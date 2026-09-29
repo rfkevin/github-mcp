@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
 import type { AppEnv } from '../src/config';
 import { codeChallenge } from '../src/auth/github';
+import { consentPolicy } from '../src/auth/consent';
 
 const ORIGIN = 'https://github-mcp.example';
 const settings: AppEnv = { ...env, PUBLIC_ORIGIN: ORIGIN, ALLOWED_GITHUB_USER_IDS: '123',
@@ -55,6 +56,29 @@ beforeAll(async () => {
 });
 
 describe('Worker OAuth / MCP', () => {
+  it('autorise les destinations du formulaire sans élargir les autres protections CSP', async () => {
+    const { page } = await consent();
+    expect(page.headers.get('Content-Security-Policy')).toBe(
+      "default-src 'none'; form-action 'self' https://github.com http://localhost:4321; frame-ancestors 'none'; base-uri 'none'",
+    );
+    expect(page.headers.get('X-Frame-Options')).toBe('DENY');
+    expect(page.headers.get('Cache-Control')).toBe('no-store');
+    expect(cookie(page)).toContain('__Host-oauth-consent-');
+  });
+
+  it('limite le retour Claude à son origine, sans chemin ni paramètres', () => {
+    expect(consentPolicy('https://claude.ai/api/mcp/auth_callback?state=private')).toBe(
+      "default-src 'none'; form-action 'self' https://github.com https://claude.ai; frame-ancestors 'none'; base-uri 'none'",
+    );
+  });
+
+  it.each(['https://*.example.com/callback', 'https://example.com;unsafe/callback', 'custom-app://callback'])
+  ('ne copie pas une expression CSP ou un protocole arbitraire : %s', uri => {
+    expect(consentPolicy(uri)).toBe(
+      "default-src 'none'; form-action 'self' https://github.com; frame-ancestors 'none'; base-uri 'none'",
+    );
+  });
+
   it('répond au contrôle de santé avec la configuration locale', async () => {
     expect((await SELF.fetch('https://example.com/health')).status).toBe(200);
     expect((await SELF.fetch('https://example.com/mcp')).status).toBe(503);

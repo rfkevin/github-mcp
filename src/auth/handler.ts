@@ -1,6 +1,6 @@
 import { AuthorizationError, CimdFetchError, authorizationErrorRedirect } from '@cloudflare/workers-oauth-provider';
 import { isAllowedUser, type AuthEnv } from '../config';
-import { consentPage } from './consent';
+import { consentPage, consentPolicy } from './consent';
 import { githubIdentity, githubSignInUrl } from './github';
 
 type PhaseReporter = (phase: string) => void;
@@ -17,7 +17,7 @@ async function handleAuthorizeGet(
   reportPhase('authorize.begin_consent');
   const consent = await oauth.beginConsent(auth);
   consent.headers.set('Content-Type', 'text/html; charset=utf-8');
-  consent.headers.set('Content-Security-Policy', "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+  consent.headers.set('Content-Security-Policy', consentPolicy(details.redirectUri));
   return new Response(consentPage(details, consent.handle), { headers: consent.headers });
 }
 
