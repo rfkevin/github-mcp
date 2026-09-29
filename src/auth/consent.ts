@@ -3,6 +3,16 @@ import type { ConsentDescription } from '@cloudflare/workers-oauth-provider';
 const escape = (value: string): string =>
   value.replace(/[&<>"']/g, char => `&#${char.charCodeAt(0)};`);
 
+// Chrome also checks redirects following a form submission. Include the upstream
+// provider and the already-validated client's origin (used when consent is denied).
+export function consentPolicy(validatedRedirectUri: string): string {
+  const origin = new URL(validatedRedirectUri).origin;
+  const sources = ["'self'", 'https://github.com'];
+  // Only serialize a literal HTTP(S) origin, never arbitrary CSP syntax or a wildcard.
+  if (/^https?:\/\/(?:[a-z0-9.-]+|\[[0-9a-f:]+\])(?::[0-9]+)?$/.test(origin)) sources.push(origin);
+  return `default-src 'none'; form-action ${sources.join(' ')}; frame-ancestors 'none'; base-uri 'none'`;
+}
+
 export function consentPage(details: ConsentDescription, handle: string): string {
   return `<!doctype html><html lang="fr"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
