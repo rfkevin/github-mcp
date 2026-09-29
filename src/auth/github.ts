@@ -112,6 +112,8 @@ function classifyRedirectTarget(location: string | null): GitHubFetchFailure['re
     : 'github_other_path';
 }
 
+const isRedirect = (status: number): boolean => status >= 300 && status < 400;
+
 function classifyUserRedirect(location: string | null): {
   redirectTarget: GitHubFetchFailure['redirectTarget'];
   url?: string;
@@ -142,54 +144,56 @@ function classifyUserRedirect(location: string | null): {
   return { redirectTarget: 'github_api_user_endpoint', url: target.href };
 }
 
+async function requestGithubUser(
+  fetcher: typeof fetch,
+  accessToken: string,
+  url: string,
+): Promise<Response> {
+  try {
+    return await fetcher(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15_000),
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'github-mcp-worker',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+  } catch (error) {
+    throw new GitHubIdentityError(
+      'github_user_network_error',
+      undefined,
+      classifyFetchFailure(error),
+    );
+  }
+}
+
+async function rejectUserRedirect(response: Response, redirect: ReturnType<typeof classifyUserRedirect>): Promise<never> {
+  await response.body?.cancel();
+  throw new GitHubIdentityError(
+    'github_user_redirect_rejected',
+    response.status,
+    { kind: 'redirect_rejected', redirectTarget: redirect.redirectTarget },
+  );
+}
+
+// A redirect is never followed blindly: only the same endpoint may be retried once.
 async function fetchGithubUser(
   fetcher: typeof fetch,
   accessToken: string,
 ): Promise<Response> {
-  let url = 'https://api.github.com/user';
+  const first = await requestGithubUser(fetcher, accessToken, 'https://api.github.com/user');
+  if (!isRedirect(first.status)) return first;
 
-  for (let redirectCount = 0; redirectCount <= 1; redirectCount += 1) {
-    let response: Response;
-    try {
-      response = await fetcher(url, {
-        redirect: 'manual',
-        signal: AbortSignal.timeout(15_000),
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'github-mcp-worker',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      });
-    } catch (error) {
-      throw new GitHubIdentityError(
-        'github_user_network_error',
-        undefined,
-        classifyFetchFailure(error),
-      );
-    }
+  const redirect = classifyUserRedirect(first.headers.get('location'));
+  if (!redirect.url) return rejectUserRedirect(first, redirect);
+  await first.body?.cancel();
 
-    if (response.status < 300 || response.status >= 400) return response;
+  const repeated = await requestGithubUser(fetcher, accessToken, redirect.url);
+  if (!isRedirect(repeated.status)) return repeated;
 
-    const redirect = classifyUserRedirect(response.headers.get('location'));
-    await response.body?.cancel();
-    if (redirect.url && redirectCount === 0) {
-      url = redirect.url;
-      continue;
-    }
-
-    throw new GitHubIdentityError(
-      'github_user_redirect_rejected',
-      response.status,
-      { kind: 'redirect_rejected', redirectTarget: redirect.redirectTarget },
-    );
-  }
-
-  throw new GitHubIdentityError(
-    'github_user_redirect_rejected',
-    undefined,
-    { kind: 'redirect_rejected', redirectTarget: 'github_api_user_endpoint' },
-  );
+  return rejectUserRedirect(repeated, classifyUserRedirect(repeated.headers.get('location')));
 }
 
 type GitHubIdentityPhase = 'callback.github_token_exchange' | 'callback.github_user_lookup';
@@ -255,7 +259,7 @@ export async function githubIdentity(
     );
   }
 
-  if (response.status >= 300 && response.status < 400) {
+  if (isRedirect(response.status)) {
     const fetchFailure: GitHubFetchFailure = {
       kind: 'redirect_rejected',
       redirectTarget: classifyRedirectTarget(response.headers.get('location')),
