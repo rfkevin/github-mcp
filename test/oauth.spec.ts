@@ -73,10 +73,75 @@ describe('Worker OAuth / MCP', () => {
   });
 
   it('refuse une approbation sans le cookie du navigateur', async () => {
-    const { handle } = await consent();
+    const { handle, page } = await consent();
+    const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const response = await send('/authorize', { method: 'POST', body: new URLSearchParams({ handle, decision: 'approve' }) });
     expect(response.status).toBe(400);
     expect(response.headers.get('Location')).toBeNull();
+    const cookieValue = cookie(page);
+    const entries = diagnostic.mock.calls.map(([entry]) => String(entry));
+    expect(entries).toContain(JSON.stringify({
+      event: 'oauth_flow_failure',
+      phase: 'authorize.approve_consent',
+      reason: 'browser_binding_missing',
+    }));
+    expect(entries.join('\n')).not.toContain(handle);
+    expect(entries.join('\n')).not.toContain(cookieValue);
+  });
+
+  it('distingue un handle de consentement absent', async () => {
+    const { page } = await consent();
+    const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const response = await send('/authorize', {
+      method: 'POST',
+      headers: { Cookie: cookie(page) },
+      body: new URLSearchParams({ decision: 'approve' }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(diagnostic).toHaveBeenCalledWith(JSON.stringify({
+      event: 'oauth_flow_failure',
+      phase: 'authorize.approve_consent',
+      reason: 'consent_handle_missing',
+    }));
+  });
+
+  it('traite un handle de type fichier comme absent', async () => {
+    const { page } = await consent();
+    const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const form = new FormData();
+    form.append('handle', new File(['not-a-handle'], 'handle.txt'));
+    form.append('decision', 'approve');
+    const response = await send('/authorize', {
+      method: 'POST',
+      headers: { Cookie: cookie(page) },
+      body: form,
+    });
+
+    expect(response.status).toBe(400);
+    expect(diagnostic).toHaveBeenCalledWith(JSON.stringify({
+      event: 'oauth_flow_failure',
+      phase: 'authorize.approve_consent',
+      reason: 'consent_handle_missing',
+    }));
+  });
+
+  it('distingue une transaction de consentement déjà consommée', async () => {
+    const { handle, page } = await consent();
+    const headers = { Cookie: cookie(page) };
+    const form = new URLSearchParams({ handle, decision: 'approve' });
+    const first = await send('/authorize', { method: 'POST', headers, body: form });
+    expect(first.status).toBe(302);
+
+    const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const replay = await send('/authorize', { method: 'POST', headers, body: form });
+
+    expect(replay.status).toBe(400);
+    expect(diagnostic).toHaveBeenCalledWith(JSON.stringify({
+      event: 'oauth_flow_failure',
+      phase: 'authorize.approve_consent',
+      reason: 'consent_transaction_expired_or_used',
+    }));
   });
 
   it('permet de refuser le consentement', async () => {
@@ -88,10 +153,12 @@ describe('Worker OAuth / MCP', () => {
   });
 
   it('refuse un callback forgé sans contacter GitHub', async () => {
+    const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const network = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network forbidden'));
     const response = await send('/callback?code=forged&state=forged');
     expect(response.status).toBe(400);
     expect(network).not.toHaveBeenCalled();
+    expect(diagnostic.mock.calls.map(([entry]) => String(entry)).join('\n')).not.toContain('forged');
   });
 
   it.each([123, 999])('valide le parcours OAuth pour l’utilisateur %s', async userId => {

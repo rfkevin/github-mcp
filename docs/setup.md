@@ -6,7 +6,7 @@ La connexion utilisateur passe par GitHub et un consentement propre au client MC
 
 ## Paramètres
 
-Les valeurs non secrètes de `wrangler.jsonc` sont volontairement vides. Sans configuration complète, le serveur répond 503 et ne fournit aucun outil privé.
+Les valeurs non secrètes de production sont renseignées dans `wrangler.jsonc`. Sans configuration complète, le serveur répond 503 et ne fournit aucun outil privé.
 
 | Paramètre | Valeur |
 | --- | --- |
@@ -22,7 +22,15 @@ Ne pas mettre les secrets dans `wrangler.jsonc`, Git, les journaux ou une conver
 
 L'authentification utilisateur n'accorde pas les permissions de dépôt : celles-ci viennent de la GitHub App. Une OAuth App GitHub sans scope de dépôt peut servir à la connexion. Le même parcours peut utiliser les identifiants OAuth d'une GitHub App compatible, à vérifier lors du raccordement réel.
 
-`OAUTH_KV` est déclaré pour les tests et le développement local. Avant déploiement, créer/associer le namespace Cloudflare voulu et vérifier son identifiant dans la configuration. Aucune ressource distante n'a été créée par cette intégration.
+`OAUTH_KV` pointe en production vers `github-mcp-oauth-kv`. Le bloc `previews` utilise un namespace distinct, `github-mcp-oauth-preview-kv`, partagé entre les préversions mais jamais avec la production.
+
+## Déploiements de branches
+
+La branche de production est `master` et sa commande est `npx wrangler deploy`. Les autres branches utilisent `npx wrangler preview`, qui exige le bloc `previews` même lorsque la compilation de production réussit.
+
+Les préversions ne reçoivent pas les secrets de production. Leurs variables OAuth sont intentionnellement vides : `/health` répond 200, tandis que `/mcp` et les routes OAuth répondent 503. Cela permet de vérifier la publication sans ouvrir l'accès aux dépôts. Ce n'est pas une validation du parcours OAuth réel.
+
+Pour tester OAuth dans une préversion, configurer une origine HTTPS de test, un callback GitHub correspondant, les identifiants d'une application de test et ses secrets via les paramètres de préversion Cloudflare. Ne pas copier le namespace ni les secrets de production. Les tests locaux utilisent des identifiants simulés et un stockage local.
 
 ## Vérifications
 
