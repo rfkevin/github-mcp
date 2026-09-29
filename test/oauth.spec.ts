@@ -209,6 +209,13 @@ describe('Worker OAuth / MCP', () => {
       reason: 'github_token_network_error',
       fetchFailure: { kind: 'other', code: 'ECONNRESET' },
     },
+    {
+      failure: 'redirect',
+      phase: 'callback.github_token_exchange',
+      reason: 'github_token_redirect_rejected',
+      httpStatus: 302,
+      fetchFailure: { kind: 'redirect_rejected', redirectTarget: 'github_token_endpoint' },
+    },
   ] as const)('diagnostique sans fuite un échec GitHub pendant $failure', async failureCase => {
     const { handle, page } = await consent();
     const approved = await send('/authorize', {
@@ -229,6 +236,14 @@ describe('Worker OAuth / MCP', () => {
         if (failureCase.failure === 'network_code') {
           const cause = Object.assign(new Error(privateErrorDescription), { code: 'ECONNRESET' });
           throw Object.assign(new TypeError(privateErrorDescription), { cause });
+        }
+        if (failureCase.failure === 'redirect') {
+          return new Response(null, {
+            status: 302,
+            headers: {
+              Location: `https://github.com/login/oauth/access_token?error_description=${encodeURIComponent(privateErrorDescription)}`,
+            },
+          });
         }
         if (failureCase.failure === 'token') {
           return Response.json({ error: 'bad_verification_code', error_description: privateErrorDescription });

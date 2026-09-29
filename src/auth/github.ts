@@ -3,6 +3,7 @@ import { publicOrigin, type AppEnv } from '../config';
 export type GitHubIdentityFailureReason =
   | 'github_token_network_error'
   | 'github_token_http_error'
+  | 'github_token_redirect_rejected'
   | 'github_token_response_invalid'
   | 'github_token_rejected'
   | 'github_token_bad_verification_code'
@@ -23,6 +24,7 @@ export type GitHubFetchFailureKind =
 export type GitHubFetchFailure = {
   kind: GitHubFetchFailureKind;
   code?: string;
+  redirectTarget?: 'github_token_endpoint' | 'github_other_path' | 'external_origin' | 'unavailable';
 };
 
 const SAFE_FETCH_ERROR_CODES = new Set([
@@ -87,6 +89,22 @@ function classifyFetchFailure(error: unknown): GitHubFetchFailure {
   return { kind: 'other' };
 }
 
+function classifyRedirectTarget(location: string | null): GitHubFetchFailure['redirectTarget'] {
+  if (!location) return 'unavailable';
+
+  let target: URL;
+  try {
+    target = new URL(location, 'https://github.com/login/oauth/access_token');
+  } catch {
+    return 'unavailable';
+  }
+
+  if (target.origin !== 'https://github.com') return 'external_origin';
+  return target.pathname === '/login/oauth/access_token'
+    ? 'github_token_endpoint'
+    : 'github_other_path';
+}
+
 type GitHubIdentityPhase = 'callback.github_token_exchange' | 'callback.github_user_lookup';
 type GitHubIdentityPhaseReporter = (phase: GitHubIdentityPhase) => void;
 
@@ -131,7 +149,7 @@ export async function githubIdentity(
   try {
     response = await fetcher('https://github.com/login/oauth/access_token', {
       method: 'POST',
-      redirect: 'error',
+      redirect: 'manual',
       signal: AbortSignal.timeout(15_000),
       headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -147,6 +165,19 @@ export async function githubIdentity(
       'github_token_network_error',
       undefined,
       classifyFetchFailure(error),
+    );
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    const fetchFailure: GitHubFetchFailure = {
+      kind: 'redirect_rejected',
+      redirectTarget: classifyRedirectTarget(response.headers.get('location')),
+    };
+    await response.body?.cancel();
+    throw new GitHubIdentityError(
+      'github_token_redirect_rejected',
+      response.status || undefined,
+      fetchFailure,
     );
   }
 
