@@ -1,6 +1,10 @@
 # Configuration du serveur
 
-Le Worker expose `/mcp` derrière OAuth 2.1 et `/health` comme contrôle de disponibilité. Le seul outil actuellement enregistré est `github_list_repositories`. Il utilise les dépôts sélectionnés dans l'installation GitHub App, avec un jeton limité aux métadonnées en lecture. Les autres services de la bibliothèque ne sont pas encore exposés.
+Le Worker expose `/mcp` derrière OAuth 2.1 et `/health` comme contrôle de disponibilité. Sept outils sont enregistrés : `github_list_repositories`, `github_get_project_guide`, `github_read_file`, `github_list_directory`, `github_search_code`, `github_compare_refs` et `github_ci_status`.
+
+Ils s'appuient sur deux clients internes à permissions distinctes. `github_list_repositories` n'utilise qu'un jeton de métadonnées en lecture : une permission demandée à tort côté lecture ne peut donc pas faire échouer sa création du jeton (422). Les six autres outils passent par un client de lecture limité aux fichiers, aux commits et à l'intégrité continue, avec `policy.readOnly` actif. Les autres services de la bibliothèque ne sont pas encore exposés.
+
+Les fichiers sensibles (`.env`, clés privées, certificats) sont refusés en lecture et masqués dans les listes et les résultats de recherche. Les contenus renvoyés sont tronqués à 80 000 octets par document, et une comparaison de plus de 120 000 octets est renvoyée sans patchs (`patchesOmitted`). Les erreurs GitHub ne sont jamais recopiées vers le client : seul un motif fermé est journalisé et un texte de repli est renvoyé.
 
 La connexion utilisateur passe par GitHub et un consentement propre au client MCP. Seuls les identifiants numériques GitHub configurés sont autorisés. Tous ces utilisateurs accèdent à la même installation : ce n'est pas encore un système multi-utilisateurs avec permissions différentes par dépôt. La liste est revérifiée à chaque requête MCP, y compris pour les jetons déjà émis.
 

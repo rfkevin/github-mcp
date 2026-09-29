@@ -71,16 +71,19 @@ export class GitHubFiles {
     );
 
     if (!Array.isArray(payload)) {
-      throw new TypeError('Le chemin demandé n’est pas un dossier.');
+      throw new Error('Le chemin demandé n’est pas un dossier.');
     }
 
-    return payload.map(({ name, path: entryPath, type, size, sha }) => ({
-      name,
-      path: entryPath,
-      type,
-      size,
-      sha,
-    }));
+    return payload
+      // Same guarantee as the repository tree: a sensitive entry never appears in a listing.
+      .filter(({ path: entryPath }) => !SENSITIVE_FILE.test(entryPath))
+      .map(({ name, path: entryPath, type, size, sha }) => ({
+        name,
+        path: entryPath,
+        type,
+        size,
+        sha,
+      }));
   }
 
   async getRepositoryTree(
