@@ -35,4 +35,4 @@ Updates and deletions of existing files require `expectedSha` from the last read
 
 Pull request branch updates validate the source branch and repository and send `expected_head_sha`. Merges remain disabled by default; enabling them does not authorize protected target branches, and the expected PR head SHA is required.
 
-The Worker exposes an OAuth-protected MCP endpoint with `github_list_repositories` only. See [setup.md](setup.md) for configuration and current limitations. Other services are library-only until their tool authorization and tests are added.
+The Worker exposes an OAuth-protected MCP endpoint with seven tools: `github_list_repositories`, `github_get_project_guide`, `github_read_file`, `github_list_directory`, `github_search_code`, `github_compare_refs`, and `github_ci_status`. Repository listing uses a metadata-only token; the six read tools share a separate read-scoped client under `policy.readOnly`. Sensitive files are refused in reads and masked from listings and search results. See [setup.md](setup.md) for configuration and current limitations. Other services are library-only until their tool authorization and tests are added.
