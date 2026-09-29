@@ -1,7 +1,7 @@
 import { AuthorizationError, CimdFetchError, authorizationErrorRedirect } from '@cloudflare/workers-oauth-provider';
 import { isAllowedUser, type AuthEnv } from '../config';
 import { consentPage, consentPolicy } from './consent';
-import { githubIdentity, githubSignInUrl } from './github';
+import { GitHubIdentityError, githubIdentity, githubSignInUrl } from './github';
 
 type PhaseReporter = (phase: string) => void;
 
@@ -68,7 +68,7 @@ async function handleCallback(
   }
 
   reportPhase('callback.github_identity');
-  const userId = await githubIdentity(env, code, upstream.data.verifier);
+  const userId = await githubIdentity(env, code, upstream.data.verifier, undefined, reportPhase);
   reportPhase('callback.check_user');
   if (!isAllowedUser(env, userId)) {
     upstream.headers.set('Location', authorizationErrorRedirect(upstream.request, 'access_denied'));
@@ -103,6 +103,7 @@ function diagnosticReason(error: unknown): string {
     return 'authorization_rejected';
   }
 
+  if (error instanceof GitHubIdentityError) return error.reason;
   if (error instanceof CimdFetchError) return 'client_metadata_unavailable';
   return 'unexpected_error';
 }
@@ -128,6 +129,9 @@ export const authHandler = {
         event: 'oauth_flow_failure',
         phase,
         reason: diagnosticReason(error),
+        ...(error instanceof GitHubIdentityError && error.httpStatus !== undefined
+          ? { httpStatus: error.httpStatus }
+          : {}),
       }));
       if (error instanceof AuthorizationError || error instanceof CimdFetchError) {
         return new Response('Demande de connexion invalide ou expirée. Recommencez depuis votre client.', {
