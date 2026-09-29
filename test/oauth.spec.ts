@@ -216,6 +216,20 @@ describe('Worker OAuth / MCP', () => {
       httpStatus: 302,
       fetchFailure: { kind: 'redirect_rejected', redirectTarget: 'github_token_endpoint' },
     },
+    {
+      failure: 'user_redirect_external',
+      phase: 'callback.github_user_lookup',
+      reason: 'github_user_redirect_rejected',
+      httpStatus: 302,
+      fetchFailure: { kind: 'redirect_rejected', redirectTarget: 'external_origin' },
+    },
+    {
+      failure: 'user_redirect_path',
+      phase: 'callback.github_user_lookup',
+      reason: 'github_user_redirect_rejected',
+      httpStatus: 302,
+      fetchFailure: { kind: 'redirect_rejected', redirectTarget: 'github_api_other_path' },
+    },
   ] as const)('diagnostique sans fuite un échec GitHub pendant $failure', async failureCase => {
     const { handle, page } = await consent();
     const approved = await send('/authorize', {
@@ -251,6 +265,16 @@ describe('Worker OAuth / MCP', () => {
         return Response.json({ access_token: 'private-upstream-token' });
       }
       if (url === 'https://api.github.com/user') {
+        if (failureCase.failure === 'user_redirect_external') {
+          return new Response(null, { status: 302, headers: {
+            Location: `https://example.invalid/authorize?next=${encodeURIComponent(privateErrorDescription)}`,
+          } });
+        }
+        if (failureCase.failure === 'user_redirect_path') {
+          return new Response(null, { status: 302, headers: {
+            Location: `https://api.github.com/user/emails?access_token=${encodeURIComponent(privateErrorDescription)}`,
+          } });
+        }
         return Response.json({ message: privateErrorDescription }, { status: 401 });
       }
       throw new Error('Unexpected network request');
@@ -271,10 +295,82 @@ describe('Worker OAuth / MCP', () => {
       ...('httpStatus' in failureCase ? { httpStatus: failureCase.httpStatus } : {}),
       ...('fetchFailure' in failureCase ? { fetchFailure: failureCase.fetchFailure } : {}),
     }));
-    expect(network).toHaveBeenCalledTimes(failureCase.failure === 'identity' ? 2 : 1);
+    expect(network).toHaveBeenCalledTimes(failureCase.phase === 'callback.github_user_lookup' ? 2 : 1);
     expect(diagnosticText).not.toContain(oneTimeCode);
     expect(diagnosticText).not.toContain('private-upstream-token');
     expect(diagnosticText).not.toContain(privateErrorDescription);
+  });
+
+  it('suit une redirection unique vers le point d’entrée /user', async () => {
+    const { handle, page } = await consent();
+    const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
+      body: new URLSearchParams({ handle, decision: 'approve' }) });
+    expect(approved.status).toBe(302);
+    const upstreamState = new URL(approved.headers.get('Location')!).searchParams.get('state')!;
+    let userCalls = 0;
+    const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url === 'https://github.com/login/oauth/access_token') {
+        return Response.json({ access_token: 'private-upstream-token' });
+      }
+      if (url.startsWith('https://api.github.com/user')) {
+        userCalls += 1;
+        if (userCalls === 1) {
+          return new Response(null, { status: 302, headers: { Location: 'https://api.github.com/user/' } });
+        }
+        return Response.json({ id: 123 });
+      }
+      throw new Error('Unexpected network request');
+    });
+
+    const callback = await send(`/callback?code=upstream-code&state=${encodeURIComponent(upstreamState)}`, {
+      headers: { Cookie: cookie(approved) },
+    });
+
+    expect(callback.status).toBe(302);
+    expect(network.mock.calls.map(([input]) => String(input))).toEqual([
+      'https://github.com/login/oauth/access_token',
+      'https://api.github.com/user',
+      'https://api.github.com/user/',
+    ]);
+    const location = new URL(callback.headers.get('Location')!);
+    expect(location.searchParams.has('code')).toBe(true);
+    expect(location.searchParams.has('error')).toBe(false);
+  });
+
+  it('refuse une seconde redirection du point d’entrée /user', async () => {
+    const { handle, page } = await consent();
+    const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
+      body: new URLSearchParams({ handle, decision: 'approve' }) });
+    expect(approved.status).toBe(302);
+    const upstreamState = new URL(approved.headers.get('Location')!).searchParams.get('state')!;
+    const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url === 'https://github.com/login/oauth/access_token') {
+        return Response.json({ access_token: 'private-upstream-token' });
+      }
+      if (url.startsWith('https://api.github.com/user')) {
+        return new Response(null, { status: 302, headers: { Location: 'https://api.github.com/user' } });
+      }
+      throw new Error('Unexpected network request');
+    });
+    const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const callback = await send(`/callback?code=upstream-code&state=${encodeURIComponent(upstreamState)}`, {
+      headers: { Cookie: cookie(approved) },
+    });
+
+    expect(callback.status).toBe(503);
+    expect(diagnostic).toHaveBeenCalledWith(JSON.stringify({
+      event: 'oauth_flow_failure',
+      phase: 'callback.github_user_lookup',
+      reason: 'github_user_redirect_rejected',
+      httpStatus: 302,
+      fetchFailure: { kind: 'redirect_rejected', redirectTarget: 'github_api_user_endpoint' },
+    }));
+    expect(network).toHaveBeenCalledTimes(3);
+    expect(diagnostic.mock.calls.map(([entry]) => String(entry)).join('\n'))
+      .not.toContain('private-upstream-token');
   });
 
   it.each([123, 999])('valide le parcours OAuth pour l’utilisateur %s', async userId => {

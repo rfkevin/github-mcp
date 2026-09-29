@@ -10,6 +10,7 @@ export type GitHubIdentityFailureReason =
   | 'github_token_incorrect_client_credentials'
   | 'github_token_redirect_uri_mismatch'
   | 'github_user_network_error'
+  | 'github_user_redirect_rejected'
   | 'github_user_http_error'
   | 'github_user_response_invalid'
   | 'github_user_id_invalid';
@@ -24,7 +25,13 @@ export type GitHubFetchFailureKind =
 export type GitHubFetchFailure = {
   kind: GitHubFetchFailureKind;
   code?: string;
-  redirectTarget?: 'github_token_endpoint' | 'github_other_path' | 'external_origin' | 'unavailable';
+  redirectTarget?:
+    | 'github_token_endpoint'
+    | 'github_other_path'
+    | 'github_api_user_endpoint'
+    | 'github_api_other_path'
+    | 'external_origin'
+    | 'unavailable';
 };
 
 const SAFE_FETCH_ERROR_CODES = new Set([
@@ -103,6 +110,86 @@ function classifyRedirectTarget(location: string | null): GitHubFetchFailure['re
   return target.pathname === '/login/oauth/access_token'
     ? 'github_token_endpoint'
     : 'github_other_path';
+}
+
+function classifyUserRedirect(location: string | null): {
+  redirectTarget: GitHubFetchFailure['redirectTarget'];
+  url?: string;
+} {
+  if (!location) return { redirectTarget: 'unavailable' };
+
+  let target: URL;
+  try {
+    target = new URL(location, 'https://api.github.com/user');
+  } catch {
+    return { redirectTarget: 'unavailable' };
+  }
+
+  if (target.origin !== 'https://api.github.com') {
+    return { redirectTarget: 'external_origin' };
+  }
+
+  if (
+    target.username ||
+    target.password ||
+    target.search ||
+    target.hash ||
+    !['/user', '/user/'].includes(target.pathname)
+  ) {
+    return { redirectTarget: 'github_api_other_path' };
+  }
+
+  return { redirectTarget: 'github_api_user_endpoint', url: target.href };
+}
+
+async function fetchGithubUser(
+  fetcher: typeof fetch,
+  accessToken: string,
+): Promise<Response> {
+  let url = 'https://api.github.com/user';
+
+  for (let redirectCount = 0; redirectCount <= 1; redirectCount += 1) {
+    let response: Response;
+    try {
+      response = await fetcher(url, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'github-mcp-worker',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+    } catch (error) {
+      throw new GitHubIdentityError(
+        'github_user_network_error',
+        undefined,
+        classifyFetchFailure(error),
+      );
+    }
+
+    if (response.status < 300 || response.status >= 400) return response;
+
+    const redirect = classifyUserRedirect(response.headers.get('location'));
+    await response.body?.cancel();
+    if (redirect.url && redirectCount === 0) {
+      url = redirect.url;
+      continue;
+    }
+
+    throw new GitHubIdentityError(
+      'github_user_redirect_rejected',
+      response.status,
+      { kind: 'redirect_rejected', redirectTarget: redirect.redirectTarget },
+    );
+  }
+
+  throw new GitHubIdentityError(
+    'github_user_redirect_rejected',
+    undefined,
+    { kind: 'redirect_rejected', redirectTarget: 'github_api_user_endpoint' },
+  );
 }
 
 type GitHubIdentityPhase = 'callback.github_token_exchange' | 'callback.github_user_lookup';
@@ -198,25 +285,7 @@ export async function githubIdentity(
   }
 
   reportPhase?.('callback.github_user_lookup');
-  let identity: Response;
-  try {
-    identity = await fetcher('https://api.github.com/user', {
-      redirect: 'error',
-      signal: AbortSignal.timeout(15_000),
-      headers: {
-        Authorization: `Bearer ${token.access_token}`,
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'github-mcp-worker',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
-  } catch (error) {
-    throw new GitHubIdentityError(
-      'github_user_network_error',
-      undefined,
-      classifyFetchFailure(error),
-    );
-  }
+  const identity = await fetchGithubUser(fetcher, token.access_token);
 
   if (!identity.ok) {
     await identity.body?.cancel();
