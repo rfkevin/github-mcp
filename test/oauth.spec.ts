@@ -185,6 +185,63 @@ describe('Worker OAuth / MCP', () => {
     expect(diagnostic.mock.calls.map(([entry]) => String(entry)).join('\n')).not.toContain('forged');
   });
 
+  it.each([
+    {
+      failure: 'token',
+      phase: 'callback.github_token_exchange',
+      reason: 'github_token_bad_verification_code',
+    },
+    {
+      failure: 'identity',
+      phase: 'callback.github_user_lookup',
+      reason: 'github_user_http_error',
+      httpStatus: 401,
+    },
+  ] as const)('diagnostique sans fuite un échec GitHub pendant $failure', async failureCase => {
+    const { handle, page } = await consent();
+    const approved = await send('/authorize', {
+      method: 'POST',
+      headers: { Cookie: cookie(page) },
+      body: new URLSearchParams({ handle, decision: 'approve' }),
+    });
+    expect(approved.status).toBe(302);
+    const upstreamState = new URL(approved.headers.get('Location')!).searchParams.get('state')!;
+    const oneTimeCode = 'test-one-time-code-must-not-be-logged';
+    const privateErrorDescription = 'private-upstream-description-must-not-be-logged';
+    const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url === 'https://github.com/login/oauth/access_token') {
+        if (failureCase.failure === 'token') {
+          return Response.json({ error: 'bad_verification_code', error_description: privateErrorDescription });
+        }
+        return Response.json({ access_token: 'private-upstream-token' });
+      }
+      if (url === 'https://api.github.com/user') {
+        return Response.json({ message: privateErrorDescription }, { status: 401 });
+      }
+      throw new Error('Unexpected network request');
+    });
+    const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const callback = await send(
+      `/callback?code=${encodeURIComponent(oneTimeCode)}&state=${encodeURIComponent(upstreamState)}`,
+      { headers: { Cookie: cookie(approved) } },
+    );
+    const diagnosticText = diagnostic.mock.calls.map(([entry]) => String(entry)).join('\n');
+
+    expect(callback.status).toBe(503);
+    expect(diagnostic).toHaveBeenCalledWith(JSON.stringify({
+      event: 'oauth_flow_failure',
+      phase: failureCase.phase,
+      reason: failureCase.reason,
+      ...('httpStatus' in failureCase ? { httpStatus: failureCase.httpStatus } : {}),
+    }));
+    expect(network).toHaveBeenCalledTimes(failureCase.failure === 'token' ? 1 : 2);
+    expect(diagnosticText).not.toContain(oneTimeCode);
+    expect(diagnosticText).not.toContain('private-upstream-token');
+    expect(diagnosticText).not.toContain(privateErrorDescription);
+  });
+
   it.each([123, 999])('valide le parcours OAuth pour l’utilisateur %s', async userId => {
     const { handle, page, client, verifier } = await consent();
     const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
