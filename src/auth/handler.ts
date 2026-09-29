@@ -132,6 +132,9 @@ export const authHandler = {
         ...(error instanceof GitHubIdentityError && error.httpStatus !== undefined
           ? { httpStatus: error.httpStatus }
           : {}),
+        ...(error instanceof GitHubIdentityError && error.fetchFailure
+          ? { fetchFailure: error.fetchFailure }
+          : {}),
       }));
       if (error instanceof AuthorizationError || error instanceof CimdFetchError) {
         return new Response('Demande de connexion invalide ou expirée. Recommencez depuis votre client.', {

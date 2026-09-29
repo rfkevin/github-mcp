@@ -13,14 +13,78 @@ export type GitHubIdentityFailureReason =
   | 'github_user_response_invalid'
   | 'github_user_id_invalid';
 
+export type GitHubFetchFailureKind =
+  | 'timeout'
+  | 'aborted'
+  | 'redirect_rejected'
+  | 'fetch_type_error'
+  | 'other';
+
+export type GitHubFetchFailure = {
+  kind: GitHubFetchFailureKind;
+  code?: string;
+};
+
+const SAFE_FETCH_ERROR_CODES = new Set([
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'ERR_TLS_CERT_VERIFY_FAILED',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
 export class GitHubIdentityError extends Error {
   constructor(
     public readonly reason: GitHubIdentityFailureReason,
     public readonly httpStatus?: number,
+    public readonly fetchFailure?: GitHubFetchFailure,
   ) {
     super(reason);
     this.name = 'GitHubIdentityError';
   }
+}
+
+function classifyFetchFailure(error: unknown): GitHubFetchFailure {
+  const causes: unknown[] = [error];
+  if (error instanceof Error && error.cause !== undefined) causes.push(error.cause);
+
+  for (const cause of causes) {
+    if (cause instanceof DOMException && cause.name === 'TimeoutError') {
+      return { kind: 'timeout' };
+    }
+    if (cause instanceof DOMException && cause.name === 'AbortError') {
+      return { kind: 'aborted' };
+    }
+
+    if (cause instanceof Error) {
+      if (cause.name === 'TimeoutError') return { kind: 'timeout' };
+      if (cause.name === 'AbortError') return { kind: 'aborted' };
+
+      if (/redirect/i.test(cause.message)) {
+        return { kind: 'redirect_rejected' };
+      }
+    }
+
+    if (typeof cause === 'object' && cause !== null && 'code' in cause) {
+      const code = cause.code;
+      if (typeof code === 'string' && SAFE_FETCH_ERROR_CODES.has(code)) {
+        return { kind: 'other', code };
+      }
+    }
+  }
+
+  if (causes.some(cause => cause instanceof TypeError)) {
+    return { kind: 'fetch_type_error' };
+  }
+
+  return { kind: 'other' };
 }
 
 type GitHubIdentityPhase = 'callback.github_token_exchange' | 'callback.github_user_lookup';
@@ -78,8 +142,12 @@ export async function githubIdentity(
         redirect_uri: `${publicOrigin(env)}/callback`,
       }),
     });
-  } catch {
-    throw new GitHubIdentityError('github_token_network_error');
+  } catch (error) {
+    throw new GitHubIdentityError(
+      'github_token_network_error',
+      undefined,
+      classifyFetchFailure(error),
+    );
   }
 
   if (!response.ok) {
@@ -111,8 +179,12 @@ export async function githubIdentity(
         'X-GitHub-Api-Version': '2022-11-28',
       },
     });
-  } catch {
-    throw new GitHubIdentityError('github_user_network_error');
+  } catch (error) {
+    throw new GitHubIdentityError(
+      'github_user_network_error',
+      undefined,
+      classifyFetchFailure(error),
+    );
   }
 
   if (!identity.ok) {
