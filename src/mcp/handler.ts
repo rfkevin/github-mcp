@@ -10,7 +10,7 @@ export const mcpHandler = {
     const ctx = context as OAuthResourceContext<{ userId?: string }>;
     const userId = ctx.auth?.userId;
     if (!isAllowedUser(env, userId) || ctx.props?.userId !== userId) {
-      return new Response('Accès refusé.', { status: 403 });
+      return new Response('Accès refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
     }
     if (!ctx.auth.scope.includes('mcp:read')) return insufficientScope(ctx.auth, ['mcp:read']);
     const tools = createToolContext(env, userId);

@@ -4,6 +4,10 @@ import { GitHubApiError, type GitHubClientOptions } from './types';
 const GITHUB_API = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
 const TOKEN_SAFETY_MARGIN_MS = 60_000;
+const ACCESS_TOKENS_PATH = '/app/installations/{id}/access_tokens';
+
+// Aucune redirection n'est légitime sur cet endpoint : ne jamais la suivre.
+const isRedirectStatus = (status: number): boolean => status >= 300 && status < 400;
 
 type SigningKey = Awaited<ReturnType<typeof importPKCS8>>;
 
@@ -71,35 +75,54 @@ export class GitHubAuthenticator {
   private async createInstallationToken(): Promise<string> {
     const appJwt = await this.createAppJwt();
     const permissions = this.options.tokenPermissions;
-    const response = await this.options.fetcher(
-      `${GITHUB_API}/app/installations/${encodeURIComponent(this.options.installationId)}/access_tokens`,
-      {
-        method: 'POST',
-        headers: {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${appJwt}`,
-          'X-GitHub-Api-Version': GITHUB_API_VERSION,
-          'User-Agent': this.options.userAgent,
-          ...(permissions ? { 'Content-Type': 'application/json' } : {}),
+    let response: Response;
+
+    try {
+      response = await this.options.fetcher(
+        `${GITHUB_API}/app/installations/${encodeURIComponent(this.options.installationId)}/access_tokens`,
+        {
+          method: 'POST',
+          redirect: 'manual',
+          headers: {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${appJwt}`,
+            'X-GitHub-Api-Version': GITHUB_API_VERSION,
+            'User-Agent': this.options.userAgent,
+            ...(permissions ? { 'Content-Type': 'application/json' } : {}),
+          },
+          body: permissions ? JSON.stringify({ permissions }) : undefined,
+          signal: AbortSignal.timeout(this.options.timeoutMs),
         },
-        body: permissions ? JSON.stringify({ permissions }) : undefined,
-        signal: AbortSignal.timeout(this.options.timeoutMs),
-      },
-    );
+      );
+    } catch {
+      throw new GitHubApiError(0, ACCESS_TOKENS_PATH,
+        'Échec réseau lors de la création du jeton GitHub App.');
+    }
+
+    if (isRedirectStatus(response.status)) {
+      await response.body?.cancel();
+      throw new GitHubApiError(response.status, ACCESS_TOKENS_PATH,
+        'Redirection GitHub inattendue : aucune redirection n’est suivie pour créer le jeton.');
+    }
 
     if (!response.ok) {
       await response.body?.cancel();
-      throw new GitHubApiError(
-        response.status,
-        '/app/installations/{id}/access_tokens',
-        'Impossible de créer le jeton GitHub App.',
-      );
+      throw new GitHubApiError(response.status, ACCESS_TOKENS_PATH,
+        `Impossible de créer le jeton GitHub App (statut ${response.status}).`);
     }
 
-    const payload = (await response.json()) as { token?: string; expires_at?: string };
+    let payload: { token?: string; expires_at?: string };
+
+    try {
+      payload = (await response.json()) as { token?: string; expires_at?: string };
+    } catch {
+      throw new GitHubApiError(response.status, ACCESS_TOKENS_PATH,
+        'Réponse d’authentification GitHub illisible.');
+    }
 
     if (!payload.token) {
-      throw new Error('GitHub n’a pas retourné de jeton d’installation.');
+      throw new GitHubApiError(response.status, ACCESS_TOKENS_PATH,
+        'GitHub n’a pas retourné de jeton d’installation.');
     }
 
     const expiresAt = payload.expires_at

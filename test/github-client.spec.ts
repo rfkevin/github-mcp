@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { GitHubClient } from '../src/github/client';
+import { GitHubHttp } from '../src/github/http';
 
 const REPOSITORY = 'owner/project';
 const INSTALLATION_TOKEN = 'installation-token';
@@ -71,6 +72,16 @@ function requestUrl(input: RequestInfo | URL): string {
   }
 
   return input.url;
+}
+
+async function rejection(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise;
+  } catch (error) {
+    return error as Error;
+  }
+
+  throw new Error('Rejet attendu.');
 }
 
 function createFetchStub(payload: Record<string, unknown>): {
@@ -530,5 +541,90 @@ describe('GitHubClient', () => {
     });
     await expect(client.pullRequests.mergePullRequest(REPOSITORY, 1, { expectedHeadSha: FILE_SHA })).rejects.toThrow('protégée');
     expect(writes).toBe(0);
+  });
+
+  it('nomme un délai dépassé sans recopier le message d’origine', async () => {
+    const origin = 'https://api.github.com/repos/private/name?token=secret';
+    const http = new GitHubHttp({
+      fetcher: async () => {
+        throw new DOMException(origin, 'TimeoutError');
+      },
+      userAgent: 'github-mcp-test',
+      timeoutMs: 10,
+      getInstallationToken: async () => INSTALLATION_TOKEN,
+    });
+
+    const failure = await rejection(
+      http.request('/repos/owner/project/issues', { method: 'POST', body: '{}' }),
+    );
+
+    expect(failure.message).toBe('Délai dépassé lors de l’appel à GitHub.');
+    expect(failure.message).not.toContain(origin);
+    expect((failure as { status?: number }).status).toBe(0);
+  });
+
+  it('nomme une panne réseau sans recopier le message d’origine', async () => {
+    const origin = 'https://api.github.com/repos/private/name?token=secret';
+    const http = new GitHubHttp({
+      fetcher: async () => {
+        throw new TypeError(origin);
+      },
+      userAgent: 'github-mcp-test',
+      timeoutMs: 10,
+      getInstallationToken: async () => INSTALLATION_TOKEN,
+    });
+
+    const failure = await rejection(
+      http.request('/repos/owner/project/issues', { method: 'POST', body: '{}' }),
+    );
+
+    expect(failure.message).toBe('Échec réseau lors de l’appel à GitHub.');
+    expect(failure.message).not.toContain(origin);
+  });
+
+  it('refuse une redirection pendant la création du jeton d’installation', async () => {
+    const client = new GitHubClient({
+      appId: '123',
+      privateKey,
+      installationId: '456',
+      fetcher: async () => new Response(null, {
+        status: 302,
+        headers: { Location: 'https://example.invalid/authorize?next=secret' },
+      }),
+    });
+
+    const failure = await rejection(client.repositories.getRepository(REPOSITORY));
+
+    expect(failure.message).toBe(
+      'Redirection GitHub inattendue : aucune redirection n’est suivie pour créer le jeton.',
+    );
+    expect(failure.message).not.toContain('example.invalid');
+    expect((failure as { status?: number }).status).toBe(302);
+  });
+
+  it('cite le statut quand GitHub refuse de créer le jeton', async () => {
+    const client = new GitHubClient({
+      appId: '123',
+      privateKey,
+      installationId: '456',
+      fetcher: async () => new Response(null, { status: 401 }),
+    });
+
+    await expect(client.repositories.getRepository(REPOSITORY)).rejects.toThrow(
+      'Impossible de créer le jeton GitHub App (statut 401).',
+    );
+  });
+
+  it('signale une réponse d’authentification illisible', async () => {
+    const client = new GitHubClient({
+      appId: '123',
+      privateKey,
+      installationId: '456',
+      fetcher: async () => new Response('pas du JSON', { status: 200 }),
+    });
+
+    await expect(client.repositories.getRepository(REPOSITORY)).rejects.toThrow(
+      'Réponse d’authentification GitHub illisible.',
+    );
   });
 });
