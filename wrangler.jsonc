@@ -8,13 +8,13 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-09-26",
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
-	"kv_namespaces": [{ "binding": "OAUTH_KV" }],
+	"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "65bb801d428d4250a4c8327310e0d065" }],
 	"vars": {
-		"PUBLIC_ORIGIN": "",
-		"ALLOWED_GITHUB_USER_IDS": "",
-		"GITHUB_APP_ID": "",
-		"GITHUB_INSTALLATION_ID": "",
-		"GITHUB_OAUTH_CLIENT_ID": ""
+		"PUBLIC_ORIGIN": "https://github-mcp.rfahedkevin.workers.dev",
+		"ALLOWED_GITHUB_USER_IDS": "105856986",
+		"GITHUB_APP_ID": "5122110",
+		"GITHUB_INSTALLATION_ID": "166154980",
+		"GITHUB_OAUTH_CLIENT_ID": "Iv23liaWMkDZAKSVWClX"
 	},
 	"observability": {
 		"enabled": true
