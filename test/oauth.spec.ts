@@ -197,6 +197,18 @@ describe('Worker OAuth / MCP', () => {
       reason: 'github_user_http_error',
       httpStatus: 401,
     },
+    {
+      failure: 'timeout',
+      phase: 'callback.github_token_exchange',
+      reason: 'github_token_network_error',
+      fetchFailure: { kind: 'timeout' },
+    },
+    {
+      failure: 'network_code',
+      phase: 'callback.github_token_exchange',
+      reason: 'github_token_network_error',
+      fetchFailure: { kind: 'other', code: 'ECONNRESET' },
+    },
   ] as const)('diagnostique sans fuite un échec GitHub pendant $failure', async failureCase => {
     const { handle, page } = await consent();
     const approved = await send('/authorize', {
@@ -211,6 +223,13 @@ describe('Worker OAuth / MCP', () => {
     const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input);
       if (url === 'https://github.com/login/oauth/access_token') {
+        if (failureCase.failure === 'timeout') {
+          throw new DOMException(privateErrorDescription, 'TimeoutError');
+        }
+        if (failureCase.failure === 'network_code') {
+          const cause = Object.assign(new Error(privateErrorDescription), { code: 'ECONNRESET' });
+          throw Object.assign(new TypeError(privateErrorDescription), { cause });
+        }
         if (failureCase.failure === 'token') {
           return Response.json({ error: 'bad_verification_code', error_description: privateErrorDescription });
         }
@@ -235,8 +254,9 @@ describe('Worker OAuth / MCP', () => {
       phase: failureCase.phase,
       reason: failureCase.reason,
       ...('httpStatus' in failureCase ? { httpStatus: failureCase.httpStatus } : {}),
+      ...('fetchFailure' in failureCase ? { fetchFailure: failureCase.fetchFailure } : {}),
     }));
-    expect(network).toHaveBeenCalledTimes(failureCase.failure === 'token' ? 1 : 2);
+    expect(network).toHaveBeenCalledTimes(failureCase.failure === 'identity' ? 2 : 1);
     expect(diagnosticText).not.toContain(oneTimeCode);
     expect(diagnosticText).not.toContain('private-upstream-token');
     expect(diagnosticText).not.toContain(privateErrorDescription);
