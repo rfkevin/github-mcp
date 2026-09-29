@@ -9,6 +9,10 @@ import {
 } from '../src/security/policy';
 
 describe('branch policy', () => {
+  it('génère une branche valide même si la troncature tombe sur un tiret', () => {
+    const branch = buildWorkingBranch('a'.repeat(47) + ' long', 'fix');
+    expect(() => assertWritableBranch(branch)).not.toThrow();
+  });
   it('génère une branche MCP', () => {
     expect(buildWorkingBranch('Claude Desktop', 'Fix login')).toBe(
       'mcp/claude-desktop/fix-login',

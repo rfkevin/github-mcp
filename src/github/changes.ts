@@ -8,8 +8,6 @@ import {
   GitHubConflictError,
   type AppliedChangeSet,
   type ApplyChangeSetOptions,
-  type GitHubContentEntry,
-  type GitHubContentFile,
   type GitHubTree,
   type FileDeletion,
 } from './types';
@@ -42,7 +40,7 @@ export class GitHubChanges {
     this.dependencies.assertWritableBranchName(branch);
     const plan = this.prepareChangeSet(changes, commitMessage, options);
     const snapshot = await this.loadParentSnapshot(repository, branch);
-    const existing = await this.loadExistingFiles(repository, snapshot, plan.paths);
+    const existing = this.loadExistingFiles(snapshot, plan.paths);
     this.assertExpectedFiles(plan, existing);
 
     const newTree = await this.createTree(repository, snapshot.treeSha, plan, existing);
@@ -71,9 +69,12 @@ export class GitHubChanges {
       throw new Error('Aucun changement à appliquer.');
     }
 
-    const validatedChanges = changes.length > 0
-      ? validateChangeSet(changes, this.dependencies.policy)
-      : [];
+    // Count and validate deletions too, before making any network request.
+    validateChangeSet([
+      ...changes,
+      ...deletions.map(deletion => ({ ...deletion, content: '' })),
+    ], this.dependencies.policy);
+    const validatedChanges = changes;
     const paths = new Set(validatedChanges.map(change => change.path));
 
     for (const deletion of deletions) {
@@ -100,60 +101,31 @@ export class GitHubChanges {
     const tree = await request<GitHubTree>(
       withQuery(repoPath(repository, `/git/trees/${encodeSegment(treeSha)}`), { recursive: 1 }),
     );
+    if (tree.truncated) {
+      throw new Error('Arbre Git tronqué : impossible de garantir les modes et chemins des fichiers.');
+    }
 
     return { commitSha, treeSha, tree };
   }
 
-  private async loadExistingFiles(
-    repository: string,
+  private loadExistingFiles(
     snapshot: ParentSnapshot,
     paths: ReadonlySet<string>,
-  ): Promise<Map<string, ExistingFile | undefined>> {
+  ): Map<string, ExistingFile | undefined> {
     const knownFiles = new Map<string, ExistingFile>();
 
-    if (!snapshot.tree.truncated) {
-      for (const item of snapshot.tree.tree) {
-        if (item.type === 'blob' && item.path && item.sha) {
-          knownFiles.set(item.path, { sha: item.sha, mode: item.mode ?? '100644' });
-        }
+    for (const item of snapshot.tree.tree) {
+      if (item.type === 'blob' && item.path && item.sha) {
+        knownFiles.set(item.path, { sha: item.sha, mode: item.mode ?? '100644' });
       }
     }
 
     const files = new Map<string, ExistingFile | undefined>();
     for (const path of paths) {
-      files.set(
-        path,
-        await this.lookupExistingFile(repository, path, snapshot, knownFiles),
-      );
+      files.set(path, knownFiles.get(path));
     }
 
     return files;
-  }
-
-  private async lookupExistingFile(
-    repository: string,
-    path: string,
-    snapshot: ParentSnapshot,
-    knownFiles: ReadonlyMap<string, ExistingFile>,
-  ): Promise<ExistingFile | undefined> {
-    if (!snapshot.tree.truncated) {
-      return knownFiles.get(path);
-    }
-
-    const { encodeSlashPath, repoPath, request, withQuery } = this.dependencies;
-    try {
-      const payload = await request<GitHubContentFile | GitHubContentEntry[]>(
-        withQuery(repoPath(repository, `/contents/${encodeSlashPath(path)}`), {
-          ref: snapshot.commitSha,
-        }),
-      );
-      return Array.isArray(payload) ? undefined : { sha: payload.sha, mode: '100644' };
-    } catch (error) {
-      if (error instanceof GitHubApiError && error.status === 404) {
-        return undefined;
-      }
-      throw error;
-    }
   }
 
   private assertExpectedFiles(
@@ -161,6 +133,9 @@ export class GitHubChanges {
     existing: ReadonlyMap<string, ExistingFile | undefined>,
   ): void {
     for (const change of plan.changes) {
+      if (existing.get(change.path) && !change.expectedSha) {
+        throw new GitHubConflictError(`Le SHA attendu est requis pour modifier ${change.path}.`);
+      }
       if (change.expectedSha && existing.get(change.path)?.sha !== change.expectedSha) {
         throw new GitHubConflictError(`Le fichier ${change.path} a changé depuis sa lecture.`);
       }
@@ -170,6 +145,9 @@ export class GitHubChanges {
       const current = existing.get(deletion.path);
       if (!current) {
         throw new GitHubConflictError(`Le fichier ${deletion.path} n’existe pas.`);
+      }
+      if (!deletion.expectedSha) {
+        throw new GitHubConflictError(`Le SHA attendu est requis pour supprimer ${deletion.path}.`);
       }
       if (deletion.expectedSha && current.sha !== deletion.expectedSha) {
         throw new GitHubConflictError(`Le fichier ${deletion.path} a changé depuis sa lecture.`);

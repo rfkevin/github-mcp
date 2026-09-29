@@ -82,7 +82,8 @@ function slugify(value: string, field: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-/, '')
     .replace(/-$/, '')
-    .slice(0, 48);
+    .slice(0, 48)
+    .replace(/-$/, '');
 
   if (!result) {
     reject('INVALID_BRANCH_SEGMENT', `${field} est invalide.`);

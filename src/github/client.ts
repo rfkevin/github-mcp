@@ -1,4 +1,4 @@
-import { assertWritableBranch, type SecurityPolicy } from '../security/policy';
+import { assertWritableBranch, PolicyViolationError, type SecurityPolicy } from '../security/policy';
 import type { GitHubClientOptions } from './types';
 import { GitHubFiles, SENSITIVE_FILE } from './files';
 import { GitHubRepositories } from './repositories';
@@ -185,6 +185,11 @@ export class GitHubClient {
       fetcher,
       userAgent,
       timeoutMs,
+      assertRequestAllowed: method => {
+        if (options.policy?.readOnly && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+          throw new PolicyViolationError('READ_ONLY_REPOSITORY', 'Ce dépôt est configuré en lecture seule.');
+        }
+      },
       getInstallationToken: forceRefresh =>
         this.authenticator.getInstallationToken(forceRefresh),
     });

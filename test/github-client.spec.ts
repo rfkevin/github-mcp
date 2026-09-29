@@ -431,4 +431,104 @@ describe('GitHubClient', () => {
       draft: false,
     });
   });
+
+  it('bloque les écritures de tous les services en lecture seule avant le réseau', async () => {
+    let calls = 0;
+    const client = new GitHubClient({
+      appId: '123', privateKey, installationId: '456', policy: { readOnly: true },
+      fetcher: async () => { calls++; return jsonResponse({}); },
+    });
+    const operations: Array<() => Promise<unknown>> = [
+      () => client.issues.createIssue(REPOSITORY, 'Issue'),
+      () => client.issues.createComment(REPOSITORY, 1, 'Comment'),
+      () => client.pullRequests.updatePullRequest(REPOSITORY, 1, { title: 'Title' }),
+      () => client.pullRequests.createReview(REPOSITORY, 1, 'COMMENT', 'Review'),
+      () => client.actions.rerunWorkflow(REPOSITORY, 1),
+      () => client.actions.dispatchWorkflow(REPOSITORY, 'ci.yml', 'main'),
+      () => client.releases.createRelease(REPOSITORY, 'v1'),
+    ];
+    for (const operation of operations) {
+      await expect(Promise.resolve().then(operation)).rejects.toThrow('lecture seule');
+    }
+    expect(calls).toBe(0);
+  });
+
+  it.each(['missing-sha', 'deletion-missing-sha', 'truncated'])('refuse un changement non vérifiable : %s', async scenario => {
+    let writes = 0;
+    const client = new GitHubClient({
+      appId: '123', privateKey, installationId: '456',
+      fetcher: async (input, init) => {
+        const url = requestUrl(input);
+        if (url.endsWith('/access_tokens')) return jsonResponse({ token: INSTALLATION_TOKEN });
+        if (init?.method && init.method !== 'GET') writes++;
+        if (url.includes('/git/ref/')) return jsonResponse({ object: { sha: 'parent' } });
+        if (url.includes('/git/commits/')) return jsonResponse({ tree: { sha: 'tree' } });
+        return jsonResponse({ truncated: scenario === 'truncated', tree: [
+          { path: FILE_PATH, sha: FILE_SHA, type: 'blob', mode: '100755' },
+        ] });
+      },
+    });
+    await expect(client.changes.applyChangeSet(REPOSITORY, 'mcp/test/fix',
+      scenario === 'deletion-missing-sha' ? [] : [{ path: FILE_PATH, content: 'new' }], 'Update',
+      scenario === 'deletion-missing-sha' ? { deletions: [{ path: FILE_PATH }] } : {},
+    )).rejects.toThrow(scenario === 'truncated' ? 'tronqué' : 'SHA attendu');
+    expect(writes).toBe(0);
+  });
+
+  it('compte aussi les suppressions dans la limite de fichiers avant le réseau', async () => {
+    let calls = 0;
+    const client = new GitHubClient({
+      appId: '123', privateKey, installationId: '456', policy: { maxFilesPerChange: 1 },
+      fetcher: async () => { calls++; return jsonResponse({}); },
+    });
+    await expect(client.changes.applyChangeSet(REPOSITORY, 'mcp/test/fix',
+      [{ path: 'new.ts', content: 'new' }], 'Update',
+      { deletions: [{ path: 'old.ts', expectedSha: FILE_SHA }] },
+    )).rejects.toThrow('nombre de fichiers');
+    expect(calls).toBe(0);
+  });
+
+  it.each(['main', 'master', 'client', 'client/app'])('refuse de mettre à jour une PR sur %s', async branch => {
+    const requests: RecordedRequest[] = [];
+    const client = new GitHubClient({
+      appId: '123', privateKey, installationId: '456',
+      fetcher: async (input, init) => {
+        const url = requestUrl(input);
+        requests.push({ url, init });
+        return jsonResponse(url.endsWith('/access_tokens') ? { token: INSTALLATION_TOKEN } : {
+          head: { ref: branch, sha: FILE_SHA, repo: { full_name: REPOSITORY } },
+        });
+      },
+    });
+    await expect(client.branches.updatePullRequestBranch(REPOSITORY, 1)).rejects.toThrow('protégée');
+    expect(requests.some(r => r.init?.method === 'PUT')).toBe(false);
+  });
+
+  it('transmet le SHA attendu pour la mise à jour d’une branche de PR autorisée', async () => {
+    let updateBody: unknown;
+    const client = new GitHubClient({
+      appId: '123', privateKey, installationId: '456',
+      fetcher: async (input, init) => {
+        if (requestUrl(input).endsWith('/access_tokens')) return jsonResponse({ token: INSTALLATION_TOKEN });
+        if (init?.method === 'PUT') { updateBody = JSON.parse(String(init.body)); return jsonResponse({}); }
+        return jsonResponse({ head: { ref: 'mcp/test/fix', sha: FILE_SHA, repo: { full_name: REPOSITORY } } });
+      },
+    });
+    await client.branches.updatePullRequestBranch(REPOSITORY, 1);
+    expect(updateBody).toEqual({ expected_head_sha: FILE_SHA });
+  });
+
+  it.each(['main', 'master', 'client/app'])('refuse une fusion vers %s même si allowMerge est activé', async base => {
+    let writes = 0;
+    const client = new GitHubClient({
+      appId: '123', privateKey, installationId: '456', allowMerge: true,
+      fetcher: async (input, init) => {
+        if (requestUrl(input).endsWith('/access_tokens')) return jsonResponse({ token: INSTALLATION_TOKEN });
+        if (init?.method === 'PUT') writes++;
+        return jsonResponse({ base: { ref: base }, head: { sha: FILE_SHA } });
+      },
+    });
+    await expect(client.pullRequests.mergePullRequest(REPOSITORY, 1, { expectedHeadSha: FILE_SHA })).rejects.toThrow('protégée');
+    expect(writes).toBe(0);
+  });
 });

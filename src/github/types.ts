@@ -82,7 +82,7 @@ export type GitHubPullRequest = {
   html_url: string;
   body?: string | null;
   user?: GitHubUser;
-  head: { ref: string; sha: string };
+  head: { ref: string; sha: string; repo?: { full_name: string } | null };
   base: { ref: string };
 };
 

@@ -124,12 +124,18 @@ export class GitHubPullRequests {
       expectedHeadSha?: string;
     } = {},
   ): Promise<{ merged: boolean; sha: string; message: string }> {
-    const { allowMerge, assertPositiveInteger, repoPath, request } = this.dependencies;
+    const { allowMerge, assertPositiveInteger, assertWritableBranchName, repoPath, request } = this.dependencies;
     if (!allowMerge) {
       throw new Error('La fusion de Pull Requests est désactivée (allowMerge).');
     }
 
     assertPositiveInteger(pullNumber, 'Numéro de Pull Request');
+
+    const pull = await this.getPullRequest(repository, pullNumber);
+    assertWritableBranchName(pull.base.ref);
+    if (!options.expectedHeadSha || options.expectedHeadSha !== pull.head.sha) {
+      throw new GitHubConflictError('Le SHA attendu de la PR est requis et doit correspondre à sa version actuelle.');
+    }
 
     try {
       return await request(repoPath(repository, `/pulls/${pullNumber}/merge`), {

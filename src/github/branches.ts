@@ -1,4 +1,4 @@
-import { GitHubApiError, GitHubConflictError } from './types';
+import { GitHubApiError, GitHubConflictError, type GitHubPullRequest } from './types';
 import type { GitHubServiceContext } from './service-context';
 
 export class GitHubBranches {
@@ -49,12 +49,17 @@ export class GitHubBranches {
   }
 
   async updatePullRequestBranch(repository: string, pullNumber: number): Promise<void> {
-    const { assertPositiveInteger, repoPath, request } = this.dependencies;
+    const { assertPositiveInteger, assertWritableBranchName, repoPath, request } = this.dependencies;
     assertPositiveInteger(pullNumber, 'Numéro de Pull Request');
+    const pull = await request<GitHubPullRequest>(repoPath(repository, `/pulls/${pullNumber}`));
+    assertWritableBranchName(pull.head.ref);
+    if (!pull.head.repo || pull.head.repo.full_name.toLowerCase() !== repository.toLowerCase()) {
+      throw new Error('La branche de PR doit appartenir au dépôt autorisé.');
+    }
 
     await request(repoPath(repository, `/pulls/${pullNumber}/update-branch`), {
       method: 'PUT',
-      body: JSON.stringify({}),
+      body: JSON.stringify({ expected_head_sha: pull.head.sha }),
     });
   }
 }

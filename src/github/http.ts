@@ -9,6 +9,7 @@ export type GitHubHttpOptions = {
   fetcher: typeof fetch;
   userAgent: string;
   timeoutMs: number;
+  assertRequestAllowed?: (method: string) => void;
   getInstallationToken: (forceRefresh?: boolean) => Promise<string>;
 };
 
@@ -20,6 +21,7 @@ export class GitHubHttp {
 
   async send(path: string, init: RequestInit = {}): Promise<Response> {
     const method = (init.method ?? 'GET').toUpperCase();
+    this.options.assertRequestAllowed?.(method);
     const idempotent = method === 'GET' || method === 'HEAD';
     let forceRefresh = false;
     let refreshedOnce = false;

@@ -1,18 +1,25 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Bind resources to your worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
+import OAuthProvider from '@cloudflare/workers-oauth-provider';
+import { assertConfigured, publicOrigin, type AppEnv, type AuthEnv } from './config';
+import { authHandler } from './auth/handler';
+import { mcpHandler } from './mcp/handler';
 
 export default {
-	async fetch(request, env, ctx): Promise<Response> {
-		return new Response("Hello World!");
-	},
-} satisfies ExportedHandler<Env>;
+  async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
+    if (new URL(request.url).pathname === '/health' && request.method === 'GET') {
+      return Response.json({ status: 'ok' });
+    }
+    try { assertConfigured(env); } catch {
+      return new Response('Serveur non configuré.', { status: 503 });
+    }
+    const origin = publicOrigin(env);
+    if (new URL(request.url).origin !== origin) return new Response('Origine refusée.', { status: 400 });
+    const provider = new OAuthProvider<AuthEnv>({
+      apiRoute: '/mcp', apiHandler: mcpHandler, defaultHandler: authHandler,
+      authorizeEndpoint: '/authorize', tokenEndpoint: '/oauth/token', clientRegistrationEndpoint: '/oauth/register',
+      scopesSupported: ['mcp:read', 'offline_access'], requiredScopes: ['mcp:read'],
+      resourceMetadata: { resource: `${origin}/mcp`, authorization_servers: [origin] },
+      clientIdMetadataDocumentEnabled: true,
+    });
+    return provider.fetch(request, env as AuthEnv, ctx);
+  },
+} satisfies ExportedHandler<AppEnv>;

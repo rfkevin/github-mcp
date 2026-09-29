@@ -7,6 +7,15 @@
 	"name": "github-mcp",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-09-26",
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"kv_namespaces": [{ "binding": "OAUTH_KV" }],
+	"vars": {
+		"PUBLIC_ORIGIN": "",
+		"ALLOWED_GITHUB_USER_IDS": "",
+		"GITHUB_APP_ID": "",
+		"GITHUB_INSTALLATION_ID": "",
+		"GITHUB_OAUTH_CLIENT_ID": ""
+	},
 	"observability": {
 		"enabled": true
 	},
