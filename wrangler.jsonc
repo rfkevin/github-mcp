@@ -16,6 +16,17 @@
 		"GITHUB_INSTALLATION_ID": "166154980",
 		"GITHUB_OAUTH_CLIENT_ID": "Iv23liaWMkDZAKSVWClX"
 	},
+	// Previews are isolated and fail closed until test OAuth credentials are configured.
+	"previews": {
+		"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "993dee7f12634524baace15e107729b9" }],
+		"vars": {
+			"PUBLIC_ORIGIN": "",
+			"ALLOWED_GITHUB_USER_IDS": "",
+			"GITHUB_APP_ID": "",
+			"GITHUB_INSTALLATION_ID": "",
+			"GITHUB_OAUTH_CLIENT_ID": ""
+		}
+	},
 	"observability": {
 		"enabled": true
 	},
