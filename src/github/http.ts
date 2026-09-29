@@ -5,6 +5,15 @@ const GITHUB_API_VERSION = '2022-11-28';
 const MAX_RETRIES = 3;
 const MAX_RATE_LIMIT_WAIT_MS = 10_000;
 
+// Seul le nom de l'erreur est lu : son message peut contenir l'URL appelée.
+function networkFailureMessage(error: unknown): string {
+  const name = error instanceof Error ? error.name : '';
+
+  if (name === 'TimeoutError') return 'Délai dépassé lors de l’appel à GitHub.';
+  if (name === 'AbortError') return 'Appel à GitHub interrompu avant la réponse.';
+  return 'Échec réseau lors de l’appel à GitHub.';
+}
+
 export type GitHubHttpOptions = {
   fetcher: typeof fetch;
   userAgent: string;
@@ -48,13 +57,13 @@ export class GitHubHttp {
           headers,
           signal: AbortSignal.timeout(this.options.timeoutMs),
         });
-      } catch {
+      } catch (error) {
         if (idempotent && attempt < MAX_RETRIES) {
           await sleep(500 * 2 ** attempt);
           continue;
         }
 
-        throw new GitHubApiError(0, path, 'Échec réseau ou délai dépassé lors de l’appel à GitHub.');
+        throw new GitHubApiError(0, path, networkFailureMessage(error));
       }
 
       if (response.ok) {

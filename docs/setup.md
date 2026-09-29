@@ -32,6 +32,26 @@ Les préversions ne reçoivent pas les secrets de production. Leurs variables OA
 
 Pour tester OAuth dans une préversion, configurer une origine HTTPS de test, un callback GitHub correspondant, les identifiants d'une application de test et ses secrets via les paramètres de préversion Cloudflare. Ne pas copier le namespace ni les secrets de production. Les tests locaux utilisent des identifiants simulés et un stockage local.
 
+## Diagnostic des échecs
+
+Un échec du parcours de connexion produit une seule ligne JSON, sans secret :
+
+| Champ | Contenu |
+| --- | --- |
+| `event` | toujours `oauth_flow_failure` |
+| `phase` | étape atteinte, par exemple `authorize.approve_consent` ou `callback.github_user_lookup` |
+| `reason` | motif classé, par exemple `github_token_redirect_rejected` ou `consent_transaction_expired_or_used` |
+| `httpStatus` | statut renvoyé par GitHub, présent seulement lorsqu'une réponse a été reçue |
+| `fetchFailure.kind` | `timeout`, `aborted`, `redirect_rejected`, `fetch_type_error` ou `other` |
+| `fetchFailure.code` | code réseau d'une liste blanche, par exemple `ECONNRESET` |
+| `fetchFailure.redirectTarget` | classe de destination d'une redirection : `github_token_endpoint`, `github_other_path`, `github_api_user_endpoint`, `github_api_other_path`, `external_origin` ou `unavailable` |
+
+Aucun de ces champs ne contient l'en-tête `Location`, une query string portant un code, un jeton ou un corps de réponse. `fetchFailure.redirectTarget` ne décrit qu'une classe : `external_origin` ou `github_api_other_path` signale un intermédiaire ou un chemin inattendu à investiguer, alors que `github_api_user_endpoint` correspond à la canonicalisation du point d'entrée `/user`, désormais suivie une seule fois.
+
+Le message renvoyé au client reste court et catégorisé : GitHub injoignable, redirection refusée par sécurité, connexion expirée ou refusée, callback mal configuré, identifiants serveur invalides. Il ne contient ni identifiant, ni URL, ni code secret ; le détail exploitable reste dans le journal. Toutes ces réponses, y compris `/health`, sont marquées `Cache-Control: no-store`.
+
+Le journal d'audit de l'outil `github_list_repositories` ajoute un champ `reason` en cas d'échec : `rate_limited`, `github_api_<statut>`, `github_api_unreachable`, `policy_<code>`, `conflict` ou `unexpected_error`. Le message d'erreur d'origine n'y est jamais recopié.
+
 ## Vérifications
 
 `npm test -- --run` teste le parcours OAuth local, les refus d'accès et les outils avec GitHub simulé. `npx tsc --noEmit` et `npx tsc --noEmit -p test/tsconfig.json` contrôlent le typage. Exécuter `npm run cf-typegen` après modification des bindings.

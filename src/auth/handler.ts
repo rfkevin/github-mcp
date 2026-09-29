@@ -5,6 +5,38 @@ import { GitHubIdentityError, githubIdentity, githubSignInUrl } from './github';
 
 type PhaseReporter = (phase: string) => void;
 
+// Messages publics par catégorie : jamais d'URL, de code, d'identifiant ni de corps
+// de réponse GitHub. Le détail exploitable reste dans le journal structuré.
+const IDENTITY_FAILURE_MESSAGES: Record<string, string> = {
+  github_token_network_error: 'GitHub est injoignable depuis ce serveur. Réessayez dans un instant.',
+  github_user_network_error: 'GitHub est injoignable depuis ce serveur. Réessayez dans un instant.',
+  github_token_redirect_rejected:
+    'Une redirection GitHub inattendue a été refusée par sécurité. Aucun identifiant n’a été transmis.',
+  github_user_redirect_rejected:
+    'Une redirection GitHub inattendue a été refusée par sécurité. Aucun identifiant n’a été transmis.',
+  github_token_http_error: 'GitHub a refusé la demande de connexion.',
+  github_user_http_error: 'GitHub a refusé la vérification de l’identité.',
+  github_token_redirect_uri_mismatch: 'Le callback GitHub configuré ne correspond pas à cette adresse.',
+  github_token_incorrect_client_credentials: 'Les identifiants OAuth GitHub du serveur sont invalides.',
+  github_token_bad_verification_code: 'Le code de connexion GitHub a expiré ou a déjà été utilisé. Recommencez.',
+  github_token_response_invalid: 'GitHub a renvoyé une réponse de connexion illisible.',
+  github_user_response_invalid: 'GitHub a renvoyé une identité illisible.',
+  github_user_id_invalid: 'GitHub a renvoyé une identité inutilisable.',
+  github_token_rejected: 'La connexion GitHub a été refusée. Recommencez depuis votre client.',
+};
+
+const FALLBACK_FAILURE_MESSAGE = 'Connexion temporairement indisponible.';
+
+function textResponse(message: string, status: number): Response {
+  return new Response(message, { status, headers: { 'Cache-Control': 'no-store' } });
+}
+
+function failureMessage(error: unknown): string {
+  return error instanceof GitHubIdentityError
+    ? IDENTITY_FAILURE_MESSAGES[error.reason] ?? FALLBACK_FAILURE_MESSAGE
+    : FALLBACK_FAILURE_MESSAGE;
+}
+
 async function handleAuthorizeGet(
   request: Request,
   oauth: AuthEnv['OAUTH_PROVIDER'],
@@ -123,7 +155,7 @@ export const authHandler = {
       if (url.pathname === '/callback' && request.method === 'GET') {
         return await handleCallback(request, env, oauth, value => { phase = value; });
       }
-      return new Response('Introuvable', { status: 404 });
+      return textResponse('Introuvable', 404);
     } catch (error) {
       console.warn(JSON.stringify({
         event: 'oauth_flow_failure',
@@ -137,13 +169,9 @@ export const authHandler = {
           : {}),
       }));
       if (error instanceof AuthorizationError || error instanceof CimdFetchError) {
-        return new Response('Demande de connexion invalide ou expirée. Recommencez depuis votre client.', {
-          status: 400, headers: { 'Cache-Control': 'no-store' },
-        });
+        return textResponse('Demande de connexion invalide ou expirée. Recommencez depuis votre client.', 400);
       }
-      return new Response('Connexion temporairement indisponible.', {
-        status: 503, headers: { 'Cache-Control': 'no-store' },
-      });
+      return textResponse(failureMessage(error), 503);
     }
   },
 };
