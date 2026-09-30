@@ -79,7 +79,7 @@ export function registerReportTools(server: McpServer, context: ToolContext): vo
     try {
       const sha = await resolveCommit(context, repository, ref);
       const allChecks = await context.checks.listCheckRuns(repository, sha);
-      const checks = allChecks.filter(check => ['sonarcloud', 'sonarqube', 'sonarqube-cloud'].includes(check.app?.slug ?? '') &&
+      const checks = allChecks.filter(check => ['sonarcloud', 'sonarqube', 'sonarqube-cloud', 'sonarqubecloud'].includes(check.app?.slug ?? '') &&
         (!check.head_sha || check.head_sha.toLowerCase() === sha));
       toolSuccess(context, 'get_quality_report');
       return textPayload({ repository, sha, source: 'github_checks', available: checks.length > 0,

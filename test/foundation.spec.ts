@@ -77,7 +77,8 @@ describe('foundation: diagnostics et cohérence', () => {
     const ctx = context();
     ctx.checks.listCheckRuns.mockRejectedValue(new GitHubApiError(422, '/app/installations/{id}/access_tokens', 'CANARY'));
     const result = await collectCiStatus(ctx as unknown as ToolContext, 'o/r', 'master');
-    expect(result).toMatchObject({ sha: SHA, partial: true, combinedState: 'pending' });
+    expect(result).toMatchObject({ sha: SHA, partial: true, availability: 'unknown', combinedState: null,
+      githubCombinedState: 'pending', statusCount: 0 });
     expect(result.unavailable[0]).toMatchObject({ source: 'checks', code: 'APP_PERMISSIONS_REJECTED' });
     expect(ctx.reads.commits.getCommit).toHaveBeenCalledTimes(1);
     expect(ctx.statuses.getCombinedStatus).toHaveBeenCalledWith('o/r', SHA);
@@ -91,6 +92,42 @@ describe('foundation: diagnostics et cohérence', () => {
     const result = await collectCiStatus(ctx as unknown as ToolContext, 'o/r', SHA);
     expect(result.runs.map(run => run.id)).toEqual([2]);
     expect(ctx.reads.commits.getCommit).not.toHaveBeenCalled();
+  });
+  it('distingue l’absence de CI du pending brut de GitHub', async () => {
+    const result = await collectCiStatus(context() as unknown as ToolContext, 'o/r', SHA);
+    expect(result).toMatchObject({ availability: 'no_checks', partial: false, combinedState: null,
+      githubCombinedState: 'pending', statusCount: 0, checks: [], runs: [] });
+    expect(result.note).toContain('Aucune vérification disponible');
+  });
+  it.each(['pending', 'success', 'failure'])('conserve un vrai commit status %s', async state => {
+    const ctx = context();
+    ctx.statuses.getCombinedStatus.mockResolvedValue({ state, total_count: 1,
+      statuses: [{ context: 'external', state, description: null }] } as never);
+    const result = await collectCiStatus(ctx as unknown as ToolContext, 'o/r', SHA);
+    expect(result).toMatchObject({ availability: 'available', combinedState: state, statusCount: 1 });
+  });
+  it('un check réussi sans commit status ne devient pas pending', async () => {
+    const ctx = context();
+    ctx.checks.listCheckRuns.mockResolvedValue([{ id: 1, name: 'ci', head_sha: SHA,
+      status: 'completed', conclusion: 'success' }] as never);
+    const result = await collectCiStatus(ctx as unknown as ToolContext, 'o/r', SHA);
+    expect(result).toMatchObject({ availability: 'available', combinedState: null,
+      checks: [{ conclusion: 'success' }] });
+  });
+  it('n’annonce pas de CI si seuls un autre commit et un run agent-checks existent', async () => {
+    const ctx = context();
+    ctx.checks.listCheckRuns.mockResolvedValue([{ id: 1, head_sha: OTHER, conclusion: 'success' }] as never);
+    ctx.workflows.listWorkflowRuns.mockResolvedValue([{ id: 2, head_sha: SHA,
+      path: '.github/workflows/agent-checks.yml', conclusion: 'success' }] as never);
+    const result = await collectCiStatus(ctx as unknown as ToolContext, 'o/r', SHA);
+    expect(result).toMatchObject({ availability: 'no_checks', checks: [], runs: [] });
+  });
+  it('ne transforme pas une source statuses inaccessible en absence de CI', async () => {
+    const ctx = context();
+    ctx.statuses.getCombinedStatus.mockRejectedValue(new GitHubApiError(403, '/status', 'CANARY'));
+    const result = await collectCiStatus(ctx as unknown as ToolContext, 'o/r', SHA);
+    expect(result).toMatchObject({ availability: 'unknown', partial: true, statusCount: null,
+      combinedState: null, githubCombinedState: null });
   });
   it('masque les secrets connus des annotations', () => {
     const result = safeDiagnostic('Bearer abc123 ghp_CANARY https://example/?token=CANARY&code=CANARY');
@@ -174,6 +211,25 @@ describe('foundation: outils regroupés', () => {
     const result = await registry(registerReportTools, ctx as unknown as ToolContext)('github_get_quality_report', { repository: 'o/r', ref: SHA });
     expect(result.structuredContent).toMatchObject({ available: false, checks: [] });
   });
+  it.each(['sonarqubecloud', 'sonarcloud', 'sonarqube', 'sonarqube-cloud'])
+  ('reconnaît le fournisseur Sonar %s au bon commit', async slug => {
+    const ctx = context();
+    ctx.checks.listCheckRuns.mockResolvedValue([{ id: 1, name: 'SonarCloud Code Analysis',
+      app: { slug }, head_sha: SHA, status: 'completed', conclusion: 'success',
+      output: { summary: 'Quality Gate passed' } }] as never);
+    const result = await registry(registerReportTools, ctx as unknown as ToolContext)('github_get_quality_report',
+      { repository: 'o/r', ref: SHA });
+    expect(result.structuredContent).toMatchObject({ available: true,
+      checks: [{ name: 'SonarCloud Code Analysis', conclusion: 'success', summary: 'Quality Gate passed' }] });
+  });
+  it('ne reprend pas le rapport Sonar d’un autre commit', async () => {
+    const ctx = context();
+    ctx.checks.listCheckRuns.mockResolvedValue([{ id: 1, app: { slug: 'sonarqubecloud' },
+      head_sha: OTHER, conclusion: 'success' }] as never);
+    const result = await registry(registerReportTools, ctx as unknown as ToolContext)('github_get_quality_report',
+      { repository: 'o/r', ref: SHA });
+    expect(result.structuredContent).toMatchObject({ available: false, checks: [] });
+  });
   it('les annotations sensibles sont retirées, les autres sont bornées', async () => {
     const ctx = context();
     ctx.checks.listCheckRuns.mockResolvedValue([{ id: 1, name: 'unit', conclusion: 'failure', head_sha: SHA }] as never);
@@ -241,6 +297,46 @@ describe('foundation: lecture et transport', () => {
       repoPath: () => '', splitRepository: () => ({ owner: 'o', name: 'r' }), withQuery: (p: string) => p,
     } as unknown as GitHubServiceContext);
     await expect(files.searchCode('o/r', 'hello')).resolves.toEqual([]);
+  });
+  it.each([true, false, undefined])('conserve l’indicateur de recherche incomplète : %s', async incomplete => {
+    const request = vi.fn(async () => ({ incomplete_results: incomplete, total_count: 0, items: [] }));
+    const files = new GitHubFiles({ request, repoPath: () => '',
+      splitRepository: () => ({ owner: 'o', name: 'r' }), withQuery: (p: string) => p,
+    } as unknown as GitHubServiceContext);
+    await expect(files.searchCodeWithMetadata('o/r', 'jose')).resolves.toEqual({
+      matches: [], incompleteResults: incomplete !== false, potentiallyTruncated: false });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it('signale une page tronquée tout en filtrant chemins sensibles et dépôts étrangers', async () => {
+    const files = new GitHubFiles({
+      request: async () => ({ incomplete_results: false, total_count: 40, items: [
+        { path: 'src/app.ts', repository: { full_name: 'o/r' } },
+        { path: '.env', repository: { full_name: 'o/r' } },
+        { path: 'other.ts', repository: { full_name: 'other/repo' } },
+      ] }), repoPath: () => '', splitRepository: () => ({ owner: 'o', name: 'r' }), withQuery: (p: string) => p,
+    } as unknown as GitHubServiceContext);
+    const result = await files.searchCodeWithMetadata('o/r', 'token');
+    expect(result).toMatchObject({ incompleteResults: false, potentiallyTruncated: true });
+    expect(result.matches.map(item => item.path)).toEqual(['src/app.ts']);
+  });
+  it.each(['master~1', 'HEAD^', 'master^2'])('explique la référence relative %s sans requête GitHub', async ref => {
+    const fetcher = vi.fn();
+    const client = new GitHubClient({ appId: '1', installationId: '2', privateKey, fetcher });
+    const ctx = context();
+    ctx.reads.commits.compareRefs = client.commits.compareRefs.bind(client.commits) as never;
+    const result = await registry(registerCommitTools, ctx as unknown as ToolContext)('github_compare_refs',
+      { repository: 'o/r', base: ref, head: 'master' });
+    expect(result).toMatchObject({ isError: true, structuredContent: { error: {
+      code: 'UNSUPPORTED_REF_EXPRESSION', retryable: false, message: expect.stringContaining('SHA du parent'),
+    } } });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it.each(['master', 'v1.0.0', SHA])('accepte branche, tag ou SHA pour comparer : %s', async base => {
+    const fetcher = vi.fn(async input => String(input).endsWith('/access_tokens')
+      ? Response.json({ token: 'fake' }) : Response.json({ status: 'ahead' }));
+    const client = new GitHubClient({ appId: '1', installationId: '2', privateKey, fetcher });
+    await expect(client.commits.compareRefs('o/r', base, OTHER)).resolves.toMatchObject({ status: 'ahead' });
+    expect(String(fetcher.mock.calls[1][0])).toContain(`/compare/${base}...${OTHER}`);
   });
   it('ne suit aucune redirection avec le jeton de dépôt', async () => {
     const fetcher = vi.fn(async () => new Response(null, { status: 302, headers: { Location: 'https://external.invalid/secret' } }));

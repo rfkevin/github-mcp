@@ -9,7 +9,7 @@ const MAX_COMPARISON_BYTES = 120_000;
 
 export function registerCommitTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_compare_refs', {
-    description: 'Comparer deux références pour relire ses propres changements (commits et fichiers touchés).',
+    description: 'Comparer deux références (noms de branches, tags ou SHA de commits). Les expressions relatives comme master~1 ou HEAD^ sont refusées : utiliser le SHA du parent. Renvoie les commits et fichiers touchés.',
     inputSchema: { repository: z.string(), base: z.string(), head: z.string() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async ({ repository, base, head }) => {

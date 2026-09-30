@@ -736,7 +736,8 @@ describe('Worker OAuth / MCP', () => {
         return Response.json({ check_runs: [{ id: 1, name: 'GitGuardian Security Checks',
           status: 'completed', conclusion: 'success', html_url: 'https://example.invalid/check/1' }] });
       }
-      if (url.includes('/status')) return Response.json({ state: 'success', total_count: 0, statuses: [] });
+      if (url.includes('/status')) return Response.json({ state: 'success', total_count: 1,
+        statuses: [{ context: 'external', state: 'success', description: null }] });
       if (url.includes('/actions/runs')) {
         return Response.json({ workflow_runs: [{ id: 7, name: 'Workers Builds', status: 'completed',
           conclusion: 'success', head_branch: 'mcp/test/fix', head_sha: 'a'.repeat(40), event: 'push',
@@ -795,9 +796,9 @@ describe('Worker OAuth / MCP', () => {
       const url = String(input);
       if (url.endsWith('/access_tokens')) return Response.json({ token: 'installation-token' });
       if (url.includes('/search/code')) {
-        return Response.json({ items: [
+        return Response.json({ incomplete_results: false, total_count: 2, items: [
           { name: 'app.ts', path: 'src/app.ts', sha: 'a'.repeat(40), html_url: 'https://example.invalid/app', repository: { full_name: 'owner/project' } },
-          { name: '.env', path: '.env', sha: 'b'.repeat(40), html_url: 'https://example.invalid/env' },
+          { name: '.env', path: '.env', sha: 'b'.repeat(40), html_url: 'https://example.invalid/env', repository: { full_name: 'owner/project' } },
         ] });
       }
       throw new Error('Unexpected GitHub request');
@@ -811,6 +812,23 @@ describe('Worker OAuth / MCP', () => {
     expect(payload.matches.map(match => match.path)).toEqual(['src/app.ts']);
     expect(audit).toHaveBeenCalledWith(JSON.stringify({ actor: '123', service: 'github',
       action: 'search_code', outcome: 'success' }));
+  });
+
+  it.each([true, false])('search_code expose au client une recherche vide, incomplete=%s', async incomplete => {
+    const { headers } = await mcpSession();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url.endsWith('/access_tokens')) return Response.json({ token: 'installation-token' });
+      if (url.includes('/search/code')) return Response.json({ items: [], total_count: 0,
+        incomplete_results: incomplete });
+      throw new Error('Unexpected GitHub request');
+    });
+    const response = await callTool(headers, 'github_search_code',
+      { repository: 'owner/project', query: 'jose' }, 1);
+    const result = toolJson<{ matches: unknown[]; incompleteResults: boolean; note: string }>(response.body);
+    expect(result).toMatchObject({ matches: [], incompleteResults: incomplete });
+    expect(result.note).toContain(incomplete ? 'Recherche GitHub incomplète' : 'ne prouve pas l’absence');
+    if (incomplete) expect(result.note).toContain('github_read_files');
   });
 
   it('tronque les fichiers longs et garde un motif fermé sur les erreurs GitHub', async () => {

@@ -75,7 +75,7 @@ export function registerFileTools(server: McpServer, context: ToolContext): void
   });
 
   server.registerTool('github_search_code', {
-    description: 'Rechercher du code dans un dépôt autorisé. Les chemins sensibles sont exclus.',
+    description: 'Rechercher dans l’index GitHub de la branche par défaut. Vérifier incompleteResults et potentiallyTruncated : une liste vide ne prouve pas l’absence du code. Les chemins sensibles sont exclus.',
     inputSchema: {
       repository: z.string(),
       query: z.string().min(1).max(256),
@@ -84,10 +84,12 @@ export function registerFileTools(server: McpServer, context: ToolContext): void
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async ({ repository, query, limit }) => {
     try {
-      const matches = await context.reads.files.searchCode(repository, query, limit);
+      const result = await context.reads.files.searchCodeWithMetadata(repository, query, limit);
       toolSuccess(context, 'search_code');
-      return textPayload({ repository, query, matches, scope: 'GitHub default-branch index',
-        note: 'L’index GitHub peut être en retard. Recherche par branche non prise en charge.' });
+      return textPayload({ repository, query, ...result, scope: 'GitHub default-branch index',
+        note: result.incompleteResults
+          ? 'Recherche GitHub incomplète : ne pas conclure à l’absence du code. Utiliser github_list_directory puis github_read_file ou github_read_files à la référence souhaitée pour vérifier les fichiers pertinents.'
+          : 'L’index GitHub peut être en retard ou ne pas couvrir tous les fichiers. Recherche par branche non prise en charge. Une liste vide ne prouve pas l’absence du code.' });
     } catch (error) {
       return toolFailure(context, 'search_code', 'Recherche impossible.', error);
     }

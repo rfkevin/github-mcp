@@ -98,6 +98,12 @@ function assertPositiveInteger(value: number, label: string): void {
 }
 
 function assertGitRef(name: string, label = 'branche'): void {
+  if (/[~^]/.test(name)) {
+    throw new InputValidationError(
+      'Expressions Git relatives (~ et ^) non prises en charge. Utilisez un nom de branche, un tag ou le SHA du commit souhaité (le SHA du parent pour master~1).',
+      'UNSUPPORTED_REF_EXPRESSION',
+    );
+  }
   const hasControlCharacter = [...name].some(character => {
     const code = character.codePointAt(0) ?? 0;
     return code <= 0x20 || code === 0x7f;

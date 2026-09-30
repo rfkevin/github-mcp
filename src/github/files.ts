@@ -1,4 +1,4 @@
-import type { GitHubContentFile, GitHubContentEntry, GitHubTreeEntry } from './types';
+import type { GitHubContentFile, GitHubContentEntry, GitHubTreeEntry, GitHubSearchCodeItem } from './types';
 import type { GitHubServiceContext } from './service-context';
 import { GitHubApiError, InputValidationError } from './types';
 
@@ -126,12 +126,16 @@ export class GitHubFiles {
     };
   }
 
-  async searchCode(repository: string, query: string, limit = 30): Promise<{
-    name: string;
-    path: string;
-    sha: string;
-    html_url: string;
-  }[]> {
+  /** API historique : préférer searchCodeWithMetadata pour interpréter les résultats. */
+  async searchCode(repository: string, query: string, limit = 30): Promise<GitHubSearchCodeItem[]> {
+    return (await this.searchCodeWithMetadata(repository, query, limit)).matches;
+  }
+
+  async searchCodeWithMetadata(repository: string, query: string, limit = 30): Promise<{
+    matches: GitHubSearchCodeItem[];
+    incompleteResults: boolean;
+    potentiallyTruncated: boolean;
+  }> {
     if (!query.trim() || query.length > 256) {
       throw new InputValidationError('Requête de recherche invalide.');
     }
@@ -144,6 +148,8 @@ export class GitHubFiles {
     repoPath(repository);
 
     const payload = await request<{
+      incomplete_results?: boolean;
+      total_count?: number;
       items: Array<{ name: string; path: string; sha: string; html_url: string; repository?: { full_name: string } }>;
     }>(
       withQuery('/search/code', {
@@ -152,7 +158,13 @@ export class GitHubFiles {
       }),
     );
 
-    return payload.items.filter(item => item.repository?.full_name.toLowerCase() === repository.toLowerCase() &&
+    const matches = payload.items.filter(item => item.repository?.full_name.toLowerCase() === repository.toLowerCase() &&
       !SENSITIVE_FILE.test(item.path)).map(({ name: itemName, path, sha, html_url }) => ({ name: itemName, path, sha, html_url }));
+    return {
+      matches,
+      // Si GitHub omet l'indicateur, ne pas prétendre que la recherche est complète.
+      incompleteResults: payload.incomplete_results !== false,
+      potentiallyTruncated: payload.total_count === undefined || payload.total_count > payload.items.length,
+    };
   }
 }
