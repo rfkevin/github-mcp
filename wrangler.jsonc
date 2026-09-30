@@ -20,7 +20,8 @@
     "GITHUB_APP_ID": "5122110",
     "GITHUB_INSTALLATION_ID": "166154980",
     "GITHUB_OAUTH_CLIENT_ID": "Iv23liaWMkDZAKSVWClX",
-    "GITHUB_AUTOMATION_ENABLED": "false"
+    "GITHUB_WRITES_ENABLED": "true",
+	"GITHUB_AUTOMATION_ENABLED": "true"
   },
   "previews": {
     "kv_namespaces": [
