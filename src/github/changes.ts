@@ -12,6 +12,7 @@ import {
   type FileDeletion,
 } from './types';
 import type { GitHubServiceContext } from './service-context';
+import { AGENT_MEMORY_PATH, assertMemoryAppend, rejectMemoryRewrite } from '../agent-memory';
 
 type GitHubRef = { object: { sha: string } };
 type GitHubCommitObject = { sha: string; tree: { sha: string } };
@@ -48,6 +49,7 @@ export class GitHubChanges {
     }
     const existing = this.loadExistingFiles(snapshot, plan.paths);
     this.assertExpectedFiles(plan, existing);
+    await this.assertMemoryPreserved(repository, plan, existing);
 
     const newTree = await this.createTree(repository, snapshot.treeSha, plan, existing);
     const commit = await this.createCommit(repository, commitMessage, newTree.sha, snapshot.commitSha);
@@ -71,6 +73,7 @@ export class GitHubChanges {
     }
 
     const deletions = options.deletions ?? [];
+    if (deletions.some(deletion => deletion.path === AGENT_MEMORY_PATH)) rejectMemoryRewrite();
     if (changes.length === 0 && deletions.length === 0) {
       throw new Error('Aucun changement à appliquer.');
     }
@@ -162,6 +165,21 @@ export class GitHubChanges {
         throw new GitHubConflictError(`Le fichier ${deletion.path} a changé depuis sa lecture.`);
       }
     }
+  }
+
+  private async assertMemoryPreserved(
+    repository: string,
+    plan: ChangeSetPlan,
+    existing: ReadonlyMap<string, ExistingFile | undefined>,
+  ): Promise<void> {
+    const change = plan.changes.find(item => item.path === AGENT_MEMORY_PATH);
+    const previous = existing.get(AGENT_MEMORY_PATH);
+    if (!change || !previous) return;
+    const { request, repoPath, encodeSegment } = this.dependencies;
+    const blob = await request<{ content: string; encoding: string; size: number }>(
+      repoPath(repository, `/git/blobs/${encodeSegment(previous.sha)}`),
+    );
+    assertMemoryAppend(blob, change.content);
   }
 
   private createTree(

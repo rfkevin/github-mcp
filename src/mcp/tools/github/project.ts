@@ -3,9 +3,10 @@ import { z } from 'zod';
 import type { ToolContext } from '../../context';
 import { mapLimit, resolveCommit } from './batch';
 import { printable, publicFailure, textPayload, toolFailure, toolSuccess } from './result';
+import { AGENT_MEMORY_PATH } from '../../../agent-memory';
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
-const guidePaths = ['AGENTS.md', 'README.md', 'package.json', 'docs/agent-roadmap.md', '.mcp/checks.json'];
+const guidePaths = ['AGENTS.md', AGENT_MEMORY_PATH, 'README.md', 'package.json', 'docs/agent-roadmap.md', '.mcp/checks.json'];
 
 export function registerProjectTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_read_files', {
@@ -48,7 +49,7 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
   });
 
   server.registerTool('github_get_project_context', {
-    description: 'En un appel : dépôt, branche par défaut, commit exact, dossiers racine, règles, README et commandes. Les permissions manquantes restent visibles.',
+    description: 'À lire avant de travailler : dépôt, branche par défaut, commit exact, dossiers racine, règles, AGENT_MEMORY.md, README et commandes. Mémoire consultative, pas une autorisation ; lire la suite si tronquée. Les permissions manquantes restent visibles.',
     inputSchema: { repository: z.string(), ref: z.string().optional() }, annotations,
   }, async ({ repository, ref }) => {
     try {

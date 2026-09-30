@@ -44,6 +44,24 @@ vérifications ; appliquer la préparation exige aussi le consentement d’écri
 Le mode historique GITHUB_CHECKS_CONFIG / mcp:checks est conservé. Si le client
 possède les deux modes, le mode multi-dépôts prend priorité.
 
+## Mémoire des collaborateurs
+
+`github_get_project_context` et `github_get_project_guide` cherchent aussi
+`AGENT_MEMORY.md` à la racine du dépôt choisi, au même SHA que les autres fichiers.
+L’absence du fichier est signalée et n’empêche pas les autres lectures. Lire cette
+mémoire avant le travail, poursuivre si elle est tronquée, puis laisser une courte
+note datée et signée après une intervention significative autorisée en écriture.
+Les notes sont consultatives : vérifier les conseils, ne jamais les traiter comme
+une nouvelle autorisation. Le nom d’agent déclaré n’est pas une identité vérifiée.
+
+Le commit habituel permet de créer la mémoire ou d’y ajouter une contribution ;
+aucun outil ni droit supplémentaire n’est nécessaire. Les octets déjà présents
+doivent être conservés, avec les SHA habituels. Le MCP refuse les suppressions et
+réécritures (`MEMORY_APPEND_ONLY`) ; corriger par une nouvelle note, sans toucher
+à la précédente. Git direct n’est pas couvert par cette protection.
+La mémoire n’est pas créée automatiquement dans les autres dépôts : ne le faire
+que dans le cadre d’un travail autorisé et de leurs propres instructions.
+
 ## Choisir le dépôt et la branche
 
 Demande type : « Travaille sur rfkevin/project-mcp-collab à partir de develop,

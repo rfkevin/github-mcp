@@ -11,6 +11,7 @@ import { createToolContext } from '../src/mcp/context';
 import type { AppEnv } from '../src/config';
 import { registerCommitTools } from '../src/mcp/tools/github/commits';
 import { registerProjectTools } from '../src/mcp/tools/github/project';
+import { registerFileTools } from '../src/mcp/tools/github/files';
 import { registerReportTools, safeDiagnostic } from '../src/mcp/tools/github/reports';
 import { collectCiStatus } from '../src/mcp/tools/github/ci';
 import { failureMessage, publicFailure, textPayload } from '../src/mcp/tools/github/result';
@@ -150,6 +151,31 @@ describe('foundation: diagnostics et cohérence', () => {
 });
 
 describe('foundation: outils regroupés', () => {
+  it.each([
+    ['github_get_project_context', registerProjectTools],
+    ['github_get_project_guide', registerFileTools],
+  ] as const)('%s inclut la mémoire au même SHA et signale sa troncature', async (name, register) => {
+    const ctx = context();
+    ctx.reads.files.getTextFile.mockImplementation(async (_repo, path) => ({ path, sha: OTHER, size: 20_000,
+      content: path === 'AGENT_MEMORY.md' ? 'Mémoire\n'.repeat(4000) : 'Guide' }));
+    const result = await registry(register, ctx as unknown as ToolContext)(name, { repository: 'o/r', ref: 'master' });
+    expect(result.structuredContent).toMatchObject({ sha: SHA,
+      documents: expect.arrayContaining([expect.objectContaining({ path: 'AGENT_MEMORY.md', truncated: true })]) });
+    expect(ctx.reads.files.getTextFile).toHaveBeenCalledWith('o/r', 'AGENT_MEMORY.md', SHA);
+  });
+  it('une mémoire absente ne bloque pas la lecture du contexte', async () => {
+    const ctx = context();
+    ctx.reads.files.getTextFile.mockImplementation(async (_repo, path) => {
+      if (path === 'AGENT_MEMORY.md') throw new GitHubApiError(404, '/git/trees', 'Absent');
+      return { path, sha: OTHER, size: 5, content: 'Guide' };
+    });
+    const result = await registry(registerProjectTools, ctx as unknown as ToolContext)('github_get_project_context', { repository: 'o/r' });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ partial: true, documents: expect.arrayContaining([
+      expect.objectContaining({ path: 'AGENT_MEMORY.md', error: expect.any(Object) }),
+      expect.objectContaining({ path: 'README.md', content: 'Guide' }),
+    ]) });
+  });
   it('read_files résout une seule fois la branche et livre les lignes au même SHA', async () => {
     const ctx = context();
     const call = registry(registerProjectTools, ctx as unknown as ToolContext);

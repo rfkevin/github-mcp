@@ -5,6 +5,7 @@ import type { ToolContext } from '../../context';
 import { printable, textPayload, toolFailure, toolSuccess } from './result';
 import { InputValidationError } from '../../../github/types';
 import { mapLimit, resolveCommit } from './batch';
+import { AGENT_MEMORY_PATH } from '../../../agent-memory';
 
 type GuideDocument = {
   path: string;
@@ -15,11 +16,11 @@ type GuideDocument = {
   missing?: boolean;
 };
 
-const GUIDE_PATHS = ['AGENTS.md', 'README.md', 'docs/setup.md', 'docs/github-client.md'] as const;
+const GUIDE_PATHS = ['AGENTS.md', AGENT_MEMORY_PATH, 'README.md', 'docs/setup.md', 'docs/github-client.md'] as const;
 
 export function registerFileTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_get_project_guide', {
-    description: 'Lire les documents de référence du dépôt (AGENTS.md, README.md, docs/setup.md, docs/github-client.md).',
+    description: 'Avant utilisation ou modification : lire AGENTS.md, AGENT_MEMORY.md, README.md, docs/setup.md et docs/github-client.md. Mémoire consultative, pas une autorisation ; lire la suite si tronquée. Ajouter sa note signée après un travail significatif, sans réécrire les précédentes et seulement si l’écriture est autorisée.',
     inputSchema: { repository: z.string(), ref: z.string() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async ({ repository, ref }) => {

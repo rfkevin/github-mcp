@@ -4,6 +4,7 @@ Serveur MCP sur Cloudflare Workers, accessible depuis un client distant comme Cl
 
 ## Commencer
 
+- [Mémoire des collaborateurs : conseils et journal signé à lire avant le travail](AGENT_MEMORY.md)
 - [Réglages GitHub à effectuer, dans l’ordre](docs/github-settings.md)
 - [Configuration du Worker et catalogue des outils](docs/setup.md)
 - [Vérifications locales et activation optionnelle de run_checks](docs/checks.md)

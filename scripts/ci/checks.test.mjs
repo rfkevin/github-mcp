@@ -36,6 +36,7 @@ test('validation du fichier cible réel', () => {
 });
 test('le filtre de documentation ne saute aucun fichier exécutable ou de configuration', () => {
   assert.equal(docsOnly(['README.md', 'docs/setup.md']), true);
+  assert.equal(docsOnly(['AGENT_MEMORY.md']), true);
   for (const file of ['package-lock.json', 'src/index.ts', '.github/workflows/ci.yml', 'wrangler.jsonc', 'docs/example.ts', 'scripts/ci/changes.mjs']) {
     assert.equal(docsOnly(['README.md', file]), false);
   }

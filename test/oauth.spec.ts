@@ -1009,7 +1009,8 @@ describe('Worker OAuth / MCP', () => {
 
     expect(payload.documents.find(document => document.path === 'AGENTS.md')?.content)
       .toContain('Règles');
-    expect(payload.documents.filter(document => document.missing)).toHaveLength(3);
+    expect(payload.documents.filter(document => document.missing)).toHaveLength(4);
+    expect(payload.documents.some(document => document.path === 'AGENT_MEMORY.md' && document.missing)).toBe(true);
     expect(payload.documents.some(document => document.path === 'README.md' && document.missing))
       .toBe(true);
     expect(audit).toHaveBeenCalledWith(JSON.stringify({ actor: '123', service: 'github',

@@ -29,7 +29,7 @@ export function registerWriteTools(server: McpServer, context: ToolContext): voi
     } catch (error) { return toolFailure(context, 'create_branch', 'Création de branche impossible. Vérifiez son état avant de relancer.', error); }
   });
   server.registerTool('github_commit_changes', {
-    description: 'Créer un commit atomique sur sa branche de travail uniquement. Fournir expectedHeadSha et le SHA du blob pour chaque fichier modifié ou supprimé. Sans expectedSha, le fichier doit être nouveau. Maximum 50 fichiers et 1 Mo cumulé. Secrets et fichiers de contrôle CI interdits. Peut déclencher la CI ; ne fusionne pas.',
+    description: 'Créer un commit atomique sur sa branche de travail uniquement. Fournir expectedHeadSha et le SHA du blob pour chaque fichier modifié ou supprimé. Sans expectedSha, le fichier doit être nouveau. AGENT_MEMORY.md : ajout en fin uniquement, conserver intégralement les anciennes notes et signer sa contribution. Maximum 50 fichiers et 1 Mo cumulé. Secrets et fichiers de contrôle CI interdits. Peut déclencher la CI ; ne fusionne pas.',
     inputSchema: commitChangesSchema.shape, annotations,
   }, async args => {
     try {

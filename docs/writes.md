@@ -42,6 +42,7 @@ Relire avec `github_compare_refs` avant de demander une PR. Elle est toujours **
 
 ## Protections et limites
 
+- `AGENT_MEMORY.md` à la racine est un journal en ajout seul : aucune suppression ni modification des octets existants par le MCP. Ajouter la nouvelle note au contenu complet lu, avec le SHA du fichier et de la branche. Une correction est une nouvelle note signée. Cette règle ne bloque pas un accès Git direct et n’authentifie pas le nom du modèle déclaré.
 - Refus des branches main, master, client, client/*, de la branche par défaut réelle et des branches hors du préfixe de l’utilisateur.
 - Refus des chemins sensibles connus (`.env`, clés, etc.), workflows/actions, CODEOWNERS, scripts de contrôle CI et de publication et parents protégés. Les dossiers, sous-modules et liens symboliques existants ne peuvent pas être remplacés par ces commits.
 - La protection par nom ne détecte pas un secret placé dans un fichier ordinaire. Ne jamais fournir de secret à un outil d’écriture.
