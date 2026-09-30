@@ -2,22 +2,31 @@ import { GitHubClient } from '../github/client';
 import type { AppEnv } from '../config';
 import { checksConfig } from '../checks/config';
 import { CheckCoordinator } from '../checks/coordinator';
+import { WriteCoordinator } from '../writes/coordinator';
+import { writesEnabled } from '../writes/config';
+import { automationEnabled } from '../automation/config';
+import { AutomationCoordinator } from '../automation/coordinator';
+import { WORKFLOW_NAME } from '../automation/workflow';
 
 export type ToolContext = {
   actor: string;
   /** Permissions minimales (métadonnées) : listing de l'installation. */
   github: Pick<GitHubClient, 'repositories'>;
   /** Contenu du dépôt uniquement. Aucun droit Actions ni Pull Requests requis. */
-  reads: Pick<GitHubClient, 'files' | 'commits'>;
+  reads: Pick<GitHubClient, 'files' | 'commits' | 'branches'>;
+  /** PR isolées : une permission manquante ne bloque pas les fichiers. */
+  pulls: Pick<GitHubClient, 'pullRequests' | 'issues'>;
   checks: GitHubClient['actions'];
   statuses: GitHubClient['actions'];
   workflows: GitHubClient['actions'];
   checkCoordinator?: CheckCoordinator;
+  writeCoordinator?: WriteCoordinator;
+  automationCoordinator?: AutomationCoordinator;
 };
 
 /**
  * Un jeton minimal par famille. Une permission manquante ne bloque pas les
- * autres familles. Tous les clients MCP restent en lecture seule.
+ * autres familles. Les clients de lecture restent en lecture seule ; les écritures sont opt-in.
  */
 export function createToolContext(env: AppEnv, actor: string, scopes: readonly string[] = []): ToolContext {
   const shared = {
@@ -40,8 +49,29 @@ export function createToolContext(env: AppEnv, actor: string, scopes: readonly s
     checks: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', checks: 'read' } }).actions,
     statuses: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', statuses: 'read' } }).actions,
     workflows: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', actions: 'read' } }).actions,
+    pulls: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', pull_requests: 'read' } }),
   };
   const checks = checksConfig(env.GITHUB_CHECKS_CONFIG);
+  if (automationEnabled(env.GITHUB_AUTOMATION_ENABLED) && scopes.includes('mcp:automation')) {
+    const canPrepare = writesEnabled(env.GITHUB_WRITES_ENABLED) && scopes.includes('mcp:write');
+    const setup = canPrepare ? new GitHubClient({ ...shared, policy: { readOnly: false, managedChecks: true },
+      tokenPermissions: { metadata: 'read', contents: 'write', workflows: 'write' } }) : undefined;
+    context.automationCoordinator = new AutomationCoordinator(actor,
+      { repositories: context.github.repositories, ...context.reads }, context.workflows,
+      (repository, ref, inputs) => new GitHubClient({ ...shared, policy: { readOnly: false },
+        apiVersion: '2026-03-10', tokenPermissions: { metadata: 'read', actions: 'write' },
+        allowedRepositories: [repository], allowedWorkflows: [WORKFLOW_NAME], allowedWorkflowRefs: [ref],
+      }).actions.dispatchWorkflow(repository, WORKFLOW_NAME, ref, inputs), setup?.changes);
+  }
+  if (writesEnabled(env.GITHUB_WRITES_ENABLED) && scopes.includes('mcp:write')) {
+    const contents = new GitHubClient({ ...shared, policy: { readOnly: false },
+      tokenPermissions: { metadata: 'read', contents: 'write' } });
+    const pulls = new GitHubClient({ ...shared, policy: { readOnly: false },
+      tokenPermissions: { metadata: 'read', pull_requests: 'write' } });
+    context.writeCoordinator = new WriteCoordinator(actor,
+      { repositories: context.github.repositories, branches: context.reads.branches },
+      { branches: contents.branches, changes: contents.changes, pullRequests: pulls.pullRequests, issues: pulls.issues });
+  }
   if (checks.length > 0 && scopes.includes('mcp:checks')) {
     const dispatch = new GitHubClient({ ...shared, policy: { readOnly: false },
       apiVersion: '2026-03-10', tokenPermissions: { metadata: 'read', actions: 'write' },

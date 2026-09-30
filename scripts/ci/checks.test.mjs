@@ -16,7 +16,7 @@ test('unit ciblé ne lance que le fichier choisi', () => {
 });
 test('full compile uniquement en dry-run', () => {
   const plan = checkPlan('full');
-  assert.deepEqual(plan.at(-1).slice(-2), ['deploy', '--dry-run']);
+  assert.deepEqual(plan.at(-1).slice(1), ['deploy', '--dry-run', '--outdir', '.release/worker']);
 });
 for (const target of ['--config=evil', '../foo', 'test/../../key', 'test/a.spec.ts;ls', 'test/a.spec.ts\n', 'test/link\\a.spec.ts', 'test/$(id).spec.ts']) {
   test(`cible refusée : ${JSON.stringify(target)}`, () => assert.throws(() => validateInputs('unit', target)));

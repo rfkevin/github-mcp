@@ -1,11 +1,15 @@
 ﻿export type SecurityPolicy = {
   readOnly: boolean;
+  /** Réservé au client spécialisé : seul le workflow canonique est autorisé. */
+  managedChecks?: boolean;
   protectedBranches: readonly string[];
   protectedBranchPrefixes: readonly string[];
   branchPrefix: string;
   maxFilesPerChange: number;
   maxFileBytes: number;
 };
+
+import { MANAGED_WORKFLOW, WORKFLOW_PATH } from '../automation/workflow';
 
 export type FileChange = {
   path: string;
@@ -178,7 +182,7 @@ export function assertWritableBranch(
   }
 }
 
-export function assertWritablePath(path: string): void {
+export function assertWritablePath(path: string, policy: Partial<SecurityPolicy> = {}): void {
   const parts = path.split('/');
 
   if (
@@ -201,7 +205,8 @@ export function assertWritablePath(path: string): void {
     reject('PATH_DENIED', 'Le chemin du fichier est invalide.');
   }
 
-  if (/^(?:\.github$|\.github\/(?:workflows|actions)(?:\/|$)|\.github\/CODEOWNERS$|scripts$|scripts\/ci(?:\/|$))/i.test(path)) {
+  if (policy.managedChecks && path === WORKFLOW_PATH) return;
+  if (/^(?:\.github$|\.github\/(?:workflows|actions)(?:\/|$)|\.github\/CODEOWNERS$|scripts$|scripts\/(?:ci|deploy)(?:\/|$))/i.test(path)) {
     reject('WORKFLOW_DENIED', 'Les fichiers GitHub Actions sont protégés.');
   }
 }
@@ -231,7 +236,10 @@ export function validateChangeSet(
       reject('CHANGE_INVALID', 'Une modification est invalide.');
     }
 
-    assertWritablePath(change.path);
+    assertWritablePath(change.path, policy);
+    if (change.path === WORKFLOW_PATH && change.content !== MANAGED_WORKFLOW) {
+      reject('WORKFLOW_DENIED', 'Seul le workflow généré par le serveur est autorisé.');
+    }
 
     if (paths.has(change.path)) {
       reject('DUPLICATE_PATH', `Le fichier ${change.path} est dupliqué.`);

@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { ToolContext } from '../../context';
-import { textPayload, toolFailure, toolSuccess } from './result';
+import { printable, textPayload, toolFailure, toolSuccess } from './result';
 import { SENSITIVE_FILE } from '../../../github/files';
 
 // Un diff complet peut être énorme : au-delà de ce budget, les patchs sont omis.
@@ -23,9 +23,11 @@ export function registerCommitTools(server: McpServer, context: ToolContext): vo
         aheadBy: comparison.ahead_by,
         behindBy: comparison.behind_by,
         totalCommits: comparison.total_commits,
-        commits: comparison.commits.map(commit => ({
+        commitsPotentiallyTruncated: comparison.total_commits > Math.min(comparison.commits.length, 50),
+        filesPotentiallyTruncated: (comparison.files?.length ?? 0) >= 300,
+        commits: comparison.commits.slice(0, 50).map(commit => ({
           sha: commit.sha,
-          message: commit.commit.message.split('\n')[0],
+          message: printable(commit.commit.message.split('\n')[0], 500).content,
           date: commit.commit.author?.date,
         })),
         files: (comparison.files ?? []).filter(file => !SENSITIVE_FILE.test(file.filename) &&

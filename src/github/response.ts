@@ -1,7 +1,7 @@
 import { InputValidationError } from './types';
 
 /** Borne appliquée pendant la lecture, y compris sans Content-Length. */
-export async function readJson<T>(response: Response, maxBytes = 8_000_000): Promise<T> {
+export async function readText(response: Response, maxBytes = 8_000_000): Promise<string> {
   if (Number(response.headers.get('Content-Length')) > maxBytes) {
     await response.body?.cancel();
     throw new InputValidationError('Réponse GitHub trop volumineuse. Réduisez la demande.', 'RESPONSE_TOO_LARGE');
@@ -23,6 +23,10 @@ export async function readJson<T>(response: Response, maxBytes = 8_000_000): Pro
       text += decoder.decode(value, { stream: true });
     }
     text += decoder.decode();
-    return JSON.parse(text) as T;
+    return text;
   } finally { reader.releaseLock(); }
+}
+
+export async function readJson<T>(response: Response, maxBytes = 8_000_000): Promise<T> {
+  return JSON.parse(await readText(response, maxBytes)) as T;
 }

@@ -5,7 +5,7 @@ import { mapLimit, resolveCommit } from './batch';
 import { printable, publicFailure, textPayload, toolFailure, toolSuccess } from './result';
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
-const guidePaths = ['AGENTS.md', 'README.md', 'package.json', 'docs/agent-roadmap.md'];
+const guidePaths = ['AGENTS.md', 'README.md', 'package.json', 'docs/agent-roadmap.md', '.mcp/checks.json'];
 
 export function registerProjectTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_read_files', {
@@ -54,9 +54,15 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
     try {
       const metadata = await context.github.repositories.getRepository(repository);
       const requestedRef = ref ?? metadata.default_branch;
-      const capabilities = { mutationsExposed: Boolean(context.checkCoordinator), checkDispatchEnabled: Boolean(context.checkCoordinator),
-        codeWritesEnabled: false, arbitraryShell: false, productionDeployment: false,
-        requiredPermissions: { files: 'contents:read', checks: 'checks:read', workflows: 'actions:read', statuses: 'statuses:read' },
+      const capabilities = { mutationsExposed: Boolean(context.automationCoordinator || context.checkCoordinator || context.writeCoordinator), checkDispatchEnabled: Boolean(context.automationCoordinator || context.checkCoordinator),
+        managedProjectChecks: Boolean(context.automationCoordinator), checkPlanPath: '.mcp/checks.json',
+        workflowPreparation: context.automationCoordinator ? 'github_prepare_checks; apply requires mcp:write' : 'disabled',
+        codeWritesEnabled: Boolean(context.writeCoordinator), workingBranchPrefix: context.writeCoordinator?.branchPrefix,
+        arbitraryShell: false, productionDeployment: false,
+        projectCommandsOnGitHubActions: Boolean(context.automationCoordinator),
+        requiredPermissions: { files: 'contents:read', checks: 'checks:read', workflows: 'actions:read', statuses: 'statuses:read',
+          pullRequests: context.writeCoordinator ? 'pull_requests:write' : 'pull_requests:read',
+          ...(context.writeCoordinator ? { codeWrites: 'contents:write' } : {}) },
         permissionsNote: 'Les droits indiqués sont nécessaires, pas une confirmation de leur attribution.' };
       let sha: string;
       try {

@@ -1,0 +1,57 @@
+name: deploy-staging
+run-name: staging / CI ${{ github.event.workflow_run.id || inputs.ci_run_id }}
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Identifiant d’une CI réussie issue d’un push sur master
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  deployments: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  select:
+    permissions:
+      contents: read
+      actions: read
+    if: >-
+      vars.RELEASE_PIPELINE_ENABLED == 'true' && github.ref == 'refs/heads/master' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      artifact_id: ${{ steps.select.outputs.artifact_id }}
+      source_run_id: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Vérifier la CI, la branche protégée et la provenance
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
+        run: node scripts/deploy/release.mjs select staging
+  publish:
+    needs: select
+    uses: ./.github/workflows/publish-worker.yml
+    with:
+      stage: staging
+      source_run_id: ${{ needs.select.outputs.source_run_id }}
+      artifact_id: ${{ needs.select.outputs.artifact_id }}

@@ -21,8 +21,11 @@ export function consentPage(details: ConsentDescription, handle: string): string
     'Le nom de cette application est déclaré par le client et n’est pas vérifié.'}</p>
 <p>L’accès sera remis à : <strong>${escape(details.redirectHost)}</strong>.</p>
 ${details.redirectIsLoopback ? '<p>Application locale : continuez uniquement si vous venez de lancer cette connexion sur votre ordinateur.</p>' : ''}
-<p>Ce client pourra lire les dépôts sélectionnés dans la GitHub App et leurs contrôles. Il ne pourra ni modifier le code, ni fusionner, ni déployer en production.</p>
-${details.scope.includes('mcp:checks') ? '<p>Vous autorisez aussi le lancement du workflow agent-checks sur les dépôts explicitement configurés. Cela exécute des tests et peut consommer des minutes GitHub Actions. Aucun autre workflow n’est autorisé.</p>' : '<p>Aucun lancement de workflow n’est autorisé par ce consentement.</p>'}
+<p>Ce client pourra lire les dépôts sélectionnés dans la GitHub App et leurs contrôles.</p>
+${details.scope.includes('mcp:write') ? '<p>Vous autorisez aussi la création de branches de travail liées à votre identité, des commits comprenant des ajouts, modifications et suppressions de fichiers, des PR en brouillon et des commentaires sur vos PR ouvertes dans les dépôts de cette installation. Les branches protégées et les fichiers sensibles, de contrôle CI ou de publication restent interdits. Ces actions peuvent déclencher la CI ou les déploiements automatiques déjà configurés dans ces dépôts. Vérifiez ces automatisations avant d’accepter.</p>' : '<p>Ce consentement ne permet pas de modifier le code.</p>'}
+<p>Aucun outil de fusion, d’approbation de PR ou de déploiement direct n’est exposé.</p>
+${details.scope.includes('mcp:automation') ? '<p>Vous autorisez les vérifications multi-dépôts : lancement du workflow de tests mcp-checks et, avec le droit d’écriture, préparation de ce workflow et des commandes du projet sur vos branches. Les commandes exécutent le code du projet sur un runner GitHub hébergé, sans secret ajouté. Elles consomment des minutes Actions et peuvent déclencher des intégrations déjà présentes. Les dépôts accessibles restent ceux de votre installation GitHub App, y compris ceux ajoutés ultérieurement.</p>' : ''}
+${details.scope.includes('mcp:checks') ? '<p>Vous autorisez aussi le lancement du workflow agent-checks sur les dépôts explicitement configurés. Cela exécute des tests et peut consommer des minutes GitHub Actions.</p>' : details.scope.includes('mcp:automation') ? '' : '<p>Aucun lancement direct de workflow n’est autorisé par ce consentement.</p>'}
 <p>Permissions : ${details.scope.map(escape).join(', ')}</p>
 <form method="post" action="/authorize">
 <input type="hidden" name="handle" value="${escape(handle)}">

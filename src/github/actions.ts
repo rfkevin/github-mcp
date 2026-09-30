@@ -10,6 +10,7 @@ import type {
 const MAX_LOG_BYTES = 200_000;
 import type { GitHubServiceContext } from './service-context';
 import { InputValidationError } from './types';
+import { readText } from './response';
 
 export class GitHubActions {
   constructor(private readonly dependencies: GitHubServiceContext) {}
@@ -71,8 +72,7 @@ export class GitHubActions {
     const { assertPositiveInteger, repoPath, send } = this.dependencies;
     assertPositiveInteger(jobId, 'Identifiant de job');
     const response = await send(repoPath(repository, `/actions/jobs/${jobId}/logs`));
-    const text = await response.text();
-    return text.length > MAX_LOG_BYTES ? `[…tronqué…]\n${text.slice(-MAX_LOG_BYTES)}` : text;
+    return readText(response, MAX_LOG_BYTES);
   }
 
   async rerunWorkflow(repository: string, runId: number, failedJobsOnly = false): Promise<void> {

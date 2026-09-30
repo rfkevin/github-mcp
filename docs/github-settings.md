@@ -13,12 +13,13 @@ Ouvrir les [réglages de rfkevin-github-mcp](https://github.com/settings/apps/rf
 | Checks | Read-only | Contrôles et annotations |
 | Commit statuses | Read-only | Statuts de commit |
 | Actions | Read-only | Exécutions et jobs |
+| Pull requests | Read-only | Les deux nouveaux outils de lecture des PR et discussions |
 
 Cliquer sur **Save changes**, puis ouvrir **Settings du compte → Applications → Installed GitHub Apps → rfkevin-github-mcp → Configure**. Accepter la demande de nouvelles permissions si elle apparaît ; l’email envoyé par GitHub permet aussi d’y accéder. Enregistrer l’App ne suffit pas : les permissions supplémentaires ne prennent effet qu’après acceptation par l’installation.
 
 Conserver **Only select repositories** et les seuls dépôts voulus. Ne pas élargir à tous les dépôts par commodité.
 
-Ce lot n’exige pas de nouvelle permission Pull requests, Issues, Administration ou Workflows. Ne pas ajouter de droits d’organisation ou de compte. Si d’autres usages de cette App ont déjà besoin de droits supplémentaires, les examiner avant de les retirer : ne pas casser ces usages à l’aveugle.
+Les lectures de fichiers n’exigent toujours pas Pull requests. Cette permission supplémentaire est réservée aux outils de PR. Issues, Administration et Workflows ne sont pas nécessaires. Ne pas ajouter de droits d’organisation ou de compte. Si d’autres usages de cette App ont déjà besoin de droits supplémentaires, les examiner avant de les retirer. Pour les outils d’écriture optionnels, voir la section ci-dessous.
 
 Les clés, Client ID, App ID et callback OAuth existants n’ont pas à être changés pour cette mise à jour.
 
@@ -31,7 +32,7 @@ Source : [modifier une GitHub App et faire accepter ses permissions](https://doc
 3. Vérifier dans la PR le job **ci**, exécuté par GitHub Actions, et consulter ses erreurs s’il échoue. Les tests locaux ne remplacent pas cette première validation Linux.
 4. Relire avant de fusionner : l’intégration Cloudflare actuellement configurée peut déployer automatiquement master. Les autres branches peuvent aussi déclencher une préversion Cloudflare selon les réglages du projet.
 
-Les deux workflows de ce lot ne demandent **aucun secret GitHub** : ne pas ajouter la clé privée, le secret OAuth ou un jeton Cloudflare aux workflows de tests.
+Les workflows `ci` et `agent-checks` ne demandent **aucun secret de déploiement** : ne pas y ajouter la clé privée, le secret OAuth ou un jeton Cloudflare. Les nouveaux workflows de publication obtiennent leur jeton Cloudflare uniquement dans leur environnement GitHub.
 
 Dans **Settings du dépôt → Actions → General**, GitHub Actions doit être autorisé et la politique des actions doit permettre `actions/checkout` et `actions/setup-node`, épinglées par SHA dans les fichiers. Conserver un `GITHUB_TOKEN` en lecture seule ; inutile d’autoriser la création ou l’approbation de PR par les workflows. Les permissions de ce jeton ne sont pas les permissions de la GitHub App.
 
@@ -49,11 +50,13 @@ Configuration proposée :
 
 Si tu es le seul relecteur, **ne pas exiger une approbation de ta propre PR** : GitHub interdit à l’auteur de l’approuver. PR obligatoire et CI obligatoire restent utiles. Une approbation par une autre personne nécessite un second relecteur réel. Ce mécanisme est distinct de la future approbation de déploiement depuis ton téléphone.
 
-La protection des chemins `.github/workflows`, `.github/actions`, `.github/CODEOWNERS` et `scripts/ci` existe dans la bibliothèque MCP, pas comme règle GitHub déjà installée. Elle n’empêche pas un humain disposant d’un accès Git direct de les modifier. Leur revue et la protection de master restent nécessaires.
+La protection des chemins `.github/workflows`, `.github/actions`, `.github/CODEOWNERS` et `scripts/ci` / `scripts/deploy` existe dans la bibliothèque MCP, pas comme règle GitHub déjà installée. Elle n’empêche pas un humain disposant d’un accès Git direct de les modifier. Leur revue et la protection de master restent nécessaires.
 
 Sources : [protection de branche](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule), [approbation des PR](https://docs.github.com/en/pull-requests/how-tos/review-pull-requests/approving-a-pull-request-with-required-reviews).
 
 ## 4. Lancer les tests depuis l’agent : activation séparée
+
+Pour le fonctionnement commun à tous les dépôts, suivre [le guide multi-dépôts](multi-repository.md). Il utilise une activation globale et le consentement `mcp:automation`, avec Actions et Workflows en écriture pour préparer le workflow de tests encadré. Les instructions ci-dessous concernent uniquement le mode historique, sans préparation de workflow.
 
 Ne faire cette étape qu’après revue et validation de `agent-checks.yml` sur la branche par défaut.
 
@@ -65,11 +68,22 @@ Attention : Actions: write est un droit GitHub plus large que le seul lancement 
 
 Sources : [lancement manuel](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow), [API de dispatch et permission Actions](https://docs.github.com/en/rest/actions/workflows?apiVersion=2026-03-10#create-a-workflow-dispatch-event).
 
-## 5. Production avec validation humaine : lot suivant
+## 5. Écritures MCP : activation séparée
 
-Il n’y a pas encore de workflow `deploy-staging` ni `deploy-production` dans ce lot. Ne pas créer des secrets de déploiement dans les workflows de vérification.
+Les quatre outils sont implémentés mais non activés par défaut. Ils peuvent être activés indépendamment des vérifications. Pour le parcours complet, ajouter ensuite le mode multi-dépôts décrit dans [multi-repository.md](multi-repository.md).
 
-La future étape devra créer les environnements, leurs ressources et leurs secrets séparés, rattacher le job de production à son environnement et choisir le relecteur obligatoire. Si le même utilisateur doit déclencher et approuver, l’option **Prevent self-review** empêcherait cette approbation : choisir explicitement le fonctionnement voulu, selon les options disponibles pour le dépôt et l’offre GitHub.
+- Examiner les automatisations de chaque dépôt sélectionné : création de branche, push ou PR peuvent lancer une CI ou un déploiement, même avec une PR en brouillon.
+- Passer **Contents** à **Read and write**, ajouter **Pull requests: Read and write**, enregistrer puis accepter les nouveaux droits dans l’installation. **Actions reste Read-only** pour ce lot. Ne pas ajouter Workflows, Administration, Issues ni de droit de contournement des branches.
+- Conserver la sélection des dépôts dans l’installation ; pas de deuxième liste à remplir dans le MCP. Tous les utilisateurs autorisés du serveur partagent cette sélection.
+- Suivre [writes.md](writes.md) pour le réglage global, le nouveau consentement et l’essai contrôlé. Ne pas activer les préversions avec les identifiants de production.
+
+Ces droits GitHub sont plus larges que les outils exposés. Les restrictions aux branches de travail, aux fichiers et aux PR en brouillon sont appliquées par le serveur, pas par une permission GitHub spécifique à ces quatre opérations.
+
+## 6. Staging et production : code prêt, configuration à effectuer
+
+`deploy-staging.yml`, `deploy-production.yml` et le workflow réutilisable `publish-worker.yml` sont maintenant présents. Ils restent désactivés tant que la variable de dépôt `RELEASE_PIPELINE_ENABLED` n’est pas `true`. Suivre [le guide de déploiement](deployments.md), qui donne toutes les variables, les secrets et l’ordre de migration.
+
+Créer `staging` et `production`, leurs ressources séparées et le secret Cloudflare dans chaque environnement. Pour production : branches protégées uniquement, relecteur humain obligatoire, contournement administrateur désactivé. Si tu déclenches puis approuves toi-même, laisser **Prevent self-review** décoché. Le code vérifie les protections et l’historique d’approbation du run avant publication.
 
 Surtout, il faudra migrer ou désactiver la voie de déploiement automatique Cloudflare de master. **Un environnement GitHub ne bloque pas un déploiement effectué directement par Cloudflare.** Ne pas annoncer une validation obligatoire tant que cette autre voie existe.
 

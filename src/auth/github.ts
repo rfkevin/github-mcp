@@ -1,4 +1,5 @@
 import { publicOrigin, type AppEnv } from '../config';
+import { readJson } from '../github/response';
 
 export type GitHubIdentityFailureReason =
   | 'github_token_network_error'
@@ -275,13 +276,13 @@ export async function githubIdentity(
 
   let token: { access_token?: string; error?: string };
   try {
-    token = await response.json() as { access_token?: string; error?: string };
+    token = await readJson(response, 64_000);
   } catch {
     throw new GitHubIdentityError('github_token_response_invalid');
   }
 
-  if (!token.access_token) {
-    throw new GitHubIdentityError(tokenErrorReason(token.error));
+  if (!token || typeof token.access_token !== 'string' || !token.access_token.trim()) {
+    throw new GitHubIdentityError(tokenErrorReason(token?.error));
   }
 
   reportPhase?.('callback.github_user_lookup');
@@ -294,12 +295,12 @@ export async function githubIdentity(
 
   let user: { id?: number };
   try {
-    user = await identity.json() as { id?: number };
+    user = await readJson(identity, 64_000);
   } catch {
     throw new GitHubIdentityError('github_user_response_invalid');
   }
 
-  if (!Number.isSafeInteger(user.id) || user.id! <= 0) {
+  if (!user || !Number.isSafeInteger(user.id) || user.id! <= 0) {
     throw new GitHubIdentityError('github_user_id_invalid');
   }
 

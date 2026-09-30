@@ -5,9 +5,10 @@
   "scripts": {
     "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
     "test:unit": "vitest run",
-    "test:ci-scripts": "node --test scripts/ci/checks.test.mjs",
+    "test:ci-scripts": "node --test scripts/ci/checks.test.mjs scripts/deploy/deploy.test.mjs scripts/automation/runner.test.mjs",
     "check:quick": "node scripts/ci/run-checks.mjs quick",
     "check:full": "node scripts/ci/run-checks.mjs full",
+    "release:rehearse": "node scripts/deploy/rehearse.mjs",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",
@@ -19,7 +20,8 @@
     "@types/node": "^26.6.3",
     "typescript": "^5.5.2",
     "vitest": "~4.1.0",
-    "wrangler": "^4.143.0"
+    "wrangler": "^4.143.0",
+    "yaml": "2.9.1"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.2.1",

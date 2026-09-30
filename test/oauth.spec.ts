@@ -5,6 +5,9 @@ import type { AppEnv } from '../src/config';
 import { codeChallenge } from '../src/auth/github';
 import { consentPolicy } from '../src/auth/consent';
 import { textFileResponse } from './git-fixtures';
+import { MANAGED_WORKFLOW, WORKFLOW_PATH, EXECUTE_STEP } from '../src/automation/workflow';
+import { PLAN_PATH } from '../src/automation/plan';
+import { automationKey } from '../src/automation/coordinator';
 
 const ORIGIN = 'https://github-mcp.example';
 const settings: AppEnv = { ...env, PUBLIC_ORIGIN: ORIGIN, ALLOWED_GITHUB_USER_IDS: '123',
@@ -19,6 +22,18 @@ async function send(path: string, init: RequestInit = {}, bindings = settings): 
   await waitOnExecutionContext(ctx);
   return response;
 }
+
+describe('sonde de disponibilité réelle', () => {
+  it('identifie le paquet configuré sans confondre health et ready', async () => {
+    const sha = 'a'.repeat(40);
+    const response = await send('/ready', {}, { ...settings, BUILD_SHA: sha });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'ready', sha });
+    expect((await send('/ready', {}, { ...settings, GITHUB_PRIVATE_KEY: '' })).status).toBe(503);
+    expect((await send('/health', {}, { ...settings, GITHUB_PRIVATE_KEY: '' })).status).toBe(200);
+    expect((await send('/ready', {}, { ...settings, BUILD_SHA: 'invalid' })).status).toBe(503);
+  });
+});
 
 function cookie(response: Response): string {
   return response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
@@ -609,6 +624,117 @@ describe('Worker OAuth / MCP', () => {
     } finally { delete settings.GITHUB_CHECKS_CONFIG; }
   });
 
+  it('le mode multi-dépôts ne donne aucun pouvoir nouveau aux anciens jetons', async () => {
+    const { headers } = await mcpSession();
+    settings.GITHUB_AUTOMATION_ENABLED = 'true';
+    try {
+      const listed = await send('/mcp', { method: 'POST', headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
+      expect(await listed.text()).not.toContain('github_prepare_checks');
+      const api = vi.spyOn(globalThis, 'fetch');
+      await callTool(headers, 'github_prepare_checks', {}, 2);
+      expect(api).not.toHaveBeenCalled();
+    } finally { delete settings.GITHUB_AUTOMATION_ENABLED; }
+  });
+
+  it('le nouveau consentement expose les vérifications et la désactivation les retire', async () => {
+    settings.GITHUB_AUTOMATION_ENABLED = 'true';
+    try {
+      const approval = await consent('mcp:read mcp:automation offline_access');
+      expect(approval.html).toContain('y compris ceux ajoutés ultérieurement');
+      const { headers } = await mcpSession('mcp:read mcp:automation offline_access');
+      const list = () => send('/mcp', { method: 'POST', headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
+      const text = await (await list()).text();
+      expect(text).toContain('github_prepare_checks');
+      expect(text).toContain('github_run_checks');
+      expect(text).not.toContain('github_commit_changes');
+      const result = await callTool(headers, 'github_prepare_checks', {
+        repository: 'other/workbench', branch: 'mcp/123/test', expectedHeadSha: 'a'.repeat(40),
+        plan: { version: 1, checks: { quick: ['npm test'] } }, apply: true,
+      }, 2);
+      expect(result.body).toContain('WRITES_NOT_ENABLED');
+      settings.GITHUB_AUTOMATION_ENABLED = 'false';
+      expect(await (await list()).text()).not.toContain('github_run_checks');
+    } finally { delete settings.GITHUB_AUTOMATION_ENABLED; }
+    expect((await send('/ready', {}, { ...settings, GITHUB_AUTOMATION_ENABLED: 'yes' })).status).toBe(503);
+  });
+
+  it('parcours multi-dépôts MCP : préparation atomique, premier run push et dispatch corrélé', async () => {
+    settings.GITHUB_AUTOMATION_ENABLED = 'true';
+    settings.GITHUB_WRITES_ENABLED = 'true';
+    try {
+      const { headers } = await mcpSession('mcp:read mcp:automation mcp:write offline_access');
+      const repository = 'other/workbench', branch = 'mcp/123/test';
+      const base = 'a'.repeat(40), next = 'b'.repeat(40), workflowBlob = 'c'.repeat(40), planBlob = 'd'.repeat(40);
+      const tree = 'e'.repeat(40), githubTree = '1'.repeat(40), mcpTree = '2'.repeat(40), workflowsTree = '3'.repeat(40);
+      const plan = { version: 1, workingDirectory: '.', install: [], checks: { quick: ['python3 -m unittest'], lint: ['python3 -m compileall src'] } };
+      const planContent = JSON.stringify(plan, null, 2) + '\n';
+      let head = base, principalHasWorkflow = false;
+      const bodies: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
+      const permissions: unknown[] = [];
+      const push = { id: 7, path: WORKFLOW_PATH, head_sha: next, head_branch: branch, event: 'push',
+        display_title: `mcp-checks/${next}/quick/push`, status: 'completed', conclusion: 'success', html_url: 'https://github.com/other/workbench/actions/runs/7' };
+      let manualTitle = '';
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = new URL(String(input)), method = init?.method ?? 'GET';
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        if (url.pathname.endsWith('/access_tokens')) { permissions.push(body.permissions); return Response.json({ token: 'installation-token' }); }
+        if (method !== 'GET') bodies.push({ method, path: url.pathname, body });
+        if (url.pathname === '/installation/repositories') return Response.json({ repositories: [{ full_name: repository }] });
+        if (url.pathname === `/repos/${repository}`) return Response.json({ full_name: repository, default_branch: 'main' });
+        if (url.pathname.includes('/git/ref/heads/')) return Response.json({ object: { sha: head } });
+        if (url.pathname.endsWith(`/git/commits/${base}`)) return Response.json({ tree: { sha: tree } });
+        if (url.pathname.endsWith('/git/trees') && method === 'POST') return Response.json({ sha: tree });
+        if (url.pathname.endsWith('/git/commits') && method === 'POST') return Response.json({ sha: next });
+        if (url.pathname.includes('/git/refs/heads/') && method === 'PATCH') { head = next; return Response.json({}); }
+        if (url.pathname.endsWith(`/git/trees/${base}`) || url.pathname.endsWith(`/git/trees/${tree}`)) return Response.json({ tree: [], truncated: false });
+        if (url.pathname.endsWith(`/git/trees/${next}`)) return Response.json({ tree: [
+          { path: '.github', type: 'tree', mode: '040000', sha: githubTree },
+          { path: '.mcp', type: 'tree', mode: '040000', sha: mcpTree },
+        ] });
+        if (url.pathname.endsWith(`/git/trees/${githubTree}`)) return Response.json({ tree: [{ path: 'workflows', type: 'tree', mode: '040000', sha: workflowsTree }] });
+        if (url.pathname.endsWith(`/git/trees/${workflowsTree}`)) return Response.json({ tree: [{ path: 'mcp-checks.yml', type: 'blob', mode: '100644', sha: workflowBlob, size: new TextEncoder().encode(MANAGED_WORKFLOW).length }] });
+        if (url.pathname.endsWith(`/git/trees/${mcpTree}`)) return Response.json({ tree: [{ path: 'checks.json', type: 'blob', mode: '100644', sha: planBlob, size: planContent.length }] });
+        if (url.pathname.endsWith(`/git/blobs/${workflowBlob}`)) return contentsFile(WORKFLOW_PATH, MANAGED_WORKFLOW);
+        if (url.pathname.endsWith(`/git/blobs/${planBlob}`)) return contentsFile(PLAN_PATH, planContent);
+        if (url.pathname.includes('/commits/')) return Response.json({ sha: url.pathname.endsWith('/main') ? (principalHasWorkflow ? next : base) : next });
+        if (url.pathname.endsWith('/actions/runs')) return Response.json({ workflow_runs: [push] });
+        if (url.pathname.endsWith('/jobs')) return Response.json({ jobs: [{ id: 1, name: 'checks', status: 'completed', conclusion: 'success',
+          steps: [{ name: EXECUTE_STEP, status: 'completed', conclusion: 'success' }] }] });
+        if (url.pathname.endsWith('/actions/runs/7')) return Response.json(push);
+        if (url.pathname.endsWith('/actions/runs/8')) return Response.json({ ...push, id: 8, event: 'workflow_dispatch', display_title: manualTitle, head_branch: 'main' });
+        if (url.pathname.endsWith('/dispatches')) {
+          manualTitle = `mcp-checks/${next}/lint/${(body.inputs as Record<string, string>).request_id}`;
+          return Response.json({ workflow_run_id: 8, html_url: 'https://github.com/other/workbench/actions/runs/8' });
+        }
+        throw new Error('Unexpected GitHub request');
+      });
+      const preview = await callTool(headers, 'github_prepare_checks', { repository, branch, expectedHeadSha: base, plan }, 1);
+      expect(toolJson(preview.body)).toMatchObject({ applied: false, changedPaths: [WORKFLOW_PATH, PLAN_PATH] });
+      expect(bodies).toEqual([]);
+      const applied = await callTool(headers, 'github_prepare_checks', { repository, branch, expectedHeadSha: base, plan, apply: true }, 2);
+      expect(toolJson(applied.body)).toMatchObject({ applied: true, commitSha: next });
+      expect(bodies.map(item => item.method)).toEqual(['POST', 'POST', 'PATCH']);
+      expect(bodies[0].body).toMatchObject({ tree: [{ path: WORKFLOW_PATH, content: MANAGED_WORKFLOW }, { path: PLAN_PATH, content: planContent }] });
+      const reused = await callTool(headers, 'github_run_checks', { repository, ref: branch }, 3);
+      expect(toolJson(reused.body)).toMatchObject({ reused: true, runId: 7, sha: next });
+      const success = await callTool(headers, 'github_get_agent_check_result', { repository, sha: next, runId: 7 }, 4);
+      expect(toolJson(success.body)).toMatchObject({ verifiedSuccess: true, targetSha: next });
+      principalHasWorkflow = true;
+      const dispatched = await callTool(headers, 'github_run_checks', { repository, ref: branch, scope: 'lint' }, 5);
+      expect(toolJson(dispatched.body)).toMatchObject({ reused: false, runId: 8 });
+      const verified = await callTool(headers, 'github_get_agent_check_result', { repository, sha: next, scope: 'lint', runId: 8 }, 6);
+      expect(toolJson(verified.body)).toMatchObject({ verifiedSuccess: true });
+      expect(bodies.at(-1)?.body).toEqual({ ref: 'main', inputs: {
+        target_sha: next, scope: 'lint', target: '', request_id: await automationKey({ repository, sha: next, scope: 'lint', target: '' }),
+      } });
+      expect(permissions).toContainEqual({ metadata: 'read', contents: 'write', workflows: 'write' });
+      expect(permissions).toContainEqual({ metadata: 'read', actions: 'write' });
+      expect(JSON.stringify(permissions)).not.toContain('administration');
+    } finally { delete settings.GITHUB_AUTOMATION_ENABLED; delete settings.GITHUB_WRITES_ENABLED; }
+  });
+
   /** Décode la chaîne SSE → JSON-RPC → JSON du texte d'outil. */
   function toolJson<T>(body: string): T {
     const data = (body.split('\n').find(line => line.startsWith('data: ')) ?? `data: ${body}`)
@@ -616,6 +742,106 @@ describe('Worker OAuth / MCP', () => {
     const envelope = JSON.parse(data) as { result?: { content?: Array<{ text?: string }> } };
     return JSON.parse(envelope.result?.content?.[0]?.text ?? '{}') as T;
   }
+
+  it('les anciens consentements de lecture ne gagnent aucun outil d’écriture', async () => {
+    const { headers } = await mcpSession();
+    settings.GITHUB_WRITES_ENABLED = 'true';
+    try {
+      const listed = await send('/mcp', { method: 'POST', headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
+      const text = await listed.text();
+      const api = vi.spyOn(globalThis, 'fetch');
+      for (const name of ['github_create_branch', 'github_commit_changes', 'github_open_pull_request']) {
+        expect(text).not.toContain(name);
+        const result = await callTool(headers, name, {}, 2);
+        expect(result.body).toContain('error');
+      }
+      expect(api).not.toHaveBeenCalled();
+    } finally { delete settings.GITHUB_WRITES_ENABLED; }
+  });
+
+  it('exige le consentement d’écriture, avertit des automatismes et retire les outils à la désactivation', async () => {
+    settings.GITHUB_WRITES_ENABLED = 'true';
+    try {
+      const approval = await consent('mcp:read mcp:write offline_access');
+      expect(approval.html).toContain('suppressions de fichiers');
+      expect(approval.html).toContain('déploiements automatiques');
+      const { headers } = await mcpSession('mcp:read mcp:write offline_access');
+      const list = () => send('/mcp', { method: 'POST', headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
+      const text = await (await list()).text();
+      for (const name of ['github_create_branch', 'github_commit_changes', 'github_open_pull_request']) expect(text).toContain(name);
+      for (const name of ['github_run_checks', 'github_merge_pull_request', 'github_delete_branch', 'github_deploy']) expect(text).not.toContain(name);
+      settings.GITHUB_WRITES_ENABLED = 'false';
+      expect(await (await list()).text()).not.toContain('github_commit_changes');
+      const api = vi.spyOn(globalThis, 'fetch');
+      await callTool(headers, 'github_create_branch', { repository: 'owner/project', task: 'fix', expectedBaseSha: 'a'.repeat(40) }, 2);
+      expect(api).not.toHaveBeenCalled();
+    } finally { delete settings.GITHUB_WRITES_ENABLED; }
+  });
+
+  it('une configuration d’écriture mal formée est refusée', async () => {
+    const result = await send('/.well-known/oauth-authorization-server', {}, { ...settings, GITHUB_WRITES_ENABLED: 'yes' });
+    expect(result.status).toBe(503);
+  });
+
+  it('parcours MCP simulé : branche, commit atomique puis PR brouillon avec jetons minimaux', async () => {
+    settings.GITHUB_WRITES_ENABLED = 'true';
+    try {
+      const { headers } = await mcpSession('mcp:read mcp:write offline_access');
+      const base = 'a'.repeat(40), blob = 'b'.repeat(40), next = 'c'.repeat(40), tree = 'd'.repeat(40);
+      let head = base;
+      const branch = 'mcp/123/fix';
+      const tokenPermissions: unknown[] = [];
+      const mutations: Array<{ path: string; method: string; body: Record<string, unknown> }> = [];
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = new URL(String(input));
+        const method = init?.method ?? 'GET';
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        if (url.pathname.endsWith('/access_tokens')) {
+          tokenPermissions.push(body.permissions);
+          return Response.json({ token: 'installation-token' });
+        }
+        if (method !== 'GET') mutations.push({ path: url.pathname, method, body });
+        if (url.pathname === '/installation/repositories') return Response.json({ repositories: [{ full_name: 'owner/project' }] });
+        if (url.pathname === '/repos/owner/project') return Response.json({ full_name: 'owner/project', default_branch: 'master' });
+        if (url.pathname.includes('/git/ref/heads/')) return Response.json({ object: { sha: head } });
+        if (url.pathname.endsWith('/git/refs') && method === 'POST') return Response.json({ ref: `refs/heads/${branch}` });
+        if (url.pathname.endsWith(`/git/commits/${base}`)) return Response.json({ tree: { sha: tree } });
+        if (url.pathname.endsWith(`/git/trees/${tree}`)) return Response.json({ truncated: false, tree: [
+          { path: 'src', type: 'tree', mode: '040000', sha: tree },
+          { path: 'src/app.ts', type: 'blob', mode: '100644', sha: blob },
+          { path: 'old.ts', type: 'blob', mode: '100644', sha: blob },
+        ] });
+        if (url.pathname.endsWith('/git/trees') && method === 'POST') return Response.json({ sha: tree });
+        if (url.pathname.endsWith('/git/commits') && method === 'POST') return Response.json({ sha: next });
+        if (url.pathname.includes('/git/refs/heads/') && method === 'PATCH') { head = next; return Response.json({}); }
+        if (url.pathname.endsWith('/pulls') && method === 'POST') return Response.json({ number: 42,
+          html_url: 'https://github.com/owner/project/pull/42', draft: true, head: { ref: branch, sha: head }, base: { ref: 'master' } });
+        throw new Error('Unexpected GitHub request');
+      });
+      const created = await callTool(headers, 'github_create_branch',
+        { repository: 'owner/project', task: 'fix', expectedBaseSha: base }, 1);
+      expect(toolJson(created.body)).toMatchObject({ branch, sha: base });
+      const committed = await callTool(headers, 'github_commit_changes', { repository: 'owner/project', branch,
+        expectedHeadSha: base, message: 'Fix', changes: [{ path: 'src/app.ts', content: 'new', expectedSha: blob }],
+        deletions: [{ path: 'old.ts', expectedSha: blob }] }, 2);
+      expect(toolJson(committed.body)).toMatchObject({ branch, commitSha: next, deletedPaths: ['old.ts'] });
+      const opened = await callTool(headers, 'github_open_pull_request',
+        { repository: 'owner/project', branch, expectedHeadSha: next, title: 'Fix' }, 3);
+      expect(toolJson(opened.body)).toMatchObject({ number: 42, draft: true, headMatchesExpected: true });
+      expect(mutations.map(item => item.method)).toEqual(['POST', 'POST', 'POST', 'PATCH', 'POST']);
+      expect(mutations[0].body).toEqual({ ref: `refs/heads/${branch}`, sha: base });
+      expect(mutations[1].body).toMatchObject({ base_tree: tree,
+        tree: [{ path: 'src/app.ts', content: 'new' }, { path: 'old.ts', sha: null }] });
+      expect(mutations[2].body).toMatchObject({ parents: [base] });
+      expect(mutations[3].body).toEqual({ sha: next, force: false });
+      expect(mutations[4].body).toMatchObject({ draft: true, head: branch, base: 'master' });
+      expect(tokenPermissions).toContainEqual({ metadata: 'read', contents: 'write' });
+      expect(tokenPermissions).toContainEqual({ metadata: 'read', pull_requests: 'write' });
+      expect(JSON.stringify(tokenPermissions)).not.toContain('actions');
+    } finally { delete settings.GITHUB_WRITES_ENABLED; }
+  });
 
   it('expose les outils de lecture avec des jetons aux permissions distinctes', async () => {
     const { headers } = await mcpSession();

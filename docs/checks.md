@@ -2,6 +2,8 @@
 
 ## Commandes locales
 
+Le mode commun à tous les dépôts et la préparation des workflows par l’agent sont décrits dans [multi-repository.md](multi-repository.md). Les sections de lancement ci-dessous décrivent le mode historique épinglé, conservé pour compatibilité.
+
 | Commande | Contenu |
 | --- | --- |
 | `npm run typecheck` | TypeScript application et tests |

@@ -1,0 +1,89 @@
+name: publish-worker
+
+on:
+  workflow_call:
+    inputs:
+      stage:
+        type: string
+        required: true
+      source_run_id:
+        type: string
+        required: true
+      artifact_id:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  deployments: write
+
+jobs:
+  publish:
+    if: inputs.stage == 'staging' || inputs.stage == 'production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Les secrets et variables viennent de cet environnement, pas du dépôt.
+    environment:
+      name: ${{ inputs.stage }}
+      url: ${{ vars.PUBLIC_ORIGIN }}
+    env:
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN }}
+      CF_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+      CF_WORKER_NAME: ${{ vars.CF_WORKER_NAME }}
+      CF_KV_NAMESPACE_ID: ${{ vars.CF_KV_NAMESPACE_ID }}
+      ALLOWED_GITHUB_USER_IDS: ${{ vars.ALLOWED_GITHUB_USER_IDS }}
+      GITHUB_APP_ID: ${{ vars.GITHUB_APP_ID }}
+      GITHUB_INSTALLATION_ID: ${{ vars.GITHUB_INSTALLATION_ID }}
+      GITHUB_OAUTH_CLIENT_ID: ${{ vars.GITHUB_OAUTH_CLIENT_ID }}
+      GITHUB_WRITES_ENABLED: ${{ vars.GITHUB_WRITES_ENABLED }}
+      GITHUB_AUTOMATION_ENABLED: ${{ vars.GITHUB_AUTOMATION_ENABLED }}
+      GITHUB_CHECKS_CONFIG: ${{ vars.GITHUB_CHECKS_CONFIG }}
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.19.0'
+          cache: npm
+          package-manager-cache: false
+      - name: Installer le déployeur sans exécuter les scripts npm
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+      - name: Télécharger exclusivement le paquet sélectionné
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: .release
+          digest-mismatch: error
+      - name: Vérifier le paquet et préparer la destination isolée
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_STAGE: ${{ inputs.stage }}
+        run: node scripts/deploy/release.mjs prepare "$RELEASE_STAGE"
+      - name: Publier le Worker déjà compilé
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: node node_modules/wrangler/bin/wrangler.js deploy --config .release/deploy.json --no-bundle
+      - name: Vérifier la version, OAuth discovery et le refus sans authentification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_STAGE: ${{ inputs.stage }}
+        run: node scripts/deploy/release.mjs smoke "$RELEASE_STAGE"
+      - name: Conserver exactement le paquet validé en staging
+        if: inputs.stage == 'staging'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staged-release
+          path: |
+            .release/manifest.json
+            .release/staging.json
+            .release/worker/
+          if-no-files-found: error
+          retention-days: 14

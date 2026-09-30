@@ -1,0 +1,9 @@
+{
+  "name": "project-mcp-collab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/calculator.test.mjs"
+  }
+}

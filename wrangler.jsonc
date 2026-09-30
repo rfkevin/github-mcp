@@ -1,62 +1,45 @@
-/**
- * For more details on how to configure Wrangler, refer to:
- * https://developers.cloudflare.com/workers/wrangler/configuration/
- */
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "github-mcp",
-	"main": "src/index.ts",
-	"compatibility_date": "2026-09-26",
-	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
-	"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "65bb801d428d4250a4c8327310e0d065" }],
-	"vars": {
-		"PUBLIC_ORIGIN": "https://github-mcp.rfahedkevin.workers.dev",
-		"ALLOWED_GITHUB_USER_IDS": "105856986",
-		"GITHUB_APP_ID": "5122110",
-		"GITHUB_INSTALLATION_ID": "166154980",
-		"GITHUB_OAUTH_CLIENT_ID": "Iv23liaWMkDZAKSVWClX"
-	},
-	// Previews are isolated and fail closed until test OAuth credentials are configured.
-	"previews": {
-		"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "993dee7f12634524baace15e107729b9" }],
-		"vars": {
-			"PUBLIC_ORIGIN": "",
-			"ALLOWED_GITHUB_USER_IDS": "",
-			"GITHUB_APP_ID": "",
-			"GITHUB_INSTALLATION_ID": "",
-			"GITHUB_OAUTH_CLIENT_ID": ""
-		}
-	},
-	"observability": {
-		"enabled": true
-	},
-	"upload_source_maps": true
-	/**
-	 * Smart Placement
-	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
-	 */
-	// "placement": {  "mode": "smart" }
-	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
-	/**
-	 * Static Assets
-	 * https://developers.cloudflare.com/workers/static-assets/binding/
-	 */
-	// "assets": {  "directory": "./public/",  "binding": "ASSETS" }
-	/**
-	 * Service Bindings (communicate between multiple Workers)
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
-	 */
-	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "github-mcp",
+  "account_id": "8508df2ab3bc8d7e6e2d37fde83dcbb3",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-26",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "65bb801d428d4250a4c8327310e0d065"
+    }
+  ],
+  "vars": {
+    "PUBLIC_ORIGIN": "https://github-mcp.rfahedkevin.workers.dev",
+    "ALLOWED_GITHUB_USER_IDS": "105856986",
+    "GITHUB_APP_ID": "5122110",
+    "GITHUB_INSTALLATION_ID": "166154980",
+    "GITHUB_OAUTH_CLIENT_ID": "Iv23liaWMkDZAKSVWClX",
+    "GITHUB_AUTOMATION_ENABLED": "false"
+  },
+  "previews": {
+    "kv_namespaces": [
+      {
+        "binding": "OAUTH_KV",
+        "id": "993dee7f12634524baace15e107729b9"
+      }
+    ],
+    "vars": {
+      "PUBLIC_ORIGIN": "",
+      "ALLOWED_GITHUB_USER_IDS": "",
+      "GITHUB_APP_ID": "",
+      "GITHUB_INSTALLATION_ID": "",
+      "GITHUB_OAUTH_CLIENT_ID": "",
+      "GITHUB_AUTOMATION_ENABLED": "false"
+    }
+  },
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true
 }

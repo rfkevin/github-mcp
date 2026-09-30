@@ -7,6 +7,10 @@ Serveur MCP sur Cloudflare Workers, accessible depuis un client distant comme Cl
 - [Réglages GitHub à effectuer, dans l’ordre](docs/github-settings.md)
 - [Configuration du Worker et catalogue des outils](docs/setup.md)
 - [Vérifications locales et activation optionnelle de run_checks](docs/checks.md)
+- [Écritures optionnelles : branches, commits et PR](docs/writes.md)
+- [Travailler sur tous les dépôts avec le même MCP](docs/multi-repository.md)
+- [Staging, approbation et publication en production](docs/deployments.md)
+- [Bilan de l’audit et validations restantes](docs/audit-2026-09-30.md)
 - [Architecture retenue et prochaines étapes](docs/agent-roadmap.md)
 - [Bilan du lot et validations effectuées](docs/overnight-handoff.md)
 - [Bibliothèque GitHub interne](docs/github-client.md)
@@ -25,8 +29,14 @@ npm run check:full
 
 ## Capacités et limites
 
-Le code propose douze outils de lecture : dépôts, contexte, fichiers, recherche, différences, état CI et diagnostics. Deux outils supplémentaires permettent de lancer et suivre les vérifications, mais restent cachés sans configuration explicite et nouveau consentement `mcp:checks`.
+Le code propose quatorze outils de lecture : dépôts, contexte, fichiers, recherche, différences, état CI, diagnostics et suivi des PR. Le mode multi-dépôts ajoute trois outils : `github_prepare_checks`, `github_run_checks` et `github_get_agent_check_result`, avec activation globale et nouveau consentement `mcp:automation`. Le mode historique `mcp:checks` conserve ses deux outils de lancement et suivi.
 
-Aucun outil MCP ne modifie le code, ne fusionne de PR ou ne déploie en production. La bibliothèque contient déjà des opérations d’écriture ; leur exposition sécurisée reste un lot distinct.
+Quatre outils d’écriture sont disponibles dans le code mais cachés par défaut : `github_create_branch`, `github_commit_changes`, `github_open_pull_request` et `github_comment_pull_request`. Ils nécessitent `GITHUB_WRITES_ENABLED=true`, un nouveau consentement `mcp:write` et les permissions GitHub appropriées. Les dépôts accessibles restent ceux de l’installation GitHub, sans seconde liste locale.
+
+L’utilisateur choisit le dépôt et la branche de départ ; l’agent crée une branche de travail liée à son identité et prépare une PR en brouillon vers la branche choisie. Il peut préparer un workflow de vérification encadré et un plan `.mcp/checks.json` adapté au projet, sans modifier le MCP pour chaque dépôt. L’activation initiale et l’essai distant restent à effectuer ; voir [le guide multi-dépôts](docs/multi-repository.md).
+
+Aucun outil ne fusionne, n’approuve ou ne déploie directement. Un commit ou une PR peut déclencher les automatisations existantes du dépôt. Le workflow de tests généré ne reçoit pas de secret de déploiement.
 
 Ne jamais committer une clé privée, un jeton, `.env` ou `.dev.vars`. Les préversions doivent conserver leurs propres ressources et identifiants.
+
+La chaîne de publication est prête dans le code : CI → paquet compilé → staging → approbation humaine → même paquet en production. Elle reste désactivée jusqu’à la configuration des environnements et de `RELEASE_PIPELINE_ENABLED`. L’autodéploiement Cloudflare existant doit être désactivé pour que l’approbation GitHub devienne le passage obligatoire.

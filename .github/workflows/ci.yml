@@ -28,20 +28,33 @@ jobs:
           CHECK_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/ci/changes.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.changes.outputs.run == 'true'
+        if: steps.changes.outputs.run == 'true' || (github.event_name == 'push' && vars.RELEASE_PIPELINE_ENABLED == 'true')
         with:
           node-version: '24.19.0'
           cache: npm
           package-manager-cache: false
       - name: Installer une seule fois
-        if: steps.changes.outputs.run == 'true'
+        if: steps.changes.outputs.run == 'true' || (github.event_name == 'push' && vars.RELEASE_PIPELINE_ENABLED == 'true')
         run: npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
       - name: Types, tests et compilation sans déploiement
-        if: steps.changes.outputs.run == 'true'
+        if: steps.changes.outputs.run == 'true' || (github.event_name == 'push' && vars.RELEASE_PIPELINE_ENABLED == 'true')
         env:
           WRANGLER_SEND_METRICS: 'false'
         run: npm run check:full
       # Le job existe aussi pour une PR documentaire : pas de contrôle requis bloqué en Pending.
       - name: Bilan documentaire
-        if: steps.changes.outputs.run == 'false'
+        if: steps.changes.outputs.run == 'false' && !(github.event_name == 'push' && vars.RELEASE_PIPELINE_ENABLED == 'true')
         run: echo 'Documentation seule ; aucune exécution de code nécessaire.'
+      - name: Sceller le paquet testé, sans secrets de déploiement
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.RELEASE_PIPELINE_ENABLED == 'true'
+        run: node scripts/deploy/release.mjs seal
+      - name: Conserver le paquet immuable
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.RELEASE_PIPELINE_ENABLED == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: worker-release
+          path: |
+            .release/manifest.json
+            .release/worker/
+          if-no-files-found: error
+          retention-days: 14

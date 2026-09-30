@@ -118,25 +118,20 @@ export class GitHubChanges {
     snapshot: ParentSnapshot,
     paths: ReadonlySet<string>,
   ): Map<string, ExistingFile | undefined> {
-    const knownFiles = new Map<string, ExistingFile>();
-
-    for (const item of snapshot.tree.tree) {
-      if (item.type === 'blob' && item.path && item.sha) {
-        knownFiles.set(item.path, { sha: item.sha, mode: item.mode ?? '100644' });
-      }
-    }
+    // Un seul index, au lieu de rechercher chaque chemin dans tout le dépôt.
+    const nodes = new Map(snapshot.tree.tree.map(item => [item.path, item]));
 
     const files = new Map<string, ExistingFile | undefined>();
     for (const path of paths) {
-      const node = snapshot.tree.tree.find(entry => entry.path === path);
+      const node = nodes.get(path);
       if (node && (node.type !== 'blob' || !['100644', '100755'].includes(node.mode ?? '100644'))) {
         throw new GitHubConflictError('Impossible de remplacer un dossier, un sous-module ou un lien symbolique.');
       }
       const ancestors = path.split('/').slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join('/'));
-      if (snapshot.tree.tree.some(entry => entry.path && ancestors.includes(entry.path) && entry.type !== 'tree')) {
+      if (ancestors.some(ancestor => nodes.has(ancestor) && nodes.get(ancestor)?.type !== 'tree')) {
         throw new GitHubConflictError('Un parent du fichier n’est pas un dossier ordinaire.');
       }
-      files.set(path, knownFiles.get(path));
+      files.set(path, node?.sha ? { sha: node.sha, mode: node.mode ?? '100644' } : undefined);
     }
 
     return files;

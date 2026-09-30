@@ -3,6 +3,8 @@ import { assertConfigured, publicOrigin, type AppEnv, type AuthEnv } from './con
 import { authHandler } from './auth/handler';
 import { mcpHandler } from './mcp/handler';
 import { checksConfig } from './checks/config';
+import { writesEnabled } from './writes/config';
+import { automationEnabled } from './automation/config';
 
 export default {
   async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
@@ -18,10 +20,16 @@ export default {
       return new Response('Origine refusée.',
         { status: 400, headers: { 'Cache-Control': 'no-store' } });
     }
+    if (new URL(request.url).pathname === '/ready' && request.method === 'GET') {
+      return Response.json({ status: 'ready', sha: env.BUILD_SHA ?? null },
+        { headers: { 'Cache-Control': 'no-store' } });
+    }
     const provider = new OAuthProvider<AuthEnv>({
       apiRoute: '/mcp', apiHandler: mcpHandler, defaultHandler: authHandler,
       authorizeEndpoint: '/authorize', tokenEndpoint: '/oauth/token', clientRegistrationEndpoint: '/oauth/register',
-      scopesSupported: ['mcp:read', 'offline_access', ...(checksConfig(env.GITHUB_CHECKS_CONFIG).length ? ['mcp:checks'] : [])],
+      scopesSupported: ['mcp:read', 'offline_access', ...(checksConfig(env.GITHUB_CHECKS_CONFIG).length ? ['mcp:checks'] : []),
+        ...(writesEnabled(env.GITHUB_WRITES_ENABLED) ? ['mcp:write'] : []),
+        ...(automationEnabled(env.GITHUB_AUTOMATION_ENABLED) ? ['mcp:automation'] : [])],
       requiredScopes: ['mcp:read'],
       resourceMetadata: { resource: `${origin}/mcp`, authorization_servers: [origin] },
       clientIdMetadataDocumentEnabled: true,

@@ -1,0 +1,6 @@
+# GitHub n'applique la revue obligatoire que si la protection de master l'exige.
+/.github/ @rfkevin
+/scripts/ci/ @rfkevin
+/scripts/deploy/ @rfkevin
+/src/automation/ @rfkevin
+/wrangler.jsonc @rfkevin

@@ -1,0 +1,48 @@
+name: deploy-production
+run-name: production / staging ${{ inputs.staging_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_run_id:
+        description: Identifiant du workflow deploy-staging réussi à promouvoir
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  deployments: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  select:
+    permissions:
+      contents: read
+      actions: read
+    if: vars.RELEASE_PIPELINE_ENABLED == 'true' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      artifact_id: ${{ steps.select.outputs.artifact_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Refuser une production sans relecteur obligatoire
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.staging_run_id }}
+        run: node scripts/deploy/release.mjs select production
+  publish:
+    needs: select
+    uses: ./.github/workflows/publish-worker.yml
+    with:
+      stage: production
+      source_run_id: ${{ inputs.staging_run_id }}
+      artifact_id: ${{ needs.select.outputs.artifact_id }}

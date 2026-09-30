@@ -106,7 +106,14 @@ export class GitHubHttp {
       return undefined as T;
     }
 
-    return readJson<T>(response);
+    try {
+      return await readJson<T>(response);
+    } catch (error) {
+      if (!['GET', 'HEAD'].includes((init.method ?? 'GET').toUpperCase())) {
+        throw new GitHubApiError(0, path, 'Réponse d’écriture GitHub illisible : vérifier le résultat avant de recommencer.');
+      }
+      throw error;
+    }
   }
 
   async paginate<TPayload, TItem>(
@@ -115,13 +122,14 @@ export class GitHubHttp {
     limit = 300,
   ): Promise<TItem[]> {
     const items: TItem[] = [];
+    const pageSize = Math.min(100, Math.max(1, limit));
 
     for (let page = 1; items.length < limit; page += 1) {
-      const payload = await this.request<TPayload>(this.withQuery(path, { per_page: 100, page }));
+      const payload = await this.request<TPayload>(this.withQuery(path, { per_page: pageSize, page }));
       const batch = extract(payload);
       items.push(...batch);
 
-      if (batch.length < 100) {
+      if (batch.length < pageSize) {
         break;
       }
     }
@@ -144,7 +152,8 @@ export class GitHubHttp {
       response.status === 429 ||
       (response.status === 403 && (retryAfter !== null || remaining === '0'));
 
-    if (isRateLimited) {
+    // Ne pas rejouer automatiquement les écritures.
+    if (idempotent && isRateLimited) {
       let delay: number | undefined;
 
       if (retryAfter !== null) {

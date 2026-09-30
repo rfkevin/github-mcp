@@ -1,14 +1,16 @@
 # Configuration du serveur
 
-Le Worker expose `/mcp` derrière OAuth 2.1 et `/health` comme contrôle de disponibilité. Les sept outils historiques sont conservés : `github_list_repositories`, `github_get_project_guide`, `github_read_file`, `github_list_directory`, `github_search_code`, `github_compare_refs` et `github_ci_status`. S’y ajoutent `github_get_project_context`, `github_read_files`, `github_get_check_result`, `github_get_failure_report` et `github_get_quality_report`.
+Le Worker expose `/mcp` derrière OAuth 2.1. `/health` confirme que le processus répond ; `/ready` exige la configuration et renvoie le SHA du paquet publié. Aucune de ces sondes ne prouve que les permissions GitHub ou une connexion utilisateur fonctionnent. Les sept outils historiques sont conservés : `github_list_repositories`, `github_get_project_guide`, `github_read_file`, `github_list_directory`, `github_search_code`, `github_compare_refs` et `github_ci_status`. S’y ajoutent `github_get_project_context`, `github_read_files`, `github_get_check_result`, `github_get_failure_report`, `github_get_quality_report`, `github_list_pull_requests` et `github_get_pull_request`.
 
-Les lectures utilisent cinq familles de jetons minimaux : metadata, contents, checks, statuses et actions. Une permission manquante ne bloque pas toutes les familles. Pull requests n’est plus demandé pour les lectures de fichiers. Les clients de lecture conservent `policy.readOnly`. La résolution d’une branche en SHA nécessite contents:read ; les sources CI deviennent indépendantes une fois ce SHA obtenu.
+Les lectures utilisent six familles de jetons minimaux : metadata, contents, checks, statuses, actions et pull_requests. Une permission manquante ne bloque pas toutes les familles. Pull requests n’est demandé que pour les outils de PR. Les clients de lecture conservent `policy.readOnly`. La résolution d’une branche en SHA nécessite contents:read ; les sources CI deviennent indépendantes une fois ce SHA obtenu.
 
-Deux outils optionnels, `github_run_checks` et `github_get_agent_check_result`, restent cachés sans configuration serveur ET consentement `mcp:checks`. Leur client demande actions:write mais n’expose que le workflow autorisé. Aucun outil de modification de code, de fusion ou de déploiement n’est exposé. Voir [les réglages GitHub](github-settings.md) et [l’activation des vérifications](checks.md).
+Le mode multi-dépôts ajoute `github_prepare_checks`, `github_run_checks` et `github_get_agent_check_result` avec `GITHUB_AUTOMATION_ENABLED=true` ET consentement `mcp:automation`. Préparer un commit exige aussi les droits d’écriture. La sélection GitHub définit les dépôts, sans configuration par dépôt dans le MCP. Voir [multi-repository.md](multi-repository.md). Le mode historique `GITHUB_CHECKS_CONFIG` / `mcp:checks` conserve ses deux outils pour compatibilité ; le mode multi-dépôts prend priorité si les deux sont autorisés.
+
+Quatre autres outils optionnels, `github_create_branch`, `github_commit_changes`, `github_open_pull_request` et `github_comment_pull_request`, nécessitent le réglage texte `GITHUB_WRITES_ENABLED=true` ET le consentement `mcp:write`. Absence, chaîne vide ou `false` les désactivent ; une autre valeur refuse la configuration. Aucun droit nouveau n’est accordé aux anciens consentements. Les branches appartiennent à l’utilisateur authentifié et les dépôts proviennent de la sélection de l’installation. Aucun outil de fusion, d’approbation ou de déploiement direct n’est exposé. Les automatisations existantes peuvent néanmoins partir sur commit/PR. Voir [writes.md](writes.md).
 
 Les chemins sensibles (`.env`, `.dev.vars`, `.npmrc`, clés privées, certificats…) sont refusés en lecture et masqués dans les listes, recherches et différences, y compris les renommages. Les lectures parcourent les arbres Git puis lisent le blob immuable, sans suivre les liens symboliques. Un fichier de plus de 1 000 000 octets est refusé avant téléchargement de son blob. Cette protection par nom ne détecte pas tous les secrets éventuellement présents dans un fichier ordinaire.
 
-La lecture historique est limitée à 80 000 octets de contenu ; les guides historiques à 16 000 octets chacun. La lecture groupée partage 60 000 octets entre au plus dix fichiers, avec au plus 400 lignes par extrait et une concurrence de trois lectures. Le contexte comprend au plus 100 entrées racine et quatre documents limités à 12 000 octets chacun. Un diff dépassant 120 000 octets perd ses patchs (`patchesOmitted`). Le JSON logique de toute réponse d’outil est borné à 160 000 octets ; l’enveloppe MCP ajoute notamment ses représentations texte et structurée.
+La lecture historique est limitée à 80 000 octets de contenu ; les guides historiques à 16 000 octets chacun. La lecture groupée partage 60 000 octets entre au plus dix fichiers, avec au plus 400 lignes par extrait et une concurrence de trois lectures. Le contexte comprend au plus 100 entrées racine et cinq documents limités à 12 000 octets chacun, dont le plan du projet. Un diff dépassant 120 000 octets perd ses patchs (`patchesOmitted`). Le JSON logique de toute réponse d’outil est borné à 160 000 octets ; l’enveloppe MCP ajoute notamment ses représentations texte et structurée.
 
 Les erreurs GitHub ne sont pas recopiées vers le client : message catégorisé, code et indicateur `retryable` sont renvoyés dans `structuredContent.error`. Les annotations sont bornées et certains formats de secrets connus sont masqués, sans garantie de détection universelle. Aucun outil de téléchargement de logs bruts n’est exposé.
 
@@ -28,6 +30,9 @@ Les valeurs non secrètes de production sont renseignées dans `wrangler.jsonc`.
 | `GITHUB_PRIVATE_KEY` | Secret : clé privée de la GitHub App, au format PKCS#8 |
 | `GITHUB_OAUTH_CLIENT_SECRET` | Secret : client secret de l'application de connexion |
 | `GITHUB_CHECKS_CONFIG` | Optionnel, JSON non secret des dépôts, refs et SHA de contrôleur autorisés ; absent par défaut. Voir [checks.md](checks.md) |
+| `GITHUB_WRITES_ENABLED` | Optionnel, `true` active les outils pour les consentements `mcp:write` ; sinon désactivé |
+| `GITHUB_AUTOMATION_ENABLED` | `false` par défaut ; `true` active les vérifications multi-dépôts pour les consentements `mcp:automation` |
+| `BUILD_SHA` | SHA du paquet, renseigné par la chaîne de publication ; facultatif pour les anciens déploiements |
 
 Ne pas mettre les secrets dans `wrangler.jsonc`, Git, les journaux ou une conversation. En développement, utiliser `.dev.vars`, ignoré par Git ; en production, les secrets Cloudflare. Le callback GitHub est exactement `PUBLIC_ORIGIN` suivi de `/callback`.
 
@@ -36,6 +41,8 @@ L'authentification utilisateur n'accorde pas les permissions de dépôt : celles
 `OAUTH_KV` pointe en production vers `github-mcp-oauth-kv`. Le bloc `previews` utilise un namespace distinct, `github-mcp-oauth-preview-kv`, partagé entre les préversions mais jamais avec la production.
 
 ## Déploiements de branches
+
+La nouvelle chaîne staging/production et sa migration sont décrites dans [deployments.md](deployments.md). Les réglages ci-dessous décrivent l’intégration Cloudflare existante, à désactiver pour la production lorsque la nouvelle chaîne est configurée. Le fichier `wrangler.jsonc` est conservé en JSON strict afin que le script de publication puisse lire ses valeurs sans dépendance supplémentaire.
 
 La branche de production est `master` et sa commande est `npx wrangler deploy`. Les autres branches utilisent `npx wrangler preview`, qui exige le bloc `previews` même lorsque la compilation de production réussit.
 

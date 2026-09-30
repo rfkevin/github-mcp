@@ -1,4 +1,5 @@
 import { importPKCS8, SignJWT } from 'jose';
+import { readJson } from './response';
 import { GitHubApiError, type GitHubClientOptions } from './types';
 
 const GITHUB_API = 'https://api.github.com';
@@ -114,18 +115,18 @@ export class GitHubAuthenticator {
     let payload: { token?: string; expires_at?: string };
 
     try {
-      payload = (await response.json()) as { token?: string; expires_at?: string };
+      payload = await readJson(response, 64_000);
     } catch {
       throw new GitHubApiError(response.status, ACCESS_TOKENS_PATH,
         'Réponse d’authentification GitHub illisible.');
     }
 
-    if (!payload.token) {
+    if (!payload || typeof payload.token !== 'string' || !payload.token.trim()) {
       throw new GitHubApiError(response.status, ACCESS_TOKENS_PATH,
         'GitHub n’a pas retourné de jeton d’installation.');
     }
 
-    const expiresAt = payload.expires_at
+    const expiresAt = typeof payload.expires_at === 'string'
       ? Date.parse(payload.expires_at)
       : Date.now() + 50 * 60_000;
 
