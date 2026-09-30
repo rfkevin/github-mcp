@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { parse } from 'yaml';
 import { boundedJson, deploymentConfig, fullSha, positiveId, requireProductionApproval, requireProductionReview, seal, trustedRun, verifyBundle } from './release.mjs';
 
 const SHA = 'a'.repeat(40);
@@ -87,6 +88,22 @@ test('le paquet est lié à la CI, au dépôt, au SHA et aux octets réellement 
   writeFileSync(resolve(root, 'worker/index.js'), 'modified');
   assert.throws(() => verifyBundle(root, REPO, '123', SHA));
 });
+test('les permissions d’écriture sont limitées aux jobs de publication, appelants et réutilisable', () => {
+  const readPermissions = { contents: 'read', actions: 'read' };
+  const publishPermissions = { ...readPermissions, deployments: 'write' };
+  for (const file of ['deploy-staging.yml', 'deploy-production.yml', 'publish-worker.yml']) {
+    const workflow = parse(readFileSync(`.github/workflows/${file}`, 'utf8'));
+    assert.deepEqual(workflow.permissions, readPermissions, `${file}: permissions globales`);
+    assert.deepEqual(workflow.jobs.publish.permissions, publishPermissions, `${file}: publication`);
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      if (name !== 'publish') assert.deepEqual(job.permissions ?? workflow.permissions, readPermissions, `${file}: ${name}`);
+    }
+    if (file !== 'publish-worker.yml') {
+      assert.equal(workflow.jobs.publish.uses, './.github/workflows/publish-worker.yml');
+    }
+  }
+});
+
 test('les workflows n’exposent le jeton Cloudflare qu’à la publication', () => {
   const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
   const checks = readFileSync('.github/workflows/agent-checks.yml', 'utf8');

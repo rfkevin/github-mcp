@@ -16,10 +16,13 @@ on:
 permissions:
   contents: read
   actions: read
-  deployments: write
 
 jobs:
   publish:
+    permissions:
+      contents: read
+      actions: read
+      deployments: write
     if: inputs.stage == 'staging' || inputs.stage == 'production'
     runs-on: ubuntu-latest
     timeout-minutes: 10

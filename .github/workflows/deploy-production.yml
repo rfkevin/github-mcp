@@ -12,7 +12,6 @@ on:
 permissions:
   contents: read
   actions: read
-  deployments: write
 
 concurrency:
   group: deploy-production
@@ -40,6 +39,10 @@ jobs:
           SOURCE_RUN_ID: ${{ inputs.staging_run_id }}
         run: node scripts/deploy/release.mjs select production
   publish:
+    permissions:
+      contents: read
+      actions: read
+      deployments: write
     needs: select
     uses: ./.github/workflows/publish-worker.yml
     with:
