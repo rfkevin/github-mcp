@@ -1,5 +1,6 @@
 import type {
   GitHubCheckRun,
+  GitHubCheckAnnotation,
   GitHubCombinedStatus,
   GitHubJob,
   GitHubWorkflow,
@@ -8,6 +9,7 @@ import type {
 
 const MAX_LOG_BYTES = 200_000;
 import type { GitHubServiceContext } from './service-context';
+import { InputValidationError } from './types';
 
 export class GitHubActions {
   constructor(private readonly dependencies: GitHubServiceContext) {}
@@ -26,6 +28,7 @@ export class GitHubActions {
     options: {
       workflow?: string | number;
       branch?: string;
+      headSha?: string;
       status?: string;
       event?: string;
       limit?: number;
@@ -33,13 +36,16 @@ export class GitHubActions {
   ): Promise<GitHubWorkflowRun[]> {
     const { assertGitRef, encodeSegment, paginate, repoPath, withQuery } = this.dependencies;
     if (options.branch) assertGitRef(options.branch);
+    if (options.headSha && !/^[a-f0-9]{40}$/i.test(options.headSha)) {
+      throw new InputValidationError('SHA de commit invalide.');
+    }
 
     const base = options.workflow
       ? repoPath(repository, `/actions/workflows/${encodeSegment(String(options.workflow))}/runs`)
       : repoPath(repository, '/actions/runs');
 
     return paginate<{ workflow_runs: GitHubWorkflowRun[] }, GitHubWorkflowRun>(
-      withQuery(base, { branch: options.branch, status: options.status, event: options.event }),
+      withQuery(base, { branch: options.branch, head_sha: options.headSha, status: options.status, event: options.event }),
       payload => payload.workflow_runs,
       options.limit ?? 30,
     );
@@ -89,13 +95,21 @@ export class GitHubActions {
     workflow: string | number,
     ref: string,
     inputs: Record<string, string> = {},
-  ): Promise<void> {
+  ): Promise<{ runId: number; url: string } | undefined> {
     const { assertGitRef, encodeSegment, repoPath, request } = this.dependencies;
     assertGitRef(ref, 'référence');
-    await request(
+    if (!this.dependencies.allowedWorkflows.has(String(workflow)) ||
+        !this.dependencies.allowedWorkflowRefs.has(ref)) {
+      throw new InputValidationError('Workflow ou référence non autorisé.', 'WORKFLOW_DENIED');
+    }
+    const result = await request<{ workflow_run_id?: number; html_url?: string } | undefined>(
       repoPath(repository, `/actions/workflows/${encodeSegment(String(workflow))}/dispatches`),
       { method: 'POST', body: JSON.stringify({ ref, inputs }) },
     );
+    if (result?.workflow_run_id && Number.isSafeInteger(result.workflow_run_id) && result.workflow_run_id > 0 &&
+        typeof result.html_url === 'string') {
+      return { runId: result.workflow_run_id, url: result.html_url };
+    }
   }
 
   listCheckRuns(repository: string, ref: string): Promise<GitHubCheckRun[]> {
@@ -106,6 +120,13 @@ export class GitHubActions {
       payload => payload.check_runs,
       200,
     );
+  }
+
+  listCheckAnnotations(repository: string, checkId: number, limit = 50): Promise<GitHubCheckAnnotation[]> {
+    const { assertPositiveInteger, repoPath, paginateArray } = this.dependencies;
+    assertPositiveInteger(checkId, 'Identifiant de contrôle');
+    return paginateArray<GitHubCheckAnnotation>(repoPath(repository, `/check-runs/${checkId}/annotations`),
+      Math.min(Math.max(limit, 1), 100));
   }
 
   getCombinedStatus(repository: string, ref: string): Promise<GitHubCombinedStatus> {

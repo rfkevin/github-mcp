@@ -1,10 +1,16 @@
 # Configuration du serveur
 
-Le Worker expose `/mcp` derrière OAuth 2.1 et `/health` comme contrôle de disponibilité. Sept outils sont enregistrés : `github_list_repositories`, `github_get_project_guide`, `github_read_file`, `github_list_directory`, `github_search_code`, `github_compare_refs` et `github_ci_status`.
+Le Worker expose `/mcp` derrière OAuth 2.1 et `/health` comme contrôle de disponibilité. Les sept outils historiques sont conservés : `github_list_repositories`, `github_get_project_guide`, `github_read_file`, `github_list_directory`, `github_search_code`, `github_compare_refs` et `github_ci_status`. S’y ajoutent `github_get_project_context`, `github_read_files`, `github_get_check_result`, `github_get_failure_report` et `github_get_quality_report`.
 
-Ils s'appuient sur deux clients internes à permissions distinctes. `github_list_repositories` n'utilise qu'un jeton de métadonnées en lecture : une permission demandée à tort côté lecture ne peut donc pas faire échouer sa création du jeton (422). Les six autres outils passent par un client de lecture limité aux fichiers, aux commits et à l'intégrité continue, avec `policy.readOnly` actif. Les autres services de la bibliothèque ne sont pas encore exposés.
+Les lectures utilisent cinq familles de jetons minimaux : metadata, contents, checks, statuses et actions. Une permission manquante ne bloque pas toutes les familles. Pull requests n’est plus demandé pour les lectures de fichiers. Les clients de lecture conservent `policy.readOnly`. La résolution d’une branche en SHA nécessite contents:read ; les sources CI deviennent indépendantes une fois ce SHA obtenu.
 
-Les fichiers sensibles (`.env`, clés privées, certificats) sont refusés en lecture et masqués dans les listes et les résultats de recherche. Les contenus renvoyés sont tronqués à 80 000 octets par document, et une comparaison de plus de 120 000 octets est renvoyée sans patchs (`patchesOmitted`). Les erreurs GitHub ne sont jamais recopiées vers le client : seul un motif fermé est journalisé et un texte de repli est renvoyé.
+Deux outils optionnels, `github_run_checks` et `github_get_agent_check_result`, restent cachés sans configuration serveur ET consentement `mcp:checks`. Leur client demande actions:write mais n’expose que le workflow autorisé. Aucun outil de modification de code, de fusion ou de déploiement n’est exposé. Voir [les réglages GitHub](github-settings.md) et [l’activation des vérifications](checks.md).
+
+Les chemins sensibles (`.env`, `.dev.vars`, `.npmrc`, clés privées, certificats…) sont refusés en lecture et masqués dans les listes, recherches et différences, y compris les renommages. Les lectures parcourent les arbres Git puis lisent le blob immuable, sans suivre les liens symboliques. Un fichier de plus de 1 000 000 octets est refusé avant téléchargement de son blob. Cette protection par nom ne détecte pas tous les secrets éventuellement présents dans un fichier ordinaire.
+
+La lecture historique est limitée à 80 000 octets de contenu ; les guides historiques à 16 000 octets chacun. La lecture groupée partage 60 000 octets entre au plus dix fichiers, avec au plus 400 lignes par extrait et une concurrence de trois lectures. Le contexte comprend au plus 100 entrées racine et quatre documents limités à 12 000 octets chacun. Un diff dépassant 120 000 octets perd ses patchs (`patchesOmitted`). Le JSON logique de toute réponse d’outil est borné à 160 000 octets ; l’enveloppe MCP ajoute notamment ses représentations texte et structurée.
+
+Les erreurs GitHub ne sont pas recopiées vers le client : message catégorisé, code et indicateur `retryable` sont renvoyés dans `structuredContent.error`. Les annotations sont bornées et certains formats de secrets connus sont masqués, sans garantie de détection universelle. Aucun outil de téléchargement de logs bruts n’est exposé.
 
 La connexion utilisateur passe par GitHub et un consentement propre au client MCP. Seuls les identifiants numériques GitHub configurés sont autorisés. Tous ces utilisateurs accèdent à la même installation : ce n'est pas encore un système multi-utilisateurs avec permissions différentes par dépôt. La liste est revérifiée à chaque requête MCP, y compris pour les jetons déjà émis.
 
@@ -21,6 +27,7 @@ Les valeurs non secrètes de production sont renseignées dans `wrangler.jsonc`.
 | `GITHUB_OAUTH_CLIENT_ID` | Client ID de l'application utilisée pour la connexion utilisateur |
 | `GITHUB_PRIVATE_KEY` | Secret : clé privée de la GitHub App, au format PKCS#8 |
 | `GITHUB_OAUTH_CLIENT_SECRET` | Secret : client secret de l'application de connexion |
+| `GITHUB_CHECKS_CONFIG` | Optionnel, JSON non secret des dépôts, refs et SHA de contrôleur autorisés ; absent par défaut. Voir [checks.md](checks.md) |
 
 Ne pas mettre les secrets dans `wrangler.jsonc`, Git, les journaux ou une conversation. En développement, utiliser `.dev.vars`, ignoré par Git ; en production, les secrets Cloudflare. Le callback GitHub est exactement `PUBLIC_ORIGIN` suivi de `/callback`.
 
@@ -54,11 +61,11 @@ Aucun de ces champs ne contient l'en-tête `Location`, une query string portant 
 
 Le message renvoyé au client reste court et catégorisé : GitHub injoignable, redirection refusée par sécurité, connexion expirée ou refusée, callback mal configuré, identifiants serveur invalides. Il ne contient ni identifiant, ni URL, ni code secret ; le détail exploitable reste dans le journal. Toutes ces réponses, y compris `/health`, sont marquées `Cache-Control: no-store`.
 
-Le journal d'audit de l'outil `github_list_repositories` ajoute un champ `reason` en cas d'échec : `rate_limited`, `github_api_<statut>`, `github_api_unreachable`, `policy_<code>`, `conflict` ou `unexpected_error`. Le message d'erreur d'origine n'y est jamais recopié.
+Les journaux d’audit des outils ajoutent un champ `reason` en cas d’échec : `rate_limited`, `github_api_<statut>`, `github_api_unreachable`, `policy_<code>`, `conflict`, `invalid_request` ou `unexpected_error`. Le message d’erreur d’origine n’y est jamais recopié. Un rapport partiel peut être une opération réussie avec des sources indisponibles : examiner aussi `partial`, `unavailable` et les erreurs par élément dans la réponse.
 
 ## Vérifications
 
-`npm test -- --run` teste le parcours OAuth local, les refus d'accès et les outils avec GitHub simulé. `npx tsc --noEmit` et `npx tsc --noEmit -p test/tsconfig.json` contrôlent le typage. Exécuter `npm run cf-typegen` après modification des bindings.
+`npm run check:quick` vérifie les types, le parcours OAuth, les outils avec GitHub simulé et le plan CI. `npm run check:full` ajoute la compilation Wrangler sans publication. Exécuter `npm run cf-typegen` après modification des bindings. Les scripts et workflows sont décrits dans [checks.md](checks.md).
 
 Les tests locaux ne prouvent pas la connexion réelle depuis Claude ou un autre client. Cette validation exige la configuration GitHub/Cloudflare et une URL HTTPS accessible. Le mode de compatibilité MCP historique conserve la valeur par défaut du SDK ; la compatibilité universelle n'est pas garantie.
 

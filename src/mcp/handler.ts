@@ -13,7 +13,7 @@ export const mcpHandler = {
       return new Response('Accès refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
     }
     if (!ctx.auth.scope.includes('mcp:read')) return insufficientScope(ctx.auth, ['mcp:read']);
-    const tools = createToolContext(env, userId);
+    const tools = createToolContext(env, userId, ctx.auth.scope);
     return createMcpHandler(() => createServer(tools), {
       allowedHostnames: [new URL(publicOrigin(env)).hostname],
     })(request, env, ctx);

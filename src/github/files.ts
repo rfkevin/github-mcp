@@ -1,15 +1,24 @@
 import type { GitHubContentFile, GitHubContentEntry, GitHubTreeEntry } from './types';
 import type { GitHubServiceContext } from './service-context';
+import { GitHubApiError, InputValidationError } from './types';
 
-export const SENSITIVE_FILE = /(^|\/)(?:\.env(?:\.[^/]*)?|id_rsa|id_ed25519|[^/]+\.(?:pem|key|p12|pfx))$/i;
+export const SENSITIVE_FILE = /(^|\/)(?:\.env(?:\.[^/]*)?|\.dev\.vars(?:\.[^/]*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa|id_ed25519|[^/]+\.(?:pem|key|p12|pfx))$/i;
+export const MAX_FILE_BYTES = 1_000_000;
 
 function decodeBase64(value: string): string {
+  if (value.length > Math.ceil(MAX_FILE_BYTES * 1.4)) {
+    throw new InputValidationError('Fichier trop volumineux pour une lecture MCP.', 'FILE_TOO_LARGE');
+  }
   const binary = atob(value.replace(/\s/g, ''));
   const bytes = Uint8Array.from(binary, character => character.codePointAt(0) ?? 0);
+  if (bytes.length > MAX_FILE_BYTES) throw new InputValidationError('Fichier trop volumineux.', 'FILE_TOO_LARGE');
+  if (bytes.includes(0)) throw new InputValidationError('Les fichiers binaires ne sont pas lisibles.', 'BINARY_FILE');
   return new TextDecoder().decode(bytes);
 }
 
 export class GitHubFiles {
+  // Cache limité à l'appel MCP (jamais partagé entre utilisateurs ou commits).
+  private readonly trees = new Map<string, Promise<{ truncated: boolean; entries: GitHubTreeEntry[] }>>();
   constructor(private readonly dependencies: GitHubServiceContext) {}
 
   async getTextFile(
@@ -17,42 +26,53 @@ export class GitHubFiles {
     path: string,
     branch: string,
   ): Promise<{ path: string; sha: string; content: string; size: number }> {
-    const { assertGitRef, assertReadablePath, encodeSlashPath, repoPath, request, withQuery } =
+    const { assertGitRef, assertReadablePath, repoPath, request } =
       this.dependencies;
     assertReadablePath(path);
     assertGitRef(branch);
 
-    const payload = await request<GitHubContentFile | GitHubContentEntry[]>(
-      withQuery(repoPath(repository, `/contents/${encodeSlashPath(path)}`), { ref: branch }),
-    );
-
-    if (Array.isArray(payload) || payload.type !== 'file') {
-      throw new Error('La ressource demandée n’est pas un fichier texte.');
-    }
-
-    if (payload.encoding !== 'base64' || (!payload.content && payload.size > 0)) {
-      const blob = await request<{ content: string; encoding: string }>(
-        repoPath(repository, `/git/blobs/${encodeURIComponent(payload.sha)}`),
-      );
-
-      if (blob.encoding !== 'base64') {
-        throw new Error('Encodage de fichier non pris en charge.');
+    // Contents peut suivre un lien symbolique vers un secret. Parcourir les
+    // arbres Git, puis lire le blob immuable, ne déréférence jamais ces liens.
+    const segments = path.split('/');
+    if (segments.length > 32) throw new InputValidationError('Chemin trop profond.');
+    let treeRef = branch;
+    let entry: GitHubTreeEntry | undefined;
+    for (let index = 0; index < segments.length; index += 1) {
+      const tree = await this.readTree(repository, treeRef);
+      if (tree.truncated) throw new InputValidationError('Arbre Git incomplet : lecture refusée.', 'TREE_TRUNCATED');
+      entry = tree.entries.find(item => item.path === segments[index]);
+      if (!entry) throw new GitHubApiError(404, '/git/trees', 'Fichier introuvable.');
+      if (entry.mode === '120000' || entry.type === 'commit') {
+        throw new InputValidationError('Les liens symboliques et sous-modules ne sont pas suivis.', 'LINK_DENIED');
       }
-
-      return {
-        path: payload.path,
-        sha: payload.sha,
-        content: decodeBase64(blob.content),
-        size: payload.size,
-      };
+      if (!entry.sha || !/^[a-f0-9]{40}$/i.test(entry.sha)) throw new Error('Invalid tree response');
+      if (index < segments.length - 1 && entry.type !== 'tree') {
+        throw new InputValidationError('Le chemin demandé ne traverse pas un dossier.');
+      }
+      treeRef = entry.sha;
     }
+    if (!entry || entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode ?? '')) {
+      throw new InputValidationError('La ressource demandée n’est pas un fichier texte.');
+    }
+    if (!Number.isSafeInteger(entry.size) || entry.size! < 0 || entry.size! > MAX_FILE_BYTES) {
+      throw new InputValidationError('Fichier trop volumineux ou taille inconnue.', 'FILE_TOO_LARGE');
+    }
+    const blob = await request<{ content: string; encoding: string; size: number }>(
+      repoPath(repository, `/git/blobs/${entry.sha}`),
+    );
+    if (blob.encoding !== 'base64') throw new InputValidationError('Encodage de fichier non pris en charge.');
+    if (blob.size > MAX_FILE_BYTES) throw new InputValidationError('Fichier trop volumineux.', 'FILE_TOO_LARGE');
+    return { path, sha: entry.sha!, content: decodeBase64(blob.content), size: entry.size! };
+  }
 
-    return {
-      path: payload.path,
-      sha: payload.sha,
-      content: decodeBase64(payload.content),
-      size: payload.size,
-    };
+  private readTree(repository: string, ref: string): Promise<{ truncated: boolean; entries: GitHubTreeEntry[] }> {
+    const key = `${repository}:${ref}`;
+    let pending = this.trees.get(key);
+    if (!pending) {
+      pending = this.getRepositoryTree(repository, ref, false);
+      this.trees.set(key, pending);
+    }
+    return pending;
   }
 
   async listDirectory(
@@ -71,7 +91,7 @@ export class GitHubFiles {
     );
 
     if (!Array.isArray(payload)) {
-      throw new Error('Le chemin demandé n’est pas un dossier.');
+      throw new InputValidationError('Le chemin demandé n’est pas un dossier.');
     }
 
     return payload
@@ -113,7 +133,10 @@ export class GitHubFiles {
     html_url: string;
   }[]> {
     if (!query.trim() || query.length > 256) {
-      throw new Error('Requête de recherche invalide.');
+      throw new InputValidationError('Requête de recherche invalide.');
+    }
+    if (/(?:^|[\s(])(?:repo|org|user):/i.test(query)) {
+      throw new InputValidationError('La recherche est déjà limitée au dépôt : retirez les filtres repo, org et user.');
     }
 
     const { request, repoPath, splitRepository, withQuery } = this.dependencies;
@@ -121,7 +144,7 @@ export class GitHubFiles {
     repoPath(repository);
 
     const payload = await request<{
-      items: Array<{ name: string; path: string; sha: string; html_url: string }>;
+      items: Array<{ name: string; path: string; sha: string; html_url: string; repository?: { full_name: string } }>;
     }>(
       withQuery('/search/code', {
         q: `${query} repo:${owner}/${name}`,
@@ -129,6 +152,7 @@ export class GitHubFiles {
       }),
     );
 
-    return payload.items.filter(item => !SENSITIVE_FILE.test(item.path));
+    return payload.items.filter(item => item.repository?.full_name.toLowerCase() === repository.toLowerCase() &&
+      !SENSITIVE_FILE.test(item.path)).map(({ name: itemName, path, sha, html_url }) => ({ name: itemName, path, sha, html_url }));
   }
 }

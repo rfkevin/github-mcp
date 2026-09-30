@@ -4,12 +4,18 @@ import { registerCiTools } from './tools/github/ci';
 import { registerCommitTools } from './tools/github/commits';
 import { registerFileTools } from './tools/github/files';
 import { registerRepositoryTools } from './tools/github/repositories';
+import { registerReportTools } from './tools/github/reports';
+import { registerProjectTools } from './tools/github/project';
+import { registerCheckTools } from './tools/github/checks';
 
 export function createServer(context: ToolContext): McpServer {
-  const server = new McpServer({ name: 'github-mcp', version: '0.2.0' });
+  const server = new McpServer({ name: 'github-mcp', version: '0.3.0' });
   registerRepositoryTools(server, context);
   registerFileTools(server, context);
   registerCommitTools(server, context);
   registerCiTools(server, context);
+  registerReportTools(server, context);
+  registerProjectTools(server, context);
+  registerCheckTools(server, context);
   return server;
 }

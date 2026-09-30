@@ -1,4 +1,5 @@
 import { GitHubApiError, GitHubRateLimitError } from './types';
+import { readJson } from './response';
 
 const GITHUB_API = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
@@ -18,6 +19,7 @@ export type GitHubHttpOptions = {
   fetcher: typeof fetch;
   userAgent: string;
   timeoutMs: number;
+  apiVersion?: '2022-11-28' | '2026-03-10';
   assertRequestAllowed?: (method: string) => void;
   getInstallationToken: (forceRefresh?: boolean) => Promise<string>;
 };
@@ -42,7 +44,7 @@ export class GitHubHttp {
       const headers = new Headers(init.headers);
       headers.set('Accept', 'application/vnd.github+json');
       headers.set('Authorization', `Bearer ${token}`);
-      headers.set('X-GitHub-Api-Version', GITHUB_API_VERSION);
+      headers.set('X-GitHub-Api-Version', this.options.apiVersion ?? GITHUB_API_VERSION);
       headers.set('User-Agent', this.options.userAgent);
 
       if (init.body && !headers.has('Content-Type')) {
@@ -55,6 +57,9 @@ export class GitHubHttp {
         response = await this.options.fetcher(`${GITHUB_API}${path}`, {
           ...init,
           headers,
+          // Workers peut conserver Authorization lors d'une redirection distante.
+          // Les URL de téléchargement de logs nécessiteront un client sans jeton.
+          redirect: 'manual',
           signal: AbortSignal.timeout(this.options.timeoutMs),
         });
       } catch (error) {
@@ -68,6 +73,11 @@ export class GitHubHttp {
 
       if (response.ok) {
         return response;
+      }
+
+      if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel();
+        throw new GitHubApiError(response.status, path, 'Redirection GitHub refusée.');
       }
 
       if (response.status === 401 && !refreshedOnce) {
@@ -96,7 +106,7 @@ export class GitHubHttp {
       return undefined as T;
     }
 
-    return (await response.json()) as T;
+    return readJson<T>(response);
   }
 
   async paginate<TPayload, TItem>(
@@ -174,10 +184,10 @@ export class GitHubHttp {
     let message = `GitHub a répondu avec le statut ${response.status}.`;
 
     try {
-      const payload = (await response.json()) as {
+      const payload = await readJson<{
         message?: string;
         errors?: Array<string | { message?: string }>;
-      };
+      }>(response, 32_000);
 
       if (payload.message) {
         message = payload.message;

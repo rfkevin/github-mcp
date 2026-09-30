@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Déterminer si le code a changé
+        id: changes
+        env:
+          CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CHECK_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/ci/changes.mjs
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.changes.outputs.run == 'true'
+        with:
+          node-version: '24.19.0'
+          cache: npm
+          package-manager-cache: false
+      - name: Installer une seule fois
+        if: steps.changes.outputs.run == 'true'
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+      - name: Types, tests et compilation sans déploiement
+        if: steps.changes.outputs.run == 'true'
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+        run: npm run check:full
+      # Le job existe aussi pour une PR documentaire : pas de contrôle requis bloqué en Pending.
+      - name: Bilan documentaire
+        if: steps.changes.outputs.run == 'false'
+        run: echo 'Documentation seule ; aucune exécution de code nécessaire.'

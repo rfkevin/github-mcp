@@ -2,6 +2,7 @@ import OAuthProvider from '@cloudflare/workers-oauth-provider';
 import { assertConfigured, publicOrigin, type AppEnv, type AuthEnv } from './config';
 import { authHandler } from './auth/handler';
 import { mcpHandler } from './mcp/handler';
+import { checksConfig } from './checks/config';
 
 export default {
   async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
@@ -20,7 +21,8 @@ export default {
     const provider = new OAuthProvider<AuthEnv>({
       apiRoute: '/mcp', apiHandler: mcpHandler, defaultHandler: authHandler,
       authorizeEndpoint: '/authorize', tokenEndpoint: '/oauth/token', clientRegistrationEndpoint: '/oauth/register',
-      scopesSupported: ['mcp:read', 'offline_access'], requiredScopes: ['mcp:read'],
+      scopesSupported: ['mcp:read', 'offline_access', ...(checksConfig(env.GITHUB_CHECKS_CONFIG).length ? ['mcp:checks'] : [])],
+      requiredScopes: ['mcp:read'],
       resourceMetadata: { resource: `${origin}/mcp`, authorization_servers: [origin] },
       clientIdMetadataDocumentEnabled: true,
     });

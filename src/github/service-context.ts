@@ -25,4 +25,6 @@ export type GitHubServiceContext = {
   allowedRepositories: ReadonlySet<string>;
   allowMerge: boolean;
   allowApproval: boolean;
+  allowedWorkflows: ReadonlySet<string>;
+  allowedWorkflowRefs: ReadonlySet<string>;
 };

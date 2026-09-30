@@ -18,6 +18,7 @@ export type GitHubTreeEntry = {
   sha?: string;
   type?: string;
   mode?: string;
+  size?: number;
 };
 
 export type GitHubTree = { sha?: string; truncated?: boolean; tree: GitHubTreeEntry[] };
@@ -55,6 +56,7 @@ export type GitHubCommit = {
   author?: GitHubUser | null;
   files?: Array<{
     filename: string;
+    previous_filename?: string;
     status: string;
     additions: number;
     deletions: number;
@@ -135,6 +137,8 @@ export type GitHubWorkflowRun = {
   event: string;
   html_url: string;
   created_at: string;
+  display_title?: string;
+  path?: string;
 };
 
 export type GitHubJob = {
@@ -152,6 +156,18 @@ export type GitHubCheckRun = {
   status: string;
   conclusion: string | null;
   html_url: string | null;
+  head_sha?: string;
+  app?: { slug?: string };
+  output?: { title?: string | null; summary?: string | null; annotations_count?: number };
+};
+
+export type GitHubCheckAnnotation = {
+  path: string;
+  start_line: number;
+  end_line: number;
+  annotation_level: string;
+  title?: string | null;
+  message: string;
 };
 
 export type GitHubCombinedStatus = {
@@ -189,6 +205,7 @@ export type GitHubClientOptions = {
   userAgent?: string;
   fetcher?: typeof fetch;
   timeoutMs?: number;
+  apiVersion?: '2022-11-28' | '2026-03-10';
   /** Politique de sécurité appliquée à toutes les écritures. */
   policy?: Partial<SecurityPolicy>;
   /** Liste blanche `owner/repo` (insensible à la casse). Vide = toute l'installation. */
@@ -199,6 +216,9 @@ export type GitHubClientOptions = {
   allowMerge?: boolean;
   /** Autorise l'approbation de Pull Requests (désactivé par défaut). */
   allowApproval?: boolean;
+  /** Aucune exécution manuelle autorisée par défaut. Les refs sont aussi explicites. */
+  allowedWorkflows?: readonly string[];
+  allowedWorkflowRefs?: readonly string[];
 };
 
 export type FileDeletion = {
@@ -208,6 +228,8 @@ export type FileDeletion = {
 
 export type ApplyChangeSetOptions = {
   deletions?: readonly FileDeletion[];
+  /** Refuser un commit préparé depuis un état de branche devenu obsolète. */
+  expectedHeadSha?: string;
 };
 
 export type AppliedChangeSet = {
@@ -235,6 +257,14 @@ export class GitHubApiError extends Error {
   ) {
     super(message);
     this.name = 'GitHubApiError';
+  }
+}
+
+/** Message écrit par le projet, sûr à restituer (jamais une réponse distante). */
+export class InputValidationError extends Error {
+  constructor(message: string, public readonly code = 'INVALID_REQUEST') {
+    super(message);
+    this.name = 'InputValidationError';
   }
 }
 

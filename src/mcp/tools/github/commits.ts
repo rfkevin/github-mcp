@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { ToolContext } from '../../context';
 import { textPayload, toolFailure, toolSuccess } from './result';
+import { SENSITIVE_FILE } from '../../../github/files';
 
 // Un diff complet peut être énorme : au-delà de ce budget, les patchs sont omis.
 const MAX_COMPARISON_BYTES = 120_000;
@@ -27,7 +28,8 @@ export function registerCommitTools(server: McpServer, context: ToolContext): vo
           message: commit.commit.message.split('\n')[0],
           date: commit.commit.author?.date,
         })),
-        files: (comparison.files ?? []).map(file => ({
+        files: (comparison.files ?? []).filter(file => !SENSITIVE_FILE.test(file.filename) &&
+          !SENSITIVE_FILE.test(file.previous_filename ?? '')).map(file => ({
           filename: file.filename,
           status: file.status,
           additions: file.additions,

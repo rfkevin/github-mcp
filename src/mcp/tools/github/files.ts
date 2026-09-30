@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { GitHubApiError } from '../../../github/client';
 import type { ToolContext } from '../../context';
 import { printable, textPayload, toolFailure, toolSuccess } from './result';
+import { InputValidationError } from '../../../github/types';
+import { mapLimit, resolveCommit } from './batch';
 
 type GuideDocument = {
   path: string;
@@ -22,24 +24,23 @@ export function registerFileTools(server: McpServer, context: ToolContext): void
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async ({ repository, ref }) => {
     try {
-      const documents: GuideDocument[] = [];
-
-      for (const path of GUIDE_PATHS) {
+      const sha = await resolveCommit(context, repository, ref);
+      const documents: GuideDocument[] = await mapLimit(GUIDE_PATHS, 3, async path => {
         try {
-          const file = await context.reads.files.getTextFile(repository, path, ref);
-          documents.push({ path: file.path, sha: file.sha, size: file.size, ...printable(file.content) });
+          const file = await context.reads.files.getTextFile(repository, path, sha);
+          return { path: file.path, sha: file.sha, size: file.size, ...printable(file.content, 16_000) };
         } catch (error) {
           if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
-          documents.push({ path, missing: true });
+          return { path, missing: true };
         }
-      }
+      });
 
       if (documents.every(document => document.missing)) {
-        throw new Error('Aucun document de référence ne correspond à cette référence.');
+        throw new InputValidationError('Aucun document de référence ne correspond à cette référence.');
       }
 
       toolSuccess(context, 'get_project_guide');
-      return textPayload({ repository, ref, documents });
+      return textPayload({ repository, ref, sha, documents });
     } catch (error) {
       return toolFailure(context, 'get_project_guide', 'Impossible de lire les documents de référence.', error);
     }
@@ -85,7 +86,8 @@ export function registerFileTools(server: McpServer, context: ToolContext): void
     try {
       const matches = await context.reads.files.searchCode(repository, query, limit);
       toolSuccess(context, 'search_code');
-      return textPayload({ repository, query, matches });
+      return textPayload({ repository, query, matches, scope: 'GitHub default-branch index',
+        note: 'L’index GitHub peut être en retard. Recherche par branche non prise en charge.' });
     } catch (error) {
       return toolFailure(context, 'search_code', 'Recherche impossible.', error);
     }

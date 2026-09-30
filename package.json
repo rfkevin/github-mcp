@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
+    "test:unit": "vitest run",
+    "test:ci-scripts": "node --test scripts/ci/checks.test.mjs",
+    "check:quick": "node scripts/ci/run-checks.mjs quick",
+    "check:full": "node scripts/ci/run-checks.mjs full",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",

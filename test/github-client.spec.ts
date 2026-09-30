@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { GitHubClient } from '../src/github/client';
 import { GitHubHttp } from '../src/github/http';
+import { gitFileResponse } from './git-fixtures';
 
 const REPOSITORY = 'owner/project';
 const INSTALLATION_TOKEN = 'installation-token';
@@ -98,9 +99,8 @@ function createFetchStub(payload: Record<string, unknown>): {
       return jsonResponse({ token: INSTALLATION_TOKEN });
     }
 
-    if (url.includes('/contents/')) {
-      return jsonResponse(payload);
-    }
+    const file = gitFileResponse(url, payload as Parameters<typeof gitFileResponse>[1]);
+    if (file) return file;
 
     return new Response('Not Found', { status: 404 });
   };
@@ -146,7 +146,7 @@ describe('GitHubClient', () => {
     const contentsRequest = requests.at(-1);
 
     expect(contentsRequest?.url).toBe(
-      'https://api.github.com/repos/owner/project/contents/src/app.ts?ref=main',
+      `https://api.github.com/repos/owner/project/git/blobs/${FILE_SHA}`,
     );
     expect(
       new Headers(contentsRequest?.init?.headers).get('Authorization'),
@@ -189,7 +189,7 @@ describe('GitHubClient', () => {
     });
 
     expect(() => client.repositories.getRepository(REPOSITORY)).toThrow(
-      'Le dépôt owner/project n’est pas autorisé.',
+      'Ce dépôt n’est pas autorisé.',
     );
     expect(requestCount).toBe(0);
   });
@@ -223,7 +223,7 @@ describe('GitHubClient', () => {
         return jsonResponse({ token: `installation-token-${tokenRequests}` });
       }
 
-      if (url.includes('/contents/')) {
+      if (url.includes('/git/blobs/')) {
         fileRequests += 1;
 
         if (fileRequests === 1) {
@@ -240,7 +240,8 @@ describe('GitHubClient', () => {
         });
       }
 
-      return new Response('Not Found', { status: 404 });
+      return gitFileResponse(url, { path: FILE_PATH, sha: FILE_SHA, size: FILE_CONTENT.length,
+        content: toBase64(FILE_CONTENT) }) ?? new Response('Not Found', { status: 404 });
     };
     const client = new GitHubClient({
       appId: '123',
@@ -447,6 +448,7 @@ describe('GitHubClient', () => {
     let calls = 0;
     const client = new GitHubClient({
       appId: '123', privateKey, installationId: '456', policy: { readOnly: true },
+      allowedWorkflows: ['ci.yml'], allowedWorkflowRefs: ['main'],
       fetcher: async () => { calls++; return jsonResponse({}); },
     });
     const operations: Array<() => Promise<unknown>> = [

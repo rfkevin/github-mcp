@@ -39,7 +39,13 @@ export class GitHubChanges {
   ): Promise<AppliedChangeSet> {
     this.dependencies.assertWritableBranchName(branch);
     const plan = this.prepareChangeSet(changes, commitMessage, options);
+    if (options.expectedHeadSha && !/^[a-f0-9]{40}$/i.test(options.expectedHeadSha)) {
+      throw new GitHubConflictError('SHA de branche attendu invalide.');
+    }
     const snapshot = await this.loadParentSnapshot(repository, branch);
+    if (options.expectedHeadSha && snapshot.commitSha.toLowerCase() !== options.expectedHeadSha.toLowerCase()) {
+      throw new GitHubConflictError('La branche a changé depuis la préparation du commit.');
+    }
     const existing = this.loadExistingFiles(snapshot, plan.paths);
     this.assertExpectedFiles(plan, existing);
 
@@ -122,6 +128,14 @@ export class GitHubChanges {
 
     const files = new Map<string, ExistingFile | undefined>();
     for (const path of paths) {
+      const node = snapshot.tree.tree.find(entry => entry.path === path);
+      if (node && (node.type !== 'blob' || !['100644', '100755'].includes(node.mode ?? '100644'))) {
+        throw new GitHubConflictError('Impossible de remplacer un dossier, un sous-module ou un lien symbolique.');
+      }
+      const ancestors = path.split('/').slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join('/'));
+      if (snapshot.tree.tree.some(entry => entry.path && ancestors.includes(entry.path) && entry.type !== 'tree')) {
+        throw new GitHubConflictError('Un parent du fichier n’est pas un dossier ordinaire.');
+      }
       files.set(path, knownFiles.get(path));
     }
 

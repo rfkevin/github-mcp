@@ -21,7 +21,8 @@ export function consentPage(details: ConsentDescription, handle: string): string
     'Le nom de cette application est déclaré par le client et n’est pas vérifié.'}</p>
 <p>L’accès sera remis à : <strong>${escape(details.redirectHost)}</strong>.</p>
 ${details.redirectIsLoopback ? '<p>Application locale : continuez uniquement si vous venez de lancer cette connexion sur votre ordinateur.</p>' : ''}
-<p>Ce client pourra lister les dépôts sélectionnés dans la GitHub App. Aucun outil d’écriture n’est exposé.</p>
+<p>Ce client pourra lire les dépôts sélectionnés dans la GitHub App et leurs contrôles. Il ne pourra ni modifier le code, ni fusionner, ni déployer en production.</p>
+${details.scope.includes('mcp:checks') ? '<p>Vous autorisez aussi le lancement du workflow agent-checks sur les dépôts explicitement configurés. Cela exécute des tests et peut consommer des minutes GitHub Actions. Aucun autre workflow n’est autorisé.</p>' : '<p>Aucun lancement de workflow n’est autorisé par ce consentement.</p>'}
 <p>Permissions : ${details.scope.map(escape).join(', ')}</p>
 <form method="post" action="/authorize">
 <input type="hidden" name="handle" value="${escape(handle)}">

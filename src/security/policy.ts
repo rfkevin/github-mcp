@@ -201,7 +201,7 @@ export function assertWritablePath(path: string): void {
     reject('PATH_DENIED', 'Le chemin du fichier est invalide.');
   }
 
-  if (/^\.github\/workflows(?:\/|$)/i.test(path)) {
+  if (/^(?:\.github$|\.github\/(?:workflows|actions)(?:\/|$)|\.github\/CODEOWNERS$|scripts$|scripts\/ci(?:\/|$))/i.test(path)) {
     reject('WORKFLOW_DENIED', 'Les fichiers GitHub Actions sont protégés.');
   }
 }

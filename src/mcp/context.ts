@@ -1,21 +1,25 @@
 import { GitHubClient } from '../github/client';
 import type { AppEnv } from '../config';
+import { checksConfig } from '../checks/config';
+import { CheckCoordinator } from '../checks/coordinator';
 
 export type ToolContext = {
   actor: string;
   /** Permissions minimales (métadonnées) : listing de l'installation. */
   github: Pick<GitHubClient, 'repositories'>;
-  /** Lecture élargie : fichiers, comparaisons, contrôles et exécutions. */
-  reads: Pick<GitHubClient, 'files' | 'commits' | 'actions'>;
+  /** Contenu du dépôt uniquement. Aucun droit Actions ni Pull Requests requis. */
+  reads: Pick<GitHubClient, 'files' | 'commits'>;
+  checks: GitHubClient['actions'];
+  statuses: GitHubClient['actions'];
+  workflows: GitHubClient['actions'];
+  checkCoordinator?: CheckCoordinator;
 };
 
 /**
- * Deux clients, deux jetons. Demander une permission que la GitHub App n'a pas
- * accordée fait échouer la création du jeton (422) : les séparer garantit qu'un
- * outil de lecture mal configuré ne prive pas `github_list_repositories`, qui
- * n'a besoin que des métadonnées. `policy.readOnly` reste actif des deux côtés.
+ * Un jeton minimal par famille. Une permission manquante ne bloque pas les
+ * autres familles. Tous les clients MCP restent en lecture seule.
  */
-export function createToolContext(env: AppEnv, actor: string): ToolContext {
+export function createToolContext(env: AppEnv, actor: string, scopes: readonly string[] = []): ToolContext {
   const shared = {
     appId: env.GITHUB_APP_ID,
     installationId: env.GITHUB_INSTALLATION_ID,
@@ -23,7 +27,7 @@ export function createToolContext(env: AppEnv, actor: string): ToolContext {
     policy: { readOnly: true },
   };
 
-  return {
+  const context: ToolContext = {
     actor,
     github: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read' } }),
     reads: new GitHubClient({
@@ -31,11 +35,20 @@ export function createToolContext(env: AppEnv, actor: string): ToolContext {
       tokenPermissions: {
         metadata: 'read',
         contents: 'read',
-        pull_requests: 'read',
-        actions: 'read',
-        checks: 'read',
-        statuses: 'read',
       },
     }),
+    checks: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', checks: 'read' } }).actions,
+    statuses: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', statuses: 'read' } }).actions,
+    workflows: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', actions: 'read' } }).actions,
   };
+  const checks = checksConfig(env.GITHUB_CHECKS_CONFIG);
+  if (checks.length > 0 && scopes.includes('mcp:checks')) {
+    const dispatch = new GitHubClient({ ...shared, policy: { readOnly: false },
+      apiVersion: '2026-03-10', tokenPermissions: { metadata: 'read', actions: 'write' },
+      allowedRepositories: checks.map(item => item.repository), allowedWorkflows: ['agent-checks.yml'],
+      allowedWorkflowRefs: checks.map(item => item.ref) });
+    context.checkCoordinator = new CheckCoordinator(checks,
+      { commits: context.reads.commits, repositories: context.github.repositories }, dispatch.actions);
+  }
+  return context;
 }

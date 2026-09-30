@@ -4,6 +4,7 @@ import worker from '../src/index';
 import type { AppEnv } from '../src/config';
 import { codeChallenge } from '../src/auth/github';
 import { consentPolicy } from '../src/auth/consent';
+import { textFileResponse } from './git-fixtures';
 
 const ORIGIN = 'https://github-mcp.example';
 const settings: AppEnv = { ...env, PUBLIC_ORIGIN: ORIGIN, ALLOWED_GITHUB_USER_IDS: '123',
@@ -23,7 +24,7 @@ function cookie(response: Response): string {
   return response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
 }
 
-async function consent() {
+async function consent(scope = 'mcp:read offline_access') {
   const registration = await send('/oauth/register', { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
       client_name: '<script>untrusted</script>', redirect_uris: ['http://localhost:4321/callback'],
@@ -33,7 +34,7 @@ async function consent() {
   const client = await registration.json() as { client_id: string };
   const verifier = 'test-verifier-'.repeat(5);
   const query = new URLSearchParams({ client_id: client.client_id, redirect_uri: 'http://localhost:4321/callback',
-    response_type: 'code', scope: 'mcp:read offline_access', state: 'client-state',
+    response_type: 'code', scope, state: 'client-state',
     code_challenge: await codeChallenge(verifier), code_challenge_method: 'S256', resource: `${ORIGIN}/mcp` });
   const page = await send(`/authorize?${query}`);
   expect(page.status).toBe(200);
@@ -42,7 +43,7 @@ async function consent() {
   expect(html).toContain('localhost');
   const handle = /name="handle" value="([^"]+)"/.exec(html)?.[1];
   expect(handle).toBeTruthy();
-  return { client, verifier, page, handle: handle! };
+  return { client, verifier, page, html, handle: handle! };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -533,8 +534,8 @@ describe('Worker OAuth / MCP', () => {
     }));
   });
 
-  async function mcpSession(): Promise<{ headers: Record<string, string> }> {
-    const { handle, page, client, verifier } = await consent();
+  async function mcpSession(scope = 'mcp:read offline_access'): Promise<{ headers: Record<string, string> }> {
+    const { handle, page, client, verifier } = await consent(scope);
     const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
       body: new URLSearchParams({ handle, decision: 'approve' }) });
     expect(approved.status).toBe(302);
@@ -580,6 +581,34 @@ describe('Worker OAuth / MCP', () => {
       size: content.length, content: btoa(String.fromCodePoint(...new TextEncoder().encode(content))) });
   }
 
+  it('n’accorde pas run_checks aux jetons de lecture existants même après activation serveur', async () => {
+    const { headers } = await mcpSession();
+    settings.GITHUB_CHECKS_CONFIG = JSON.stringify([{ repository: 'owner/project', ref: 'master', controllerSha: 'a'.repeat(40) }]);
+    try {
+      const listed = await send('/mcp', { method: 'POST', headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
+      expect(await listed.text()).not.toContain('github_run_checks');
+      const api = vi.spyOn(globalThis, 'fetch');
+      const result = await callTool(headers, 'github_run_checks', { repository: 'owner/project', sha: 'b'.repeat(40) }, 2);
+      expect(result.body).not.toContain('runId');
+      expect(api).not.toHaveBeenCalled();
+    } finally { delete settings.GITHUB_CHECKS_CONFIG; }
+  });
+
+  it('expose run_checks seulement après consentement explicite et le retire à la désactivation', async () => {
+    settings.GITHUB_CHECKS_CONFIG = JSON.stringify([{ repository: 'owner/project', ref: 'master', controllerSha: 'a'.repeat(40) }]);
+    try {
+      const approval = await consent('mcp:read mcp:checks offline_access');
+      expect(approval.html).toContain('minutes GitHub Actions');
+      const { headers } = await mcpSession('mcp:read mcp:checks offline_access');
+      const list = () => send('/mcp', { method: 'POST', headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
+      expect(await (await list()).text()).toContain('github_run_checks');
+      delete settings.GITHUB_CHECKS_CONFIG;
+      expect(await (await list()).text()).not.toContain('github_run_checks');
+    } finally { delete settings.GITHUB_CHECKS_CONFIG; }
+  });
+
   /** Décode la chaîne SSE → JSON-RPC → JSON du texte d'outil. */
   function toolJson<T>(body: string): T {
     const data = (body.split('\n').find(line => line.startsWith('data: ')) ?? `data: ${body}`)
@@ -600,7 +629,8 @@ describe('Worker OAuth / MCP', () => {
       if (url.includes('/installation/repositories')) {
         return Response.json({ repositories: [{ full_name: 'owner/private' }] });
       }
-      if (url.includes('/contents/')) return contentsFile('src/app.ts', 'Bonjour le monde');
+      const file = textFileResponse(url, 'src/app.ts', 'Bonjour le monde');
+      if (file) return file;
       throw new Error('Unexpected GitHub request');
     });
     const audit = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -712,6 +742,7 @@ describe('Worker OAuth / MCP', () => {
           conclusion: 'success', head_branch: 'mcp/test/fix', head_sha: 'a'.repeat(40), event: 'push',
           html_url: 'https://example.invalid/run/7', created_at: '2026-09-29T00:00:00Z' }] });
       }
+      if (url.includes('/commits/')) return Response.json({ sha: 'a'.repeat(40) });
       throw new Error('Unexpected GitHub request');
     });
     const audit = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -737,8 +768,8 @@ describe('Worker OAuth / MCP', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input);
       if (url.endsWith('/access_tokens')) return Response.json({ token: 'installation-token' });
-      if (url.includes('/contents/AGENTS.md')) return contentsFile('AGENTS.md', '# Règles du dépôt');
-      if (url.includes('/contents/')) return Response.json({ message: 'Not Found' }, { status: 404 });
+      const file = textFileResponse(url, 'AGENTS.md', '# Règles du dépôt');
+      if (file) return file;
       throw new Error('Unexpected GitHub request');
     });
     const audit = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -765,7 +796,7 @@ describe('Worker OAuth / MCP', () => {
       if (url.endsWith('/access_tokens')) return Response.json({ token: 'installation-token' });
       if (url.includes('/search/code')) {
         return Response.json({ items: [
-          { name: 'app.ts', path: 'src/app.ts', sha: 'a'.repeat(40), html_url: 'https://example.invalid/app' },
+          { name: 'app.ts', path: 'src/app.ts', sha: 'a'.repeat(40), html_url: 'https://example.invalid/app', repository: { full_name: 'owner/project' } },
           { name: '.env', path: '.env', sha: 'b'.repeat(40), html_url: 'https://example.invalid/env' },
         ] });
       }
@@ -788,11 +819,13 @@ describe('Worker OAuth / MCP', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input);
       if (url.endsWith('/access_tokens')) return Response.json({ token: 'installation-token' });
-      if (url.includes('/contents/')) {
+      if (url.includes('/git/blobs/')) {
         round += 1;
         if (round === 1) return contentsFile('big.txt', 'x'.repeat(90_000));
         return Response.json({ message: 'Server Error on https://api.github.com/private' }, { status: 500 });
       }
+      const file = textFileResponse(url, 'big.txt', 'x'.repeat(90_000));
+      if (file) return file;
       throw new Error('Unexpected GitHub request');
     });
     const audit = vi.spyOn(console, 'log').mockImplementation(() => {});

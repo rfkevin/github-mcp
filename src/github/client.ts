@@ -1,5 +1,5 @@
 import { assertWritableBranch, PolicyViolationError, type SecurityPolicy } from '../security/policy';
-import type { GitHubClientOptions } from './types';
+import { InputValidationError, type GitHubClientOptions } from './types';
 import { GitHubFiles, SENSITIVE_FILE } from './files';
 import { GitHubRepositories } from './repositories';
 import { GitHubBranches } from './branches';
@@ -64,7 +64,7 @@ function splitRepository(repository: string): { owner: string; name: string } {
   const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repository);
 
   if (!match) {
-    throw new Error('Format de dépôt invalide. Utilise owner/repository.');
+    throw new InputValidationError('Format de dépôt invalide. Utilise owner/repository.');
   }
 
   return { owner: match[1], name: match[2] };
@@ -93,7 +93,7 @@ function withQuery(
 
 function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label} invalide.`);
+    throw new InputValidationError(`${label} invalide.`);
   }
 }
 
@@ -117,7 +117,7 @@ function assertGitRef(name: string, label = 'branche'): void {
     name === '@' ||
     /[\\~^:?*[\]%]/.test(name)
   ) {
-    throw new Error(`Nom de ${label} invalide.`);
+    throw new InputValidationError(`Nom de ${label} invalide.`);
   }
 }
 
@@ -140,11 +140,11 @@ function assertReadablePath(path: string, allowEmpty = false): void {
     path.split('/').some(segment => segment === '' || segment === '.' || segment === '..') ||
     path.split('/').includes('.git')
   ) {
-    throw new Error('Chemin de fichier invalide.');
+    throw new InputValidationError('Chemin de fichier invalide.');
   }
 
   if (SENSITIVE_FILE.test(path)) {
-    throw new Error('La lecture de ce fichier sensible est interdite.');
+    throw new InputValidationError('La lecture de ce fichier sensible est interdite.', 'SENSITIVE_FILE');
   }
 }
 
@@ -185,6 +185,7 @@ export class GitHubClient {
       fetcher,
       userAgent,
       timeoutMs,
+      apiVersion: options.apiVersion,
       assertRequestAllowed: method => {
         if (options.policy?.readOnly && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
           throw new PolicyViolationError('READ_ONLY_REPOSITORY', 'Ce dépôt est configuré en lecture seule.');
@@ -216,6 +217,8 @@ export class GitHubClient {
       allowedRepositories: this.allowedRepositories,
       allowMerge: options.allowMerge ?? false,
       allowApproval: options.allowApproval ?? false,
+      allowedWorkflows: new Set(options.allowedWorkflows ?? []),
+      allowedWorkflowRefs: new Set(options.allowedWorkflowRefs ?? []),
     };
 
     this.files = new GitHubFiles(context);
@@ -236,7 +239,7 @@ export class GitHubClient {
       this.allowedRepositories.size > 0 &&
       !this.allowedRepositories.has(`${owner}/${name}`.toLowerCase())
     ) {
-      throw new Error(`Le dépôt ${owner}/${name} n’est pas autorisé.`);
+      throw new InputValidationError('Ce dépôt n’est pas autorisé.', 'REPOSITORY_DENIED');
     }
 
     return `/repos/${encodeSegment(owner)}/${encodeSegment(name)}${suffix}`;
