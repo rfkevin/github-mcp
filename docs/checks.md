@@ -24,6 +24,8 @@ Seuls `quick`, `typecheck`, `unit` et `full` sont disponibles. `target` est rés
 
 `ci.yml` s’exécute sur PR et push sur master. Son job reste présent pour la documentation seule, mais peut éviter l’installation et les tests de code. Le filtre autorise seulement README, AGENTS, LICENSE et les Markdown sous docs ; en cas d’incertitude, les contrôles complets s’exécutent.
 
+Le détecteur de changements utilise `/usr/bin/git` sur le runner Ubuntu, sans résolution par le PATH hérité ni shell. Son environnement enfant limite le PATH aux répertoires système `/usr/bin:/bin` et ignore les configurations Git globale et système. Les diff externes et conversions de texte sont désactivés. Si cet exécutable est absent, notamment sous Windows, ou si le diff échoue, il conserve toutes les vérifications au lieu de chercher un autre Git.
+
 `agent-checks.yml` s’exécute manuellement sur la branche par défaut. Deux checkouts séparent le contrôleur et la cible. Les paramètres sont validés avant le checkout cible, puis le SHA chargé est vérifié. Un seul job installe les dépendances et exécute le périmètre demandé.
 
 Les actions sont épinglées par SHA, Node est fixé à 24.19.0 et le jeton du job reste en lecture seule. Aucun secret de déploiement n’est injecté ; les identifiants Git ne sont pas persistés dans les checkouts. `npm ci --ignore-scripts` évite les scripts d’installation, mais les tests et leur configuration exécutent bien le code cible : ils ne doivent jamais recevoir de secret.

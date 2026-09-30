@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import childProcess from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -8,17 +8,25 @@ export function docsOnly(paths) {
     path === 'README.md' || path === 'AGENTS.md' || path === 'LICENSE' || /^docs\/[^\r\n]+\.md$/.test(path));
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  let skip = false;
+/** Ce détecteur vise le runner Ubuntu du workflow, pas un Git découvert dans PATH. */
+export function shouldRunChecks(base, head) {
   try {
-    const base = process.env.CHECK_BASE ?? '';
-    const head = process.env.CHECK_HEAD ?? '';
     if (!/^[a-f0-9]{40}$/i.test(base) || !/^[a-f0-9]{40}$/i.test(head)) throw new Error('Invalid refs');
-    const diff = execFileSync('git', ['diff', '--name-only', '-z', base, head, '--'], { encoding: 'utf8', maxBuffer: 2_000_000 });
-    skip = docsOnly(diff.split('\0').filter(Boolean));
+    const diff = childProcess.execFileSync('/usr/bin/git',
+      ['diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', base, head, '--'], {
+        encoding: 'utf8', maxBuffer: 2_000_000, timeout: 30_000, shell: false,
+        // Répertoires système du runner ; aucun PATH/config Git hérité du job.
+        env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+      });
+    return !docsOnly(diff.split('\0').filter(Boolean));
   } catch {
-    // Historique incomplet, premier push, taille excessive : exécuter tous les tests.
+    // Git absent (notamment Windows), historique incomplet ou autre doute : tous les tests.
+    return true;
   }
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `run=${!skip}\n`);
-  console.log(skip ? 'Documentation seulement : vérifications de code non nécessaires.' : 'Vérifications complètes nécessaires.');
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const run = shouldRunChecks(process.env.CHECK_BASE ?? '', process.env.CHECK_HEAD ?? '');
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `run=${run}\n`);
+  console.log(run ? 'Vérifications complètes nécessaires.' : 'Documentation seulement : vérifications de code non nécessaires.');
 }
