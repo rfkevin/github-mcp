@@ -24,23 +24,14 @@ export default {
       return Response.json({ status: 'ready', sha: env.BUILD_SHA ?? null },
         { headers: { 'Cache-Control': 'no-store' } });
     }
-        const scopes = [
-      'mcp:read',
-      'offline_access',
-      ...(checksConfig(env.GITHUB_CHECKS_CONFIG).length ? ['mcp:checks'] : []),
-      ...(writesEnabled(env.GITHUB_WRITES_ENABLED) ? ['mcp:write'] : []),
-      ...(automationEnabled(env.GITHUB_AUTOMATION_ENABLED) ? ['mcp:automation'] : []),
-    ];
     const provider = new OAuthProvider<AuthEnv>({
       apiRoute: '/mcp', apiHandler: mcpHandler, defaultHandler: authHandler,
       authorizeEndpoint: '/authorize', tokenEndpoint: '/oauth/token', clientRegistrationEndpoint: '/oauth/register',
-      scopesSupported: scopes,
+      scopesSupported: ['mcp:read', 'offline_access', ...(checksConfig(env.GITHUB_CHECKS_CONFIG).length ? ['mcp:checks'] : []),
+        ...(writesEnabled(env.GITHUB_WRITES_ENABLED) ? ['mcp:write'] : []),
+        ...(automationEnabled(env.GITHUB_AUTOMATION_ENABLED) ? ['mcp:automation'] : [])],
       requiredScopes: ['mcp:read'],
-      resourceMetadata: {
-        resource: `${origin}/mcp`,
-        authorization_servers: [origin],
-        scopes_supported: scopes,
-      },
+      resourceMetadata: { resource: `${origin}/mcp`, authorization_servers: [origin] },
       clientIdMetadataDocumentEnabled: true,
     });
     return provider.fetch(request, env as AuthEnv, ctx);
