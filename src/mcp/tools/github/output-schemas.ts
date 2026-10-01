@@ -98,6 +98,11 @@ export const outputSchemas = {
     reviewComments: z.array(z.object({ ...comment, path: s, line: n.nullable().optional() })).optional(),
     discussionPotentiallyTruncated: b.optional(), discussionPage: n.optional(), nextDiscussionPage: n.nullable().optional(),
     discussionOrder: s.optional() },
+  github_get_issue: { ...repository, number: n, title: s, state: s, url: s, author: s.optional(),
+    labels: strings, assignees: strings, body: s, bodyTruncated: b,
+    comments: z.array(z.object(comment)).optional(),
+    commentsPotentiallyTruncated: b.optional(), commentsPage: n.optional(), nextCommentsPage: n.nullable().optional(),
+    commentsOrder: s.optional() },
   // The managed and legacy check controllers share these fields.
   github_run_checks: { ...run, sha: s.optional(), scope: s.optional(), target: s.optional(),
     reused: b, key: s, deduplication: s.optional() },

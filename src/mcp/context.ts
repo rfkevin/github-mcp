@@ -17,6 +17,8 @@ export type ToolContext = {
   reads: Pick<GitHubClient, 'files' | 'commits' | 'branches'>;
   /** PR isolées : une permission manquante ne bloque pas les fichiers. */
   pulls: Pick<GitHubClient, 'pullRequests' | 'issues'>;
+  /** Issues en lecture seule : droit Issues distinct, un refus ne bloque aucune autre famille. */
+  issueReads: Pick<GitHubClient, 'issues'>;
   checks: GitHubClient['actions'];
   statuses: GitHubClient['actions'];
   workflows: GitHubClient['actions'];
@@ -52,6 +54,7 @@ export function createToolContext(env: AppEnv, actor: string, scopes: readonly s
     statuses: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', statuses: 'read' } }).actions,
     workflows: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', actions: 'read' } }).actions,
     pulls: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', pull_requests: 'read' } }),
+    issueReads: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', issues: 'read' } }),
   };
   const checks = checksConfig(env.GITHUB_CHECKS_CONFIG);
   if (automationEnabled(env.GITHUB_AUTOMATION_ENABLED) && scopes.includes('mcp:automation')) {
