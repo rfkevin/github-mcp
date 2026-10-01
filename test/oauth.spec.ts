@@ -76,7 +76,7 @@ describe('Worker OAuth / MCP', () => {
   it('autorise les destinations du formulaire sans élargir les autres protections CSP', async () => {
     const { page } = await consent();
     expect(page.headers.get('Content-Security-Policy')).toBe(
-      "default-src 'none'; form-action 'self' https://github.com http://localhost:4321; frame-ancestors 'none'; base-uri 'none'",
+      "default-src 'none'; form-action 'self' https://github.com http://localhost:4321; frame-ancestors 'none'; base-uri 'none'; style-src 'unsafe-inline'",
     );
     expect(page.headers.get('X-Frame-Options')).toBe('DENY');
     expect(page.headers.get('Cache-Control')).toBe('no-store');
