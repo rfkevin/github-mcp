@@ -70,14 +70,14 @@ Sources : [lancement manuel](https://docs.github.com/en/actions/how-tos/manage-w
 
 ## 5. Écritures MCP : activation séparée
 
-Les quatre outils sont implémentés mais non activés par défaut. Ils peuvent être activés indépendamment des vérifications. Pour le parcours complet, ajouter ensuite le mode multi-dépôts décrit dans [multi-repository.md](multi-repository.md).
+Les cinq outils d’écriture sont implémentés mais non activés par défaut. Ils peuvent être activés indépendamment des vérifications. Pour le parcours complet, ajouter ensuite le mode multi-dépôts décrit dans [multi-repository.md](multi-repository.md).
 
 - Examiner les automatisations de chaque dépôt sélectionné : création de branche, push ou PR peuvent lancer une CI ou un déploiement, même avec une PR en brouillon.
 - Passer **Contents** à **Read and write**, ajouter **Pull requests: Read and write**, enregistrer puis accepter les nouveaux droits dans l’installation. **Actions reste Read-only** pour ce lot. Ne pas ajouter Workflows, Administration, Issues ni de droit de contournement des branches.
 - Conserver la sélection des dépôts dans l’installation ; pas de deuxième liste à remplir dans le MCP. Tous les utilisateurs autorisés du serveur partagent cette sélection.
 - Suivre [writes.md](writes.md) pour le réglage global, le nouveau consentement et l’essai contrôlé. Ne pas activer les préversions avec les identifiants de production.
 
-Ces droits GitHub sont plus larges que les outils exposés. Les restrictions aux branches de travail, aux fichiers et aux PR en brouillon sont appliquées par le serveur, pas par une permission GitHub spécifique à ces quatre opérations.
+Ces droits GitHub sont plus larges que les outils exposés. Les restrictions aux branches de travail et fichiers sont appliquées par le serveur, pas par une permission GitHub spécifique à ces opérations. Les PR sont en brouillon par défaut. La collaboration entre agents et la fusion optionnelle vers `integration` exigent les conditions distinctes du [guide d’équipe](team-workflow.md) ; ne pas donner de bypass au bot, ni activer une production automatique sur integration.
 
 ## 6. Staging et production : code prêt, configuration à effectuer
 

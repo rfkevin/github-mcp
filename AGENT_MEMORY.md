@@ -74,3 +74,36 @@ conflit, puis ajouter sa note au fichier complet. Suite : après publication
 autorisée, vérifier la lecture et un ajout sur un dépôt de test ; vérifier aussi
 qu’une réécriture est refusée. Merci au propriétaire et aux collaborateurs pour
 leurs essais, retours et contributions au projet.
+
+### 2026-10-01-codex-collaboration-et-retours
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : `codex/agent-workflow-foundation`, base `0e2ea842a0d8b517d1bf3098632ebfc72c8717b3`
+
+Constat : le serveur transmet désormais une démarche commune de discussion de PR,
+suivi CI/build au SHA exact et arbitrage humain. Les commentaires portent un nom
+déclaré ; l’intégration exige un consentement séparé, une politique du propriétaire
+et des accords aux SHA courants. Vérification : types, tests locaux et compilation
+sans publication ; GitHub reste simulé. Limites : les labels ne certifient pas des
+modèles indépendants, aucun client n’est réveillé et la fusion n’a pas de verrou
+global. Conseil : distinguer commit source et résultat intégré dans le suivi CI.
+Les améliorations du MCP vont dans `TOOL_IMPROVEMENTS.md`, pas dans cette mémoire ;
+en lecture seule, remettre la note au propriétaire. Suite : publication autorisée
+puis essai réel entre clients sur un dépôt de test. Merci au propriétaire et aux
+collaborateurs pour les cas concrets, les objections et les futures propositions.
+
+### 2026-10-01-codex-conseils-au-prochain-agent
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : `codex/agent-workflow-foundation`, base `0e2ea842a0d8b517d1bf3098632ebfc72c8717b3`
+
+À mes successeurs : cette mémoire vous est destinée ; le propriétaire n’a pas à
+la lire pour superviser vos tâches. Complément à `2026-10-01-codex-collaboration-et-retours` :
+la transmission la plus utile indique où reprendre, ce qui est vérifié et ce qui
+reste incertain, plutôt qu’un historique complet des appels. Dans ce travail,
+les tests ont distingué lecture seule, écriture et intégration ; la présence
+d’un outil fonctionnel ne suffit donc pas à conclure que tous les droits sont
+accordés. Commencez par vérifier dépôt, branche, SHA et capacités effectives,
+puis regroupez les lectures nécessaires. Pendant une correction, utilisez les
+tests ciblés ; figez le lot avant la vérification complète pour éviter de la
+relancer après chaque retouche. Séparez fait observé, hypothèse et permission.
+Limite de mon expérience : développement et tests locaux, pas d’essai multi-agents
+en production. Laissez au suivant une prochaine action précise et gardez les idées
+d’évolution de l’outil dans l’autre registre. Merci aux collaborateurs qui
+compléteront ou nuanceront ces conseils avec leurs propres expériences.

@@ -33,7 +33,8 @@ protégés. L’ancien mode de vérification reste inchangé.
    mcp:automation et offline_access. Les anciens consentements ne gagnent pas de
    nouvelle capacité.
 4. Vérifier le catalogue : github_prepare_checks, github_run_checks,
-   github_get_agent_check_result et les quatre outils d’écriture.
+   github_get_agent_check_result et les cinq outils d’écriture. La discussion
+   d’équipe et l’intégration optionnelle suivent [team-workflow.md](team-workflow.md).
 
 L’installation de la GitHub App définit les dépôts accessibles, y compris ceux
 ajoutés plus tard. Il n’y a ni liste de dépôts ni épingle de contrôleur à actualiser

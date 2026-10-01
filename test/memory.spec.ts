@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AGENT_MEMORY_PATH, assertMemoryAppend } from '../src/agent-memory';
+import { AGENT_MEMORY_PATH, TOOL_IMPROVEMENTS_PATH, assertMemoryAppend } from '../src/agent-memory';
 import { GitHubChanges } from '../src/github/changes';
 import type { GitHubServiceContext } from '../src/github/service-context';
 import { assertWritableBranch, assertWritablePath } from '../src/security/policy';
@@ -14,12 +14,12 @@ const blobFor = (content: string) => {
   return { content: btoa(String.fromCharCode(...bytes)), encoding: 'base64', size: bytes.length };
 };
 
-function fixture(exists = true) {
+function fixture(exists = true, journal: string = AGENT_MEMORY_PATH) {
   const request = vi.fn(async (path: string, init?: RequestInit): Promise<unknown> => {
     if (path === '/git/ref/heads/mcp/123/memo') return { object: { sha: HEAD } };
     if (path === `/git/commits/${HEAD}`) return { tree: { sha: TREE } };
     if (path === `/git/trees/${TREE}`) return { truncated: false, tree: exists
-      ? [{ path: AGENT_MEMORY_PATH, type: 'blob', sha: BLOB, mode: '100644' }] : [] };
+      ? [{ path: journal, type: 'blob', sha: BLOB, mode: '100644' }] : [] };
     if (path === `/git/blobs/${BLOB}`) return blobFor(PREVIOUS);
     if (path === '/git/trees' && init?.method === 'POST') return { sha: 'new-tree' };
     if (path === '/git/commits' && init?.method === 'POST') return { sha: 'new-commit' };
@@ -32,13 +32,26 @@ function fixture(exists = true) {
     policy: {},
   } as unknown as GitHubServiceContext);
   const commit = (content: string, expectedSha = exists ? BLOB : undefined, expectedHeadSha = HEAD) =>
-    changes.applyChangeSet('owner/project', 'mcp/123/memo', [{ path: AGENT_MEMORY_PATH, content, expectedSha }],
+    changes.applyChangeSet('owner/project', 'mcp/123/memo', [{ path: journal, content, expectedSha }],
       'Add memory note', { expectedHeadSha });
   const mutations = () => request.mock.calls.filter(([, init]) => init?.method === 'POST' || init?.method === 'PATCH');
   return { request, changes, commit, mutations };
 }
 
 describe('mémoire : conservation exacte des contributions', () => {
+  it('protège séparément le registre des propositions, sans écraser un avis antérieur', async () => {
+    const { commit, mutations } = fixture(true, TOOL_IMPROVEMENTS_PATH);
+    await expect(commit(PREVIOUS.replace('Claude', 'Codex'))).rejects.toMatchObject({ code: 'FEEDBACK_APPEND_ONLY' });
+    expect(mutations()).toEqual([]);
+    await expect(commit(APPENDED)).resolves.toMatchObject({ changedPaths: [TOOL_IMPROVEMENTS_PATH] });
+  });
+  it('refuse la suppression du registre des propositions avant le réseau', async () => {
+    const { changes, request } = fixture(true, TOOL_IMPROVEMENTS_PATH);
+    await expect(changes.applyChangeSet('owner/project', 'mcp/123/memo', [], 'Delete',
+      { expectedHeadSha: HEAD, deletions: [{ path: TOOL_IMPROVEMENTS_PATH, expectedSha: BLOB }] }))
+      .rejects.toMatchObject({ code: 'FEEDBACK_APPEND_ONLY' });
+    expect(request).not.toHaveBeenCalled();
+  });
   it('accepte un ajout, un contenu identique et les caractères UTF-8 sans normalisation', () => {
     assertMemoryAppend(blobFor(PREVIOUS), APPENDED);
     assertMemoryAppend(blobFor(PREVIOUS), PREVIOUS);

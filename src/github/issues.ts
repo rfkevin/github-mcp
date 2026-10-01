@@ -90,9 +90,13 @@ export class GitHubIssues {
     });
   }
 
-  listComments(repository: string, issueNumber: number, limit = 100): Promise<GitHubComment[]> {
-    const { assertPositiveInteger, paginateArray, repoPath } = this.dependencies;
+  listComments(repository: string, issueNumber: number, limit = 100, page?: number): Promise<GitHubComment[]> {
+    const { assertPositiveInteger, paginateArray, repoPath, request, withQuery } = this.dependencies;
     assertPositiveInteger(issueNumber, 'Numéro d’issue ou de Pull Request');
+    if (page !== undefined) {
+      assertPositiveInteger(page, 'Page');
+      return request(withQuery(repoPath(repository, `/issues/${issueNumber}/comments`), { per_page: 20, page }));
+    }
     return paginateArray(repoPath(repository, `/issues/${issueNumber}/comments`), limit);
   }
 

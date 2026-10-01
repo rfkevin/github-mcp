@@ -206,6 +206,9 @@ export function assertWritablePath(path: string, policy: Partial<SecurityPolicy>
   }
 
   if (policy.managedChecks && path === WORKFLOW_PATH) return;
+  if (/^\.mcp(?:$|\/integration\.json(?:\/|$))/i.test(path)) {
+    reject('INTEGRATION_POLICY_PROTECTED', 'La politique d’intégration doit être validée par le propriétaire.');
+  }
   if (/^(?:\.github$|\.github\/(?:workflows|actions)(?:\/|$)|\.github\/CODEOWNERS$|scripts$|scripts\/(?:ci|deploy)(?:\/|$))/i.test(path)) {
     reject('WORKFLOW_DENIED', 'Les fichiers GitHub Actions sont protégés.');
   }

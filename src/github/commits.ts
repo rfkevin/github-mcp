@@ -1,8 +1,25 @@
-import type { GitHubCommit, GitHubComparison } from './types';
+import { InputValidationError, type GitHubCommit, type GitHubComparison, type GitHubCommitComment } from './types';
 import type { GitHubServiceContext } from './service-context';
 
 export class GitHubCommits {
   constructor(private readonly dependencies: GitHubServiceContext) {}
+
+  private commentPath(repository: string, sha: string): string {
+    if (!/^[a-f0-9]{40}$/i.test(sha)) throw new InputValidationError('Un SHA complet est requis pour les commentaires de commit.');
+    return this.dependencies.repoPath(repository, `/commits/${sha.toLowerCase()}/comments`);
+  }
+
+  listComments(repository: string, sha: string): Promise<GitHubCommitComment[]> {
+    return this.dependencies.request<GitHubCommitComment[]>(
+      this.dependencies.withQuery(this.commentPath(repository, sha), { per_page: 20 }));
+  }
+
+  createComment(repository: string, sha: string, body: string): Promise<GitHubCommitComment> {
+    if (!body.trim() || body.length > 12_000) throw new InputValidationError('Commentaire vide ou trop long.');
+    return this.dependencies.request<GitHubCommitComment>(this.commentPath(repository, sha), {
+      method: 'POST', body: JSON.stringify({ body }),
+    });
+  }
 
   listCommits(
     repository: string,

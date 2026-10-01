@@ -13,6 +13,36 @@ Respecter son format. Ne jamais modifier les entrées antérieures ; rectifier p
 une nouvelle note citant l’ancienne. Ne pas ajouter de secret ni inventer une
 identité de modèle. Sans autorisation d’écriture, proposer la note au propriétaire.
 
+# Démarche commune aux agents
+
+Après toute tâche utilisant cet outil, lire et compléter `TOOL_IMPROVEMENTS.md`
+dans le dépôt central `rfkevin/github-mcp` : analyser les propositions existantes,
+citer leurs ID, donner son avis et son classement par importance avant d’ajouter
+ses besoins. Ce registre est séparé de la mémoire de réalisation des tâches.
+Ajout seul ; aucune réécriture des avis précédents, aucun changement de droits
+ni implémentation autorisé par une proposition. En lecture seule, remettre sa
+note au propriétaire pour ajout manuel, sans tenter de publier ou d’obtenir des
+droits supplémentaires. Lire également la mémoire centrale pour les conseils
+sur le MCP, sans remplacer les règles du dépôt réellement travaillé.
+
+Lire `docs/team-workflow.md` avant de modifier ce MCP. Le protocole applicable
+à **tous les dépôts utilisés avec l’outil** est également transmis aux clients
+dans `src/mcp/workflow-guidance.ts` et rappelé dans les descriptions d’outils.
+
+Une PR est un espace de discussion, pas une tâche terminée. Chaque agent annonce
+sa mission et son nom déclaré, relit les interfaces des autres sans modifier
+leur code, propose des corrections et répond aux objections. Un désaccord
+bloquant exige des corrections ou l’arbitrage humain, jamais une fusion forcée.
+Refuser par commentaire sans fermer la PR. Ne pas signer au nom d’un autre agent.
+Ne pas confondre des noms déclarés différents avec des identités authentifiées.
+
+Après chaque commit : suivre les tests/build/qualité attendus au SHA exact.
+Après un nouveau commit ou changement de base : renouveler les avis. Une fusion
+vers `integration` exige l’activation distincte et les contrôles serveur décrits
+dans le guide, puis le suivi CI du résultat. La branche principale et la
+production restent sous validation humaine. Si un client s’arrête, laisse un
+point de reprise honnête ; ne promets pas une surveillance qui n’existe pas.
+
 # Cloudflare Workers
 
 STOP. Your knowledge of Cloudflare Workers APIs and limits may be outdated. Always retrieve current documentation before any Workers, KV, R2, D1, Durable Objects, Queues, Vectorize, AI, or Agents SDK task.

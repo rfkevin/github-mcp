@@ -750,6 +750,8 @@ describe('Worker OAuth / MCP', () => {
       const listed = await send('/mcp', { method: 'POST', headers,
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
       const text = await listed.text();
+      expect(listed.status).toBe(200);
+      expect(text).toContain('github_read_file');
       const api = vi.spyOn(globalThis, 'fetch');
       for (const name of ['github_create_branch', 'github_commit_changes', 'github_open_pull_request']) {
         expect(text).not.toContain(name);
@@ -758,6 +760,44 @@ describe('Worker OAuth / MCP', () => {
       }
       expect(api).not.toHaveBeenCalled();
     } finally { delete settings.GITHUB_WRITES_ENABLED; }
+  });
+
+  it('sépare lecture, écriture et intégration pour des clients simultanés, et transmet la démarche centrale', async () => {
+    settings.GITHUB_WRITES_ENABLED = 'true';
+    settings.GITHUB_AUTOMATION_ENABLED = 'true';
+    try {
+      const read = await mcpSession('mcp:read offline_access');
+      const write = await mcpSession('mcp:read mcp:write offline_access');
+      const full = await mcpSession('mcp:read mcp:write mcp:automation mcp:integration offline_access');
+      const list = async (headers: Record<string, string>) => {
+        const response = await send('/mcp', { method: 'POST', headers,
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
+        expect(response.status).toBe(200);
+        const text = await response.text();
+        const envelope = JSON.parse((text.split('\n').find(line => line.startsWith('data: ')) ?? `data: ${text}`).slice(6));
+        return (envelope.result.tools as Array<{ name: string }>).map(tool => tool.name);
+      };
+      expect(await list(read.headers)).toHaveLength(15);
+      expect(await list(write.headers)).toHaveLength(20);
+      expect(await list(full.headers)).toHaveLength(24);
+      expect(await list(write.headers)).not.toContain('github_merge_integration');
+      const initialized = await send('/mcp', { method: 'POST', headers: read.headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {
+          protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'read-only-client', version: '1' } } }) });
+      const text = await initialized.text();
+      expect(text).toContain('TOOL_IMPROVEMENTS.md');
+      expect(text).toContain('rfkevin/github-mcp');
+      const api = vi.spyOn(globalThis, 'fetch');
+      for (const name of ['github_commit_changes', 'github_comment_commit', 'github_comment_pull_request', 'github_merge_integration', 'github_run_checks']) {
+        expect((await callTool(read.headers, name, {}, 2)).body).toContain('error');
+      }
+      expect(api).not.toHaveBeenCalled();
+      const page = await consent('mcp:read mcp:write mcp:integration offline_access');
+      expect(page.html).toContain('uniquement vers integration');
+      expect(page.html).toContain('Des noms différents ne prouvent pas');
+      settings.GITHUB_WRITES_ENABLED = 'false';
+      expect(await list(full.headers)).not.toContain('github_merge_integration');
+    } finally { delete settings.GITHUB_WRITES_ENABLED; delete settings.GITHUB_AUTOMATION_ENABLED; }
   });
 
   it('exige le consentement d’écriture, avertit des automatismes et retire les outils à la désactivation', async () => {

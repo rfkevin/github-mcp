@@ -4,6 +4,17 @@ import type { GitHubServiceContext } from './service-context';
 export class GitHubBranches {
   constructor(private readonly dependencies: GitHubServiceContext) {}
 
+  /** La cible n'est jamais issue des arguments du modèle ou de la base mutable d'une PR. */
+  async mergeIntegration(repository: string, headSha: string, message: string): Promise<{ sha: string } | undefined> {
+    const { allowIntegrationMerge, request, repoPath } = this.dependencies;
+    if (!allowIntegrationMerge) throw new InputValidationError('Fusion d’intégration désactivée.', 'INTEGRATION_DISABLED');
+    if (!/^[a-f0-9]{40}$/i.test(headSha) || !message.trim() || message.length > 1000) {
+      throw new InputValidationError('Fusion invalide.');
+    }
+    return request(repoPath(repository, '/merges'), { method: 'POST',
+      body: JSON.stringify({ base: 'integration', head: headSha.toLowerCase(), commit_message: message }) });
+  }
+
   async getBranchHead(repository: string, branch: string): Promise<string> {
     const { assertGitRef, encodeSlashPath, repoPath, request } = this.dependencies;
     assertGitRef(branch);
