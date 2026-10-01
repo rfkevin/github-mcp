@@ -35,7 +35,7 @@ export function checkPlan(scope, target = '') {
   }
   if (scope !== 'typecheck') {
     commands.push(['node_modules/vitest/vitest.mjs', 'run', '--reporter=default', '--reporter=github-actions', ...(target ? [target] : [])]);
-    if (!target) commands.push(['--test', 'scripts/ci/checks.test.mjs', 'scripts/deploy/deploy.test.mjs', 'scripts/automation/runner.test.mjs']);
+    if (!target) commands.push(['--test', 'scripts/ci/checks.test.mjs', 'scripts/deploy/deploy.test.mjs', 'scripts/automation/runner.test.mjs', 'scripts/diagnostics/openai-mcp.test.mjs']);
   }
   if (scope === 'full') commands.push(['node_modules/wrangler/bin/wrangler.js', 'deploy', '--dry-run', '--outdir', '.release/worker']);
   return commands;

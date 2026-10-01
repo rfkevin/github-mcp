@@ -169,3 +169,19 @@ Préparation d'une PR dédiée pour publication et essai réel. Aucun contournem
 OAuth ni changement de droits. Limite : la disparition de l'erreur OpenAI doit
 encore être vérifiée après publication ; ce résultat ne peut pas être déduit
 des tests locaux. Merci aux collaborateurs pour la revue et les prochains essais.
+
+### 2026-10-02-codex-contrat-oauth-openai
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : complément à la PR #12 fusionnée, base `73249b61f152293be74d8bec325b8122b0fb5fd5`
+
+Le propriétaire a demandé d'adapter réellement le serveur aux exemples OpenAI.
+Les 24 outils déclarent maintenant leurs portées dans `_meta.securitySchemes`,
+champ documenté de compatibilité que le SDK transmet ; aucune autorisation n'est
+élargie. Version MCP 0.7.1. Un diagnostic Responses `type: mcp` n'importe qu'un
+outil de lecture et distingue API, découverte et résultat ; hors ligne par défaut,
+réel seulement avec --live et deux identifiants locaux distincts. Ne jamais passer
+une clé GitHub comme jeton MCP. Tests : 357 applicatifs et 45 scripts réussis,
+types et compilation Wrangler sans publication. Limite : aucun appel réel OpenAI,
+aucune preuve de résolution du plugin, aucun nouvel essai Claude réel. Suite :
+valider et publier la PR complémentaire puis essayer le plugin et une lecture
+depuis les clients utiles ; l'essai API n'est pas le parcours OAuth de l'interface.
+Merci au propriétaire et aux collaborateurs pour leurs vérifications indépendantes.
