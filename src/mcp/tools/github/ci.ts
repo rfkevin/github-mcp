@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server';
+import { outputSchemas } from './output-schemas';
 import { z } from 'zod';
 import type { ToolContext } from '../../context';
 import { textPayload, toolFailure, toolSuccess } from './result';
@@ -60,6 +61,7 @@ export async function collectCiStatus(context: ToolContext, repository: string, 
 
 export function registerCiTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_ci_status', {
+    outputSchema: outputSchemas.github_ci_status,
     description: 'Après commit/PR et jusqu’au bilan : suivre les contrôles au SHA exact. Déclarer expectedChecks depuis les workflows/mission : source check + nom du check, workflow + chemin .github/workflows/ci.yml, status + contexte. verification distingue pending, failed, incomplete et declared_checks_passed. Sans attentes, observed_success ne valide pas toute la tâche. Respecter nextPollSeconds ; relire le headSha de la PR avant de conclure. Les contrôles absents, annulés, ignorés ou inaccessibles ne sont pas des réussites.',
     inputSchema: { repository: z.string(), ref: z.string(), expectedChecks: z.array(expectedCheckSchema).max(30).default([]) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },

@@ -9,6 +9,7 @@ Serveur MCP sur Cloudflare Workers, accessible depuis un client distant comme Cl
 - [Démarche commune : discussion entre agents et intégration contrôlée](docs/team-workflow.md)
 - [Réglages GitHub à effectuer, dans l’ordre](docs/github-settings.md)
 - [Configuration du Worker et catalogue des outils](docs/setup.md)
+- [Compatibilité MCP/OAuth, clients et diagnostic de découverte](docs/mcp-compatibility.md)
 - [Vérifications locales et activation optionnelle de run_checks](docs/checks.md)
 - [Écritures optionnelles : branches, commits et PR](docs/writes.md)
 - [Travailler sur tous les dépôts avec le même MCP](docs/multi-repository.md)

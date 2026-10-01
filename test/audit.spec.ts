@@ -4,6 +4,7 @@ import type { ToolContext } from '../src/mcp/context';
 import { GitHubHttp } from '../src/github/http';
 import { assertWritablePath } from '../src/security/policy';
 import { registerPullRequestTools } from '../src/mcp/tools/github/pull-requests';
+import { z } from 'zod';
 
 describe('audit : sécurité du client et du contrôleur', () => {
   it.each(['POST', 'PATCH', 'PUT', 'DELETE'])('ne rejoue pas %s après une limitation de débit', async method => {
@@ -32,7 +33,14 @@ describe('audit : PR récupérables et réponses bornées', () => {
     const handlers = new Map<string, (args: Record<string, unknown>) => Promise<{ structuredContent?: Record<string, unknown> }>>();
     const pulls = { pullRequests: { listPullRequests: vi.fn(async () => [pull]), getPullRequest: vi.fn(async () => pull),
       listReviews: vi.fn(async () => []), listReviewComments: vi.fn(async () => []) }, issues: { listComments: vi.fn(async () => []) } };
-    registerPullRequestTools({ registerTool: (name: string, _spec: unknown, callback: never) => handlers.set(name, callback) } as unknown as McpServer,
+    registerPullRequestTools({ registerTool: (name: string, spec: { outputSchema: z.ZodRawShape },
+      callback: (args: Record<string, unknown>) => Promise<{ isError?: boolean; structuredContent: Record<string, unknown> }>) => {
+      handlers.set(name, async args => {
+        const result = await callback(args);
+        if (!result.isError) z.object(spec.outputSchema).parse(result.structuredContent);
+        return result;
+      });
+    } } as unknown as McpServer,
       { actor: '123', pulls } as unknown as ToolContext);
     return { handlers, pulls };
   }

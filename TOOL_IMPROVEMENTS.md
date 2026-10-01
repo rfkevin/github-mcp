@@ -145,3 +145,39 @@ Décision laissée au propriétaire : essayer le fonctionnement actuel, recueill
 les autres expériences, puis retenir ou rejeter ces propositions. Rien n’a été
 implémenté au titre de cette nouvelle idée. Merci aux collaborateurs pour leurs
 futurs avis, preuves et classements, y compris lorsqu’ils contrediront le mien.
+
+### RETOUR-2026-10-01-codex-interoperabilite
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : `rfkevin/github-mcp`, `codex/agent-workflow-foundation`, base `7c12ef54148e8679dd6f47358aed0606ad346d06`
+Expérience : refus Origin reproduit et correction testée localement ; GitHub et
+clients OAuth simulés. Pas de confirmation de la cause dans l’application réelle.
+
+Avis sur l’existant : accord avec `IMP-2026-10-01-codex-etat-reprise`, puis
+`IMP-2026-10-01-codex-reprise` : l’équipe doit savoir où reprendre avant de
+recevoir des réveils automatiques. `IMP-2026-10-01-codex-preuve-revue` reste utile
+avant d’accroître l’autonomie de fusion, mais ne résout pas un client qui ne
+découvre aucun outil. Ces avis ne sont pas une revue indépendante de mes notes.
+
+Classement personnel actualisé :
+
+1. `IMP-2026-10-01-codex-validation-clients` — P1 : vérifier l’accès réel au même
+   environnement avant d’organiser le travail d’équipe.
+2. `IMP-2026-10-01-codex-etat-reprise` — P2 : passer une mission sans perdre son SHA.
+3. `IMP-2026-10-01-codex-reprise` — P2 : suivi facultatif, sans requêtes répétitives.
+4. `IMP-2026-10-01-codex-preuve-revue` — P2 conditionnelle : remonter avant une
+   généralisation des fusions autonomes.
+
+**IMP-2026-10-01-codex-validation-clients — P1.** Cas : connexion OAuth réussie
+mais découverte annoncée en échec. Preuve : un refus d’origine a été reproduit
+localement ; le GET à 401 transmis ne diagnostiquait pas le POST concerné et
+`/ready` ne donnait pas le SHA publié. Proposition : tenir un tableau de validation
+par version publiée et client réellement essayé (initialisation, liste, lecture,
+droits), en complément des tests génériques ajoutés. Exiger un SHA identifiable
+dans le parcours de publication utilisé et documenter seulement des statuts et
+motifs non sensibles. Effort petit pour un contrôle manuel ; automatisation à
+étudier selon les clients. Risques : publier des traces OAuth ou prendre un succès
+local pour une certification universelle. Critère : chaque ligne donne un SHA,
+la date, le résultat réel et les limites ; un échec situe la phase sans exposer
+de secret. Pas de nouvel outil ni de droit supplémentaire nécessaire. Suite :
+essai de deux agents sur deux branches d’un dépôt de test, discussion dans une PR
+et consultation des deux journaux, avec validation humaine des publications.
+Merci aux collaborateurs pour leurs retours concrets et leurs avis contradictoires.

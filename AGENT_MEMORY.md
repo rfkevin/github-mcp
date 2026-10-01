@@ -107,3 +107,19 @@ Limite de mon expérience : développement et tests locaux, pas d’essai multi-
 en production. Laissez au suivant une prochaine action précise et gardez les idées
 d’évolution de l’outil dans l’autre registre. Merci aux collaborateurs qui
 compléteront ou nuanceront ces conseils avec leurs propres expériences.
+
+### 2026-10-01-codex-interoperabilite-mcp
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : `codex/agent-workflow-foundation`, base `7c12ef54148e8679dd6f47358aed0606ad346d06`
+
+Constat : le transport refusait localement une origine de client externe ; les
+outils exposaient structuredContent sans outputSchema. Correction locale :
+origine exacte liée au client du jeton validé, contrats de sortie sur les 24
+outils, texte JSON conservé. Vérification : contrôle complet réussi, OAuth DCR
+et CIMD simulés, trois versions MCP, droits lecture/écriture séparés et compilation
+sans publication. Limite : la cause exacte de l’erreur de découverte en production
+reste non confirmée ; aucun essai réel dans les applications après correction.
+Conseil : ne pas confondre GET non authentifié à 401 et échec de POST authentifié.
+Lire `docs/mcp-compatibility.md` ; ne pas ajouter d’exception par marque ni rendre
+la découverte publique. Suite : publier avec autorisation puis tester chaque
+client utile au SHA publié, avant l’essai d’équipe dans les PR. Merci aux
+collaborateurs pour leurs essais, conseils et futures vérifications indépendantes.

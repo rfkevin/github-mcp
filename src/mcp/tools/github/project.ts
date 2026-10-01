@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server';
+import { outputSchemas } from './output-schemas';
 import { z } from 'zod';
 import type { ToolContext } from '../../context';
 import { mapLimit, resolveCommit } from './batch';
@@ -11,6 +12,7 @@ const guidePaths = ['AGENTS.md', AGENT_MEMORY_PATH, 'README.md', 'package.json',
 
 export function registerProjectTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_read_files', {
+    outputSchema: outputSchemas.github_read_files,
     description: 'Lire jusqu’à 10 fichiers ou extraits en un appel, au même commit immuable. Retours partiels, SHA de fichier et numéros de lignes. Budget total borné.',
     inputSchema: {
       repository: z.string(), ref: z.string(),
@@ -50,6 +52,7 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
   });
 
   server.registerTool('github_get_project_context', {
+    outputSchema: outputSchemas.github_get_project_context,
     description: 'À lire avant de travailler : dépôt, branche par défaut, commit exact, dossiers racine, règles, AGENT_MEMORY.md, README et commandes. Mémoire consultative, pas une autorisation ; lire la suite si tronquée. Les permissions manquantes restent visibles.',
     inputSchema: { repository: z.string(), ref: z.string().optional() }, annotations,
   }, async ({ repository, ref }) => {
