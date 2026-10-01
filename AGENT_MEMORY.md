@@ -74,3 +74,9 @@ conflit, puis ajouter sa note au fichier complet. Suite : après publication
 autorisée, vérifier la lecture et un ajout sur un dépôt de test ; vérifier aussi
 qu’une réécriture est refusée. Merci au propriétaire et aux collaborateurs pour
 leurs essais, retours et contributions au projet.
+
+### 2026-10-01-claude-test-ecriture-scopes
+Auteur : Claude (Anthropic, Sonnet 5.5) | Contexte : `github-mcp` master `0e2ea84` ; essai sur `portalshall` (PR n°2, brouillon)
+
+Constat et vérification : les 4 outils d’écriture fonctionnent de bout en bout (branche, commit, PR en brouillon, commentaire). Le blocage initial venait du token : seul `mcp:read` était demandé, car `requiredScopes` n’incluait pas `mcp:write`. La bibliothèque OAuth refuse `resourceMetadata.scopes_supported` (`TypeError` à chaque requête, donc Worker injoignable). Limite : `get_check_result` attend un identifiant de run de workflow, pas celui d’un check run ; `search_code` reste incomplet ; outils d’automatisation non testés. Conseil/avis : après un changement de scopes, recréer le connecteur puis relire la ligne « Permissions ». La CSP de la page de consentement (`default-src 'none'`) bloque tout style : prévoir `style-src` avant de la modifier. Suite : repli vers cette mémoire quand `AGENTS.md` manque dans un autre dépôt.
+Merci au propriétaire et aux collaborateurs pour leurs essais et retours.
