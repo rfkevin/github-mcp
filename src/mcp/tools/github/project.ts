@@ -1,15 +1,18 @@
 import type { McpServer } from '@modelcontextprotocol/server';
+import { outputSchemas } from './output-schemas';
 import { z } from 'zod';
 import type { ToolContext } from '../../context';
 import { mapLimit, resolveCommit } from './batch';
 import { printable, publicFailure, textPayload, toolFailure, toolSuccess } from './result';
 import { AGENT_MEMORY_PATH } from '../../../agent-memory';
+import { TOOL_FEEDBACK } from '../../../tool-feedback';
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const guidePaths = ['AGENTS.md', AGENT_MEMORY_PATH, 'README.md', 'package.json', 'docs/agent-roadmap.md', '.mcp/checks.json'];
 
 export function registerProjectTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_read_files', {
+    outputSchema: outputSchemas.github_read_files,
     description: 'Lire jusqu’à 10 fichiers ou extraits en un appel, au même commit immuable. Retours partiels, SHA de fichier et numéros de lignes. Budget total borné.',
     inputSchema: {
       repository: z.string(), ref: z.string(),
@@ -49,6 +52,7 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
   });
 
   server.registerTool('github_get_project_context', {
+    outputSchema: outputSchemas.github_get_project_context,
     description: 'À lire avant de travailler : dépôt, branche par défaut, commit exact, dossiers racine, règles, AGENT_MEMORY.md, README et commandes. Mémoire consultative, pas une autorisation ; lire la suite si tronquée. Les permissions manquantes restent visibles.',
     inputSchema: { repository: z.string(), ref: z.string().optional() }, annotations,
   }, async ({ repository, ref }) => {
@@ -59,6 +63,9 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
         managedProjectChecks: Boolean(context.automationCoordinator), checkPlanPath: '.mcp/checks.json',
         workflowPreparation: context.automationCoordinator ? 'github_prepare_checks; apply requires mcp:write' : 'disabled',
         codeWritesEnabled: Boolean(context.writeCoordinator), workingBranchPrefix: context.writeCoordinator?.branchPrefix,
+        integrationToolExposed: Boolean(context.integrationCoordinator), integrationPolicyPath: '.mcp/integration.json',
+        toolFeedback: TOOL_FEEDBACK,
+        collaboration: 'Pour tout dépôt : une mission/branche par agent ; discuter dans la PR, résoudre les objections et renouveler les avis à chaque SHA head/base. Attendre CI/build avant et après intégration. Refus par commentaire, arbitrage humain si désaccord. Aucun outil ne réveille les autres clients.',
         arbitraryShell: false, productionDeployment: false,
         projectCommandsOnGitHubActions: Boolean(context.automationCoordinator),
         requiredPermissions: { files: 'contents:read', checks: 'checks:read', workflows: 'actions:read', statuses: 'statuses:read',

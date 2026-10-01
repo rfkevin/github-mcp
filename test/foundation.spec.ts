@@ -17,6 +17,7 @@ import { collectCiStatus } from '../src/mcp/tools/github/ci';
 import { failureMessage, publicFailure, textPayload } from '../src/mcp/tools/github/result';
 import { mapLimit } from '../src/mcp/tools/github/batch';
 import { readJson } from '../src/github/response';
+import { z } from 'zod';
 
 const SHA = 'a'.repeat(40);
 const OTHER = 'b'.repeat(40);
@@ -25,7 +26,13 @@ type Handler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
 function registry(register: (server: McpServer, context: ToolContext) => void, context: ToolContext) {
   const handlers = new Map<string, Handler>();
-  const fake = { registerTool: (name: string, _spec: unknown, handler: Handler) => handlers.set(name, handler) };
+  const fake = { registerTool: (name: string, spec: { outputSchema: z.ZodRawShape }, handler: Handler) => {
+    handlers.set(name, async args => {
+      const result = await handler(args);
+      if (!result.isError) z.object(spec.outputSchema).parse(result.structuredContent);
+      return result;
+    });
+  } };
   register(fake as unknown as McpServer, context);
   return (name: string, args: Record<string, unknown>) => handlers.get(name)!(args);
 }
@@ -216,12 +223,12 @@ describe('foundation: outils regroupés', () => {
         { filename: '.env', patch: 'CANARY_1' },
         { filename: 'config.txt', previous_filename: '.env.production', patch: 'CANARY_2' },
         { filename: '.dev.vars', patch: 'CANARY_3' },
-        { filename: 'src/app.ts', patch: '+ok' },
+        { filename: 'src/app.ts', status: 'modified', additions: 1, deletions: 0, patch: '+ok' },
       ] });
     const result = await registry(registerCommitTools, ctx as unknown as ToolContext)('github_compare_refs',
       { repository: 'o/r', base: 'master', head: 'mcp/a/b' });
     expect(JSON.stringify(result)).not.toContain('CANARY');
-    expect(result.structuredContent.files).toEqual([{ filename: 'src/app.ts', patch: '+ok' }]);
+    expect(result.structuredContent.files).toEqual([{ filename: 'src/app.ts', status: 'modified', additions: 1, deletions: 0, patch: '+ok' }]);
   });
   it('get_check_result refuse un commit différent de celui attendu', async () => {
     const ctx = context();
@@ -241,7 +248,7 @@ describe('foundation: outils regroupés', () => {
   ('reconnaît le fournisseur Sonar %s au bon commit', async slug => {
     const ctx = context();
     ctx.checks.listCheckRuns.mockResolvedValue([{ id: 1, name: 'SonarCloud Code Analysis',
-      app: { slug }, head_sha: SHA, status: 'completed', conclusion: 'success',
+      app: { slug }, head_sha: SHA, status: 'completed', conclusion: 'success', html_url: null,
       output: { summary: 'Quality Gate passed' } }] as never);
     const result = await registry(registerReportTools, ctx as unknown as ToolContext)('github_get_quality_report',
       { repository: 'o/r', ref: SHA });
@@ -258,9 +265,10 @@ describe('foundation: outils regroupés', () => {
   });
   it('les annotations sensibles sont retirées, les autres sont bornées', async () => {
     const ctx = context();
-    ctx.checks.listCheckRuns.mockResolvedValue([{ id: 1, name: 'unit', conclusion: 'failure', head_sha: SHA }] as never);
+    ctx.checks.listCheckRuns.mockResolvedValue([{ id: 1, name: 'unit', conclusion: 'failure', head_sha: SHA, html_url: null }] as never);
     ctx.checks.listCheckAnnotations.mockResolvedValue([
-      { path: '.env', message: 'CANARY' }, { path: 'src/app.ts', message: 'x'.repeat(5_000) },
+      { path: '.env', message: 'CANARY' }, { path: 'src/app.ts', start_line: 1, end_line: 1,
+        annotation_level: 'failure', message: 'x'.repeat(5_000) },
     ] as never);
     const result = await registry(registerReportTools, ctx as unknown as ToolContext)('github_get_failure_report', { repository: 'o/r', ref: SHA });
     expect(JSON.stringify(result)).not.toContain('CANARY');

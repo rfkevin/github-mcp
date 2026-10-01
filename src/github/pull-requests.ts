@@ -171,9 +171,13 @@ export class GitHubPullRequests {
     );
   }
 
-  listReviews(repository: string, pullNumber: number, limit = 100): Promise<GitHubReview[]> {
-    const { assertPositiveInteger, paginateArray, repoPath } = this.dependencies;
+  listReviews(repository: string, pullNumber: number, limit = 100, page?: number): Promise<GitHubReview[]> {
+    const { assertPositiveInteger, paginateArray, repoPath, request, withQuery } = this.dependencies;
     assertPositiveInteger(pullNumber, 'Numéro de Pull Request');
+    if (page !== undefined) {
+      assertPositiveInteger(page, 'Page');
+      return request(withQuery(repoPath(repository, `/pulls/${pullNumber}/reviews`), { per_page: 20, page }));
+    }
     return paginateArray(repoPath(repository, `/pulls/${pullNumber}/reviews`), limit);
   }
 
@@ -181,9 +185,14 @@ export class GitHubPullRequests {
     repository: string,
     pullNumber: number,
     limit = 200,
+    page?: number,
   ): Promise<GitHubReviewComment[]> {
-    const { assertPositiveInteger, paginateArray, repoPath } = this.dependencies;
+    const { assertPositiveInteger, paginateArray, repoPath, request, withQuery } = this.dependencies;
     assertPositiveInteger(pullNumber, 'Numéro de Pull Request');
+    if (page !== undefined) {
+      assertPositiveInteger(page, 'Page');
+      return request(withQuery(repoPath(repository, `/pulls/${pullNumber}/comments`), { per_page: 20, page }));
+    }
     return paginateArray(repoPath(repository, `/pulls/${pullNumber}/comments`), limit);
   }
 

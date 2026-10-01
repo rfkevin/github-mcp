@@ -30,6 +30,7 @@ export default {
       'offline_access',
       ...(checksConfig(env.GITHUB_CHECKS_CONFIG).length ? ['mcp:checks'] : []),
       ...(writes ? ['mcp:write'] : []),
+      ...(writes ? ['mcp:integration'] : []),
       ...(automationEnabled(env.GITHUB_AUTOMATION_ENABLED) ? ['mcp:automation'] : []),
     ];
     const provider = new OAuthProvider<AuthEnv>({

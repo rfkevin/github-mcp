@@ -69,50 +69,20 @@ const item = (name: keyof typeof ICONS, title: string, text: string, tone: Tone 
   `<li class='${tone}'><span class='ico'>${icon(name)}</span><div><strong>${title}</strong><p>${text}</p></div></li>`;
 
 export function consentPage(details: ConsentDescription, handle: string): string {
-  const has = (scope: string): boolean => details.scope.includes(scope);
-  const items = [
-    item('eye', 'Lecture des dépôts',
-      'Ce client pourra lire les dépôts sélectionnés dans la GitHub App et leurs contrôles.'),
-    has('mcp:write')
-      ? item('edit', 'Écriture sur des branches de travail',
-        'Vous autorisez aussi la création de branches de travail liées à votre identité, des commits comprenant des ajouts, modifications et suppressions de fichiers, des PR en brouillon et des commentaires sur vos PR ouvertes dans les dépôts de cette installation. Les branches protégées et les fichiers sensibles, de contrôle CI ou de publication restent interdits. Ces actions peuvent déclencher la CI ou les déploiements automatiques déjà configurés dans ces dépôts. Vérifiez ces automatisations avant d’accepter.',
-        'warn')
-      : item('lock', 'Aucune modification du code', 'Ce consentement ne permet pas de modifier le code.'),
-    item('lock', 'Pas de fusion ni de déploiement',
-      'Aucun outil de fusion, d’approbation de PR ou de déploiement direct n’est exposé.'),
-    has('mcp:automation')
-      ? item('play', 'Vérifications multi-dépôts',
-        'Vous autorisez les vérifications multi-dépôts : lancement du workflow de tests mcp-checks et, avec le droit d’écriture, préparation de ce workflow et des commandes du projet sur vos branches. Les commandes exécutent le code du projet sur un runner GitHub hébergé, sans secret ajouté. Elles consomment des minutes Actions et peuvent déclencher des intégrations déjà présentes. Les dépôts accessibles restent ceux de votre installation GitHub App, y compris ceux ajoutés ultérieurement.',
-        'warn')
-      : '',
-    has('mcp:checks')
-      ? item('play', 'Lancement de workflow',
-        'Vous autorisez aussi le lancement du workflow agent-checks sur les dépôts explicitement configurés. Cela exécute des tests et peut consommer des minutes GitHub Actions.',
-        'warn')
-      : has('mcp:automation')
-        ? ''
-        : item('lock', 'Aucun lancement de workflow',
-          'Aucun lancement direct de workflow n’est autorisé par ce consentement.'),
-  ].join('');
-  const client = details.clientDomain
-    ? `Domaine du client : <strong>${escape(details.clientDomain)}</strong>`
-    : 'Le nom de cette application est déclaré par le client et n’est pas vérifié.';
-  const badges = details.scope.map(scope => `<span class='badge'>${escape(scope)}</span>`).join('');
-  const loopback = details.redirectIsLoopback
-    ? `<p class='notice'>Application locale : continuez uniquement si vous venez de lancer cette connexion sur votre ordinateur.</p>`
-    : '';
-  return `<!doctype html><html lang='fr'><head><meta charset='utf-8'>
-<meta name='viewport' content='width=device-width, initial-scale=1'>
-<title>Autoriser GitHub MCP</title><style>${STYLE}</style></head>
-<body><main>
-<span class='mark'>${icon('shield', 36)}</span>
-<h1>Autoriser ${escape(details.clientName)} ?</h1>
-<p class='sub'>${client}</p>
-<p class='dest'>L’accès sera remis à : <strong>${escape(details.redirectHost)}</strong>.</p>
-${loopback}
-<h2>Ce que ce client pourra faire</h2>
-<ul class='perms'>${items}</ul>
-<p class='scopes'>Permissions :<br>${badges}</p>
+  return `<!doctype html><html lang="fr"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autoriser GitHub MCP</title><h1>Autoriser ${escape(details.clientName)} ?</h1>
+<p>${details.clientDomain ? `Domaine du client : ${escape(details.clientDomain)}` :
+    'Le nom de cette application est déclaré par le client et n’est pas vérifié.'}</p>
+<p>L’accès sera remis à : <strong>${escape(details.redirectHost)}</strong>.</p>
+${details.redirectIsLoopback ? '<p>Application locale : continuez uniquement si vous venez de lancer cette connexion sur votre ordinateur.</p>' : ''}
+<p>Ce client pourra lire les dépôts sélectionnés dans la GitHub App et leurs contrôles.</p>
+${details.scope.includes('mcp:write') ? '<p>Vous autorisez aussi la création de branches de travail liées à votre identité, des commits comprenant des ajouts, modifications et suppressions de fichiers, des PR (en brouillon par défaut) et des commentaires sur les commits et PR ouvertes, y compris ceux d’autres collaborateurs, dans les dépôts de cette installation. Les branches protégées et les fichiers sensibles, de contrôle CI ou de publication restent interdits. Ces actions peuvent déclencher la CI ou les déploiements automatiques déjà configurés dans ces dépôts. Vérifiez ces automatisations avant d’accepter.</p>' : '<p>Ce consentement ne permet pas de modifier le code.</p>'}
+${details.scope.includes('mcp:integration') && details.scope.includes('mcp:write') ? '<p>Vous autorisez séparément la fusion de code uniquement vers integration dans les dépôts dont vous avez installé la politique .mcp/integration.json sur la branche principale. Elle exige les contrôles et accords déclarés configurés. Des noms différents ne prouvent pas des agents indépendants. Cette fusion peut déclencher les automatisations du dépôt : integration ne doit pas publier en production.</p>' : '<p>Aucun outil de fusion n’est autorisé par ce consentement.</p>'}
+<p>Aucune fusion vers main/master ou la branche par défaut, aucune approbation GitHub de PR, fermeture de PR ou publication directe n’est exposée.</p>
+${details.scope.includes('mcp:automation') ? '<p>Vous autorisez les vérifications multi-dépôts : lancement du workflow de tests mcp-checks et, avec le droit d’écriture, préparation de ce workflow et des commandes du projet sur vos branches. Les commandes exécutent le code du projet sur un runner GitHub hébergé, sans secret ajouté. Elles consomment des minutes Actions et peuvent déclencher des intégrations déjà présentes. Les dépôts accessibles restent ceux de votre installation GitHub App, y compris ceux ajoutés ultérieurement.</p>' : ''}
+${details.scope.includes('mcp:checks') ? '<p>Vous autorisez aussi le lancement du workflow agent-checks sur les dépôts explicitement configurés. Cela exécute des tests et peut consommer des minutes GitHub Actions.</p>' : details.scope.includes('mcp:automation') ? '' : '<p>Aucun lancement direct de workflow n’est autorisé par ce consentement.</p>'}
+<p>Permissions : ${details.scope.map(escape).join(', ')}</p>
 <form method="post" action="/authorize">
 <input type="hidden" name="handle" value="${escape(handle)}">
 <div class='actions'>

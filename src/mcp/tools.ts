@@ -9,9 +9,11 @@ import { registerProjectTools } from './tools/github/project';
 import { registerCheckTools } from './tools/github/checks';
 import { registerWriteTools } from './tools/github/writes';
 import { registerPullRequestTools } from './tools/github/pull-requests';
+import { WORKFLOW_INSTRUCTIONS } from './workflow-guidance';
+import { registerIntegrationTools } from './tools/github/integration';
 
 export function createServer(context: ToolContext): McpServer {
-  const server = new McpServer({ name: 'github-mcp', version: '0.6.0' });
+  const server = new McpServer({ name: 'github-mcp', version: '0.7.0' }, { instructions: WORKFLOW_INSTRUCTIONS });
   registerRepositoryTools(server, context);
   registerFileTools(server, context);
   registerCommitTools(server, context);
@@ -21,5 +23,6 @@ export function createServer(context: ToolContext): McpServer {
   registerPullRequestTools(server, context);
   registerCheckTools(server, context);
   registerWriteTools(server, context);
+  registerIntegrationTools(server, context);
   return server;
 }

@@ -8,7 +8,7 @@ Le propriétaire a autorisé le mode commun à tous les dépôts : choisir le d�
 
 La sélection de l’installation GitHub définit les dépôts accessibles ; le nouveau mode ne possède pas de deuxième liste ni d’épingle de SHA à mettre à jour dans le MCP. Le workflow est encadré par le serveur, tandis que `.mcp/checks.json` contient les commandes propres au projet. Les écritures restent sur les branches de travail liées à l’identité ; la branche choisie sert de base et de cible de PR.
 
-À la demande du propriétaire, les outils de préparation de changements sont maintenant implémentés : création d’une branche de travail, commits atomiques, puis ouverture d’une PR en brouillon. Ils restent cachés sans activation serveur et consentement d’écriture distinct. Aucun réglage distant n’a été modifié. La prochaine validation sera l’essai réel de ces outils après revue des permissions et automatismes du dépôt, avec le propriétaire. Aucun outil de fusion ou de déploiement direct n’est ajouté. Le propriétaire garde la main sur le commit et le push du MCP lui-même tant qu’il n’autorise pas autre chose.
+Les outils de préparation de changements sont implémentés : branche de travail, commits atomiques et PR en brouillon par défaut. Ils restent cachés sans activation serveur et consentement d’écriture. Évolution du 1er octobre : discussion entre agents, suivi obligatoire dans les consignes jusqu’au résultat CI/build, et capacité séparée d’intégration uniquement vers `integration`, avec politique du propriétaire et consentement `mcp:integration`. Voir [team-workflow.md](team-workflow.md). Aucun réglage distant n’a été modifié par ce lot. Le propriétaire garde la main sur le commit, le push, la branche principale et la publication.
 
 ## Principes
 
@@ -33,7 +33,9 @@ La sélection de l’installation GitHub définit les dépôts accessibles ; le 
 | Suivi corrélé | `github_get_agent_check_result`, contrôleur et cible distincts |
 | Branches, commits atomiques et PR | Outils optionnels implémentés, consentement `mcp:write` et activation serveur obligatoires ; PR en brouillon |
 | Suivi des PR | Deux outils de lecture pour retrouver une PR, son SHA et sa discussion bornée |
-| Commentaires | `github_comment_pull_request`, limité aux PR ouvertes de sa propre branche, sans approbation |
+| Commentaires | `github_comment_pull_request` et `github_comment_commit`, y compris sur le travail d’autres agents, sans modifier leur code ni donner d’APPROVE GitHub |
+| Intégration | `github_merge_integration`, option séparée, CI et avis déclarés au SHA exact ; aucune fusion principale |
+| Retours d’expérience | Mémoire et `TOOL_IMPROVEMENTS.md` distincts, centralisés dans rfkevin/github-mcp ; lecture seule avec remise manuelle possible |
 | Staging et production approuvée | Workflows et contrôles locaux implémentés ; environnements et ressources distants à configurer |
 
 Les noms `github_*` sont conservés pour les clients existants. Disponibilité dans le code ne signifie pas activation ou déploiement à distance.
@@ -42,7 +44,7 @@ Les noms `github_*` sont conservés pour les clients existants. Disponibilité d
 
 Contexte → lectures groupées → branche de travail → changement atomique → tests ciblés → diagnostic → relecture du diff → PR → CI complète → validation humaine.
 
-L’étape d’écriture possède son propre scope, utilise les dépôts sélectionnés dans l’installation GitHub, réserve les branches à l’acteur et exige les SHA attendus. Aucun outil de fusion automatique ou de déploiement production n’est prévu dans le catalogue actuel. Les commits et PR peuvent déclencher les automatismes du dépôt ; voir [writes.md](writes.md).
+L’étape d’écriture possède son propre scope, utilise les dépôts sélectionnés dans l’installation GitHub, réserve les branches à l’acteur et exige les SHA attendus. La capacité d’intégration a un consentement supplémentaire et ne fusionne jamais la branche principale. Aucun outil de publication production directe. Les commits, PR et intégrations peuvent déclencher les automatismes du dépôt ; voir [writes.md](writes.md).
 
 ## Optimisations retenues
 
@@ -54,7 +56,7 @@ Un runner permanent, un cache de résultats persistant ou un verrou distribué n
 
 1. Valider ce lot sur GitHub et depuis Claude ; revoir les permissions effectives de l’installation.
 2. Activer et essayer le mode multi-dépôts sur un nouveau projet. Le premier quick peut démarrer au push avant fusion ; le lancement manuel exige le workflow sur la branche par défaut. L’ancien mode épinglé reste compatible mais n’est plus le parcours recommandé pour plusieurs projets.
-3. Valider les quatre outils d’écriture depuis le client après activation explicite ; ne pas exposer les autres services internes sans nouvelle revue.
+3. Valider les cinq outils d’écriture, le parcours de discussion et, seulement après configuration du propriétaire, l’intégration. Tester aussi un client en lecture seule et la remise manuelle des propositions ; ne pas exposer d’autres services internes sans revue.
 4. Ajouter lint, E2E navigateur et Sonar détaillé si retenus. Ne pas injecter un jeton Sonar dans du code de PR non fiable.
 5. Configurer et éprouver la chaîne staging/production décrite dans [deployments.md](deployments.md). Elle réutilise le paquet compilé par la CI ; les ressources distantes et la migration de l’autodéploiement Cloudflare restent à effectuer.
 

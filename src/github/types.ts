@@ -48,6 +48,7 @@ export type GitHubBranch = {
 
 export type GitHubCommit = {
   sha: string;
+  parents?: Array<{ sha: string }>;
   html_url: string;
   commit: {
     message: string;
@@ -85,7 +86,7 @@ export type GitHubPullRequest = {
   body?: string | null;
   user?: GitHubUser;
   head: { ref: string; sha: string; repo?: { full_name: string } | null };
-  base: { ref: string };
+  base: { ref: string; sha?: string };
 };
 
 export type GitHubIssue = {
@@ -107,6 +108,8 @@ export type GitHubComment = {
   user?: GitHubUser;
   created_at: string;
 };
+
+export type GitHubCommitComment = GitHubComment & { commit_id: string; path?: string | null; line?: number | null };
 
 export type GitHubReview = {
   id: number;
@@ -214,6 +217,8 @@ export type GitHubClientOptions = {
   tokenPermissions?: Record<string, 'read' | 'write'>;
   /** Autorise la fusion de Pull Requests (désactivé par défaut). */
   allowMerge?: boolean;
+  /** Capacité distincte, cible fixe integration uniquement. */
+  allowIntegrationMerge?: boolean;
   /** Autorise l'approbation de Pull Requests (désactivé par défaut). */
   allowApproval?: boolean;
   /** Aucune exécution manuelle autorisée par défaut. Les refs sont aussi explicites. */

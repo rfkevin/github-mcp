@@ -12,7 +12,7 @@ import {
   type FileDeletion,
 } from './types';
 import type { GitHubServiceContext } from './service-context';
-import { AGENT_MEMORY_PATH, assertMemoryAppend, rejectMemoryRewrite } from '../agent-memory';
+import { APPEND_ONLY_PATHS, assertMemoryAppend, rejectMemoryRewrite } from '../agent-memory';
 
 type GitHubRef = { object: { sha: string } };
 type GitHubCommitObject = { sha: string; tree: { sha: string } };
@@ -73,7 +73,9 @@ export class GitHubChanges {
     }
 
     const deletions = options.deletions ?? [];
-    if (deletions.some(deletion => deletion.path === AGENT_MEMORY_PATH)) rejectMemoryRewrite();
+    for (const path of APPEND_ONLY_PATHS) {
+      if (deletions.some(deletion => deletion.path === path)) rejectMemoryRewrite(path);
+    }
     if (changes.length === 0 && deletions.length === 0) {
       throw new Error('Aucun changement à appliquer.');
     }
@@ -172,14 +174,16 @@ export class GitHubChanges {
     plan: ChangeSetPlan,
     existing: ReadonlyMap<string, ExistingFile | undefined>,
   ): Promise<void> {
-    const change = plan.changes.find(item => item.path === AGENT_MEMORY_PATH);
-    const previous = existing.get(AGENT_MEMORY_PATH);
-    if (!change || !previous) return;
-    const { request, repoPath, encodeSegment } = this.dependencies;
-    const blob = await request<{ content: string; encoding: string; size: number }>(
-      repoPath(repository, `/git/blobs/${encodeSegment(previous.sha)}`),
-    );
-    assertMemoryAppend(blob, change.content);
+    for (const path of APPEND_ONLY_PATHS) {
+      const change = plan.changes.find(item => item.path === path);
+      const previous = existing.get(path);
+      if (!change || !previous) continue;
+      const { request, repoPath, encodeSegment } = this.dependencies;
+      const blob = await request<{ content: string; encoding: string; size: number }>(
+        repoPath(repository, `/git/blobs/${encodeSegment(previous.sha)}`),
+      );
+      assertMemoryAppend(blob, change.content, path);
+    }
   }
 
   private createTree(

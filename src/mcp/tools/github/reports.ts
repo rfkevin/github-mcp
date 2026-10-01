@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server';
+import { outputSchemas } from './output-schemas';
 import { z } from 'zod';
 import type { ToolContext } from '../../context';
 import { InputValidationError } from '../../../github/types';
@@ -21,6 +22,7 @@ export function safeDiagnostic(value: string, maxBytes = 4_000): string {
 
 export function registerReportTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_get_check_result', {
+    outputSchema: outputSchemas.github_get_check_result,
     description: 'Lire une exécution par identifiant : SHA associé par GitHub, état, jobs et étapes en échec. Ce SHA ne prouve pas le checkout effectué par le workflow. Pour run_checks, utiliser github_get_agent_check_result.',
     inputSchema: { repository: z.string(), runId: z.number().int().positive(),
       expectedSha: z.string().regex(/^[a-f0-9]{40}$/i).optional() }, annotations,
@@ -45,6 +47,7 @@ export function registerReportTools(server: McpServer, context: ToolContext): vo
   });
 
   server.registerTool('github_get_failure_report', {
+    outputSchema: outputSchemas.github_get_failure_report,
     description: 'Rapport borné des contrôles en échec au commit exact et de leurs annotations. Pas de logs bruts.',
     inputSchema: { repository: z.string(), ref: z.string() }, annotations,
   }, async ({ repository, ref }) => {
@@ -73,6 +76,7 @@ export function registerReportTools(server: McpServer, context: ToolContext): vo
   });
 
   server.registerTool('github_get_quality_report', {
+    outputSchema: outputSchemas.github_get_quality_report,
     description: 'Lire les contrôles publiés par SonarCloud/SonarQube pour un commit. Ne remplace pas l’API Sonar et n’invente pas de quality gate absent.',
     inputSchema: { repository: z.string(), ref: z.string() }, annotations,
   }, async ({ repository, ref }) => {

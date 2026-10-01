@@ -24,6 +24,7 @@ export type GitHubServiceContext = {
   policy: Partial<SecurityPolicy>;
   allowedRepositories: ReadonlySet<string>;
   allowMerge: boolean;
+  allowIntegrationMerge: boolean;
   allowApproval: boolean;
   allowedWorkflows: ReadonlySet<string>;
   allowedWorkflowRefs: ReadonlySet<string>;

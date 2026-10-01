@@ -222,6 +222,7 @@ export class GitHubClient {
       policy: this.policy,
       allowedRepositories: this.allowedRepositories,
       allowMerge: options.allowMerge ?? false,
+      allowIntegrationMerge: options.allowIntegrationMerge ?? false,
       allowApproval: options.allowApproval ?? false,
       allowedWorkflows: new Set(options.allowedWorkflows ?? []),
       allowedWorkflowRefs: new Set(options.allowedWorkflowRefs ?? []),

@@ -65,7 +65,7 @@ Utiliser de préférence une GitHub App de test installée sur un dépôt de tes
 5. Dans **Settings → Secrets and variables → Actions → Variables**, créer la variable de dépôt `RELEASE_PIPELINE_ENABLED=true`. Relancer la CI du dernier push master si elle n’avait pas produit de paquet. Ne relancer que si ce run n’avait pas encore créé `worker-release`.
 6. Vérifier le run staging, puis y tester OAuth et les outils depuis un connecteur de test Claude. Lancer ensuite `deploy-production` et approuver la promotion.
 
-L’intégration Cloudflare actuelle, une commande locale de publication et d’autres détenteurs de jetons peuvent publier hors GitHub. L’approbation n’est une règle effective de ton exploitation qu’après migration de ces voies. Aucun outil MCP de fusion, d’approbation ou de déploiement n’est ajouté.
+L’intégration Cloudflare actuelle, une commande locale de publication et d’autres détenteurs de jetons peuvent publier hors GitHub. L’approbation n’est une règle effective de ton exploitation qu’après migration de ces voies. Aucun outil MCP de fusion principale, d’approbation GitHub ou de déploiement direct n’est ajouté. L’option distincte de fusion vers `integration` décrite dans [team-workflow.md](team-workflow.md) ne doit déclencher aucune production.
 
 ## En cas d’échec
 

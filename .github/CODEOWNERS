@@ -3,4 +3,6 @@
 /scripts/ci/ @rfkevin
 /scripts/deploy/ @rfkevin
 /src/automation/ @rfkevin
+/src/integration/ @rfkevin
+/.mcp/integration.json @rfkevin
 /wrangler.jsonc @rfkevin

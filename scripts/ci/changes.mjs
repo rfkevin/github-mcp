@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 /** Seuls les documents non exécutables permettent d'éviter l'installation. */
 export function docsOnly(paths) {
   return paths.length > 0 && paths.every(path =>
-    path === 'README.md' || path === 'AGENTS.md' || path === 'AGENT_MEMORY.md' || path === 'LICENSE' || /^docs\/[^\r\n]+\.md$/.test(path));
+    path === 'README.md' || path === 'AGENTS.md' || path === 'AGENT_MEMORY.md' || path === 'TOOL_IMPROVEMENTS.md' || path === 'LICENSE' || /^docs\/[^\r\n]+\.md$/.test(path));
 }
 
 /** Ce détecteur vise le runner Ubuntu du workflow, pas un Git découvert dans PATH. */

@@ -1,9 +1,11 @@
 import type { McpServer } from '@modelcontextprotocol/server';
+import { outputSchemas } from './output-schemas';
 import type { ToolContext } from '../../context';
 import { textPayload, toolFailure, toolSuccess } from './result';
 
 export function registerRepositoryTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_list_repositories', {
+    outputSchema: outputSchemas.github_list_repositories,
     description: 'Lister les dépôts sélectionnés dans l’installation GitHub App de ce serveur.',
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },

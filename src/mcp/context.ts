@@ -7,6 +7,7 @@ import { writesEnabled } from '../writes/config';
 import { automationEnabled } from '../automation/config';
 import { AutomationCoordinator } from '../automation/coordinator';
 import { WORKFLOW_NAME } from '../automation/workflow';
+import { IntegrationCoordinator } from '../integration/coordinator';
 
 export type ToolContext = {
   actor: string;
@@ -22,6 +23,7 @@ export type ToolContext = {
   checkCoordinator?: CheckCoordinator;
   writeCoordinator?: WriteCoordinator;
   automationCoordinator?: AutomationCoordinator;
+  integrationCoordinator?: IntegrationCoordinator;
 };
 
 /**
@@ -69,8 +71,14 @@ export function createToolContext(env: AppEnv, actor: string, scopes: readonly s
     const pulls = new GitHubClient({ ...shared, policy: { readOnly: false },
       tokenPermissions: { metadata: 'read', pull_requests: 'write' } });
     context.writeCoordinator = new WriteCoordinator(actor,
-      { repositories: context.github.repositories, branches: context.reads.branches },
-      { branches: contents.branches, changes: contents.changes, pullRequests: pulls.pullRequests, issues: pulls.issues });
+      { repositories: context.github.repositories, branches: context.reads.branches, commits: context.reads.commits },
+      { branches: contents.branches, changes: contents.changes, pullRequests: pulls.pullRequests, issues: pulls.issues, commits: contents.commits });
+    if (scopes.includes('mcp:integration')) {
+      context.integrationCoordinator = new IntegrationCoordinator(actor, context, (repository, head, message) =>
+        new GitHubClient({ ...shared, policy: { readOnly: false }, allowIntegrationMerge: true,
+          allowedRepositories: [repository], tokenPermissions: { metadata: 'read', contents: 'write' },
+        }).branches.mergeIntegration(repository, head, message));
+    }
   }
   if (checks.length > 0 && scopes.includes('mcp:checks')) {
     const dispatch = new GitHubClient({ ...shared, policy: { readOnly: false },
