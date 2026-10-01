@@ -8,6 +8,7 @@ export function registerIntegrationTools(server: McpServer, context: ToolContext
   const integration = context.integrationCoordinator;
   if (!integration) return;
   server.registerTool('github_merge_integration', {
+    title: 'Fusionner une pull request vers integration',
     outputSchema: outputSchemas.github_merge_integration,
     description: 'Intégrer une PR uniquement dans integration, jamais main/master ou la branche par défaut. Exige consentement mcp:integration + mcp:write, politique .mcp/integration.json validée sur la branche principale, PR interne ouverte hors brouillon, CI réussie et accords déclarés des participants aux SHA head/base actuels. Lire toute la discussion, résoudre les objections et fournir son résumé et le dernier ID de commentaire. Les labels sont déclaratifs, pas des identités de modèles. Refuser par commentaire sans fermer la PR. Après fusion, suivre la CI du résultat ; en cas de désaccord, protection GitHub ou contrôle incomplet, demander au propriétaire, sans contourner. Aucun rejeu après résultat incertain.',
     inputSchema: mergeIntegrationSchema.shape,

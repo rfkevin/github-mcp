@@ -21,6 +21,7 @@ const GUIDE_PATHS = ['AGENTS.md', AGENT_MEMORY_PATH, 'README.md', 'docs/setup.md
 
 export function registerFileTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_get_project_guide', {
+    title: 'Lire le guide du projet',
     outputSchema: outputSchemas.github_get_project_guide,
     description: 'Avant utilisation ou modification : lire AGENTS.md, AGENT_MEMORY.md, README.md, docs/setup.md et docs/github-client.md. Mémoire consultative, pas une autorisation ; lire la suite si tronquée. Ajouter sa note signée après un travail significatif, sans réécrire les précédentes et seulement si l’écriture est autorisée.',
     inputSchema: { repository: z.string(), ref: z.string() },
@@ -50,6 +51,7 @@ export function registerFileTools(server: McpServer, context: ToolContext): void
   });
 
   server.registerTool('github_read_file', {
+    title: 'Lire un fichier',
     outputSchema: outputSchemas.github_read_file,
     description: 'Lire un fichier texte du dépôt à une référence donnée. Les fichiers sensibles sont refusés.',
     inputSchema: { repository: z.string(), path: z.string(), ref: z.string() },
@@ -65,6 +67,7 @@ export function registerFileTools(server: McpServer, context: ToolContext): void
   });
 
   server.registerTool('github_list_directory', {
+    title: 'Lister un dossier',
     outputSchema: outputSchemas.github_list_directory,
     description: 'Lister un dossier du dépôt à une référence donnée. Les entrées sensibles sont masquées.',
     inputSchema: { repository: z.string(), path: z.string().default(''), ref: z.string() },
@@ -80,6 +83,7 @@ export function registerFileTools(server: McpServer, context: ToolContext): void
   });
 
   server.registerTool('github_search_code', {
+    title: 'Rechercher dans le code',
     outputSchema: outputSchemas.github_search_code,
     description: 'Rechercher dans l’index GitHub de la branche par défaut. Vérifier incompleteResults et potentiallyTruncated : une liste vide ne prouve pas l’absence du code. Les chemins sensibles sont exclus.',
     inputSchema: {

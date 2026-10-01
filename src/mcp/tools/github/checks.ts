@@ -13,6 +13,7 @@ export function registerCheckTools(server: McpServer, context: ToolContext): voi
     scope: z.enum(checkScopes).default('quick'), target: z.string().max(240).default(''),
   };
   server.registerTool('github_run_checks', {
+    title: 'Lancer les vérifications autorisées',
     outputSchema: outputSchemas.github_run_checks,
     description: context.automationCoordinator
       ? 'Vérifier un dépôt et une branche (ref) ou SHA exact avec .mcp/checks.json. Réutilise les runs push quick ; lancement manuel si mcp-checks.yml est installé sur la branche par défaut. Retour immédiat : conserver sha, scope, target et runId. Exécute les commandes du projet sur GitHub Actions et peut consommer des minutes.'
@@ -30,6 +31,7 @@ export function registerCheckTools(server: McpServer, context: ToolContext): voi
     }
   });
   server.registerTool('github_get_agent_check_result', {
+    title: 'Lire le résultat des vérifications de l’agent',
     outputSchema: outputSchemas.github_get_agent_check_result,
     description: 'Résultat corrélé de run_checks : vérifie le contrôleur, le commit testé, les paramètres et l’étape réellement exécutée. Ne confond pas le commit du workflow avec la cible.',
     inputSchema: { ...requestSchema, sha: z.string().regex(/^[a-f0-9]{40}$/i), runId: z.number().int().positive() },
@@ -45,6 +47,7 @@ export function registerCheckTools(server: McpServer, context: ToolContext): voi
     }
   });
   if (context.automationCoordinator) server.registerTool('github_prepare_checks', {
+    title: 'Préparer les vérifications du projet',
     outputSchema: outputSchemas.github_prepare_checks,
     description: 'Préparer les vérifications du dépôt : workflow mcp-checks.yml encadré et plan .mcp/checks.json. Fournir les vraies commandes après lecture du projet. apply=false prévisualise ; apply=true crée un commit atomique sur votre branche et peut démarrer quick au push. Application réservée au consentement mcp:write. Les workflows existants restent protégés.',
     inputSchema: prepareSchema.shape,

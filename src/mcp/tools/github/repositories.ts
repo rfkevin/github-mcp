@@ -5,6 +5,7 @@ import { textPayload, toolFailure, toolSuccess } from './result';
 
 export function registerRepositoryTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_list_repositories', {
+    title: 'Lister les dépôts accessibles',
     outputSchema: outputSchemas.github_list_repositories,
     description: 'Lister les dépôts sélectionnés dans l’installation GitHub App de ce serveur.',
     inputSchema: {},

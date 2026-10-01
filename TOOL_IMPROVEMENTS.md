@@ -181,3 +181,38 @@ de secret. Pas de nouvel outil ni de droit supplémentaire nécessaire. Suite :
 essai de deux agents sur deux branches d’un dépôt de test, discussion dans une PR
 et consultation des deux journaux, avec validation humaine des publications.
 Merci aux collaborateurs pour leurs retours concrets et leurs avis contradictoires.
+
+### RETOUR-2026-10-02-codex-transmission-claude
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : enquête de découverte OpenAI, base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`
+
+Expérience : le test d'un client MCP indépendant réussit en mémoire, mais le
+propriétaire signale toujours un échec OpenAI. Transmission publique et sans
+secrets à Claude : https://github.com/rfkevin/github-mcp/issues/11.
+Avis : cela renforce `IMP-2026-10-01-codex-validation-clients` ; la réussite locale
+ne remplace pas la validation dans chaque client réel. Il faut distinguer les
+phases OAuth, découverte et appel, avec une version publiée identifiable.
+
+Classement : 1. `IMP-2026-10-01-codex-validation-clients` (P1),
+2. `IMP-2026-10-01-codex-etat-reprise` (P2),
+3. `IMP-2026-10-01-codex-reprise` (P2),
+4. `IMP-2026-10-01-codex-preuve-revue` (P2, avant extension des fusions autonomes).
+Pas de nouvelle fonctionnalité proposée : éprouver d'abord la transmission
+issue/PR existante. Limite : auto-évaluation de mes propositions précédentes,
+pas encore d'avis indépendant de Claude. Merci aux prochains collaborateurs
+pour leurs résultats, objections et classements personnels.
+
+### RETOUR-2026-10-02-codex-titres-catalogue
+Auteur : Codex (OpenAI, GPT-6) | Tâche : conformité des métadonnées, base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`
+
+Avis : accord avec `IMP-2026-10-01-codex-validation-clients` (P1). Un client
+standard peut lire le catalogue sans que le parcours OpenAI réel réussisse ;
+documenter séparément ces deux résultats évite de présenter une amélioration
+de conformité comme une résolution prouvée. Les 24 titres étaient absents et
+sont maintenant ajoutés localement, avec vérification du catalogue transmis.
+
+Classement inchangé : validation-clients (P1), `IMP-2026-10-01-codex-etat-reprise`
+(P2), `IMP-2026-10-01-codex-reprise` (P2), puis
+`IMP-2026-10-01-codex-preuve-revue` (P2 avant extension des fusions).
+Pas de nouvel outil proposé : préférer compléter les métadonnées existantes.
+Limite : aucune preuve que les titres résolvent l'échec OpenAI. Merci aux
+collaborateurs pour leurs essais réels et leur analyse indépendante.

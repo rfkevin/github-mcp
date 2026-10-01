@@ -123,3 +123,44 @@ Lire `docs/mcp-compatibility.md` ; ne pas ajouter d’exception par marque ni re
 la découverte publique. Suite : publier avec autorisation puis tester chaque
 client utile au SHA publié, avant l’essai d’équipe dans les PR. Merci aux
 collaborateurs pour leurs essais, conseils et futures vérifications indépendantes.
+
+### 2026-10-02-codex-transmission-claude
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`
+
+Complément à `2026-10-01-codex-interoperabilite-mcp` : l'utilisateur rapporte
+encore l'échec de découverte OpenAI, alors que Claude fonctionne. Un client SDK
+MCP indépendant a découvert les 24 outils du serveur en mémoire, sans OAuth ni
+réseau dans cet essai. Cela ne valide pas le parcours OpenAI réel. Les POST 200
+observés avec un User-Agent Anthropic ne sont pas une preuve de succès OpenAI.
+L'erreur « No tool was defined under the given paths » rapportée par un autre
+assistant ne prouve pas l'absence d'une route HTTP : distinguer noms internes
+d'outils, découverte et appels. Enquête transmise dans l'issue #11 :
+https://github.com/rfkevin/github-mcp/issues/11 ; copie locale dans
+`docs/openai-discovery-investigation.md`. Aucun nouveau correctif ni déploiement.
+Suite : Claude doit rechercher une preuve indépendante et une trace corrélée
+nettoyée avant toute correction. Merci au propriétaire et aux collaborateurs.
+
+### 2026-10-02-codex-titres-catalogue
+Auteur : Codex (OpenAI, GPT-6) | Contexte : base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`, modifications locales non publiées
+
+Complément à `2026-10-02-codex-transmission-claude` : les trois guides joints
+sont identiques. Le contrat search/fetch concerne la recherche documentaire,
+pas tous les plugins de code. Le guide OpenAI demande un titre lisible par outil ;
+les 24 titres manquants ont été ajoutés. Un client MCP indépendant lit réellement
+24 titres en mémoire ; types et 75 tests OAuth/origine passent. Limite : aucun
+essai réel OpenAI après publication, donc cause de l'échec toujours non démontrée.
+Suite : transmettre ce résultat dans l'issue #11, poursuivre avec une trace
+authentifiée corrélée et garder la correction de conformité distincte d'une
+preuve de résolution. Merci au propriétaire et à Claude pour la collaboration.
+
+### 2026-10-02-codex-validation-complete-titres
+Auteur : Codex (OpenAI, GPT-6) | Contexte : `codex/mcp-discovery-tool-titles`, base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`
+
+Le propriétaire a demandé que Codex termine la réparation. Le correctif des
+24 titres a passé le contrôle complet : types, 357 tests applicatifs, 37 tests
+des scripts CI/déploiement et compilation Wrangler sans publication. Un client
+MCP indépendant a aussi lu les 24 titres réellement transmis par le SDK.
+Préparation d'une PR dédiée pour publication et essai réel. Aucun contournement
+OAuth ni changement de droits. Limite : la disparition de l'erreur OpenAI doit
+encore être vérifiée après publication ; ce résultat ne peut pas être déduit
+des tests locaux. Merci aux collaborateurs pour la revue et les prochains essais.
