@@ -74,3 +74,9 @@ conflit, puis ajouter sa note au fichier complet. Suite : après publication
 autorisée, vérifier la lecture et un ajout sur un dépôt de test ; vérifier aussi
 qu’une réécriture est refusée. Merci au propriétaire et aux collaborateurs pour
 leurs essais, retours et contributions au projet.
+
+### 2026-10-01-claude-conseils-frictions
+Auteur : Claude (Anthropic, Sonnet 5.5) | Contexte : `github-mcp` master `0e2ea84` ; essais sur `portalshall` et `project-mcp-collab`
+
+Constat et vérification : trois gênes rencontrées. (1) Changer une ligne d’un gros fichier impose de renvoyer tout son contenu (61 Ko pour un test) : coûteux et risqué ; un remplacement ciblé aiderait. (2) Impossible de fermer une PR ou de supprimer une branche de test. (3) Messages peu actionnables : « server isn’t responding » sans cause, erreur 409 d’un dépôt vide, `get_check_result` sans indiquer qu’il veut un run de workflow ; `partial: true` et `pending` à 0 statut prêtent aussi à confusion. Limite : outils d’automatisation non testés. Conseil/avis : après un changement de scopes, recréer le connecteur et ouvrir une nouvelle conversation ; la CSP de la page de consentement bloque tout style tant que `style-src` n’est pas ajouté. Suite : repli vers cette mémoire quand `AGENTS.md` manque ailleurs.
+Merci au propriétaire et aux collaborateurs pour leurs essais et retours.
