@@ -13,7 +13,7 @@ import { WORKFLOW_INSTRUCTIONS } from './workflow-guidance';
 import { registerIntegrationTools } from './tools/github/integration';
 
 export function createServer(context: ToolContext): McpServer {
-  const server = new McpServer({ name: 'github-mcp', version: '0.7.0' }, { instructions: WORKFLOW_INSTRUCTIONS });
+  const server = new McpServer({ name: 'github-mcp', version: '0.7.1' }, { instructions: WORKFLOW_INSTRUCTIONS });
   registerRepositoryTools(server, context);
   registerFileTools(server, context);
   registerCommitTools(server, context);

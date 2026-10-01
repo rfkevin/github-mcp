@@ -746,7 +746,11 @@ describe('Worker OAuth / MCP', () => {
       const { headers } = await mcpSession('mcp:read mcp:checks offline_access');
       const list = () => send('/mcp', { method: 'POST', headers,
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
-      expect(await (await list()).text()).toContain('github_run_checks');
+      const catalogue = await (await list()).text();
+      expect(catalogue).toContain('github_run_checks');
+      const tools = rpcResult(catalogue).tools as Array<{ name: string; _meta: { securitySchemes: unknown } }>;
+      expect(tools.find(tool => tool.name === 'github_run_checks')?._meta.securitySchemes)
+        .toEqual([{ type: 'oauth2', scopes: ['mcp:read', 'mcp:checks'] }]);
       delete settings.GITHUB_CHECKS_CONFIG;
       expect(await (await list()).text()).not.toContain('github_run_checks');
     } finally { delete settings.GITHUB_CHECKS_CONFIG; }
@@ -903,7 +907,19 @@ describe('Worker OAuth / MCP', () => {
         expect(response.status).toBe(200);
         const text = await response.text();
         const envelope = JSON.parse((text.split('\n').find(line => line.startsWith('data: ')) ?? `data: ${text}`).slice(6));
-        return (envelope.result.tools as Array<{ name: string }>).map(tool => tool.name);
+        const tools = envelope.result.tools as Array<{ name: string; title: string;
+          inputSchema: { type: string }; outputSchema: { type: string };
+          _meta: { securitySchemes: Array<{ type: string; scopes: string[] }> } }>;
+        for (const tool of tools) {
+          expect(tool.title.trim().length).toBeGreaterThan(0);
+          expect(tool.inputSchema.type).toBe('object');
+          expect(tool.outputSchema.type).toBe('object');
+          const capabilities = tool.name === 'github_merge_integration' ? ['mcp:write', 'mcp:integration']
+            : ['github_run_checks', 'github_get_agent_check_result', 'github_prepare_checks'].includes(tool.name) ? ['mcp:automation']
+            : ['github_comment_commit', 'github_comment_pull_request', 'github_create_branch', 'github_commit_changes', 'github_open_pull_request'].includes(tool.name) ? ['mcp:write'] : [];
+          expect(tool._meta.securitySchemes).toEqual([{ type: 'oauth2', scopes: ['mcp:read', ...capabilities] }]);
+        }
+        return tools.map(tool => tool.name);
       };
       expect(await list(read.headers)).toHaveLength(15);
       expect(await list(write.headers)).toHaveLength(20);

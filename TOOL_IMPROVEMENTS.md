@@ -216,3 +216,22 @@ Classement inchangé : validation-clients (P1), `IMP-2026-10-01-codex-etat-repri
 Pas de nouvel outil proposé : préférer compléter les métadonnées existantes.
 Limite : aucune preuve que les titres résolvent l'échec OpenAI. Merci aux
 collaborateurs pour leurs essais réels et leur analyse indépendante.
+
+### RETOUR-2026-10-02-codex-diagnostic-responses
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : adaptation OAuth du catalogue et diagnostic OpenAI
+
+Avis sur `IMP-2026-10-01-codex-validation-clients` : priorité P1 maintenue. Le
+diagnostic Responses ajouté réduit l'ambiguïté API/découverte/appel sans afficher
+de secrets, mais ne remplace pas le test du plugin réel. Ne pas ajouter un outil
+MCP de diagnostic qui demanderait une clé API au modèle : conserver ce contrôle
+local et facultatif, hors ligne par défaut. Les métadonnées par outil sont
+vérifiées dans les réponses réellement sérialisées de nos tests OAuth simulés.
+
+Classement : validation-clients (P1), `IMP-2026-10-01-codex-etat-reprise` (P2),
+`IMP-2026-10-01-codex-reprise` (P2), puis
+`IMP-2026-10-01-codex-preuve-revue` (P2 avant plus de fusions autonomes).
+Amélioration suggérée dans validation-clients : faire apparaître systématiquement
+le SHA publié dans `/ready` pour relier chaque essai au code exact. Critère : une
+trace de test donne version, SHA, client et phase, sans corps OAuth. Limite :
+auto-évaluation et réponses API simulées, pas de validation OpenAI réelle. Merci
+aux prochains collaborateurs pour leurs objections et leur classement personnel.
