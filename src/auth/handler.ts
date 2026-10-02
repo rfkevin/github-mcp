@@ -11,11 +11,11 @@ const IDENTITY_FAILURE_MESSAGES: Record<string, string> = {
   github_token_network_error: 'GitHub est injoignable depuis ce serveur. Réessayez dans un instant.',
   github_user_network_error: 'GitHub est injoignable depuis ce serveur. Réessayez dans un instant.',
   github_token_redirect_rejected:
-    'Une redirection GitHub inattendue a été refusée par sécurité. Aucun identifiant n'a été transmis.',
+    'Une redirection GitHub inattendue a été refusée par sécurité. Aucun identifiant n’a été transmis.',
   github_user_redirect_rejected:
-    'Une redirection GitHub inattendue a été refusée par sécurité. Aucun identifiant n'a été transmis.',
+    'Une redirection GitHub inattendue a été refusée par sécurité. Aucun identifiant n’a été transmis.',
   github_token_http_error: 'GitHub a refusé la demande de connexion.',
-  github_user_http_error: 'GitHub a refusé la vérification de l'identité.',
+  github_user_http_error: 'GitHub a refusé la vérification de l’identité.',
   github_token_redirect_uri_mismatch: 'Le callback GitHub configuré ne correspond pas à cette adresse.',
   github_token_incorrect_client_credentials: 'Les identifiants OAuth GitHub du serveur sont invalides.',
   github_token_bad_verification_code: 'Le code de connexion GitHub a expiré ou a déjà été utilisé. Recommencez.',
@@ -50,7 +50,7 @@ function htmlErrorPage(title: string, message: string, status: number): Response
     '<title>' + escapeHtml(title) + '</title><style>' + ERROR_STYLE + '</style></head><body><main>',
     '<h1>' + escapeHtml(title) + '</h1>',
     '<p>' + escapeHtml(message) + '</p>',
-    '<p class="hint">Recommencez la connexion depuis votre client, sans recharger cette page : chaque demande de connexion ne sert qu'une fois.</p>',
+    '<p class="hint">Recommencez la connexion depuis votre client, sans recharger cette page : chaque demande de connexion ne sert qu’une fois.</p>',
     '</main></body></html>',
   ].join('');
   return new Response(html, { status, headers: {

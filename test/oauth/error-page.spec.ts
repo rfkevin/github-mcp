@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createOAuthFixture } from './helpers';
 const { send, cookie, consent } = createOAuthFixture();
-describe('Pages d'erreur claires du flux OAuth', () => {
+describe('Pages d’erreur claires du flux OAuth', () => {
     it('explique en HTML une approbation déjà consommée, sans redirection ni lien', async () => {
         const { handle, page } = await consent();
         const headers = { Cookie: cookie(page) };
