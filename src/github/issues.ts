@@ -54,6 +54,17 @@ export class GitHubIssues {
     return items.filter(item => !item.pull_request);
   }
 
+  /** The cap applies before PR filtering; a short issue list may still have another page. */
+  async listIssuesPage(repository: string, options: { state: 'open' | 'closed' | 'all'; limit: number; page: number }) {
+    const { assertPositiveInteger, repoPath, request, withQuery } = this.dependencies;
+    assertPositiveInteger(options.limit, 'Limite');
+    assertPositiveInteger(options.page, 'Page');
+    const items = await request<GitHubIssue[]>(withQuery(repoPath(repository, '/issues'), {
+      state: options.state, per_page: Math.min(options.limit, 50), page: options.page,
+    }));
+    return { issues: items.filter(item => !item.pull_request), potentiallyTruncated: items.length >= Math.min(options.limit, 50) };
+  }
+
   updateIssue(
     repository: string,
     issueNumber: number,

@@ -181,3 +181,149 @@ de secret. Pas de nouvel outil ni de droit supplémentaire nécessaire. Suite :
 essai de deux agents sur deux branches d’un dépôt de test, discussion dans une PR
 et consultation des deux journaux, avec validation humaine des publications.
 Merci aux collaborateurs pour leurs retours concrets et leurs avis contradictoires.
+
+### RETOUR-2026-10-02-codex-transmission-claude
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : enquête de découverte OpenAI, base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`
+
+Expérience : le test d'un client MCP indépendant réussit en mémoire, mais le
+propriétaire signale toujours un échec OpenAI. Transmission publique et sans
+secrets à Claude : https://github.com/rfkevin/github-mcp/issues/11.
+Avis : cela renforce `IMP-2026-10-01-codex-validation-clients` ; la réussite locale
+ne remplace pas la validation dans chaque client réel. Il faut distinguer les
+phases OAuth, découverte et appel, avec une version publiée identifiable.
+
+Classement : 1. `IMP-2026-10-01-codex-validation-clients` (P1),
+2. `IMP-2026-10-01-codex-etat-reprise` (P2),
+3. `IMP-2026-10-01-codex-reprise` (P2),
+4. `IMP-2026-10-01-codex-preuve-revue` (P2, avant extension des fusions autonomes).
+Pas de nouvelle fonctionnalité proposée : éprouver d'abord la transmission
+issue/PR existante. Limite : auto-évaluation de mes propositions précédentes,
+pas encore d'avis indépendant de Claude. Merci aux prochains collaborateurs
+pour leurs résultats, objections et classements personnels.
+
+### RETOUR-2026-10-02-codex-titres-catalogue
+Auteur : Codex (OpenAI, GPT-6) | Tâche : conformité des métadonnées, base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`
+
+Avis : accord avec `IMP-2026-10-01-codex-validation-clients` (P1). Un client
+standard peut lire le catalogue sans que le parcours OpenAI réel réussisse ;
+documenter séparément ces deux résultats évite de présenter une amélioration
+de conformité comme une résolution prouvée. Les 24 titres étaient absents et
+sont maintenant ajoutés localement, avec vérification du catalogue transmis.
+
+Classement inchangé : validation-clients (P1), `IMP-2026-10-01-codex-etat-reprise`
+(P2), `IMP-2026-10-01-codex-reprise` (P2), puis
+`IMP-2026-10-01-codex-preuve-revue` (P2 avant extension des fusions).
+Pas de nouvel outil proposé : préférer compléter les métadonnées existantes.
+Limite : aucune preuve que les titres résolvent l'échec OpenAI. Merci aux
+collaborateurs pour leurs essais réels et leur analyse indépendante.
+
+### RETOUR-2026-10-02-codex-diagnostic-responses
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : adaptation OAuth du catalogue et diagnostic OpenAI
+
+Avis sur `IMP-2026-10-01-codex-validation-clients` : priorité P1 maintenue. Le
+diagnostic Responses ajouté réduit l'ambiguïté API/découverte/appel sans afficher
+de secrets, mais ne remplace pas le test du plugin réel. Ne pas ajouter un outil
+MCP de diagnostic qui demanderait une clé API au modèle : conserver ce contrôle
+local et facultatif, hors ligne par défaut. Les métadonnées par outil sont
+vérifiées dans les réponses réellement sérialisées de nos tests OAuth simulés.
+
+Classement : validation-clients (P1), `IMP-2026-10-01-codex-etat-reprise` (P2),
+`IMP-2026-10-01-codex-reprise` (P2), puis
+`IMP-2026-10-01-codex-preuve-revue` (P2 avant plus de fusions autonomes).
+Amélioration suggérée dans validation-clients : faire apparaître systématiquement
+le SHA publié dans `/ready` pour relier chaque essai au code exact. Critère : une
+trace de test donne version, SHA, client et phase, sans corps OAuth. Limite :
+auto-évaluation et réponses API simulées, pas de validation OpenAI réelle. Merci
+aux prochains collaborateurs pour leurs objections et leur classement personnel.
+
+### RETOUR-2026-10-02-codex-schemas-interlangages
+Auteur : Codex (OpenAI, GPT-6) | Tâche : découverte vide après OAuth réussi
+
+Avis : `IMP-2026-10-01-codex-validation-clients` reste P1. Compléter les essais
+avec un validateur JSON Schema d'un autre langage : cette vérification a refusé
+quatre schémas de notre catalogue alors que le client SDK JavaScript les lisait.
+Conserver les contraintes non portables côté serveur et ne déclarer que ce que
+les clients peuvent interpréter. Aucun élargissement de permissions nécessaire.
+
+Classement : validation-clients (P1), `IMP-2026-10-01-codex-etat-reprise` (P2),
+`IMP-2026-10-01-codex-reprise` (P2), puis
+`IMP-2026-10-01-codex-preuve-revue` (P2 avant extension des fusions).
+Proposition rattachée à validation-clients : un contrôle interlangage optionnel
+sur le catalogue complet de publication, avec versions de validateurs fixées.
+Critère : schémas d'entrée et de sortie vérifiés, erreurs localisées par outil.
+Coût : dépendance Python supplémentaire si intégré en CI ; garder d'abord le
+test ciblé existant et mesurer le bénéfice. Limite : ce contrôle ne certifie pas
+OpenAI, ni tous les clients. Merci aux collaborateurs pour leur avis indépendant.
+
+
+### RETOUR-2026-10-02-codex-pr17-correction-navigation
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : PR #17, base `971740dcca84f1283943eeba294cd5b245fc7419`
+Expérience : lectures MCP réelles de dépôts/PR/CI ; correction et tests locaux avec GitHub simulé.
+
+Avis sur l'existant : accord avec `IMP-2026-10-01-codex-validation-clients` :
+les outils étaient visibles et certaines lectures réelles fonctionnent dans cette
+session, mais une préversion verte ne remplace pas la CI ni un essai OAuth des
+nouvelles fonctions. Accord avec `IMP-2026-10-01-codex-etat-reprise` : le retour
+complet de la PR #17 a permis de distinguer son code du fichier endommagé de #15.
+`IMP-2026-10-01-codex-reprise` reste utile après un état de reprise fiable ;
+`IMP-2026-10-01-codex-preuve-revue` reste conditionnelle avant extension des fusions.
+
+Classement personnel : 1. validation-clients — P1, validation de la version
+réellement utilisée ; 2. etat-reprise — P2, continuité au bon SHA ; 3. reprise —
+P2, ensuite seulement ; 4. preuve-revue — P2 conditionnelle, intégration non utilisée.
+
+Aucune nouvelle proposition : les besoins d'édition ciblée, restauration et append
+étaient déjà décrits dans le commentaire 5950768081 de #17 et la note de Claude
+`2026-10-01-claude-conseils-frictions`. Le présent travail corrige l'outil ciblé
+déjà ajouté à #17 ; garde générale anti-troncature, restauration, append dédié et
+création d'issue restent à décider séparément. Le découpage demandé réduit le
+plus long fichier de tests de 1 285 à 289 lignes ; une carte précise les chemins.
+Limite : aucun gain de temps agent mesuré, pas de droits élargis ou de fusion.
+Suite : revue de #17 et essai réel après publication humaine. Merci aux collaborateurs.
+
+### RETOUR-2026-10-02-codex-pr17-restauration-append-issues
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : compléments autorisés à PR #17, base `36f1d25`
+
+Complément au retour `RETOUR-2026-10-02-codex-pr17-correction-navigation` :
+restauration, append et création d'issue ont maintenant été demandés explicitement
+par le propriétaire et implémentés ; aucune proposition n'a servi d'autorisation.
+Les besoins figurent déjà dans le commentaire 5950768081 et la note de Claude
+`2026-10-01-claude-conseils-frictions`, sans nouvelle proposition indépendante.
+Le parcours simulé crée, liste et lit une issue ; les refus Issues: Write
+n'empêchent pas les autres lectures ni les commentaires PR. L'append respecte
+les vrais contrôles des journaux, y compris BOM, CRLF et Unicode conservés.
+
+Avis et classement personnel : 1. `IMP-2026-10-01-codex-validation-clients`
+(P1), vérifier version publiée/catalogue/permissions réelles après revue ;
+2. `IMP-2026-10-01-codex-etat-reprise` (P2), relire les SHA et issues après
+réponse incertaine pour éviter un doublon ; 3. `IMP-2026-10-01-codex-reprise`
+(P2), utile une fois l'état fiable ; 4. `IMP-2026-10-01-codex-preuve-revue`
+(P2 conditionnelle avant extension des fusions). Accord avec ces propositions,
+sans présenter les tests locaux comme preuve de publication ni d'essai Claude.
+La garde générale anti-troncature reste séparée, les outils ciblés réduisent
+l'exposition sans la remplacer. Prochaine étape : revue humaine de #17 et essai
+réel avec permission acceptée ; pas de droit accordé ni de fusion ici.
+Merci aux collaborateurs pour leurs retours et vérifications indépendantes.
+
+
+### RETOUR-2026-10-02-codex-pr15-conflits
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : réparer #15 et ajouter la résolution de branche
+
+Expérience vérifiée : #15 conservait un lecteur d'issues antérieur et un test
+PLACEHOLDER, alors que #17 est désormais fusionnée. Le propriétaire autorise
+la correction et les outils de conflits ; les propositions seules ne donnent
+aucun droit. Diagnostic et résolution sont séparés : lecture possible sans
+écriture, choix explicites et deux parents sur sa branche avec mcp:write.
+Le parcours OAuth et les protections sont testés avec GitHub simulé.
+
+Avis et classement : 1. IMP-2026-10-01-codex-validation-clients (P1), garder
+le SHA/version du catalogue réellement publié, puis essai dans les clients ;
+2. IMP-2026-10-01-codex-etat-reprise (P2), lire head/base/ancêtre pour ne pas
+confondre un conflit de fichier et un avis périmé ; 3. IMP-2026-10-01-codex-reprise
+(P2), seulement à partir de cet état vérifié ; 4. IMP-2026-10-01-codex-preuve-revue
+(P2 conditionnelle), renouveler les avis après le commit de résolution. Accord
+avec ces quatre propositions, aucun besoin nouveau distinct dans ce travail.
+Suite concrète : éprouver ces opérations sur un dépôt de test après publication
+humaine. Limites : fusion conservative par fichiers, arbitragée si chemins
+protégés ou journaux incompatibles ; aucun shell distant, bypass ou force-push.
+Merci aux collaborateurs pour leurs objections et vérifications indépendantes.

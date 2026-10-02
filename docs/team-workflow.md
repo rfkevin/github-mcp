@@ -53,6 +53,12 @@ disposent de leur propre reprise autorisée. Le MCP fournit le lieu d’échange
 contrôles, pas un orchestrateur autonome. Si l’attente ne peut pas continuer, laisser
 PR, SHA, contrôles restants et prochaine action, avec « vérification incomplète ».
 
+En cas de conflits, `github_get_merge_context` prépare une comparaison immuable
+à trois versions ; `github_resolve_conflicts` enregistre les choix explicites
+dans la branche personnelle avec `mcp:write`. Ce n’est pas une intégration de PR
+dans la branche principale. Refaire les tests et avis au nouveau SHA. Parcours,
+protections et limites : [conflict-resolution.md](conflict-resolution.md).
+
 ## Mémoire et propositions : deux registres, un dépôt central
 
 Le serveur indique `rfkevin/github-mcp` comme destination centrale, sans en faire

@@ -3,6 +3,8 @@ import type { AppEnv } from '../config';
 import { checksConfig } from '../checks/config';
 import { CheckCoordinator } from '../checks/coordinator';
 import { WriteCoordinator } from '../writes/coordinator';
+import { IssueWriteCoordinator } from '../writes/issues';
+import { MergeCoordinator } from '../merges/coordinator';
 import { writesEnabled } from '../writes/config';
 import { automationEnabled } from '../automation/config';
 import { AutomationCoordinator } from '../automation/coordinator';
@@ -14,16 +16,18 @@ export type ToolContext = {
   /** Permissions minimales (métadonnées) : listing de l'installation. */
   github: Pick<GitHubClient, 'repositories'>;
   /** Contenu du dépôt uniquement. Aucun droit Actions ni Pull Requests requis. */
-  reads: Pick<GitHubClient, 'files' | 'commits' | 'branches'>;
+  reads: Pick<GitHubClient, 'files' | 'commits' | 'branches' | 'merges'>;
   /** PR isolées : une permission manquante ne bloque pas les fichiers. */
   pulls: Pick<GitHubClient, 'pullRequests' | 'issues'>;
-  /** Issues en lecture seule : droit Issues distinct, un refus ne bloque aucune autre famille. */
-  issueReads: Pick<GitHubClient, 'issues'>;
+  /** Issues isolées : permission GitHub Issues: Read, indépendante des PR. */
+  issues: GitHubClient['issues'];
   checks: GitHubClient['actions'];
   statuses: GitHubClient['actions'];
   workflows: GitHubClient['actions'];
   checkCoordinator?: CheckCoordinator;
   writeCoordinator?: WriteCoordinator;
+  issueWriteCoordinator?: IssueWriteCoordinator;
+  mergeCoordinator?: MergeCoordinator;
   automationCoordinator?: AutomationCoordinator;
   integrationCoordinator?: IntegrationCoordinator;
 };
@@ -54,9 +58,10 @@ export function createToolContext(env: AppEnv, actor: string, scopes: readonly s
     statuses: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', statuses: 'read' } }).actions,
     workflows: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', actions: 'read' } }).actions,
     pulls: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', pull_requests: 'read' } }),
-    issueReads: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', issues: 'read' } }),
+    issues: new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', issues: 'read' } }).issues,
   };
   const checks = checksConfig(env.GITHUB_CHECKS_CONFIG);
+  context.mergeCoordinator = new MergeCoordinator(actor, { repositories: context.github.repositories, ...context.reads });
   if (automationEnabled(env.GITHUB_AUTOMATION_ENABLED) && scopes.includes('mcp:automation')) {
     const canPrepare = writesEnabled(env.GITHUB_WRITES_ENABLED) && scopes.includes('mcp:write');
     const setup = canPrepare ? new GitHubClient({ ...shared, policy: { readOnly: false, managedChecks: true },
@@ -73,6 +78,10 @@ export function createToolContext(env: AppEnv, actor: string, scopes: readonly s
       tokenPermissions: { metadata: 'read', contents: 'write' } });
     const pulls = new GitHubClient({ ...shared, policy: { readOnly: false },
       tokenPermissions: { metadata: 'read', pull_requests: 'write' } });
+    const issues = new GitHubClient({ ...shared, policy: { readOnly: false },
+      tokenPermissions: { metadata: 'read', issues: 'write' } });
+    context.issueWriteCoordinator = new IssueWriteCoordinator(actor, context.github.repositories, issues.issues);
+    context.mergeCoordinator = new MergeCoordinator(actor, { repositories: context.github.repositories, ...context.reads }, contents.merges);
     context.writeCoordinator = new WriteCoordinator(actor,
       { repositories: context.github.repositories, branches: context.reads.branches, commits: context.reads.commits },
       { branches: contents.branches, changes: contents.changes, pullRequests: pulls.pullRequests, issues: pulls.issues, commits: contents.commits });

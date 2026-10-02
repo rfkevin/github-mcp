@@ -15,7 +15,7 @@ Le mode commun à tous les dépôts et la préparation des workflows par l’age
 Pour un fichier ciblé sous PowerShell, depuis la racine :
 
 ```powershell
-$env:CHECK_TARGET = 'test/oauth.spec.ts'
+$env:CHECK_TARGET = 'test/oauth/catalogue.spec.ts'
 try { node scripts/ci/run-checks.mjs unit }
 finally { Remove-Item Env:CHECK_TARGET -ErrorAction SilentlyContinue }
 ```

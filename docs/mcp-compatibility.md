@@ -15,7 +15,7 @@ la conformité du serveur ne peut pas lui ajouter cette capacité.
   découverte et appel d’outil. Ce n’est pas une promesse sur les versions futures.
 - OAuth avec PKCE et jetons liés à la ressource. Enregistrement dynamique (DCR)
   et documents de métadonnées de client (CIMD) passent par le fournisseur OAuth.
-- Chaque outil expose un `inputSchema`, un `outputSchema` objet et des annotations.
+- Chaque outil expose un titre lisible, un `inputSchema`, un `outputSchema` objet et des annotations.
   Les réponses conservent le JSON texte et `structuredContent` pour les clients
   anciens et récents. Le SDK valide les succès contre le schéma déclaré ; les
   erreurs d’outil portent `isError: true` et `structuredContent.error`.
@@ -92,3 +92,74 @@ par cette correction de transport. La production conserve sa validation humaine.
 `outputSchema` est optionnel dans MCP ; le déclarer rend le contrat vérifiable et
 répond aussi à l’exigence documentée par OpenAI pour les sorties structurées.
 La conformité à ces points ne constitue pas une certification universelle des clients.
+
+## Complément du 2 octobre 2026 : documents OpenAI et titres
+
+Les trois documents joints par le propriétaire sont identiques et décrivent
+notamment les outils `search`/`fetch` pour deep research et company knowledge.
+Ce contrat documentaire n'est pas une obligation pour tous les plugins de code.
+Le [guide MCP des plugins OpenAI](https://developers.openai.com/plugins/build/mcp-server)
+demande un nom d'action et un titre lisible pour chaque outil. Le catalogue local
+n'avait pas de titres : les 24 outils en possèdent désormais, sans changer leurs
+noms, paramètres, résultats ni droits.
+
+Le client SDK MCP indépendant lit bien les 24 titres avec `tools/list` en mémoire.
+Types et 75 tests OAuth/origine passent. Ce changement n'est pas encore publié et
+ne démontre pas que l'absence de titre causait l'erreur OpenAI réelle.
+La transmission et les preuves complémentaires figurent dans
+[l'issue #11](https://github.com/rfkevin/github-mcp/issues/11).
+
+## Adaptation des déclarations OAuth et diagnostic Responses API
+
+Le catalogue annonce désormais les portées nécessaires à chaque outil dans
+`_meta.securitySchemes`, champ de compatibilité documenté par OpenAI et transmis
+par notre SDK MCP v2. La version du catalogue passe à `0.7.1`. Les outils de
+lecture déclarent `mcp:read`, les écritures ajoutent `mcp:write`, les vérifications
+ajoutent `mcp:automation` ou `mcp:checks` selon le mode, et la fusion d'intégration
+ajoute `mcp:write` et `mcp:integration`. La préparation d'un workflow peut être
+prévisualisée sans droit d'écriture ; son application reste protégée côté serveur.
+Ces déclarations n'accordent aucun droit et ne remplacent jamais les contrôles.
+
+Le SDK utilisé accepte `_meta`, mais n'expose pas de configuration de propriété
+`securitySchemes` au premier niveau : aucune modification de ses champs privés
+n'est utilisée. Ce complément améliore le contrat ; il ne prouve pas à lui seul
+la résolution de l'erreur réelle de découverte.
+
+Les exemples `type: function`, `parameters`, `strict` et `type: namespace`
+configurent le client Responses API. Ils ne doivent pas remplacer `inputSchema`
+ni la réponse standard `tools/list` du serveur MCP. Pour suivre l'exemple direct
+`type: mcp`, le projet fournit un diagnostic dédié :
+
+```sh
+npm run diagnose:openai
+npm run diagnose:openai -- --live
+```
+
+La première commande est une préparation hors ligne : aucune requête ni dépense.
+La seconde appelle réellement l'API et peut être facturée. Elle nécessite deux
+variables locales distinctes, jamais à transmettre dans un chat ou un commit :
+
+- `OPENAI_API_KEY` : clé API OpenAI, utilisée seulement pour joindre Responses.
+- `MCP_ACCESS_TOKEN` : jeton OAuth d'accès de ce serveur MCP, lié à la ressource
+  `/mcp` avec `mcp:read`. Ce n'est ni un jeton GitHub, ni une clé privée de l'App.
+
+`OPENAI_MODEL` peut remplacer le modèle de l'exemple (`gpt-6-astra`) par un modèle
+accessible au compte et compatible avec les outils MCP. `MCP_SERVER_URL` permet
+de choisir une autre URL HTTPS `/mcp`, sans identifiants ni paramètres.
+Le diagnostic ne réalise pas le parcours OAuth initial à votre place.
+
+Un seul outil est autorisé : `github_list_repositories`. Aucun outil d'écriture,
+de fusion ou de déploiement n'est accessible dans cet essai. La sortie indique
+uniquement les étapes API, découverte et appel et leurs résultats ; elle ne
+recopie ni secrets, ni noms de dépôts, ni messages bruts du fournisseur.
+Un HTTP 200 sans import d'outil n'est pas un succès ; un résultat MCP en erreur
+n'est pas davantage un appel réussi.
+
+Les réponses API sont simulées dans les tests CI. L'essai API réel nécessite les
+identifiants du propriétaire ; il n'a pas été réalisé pendant cette adaptation.
+Même un succès Responses ne certifierait pas le parcours OAuth du plugin dans
+l'interface : ce dernier doit être essayé séparément après publication autorisée.
+
+Références : [authentification des plugins](https://developers.openai.com/plugins/build/auth),
+[métadonnées de compatibilité](https://developers.openai.com/plugins/reference),
+[MCP avec Responses](https://developers.openai.com/api/docs/guides/tools-connectors-mcp).

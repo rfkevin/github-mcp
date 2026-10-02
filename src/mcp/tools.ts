@@ -10,11 +10,15 @@ import { registerCheckTools } from './tools/github/checks';
 import { registerWriteTools } from './tools/github/writes';
 import { registerPullRequestTools } from './tools/github/pull-requests';
 import { registerIssueTools } from './tools/github/issues';
+import { registerTargetedWriteTools } from './tools/github/targeted-write';
+import { registerFileWriteTools } from './tools/github/file-writes';
+import { registerIssueWriteTools } from './tools/github/issue-writes';
+import { registerMergeTools } from './tools/github/merges';
 import { WORKFLOW_INSTRUCTIONS } from './workflow-guidance';
 import { registerIntegrationTools } from './tools/github/integration';
 
 export function createServer(context: ToolContext): McpServer {
-  const server = new McpServer({ name: 'github-mcp', version: '0.7.0' }, { instructions: WORKFLOW_INSTRUCTIONS });
+  const server = new McpServer({ name: 'github-mcp', version: '0.8.0' }, { instructions: WORKFLOW_INSTRUCTIONS });
   registerRepositoryTools(server, context);
   registerFileTools(server, context);
   registerCommitTools(server, context);
@@ -25,6 +29,10 @@ export function createServer(context: ToolContext): McpServer {
   registerIssueTools(server, context);
   registerCheckTools(server, context);
   registerWriteTools(server, context);
+  registerTargetedWriteTools(server, context);
+  registerFileWriteTools(server, context);
+  registerIssueWriteTools(server, context);
+  registerMergeTools(server, context);
   registerIntegrationTools(server, context);
   return server;
 }

@@ -128,3 +128,139 @@ Lire `docs/mcp-compatibility.md` ; ne pas ajouter d’exception par marque ni re
 la découverte publique. Suite : publier avec autorisation puis tester chaque
 client utile au SHA publié, avant l’essai d’équipe dans les PR. Merci aux
 collaborateurs pour leurs essais, conseils et futures vérifications indépendantes.
+
+### 2026-10-02-codex-transmission-claude
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`
+
+Complément à `2026-10-01-codex-interoperabilite-mcp` : l'utilisateur rapporte
+encore l'échec de découverte OpenAI, alors que Claude fonctionne. Un client SDK
+MCP indépendant a découvert les 24 outils du serveur en mémoire, sans OAuth ni
+réseau dans cet essai. Cela ne valide pas le parcours OpenAI réel. Les POST 200
+observés avec un User-Agent Anthropic ne sont pas une preuve de succès OpenAI.
+L'erreur « No tool was defined under the given paths » rapportée par un autre
+assistant ne prouve pas l'absence d'une route HTTP : distinguer noms internes
+d'outils, découverte et appels. Enquête transmise dans l'issue #11 :
+https://github.com/rfkevin/github-mcp/issues/11 ; copie locale dans
+`docs/openai-discovery-investigation.md`. Aucun nouveau correctif ni déploiement.
+Suite : Claude doit rechercher une preuve indépendante et une trace corrélée
+nettoyée avant toute correction. Merci au propriétaire et aux collaborateurs.
+
+### 2026-10-02-codex-titres-catalogue
+Auteur : Codex (OpenAI, GPT-6) | Contexte : base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`, modifications locales non publiées
+
+Complément à `2026-10-02-codex-transmission-claude` : les trois guides joints
+sont identiques. Le contrat search/fetch concerne la recherche documentaire,
+pas tous les plugins de code. Le guide OpenAI demande un titre lisible par outil ;
+les 24 titres manquants ont été ajoutés. Un client MCP indépendant lit réellement
+24 titres en mémoire ; types et 75 tests OAuth/origine passent. Limite : aucun
+essai réel OpenAI après publication, donc cause de l'échec toujours non démontrée.
+Suite : transmettre ce résultat dans l'issue #11, poursuivre avec une trace
+authentifiée corrélée et garder la correction de conformité distincte d'une
+preuve de résolution. Merci au propriétaire et à Claude pour la collaboration.
+
+### 2026-10-02-codex-validation-complete-titres
+Auteur : Codex (OpenAI, GPT-6) | Contexte : `codex/mcp-discovery-tool-titles`, base `6a9df4cbf4ed8ce5eddfee731322b2e1a819aade`
+
+Le propriétaire a demandé que Codex termine la réparation. Le correctif des
+24 titres a passé le contrôle complet : types, 357 tests applicatifs, 37 tests
+des scripts CI/déploiement et compilation Wrangler sans publication. Un client
+MCP indépendant a aussi lu les 24 titres réellement transmis par le SDK.
+Préparation d'une PR dédiée pour publication et essai réel. Aucun contournement
+OAuth ni changement de droits. Limite : la disparition de l'erreur OpenAI doit
+encore être vérifiée après publication ; ce résultat ne peut pas être déduit
+des tests locaux. Merci aux collaborateurs pour la revue et les prochains essais.
+
+### 2026-10-02-codex-contrat-oauth-openai
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : complément à la PR #12 fusionnée, base `73249b61f152293be74d8bec325b8122b0fb5fd5`
+
+Le propriétaire a demandé d'adapter réellement le serveur aux exemples OpenAI.
+Les 24 outils déclarent maintenant leurs portées dans `_meta.securitySchemes`,
+champ documenté de compatibilité que le SDK transmet ; aucune autorisation n'est
+élargie. Version MCP 0.7.1. Un diagnostic Responses `type: mcp` n'importe qu'un
+outil de lecture et distingue API, découverte et résultat ; hors ligne par défaut,
+réel seulement avec --live et deux identifiants locaux distincts. Ne jamais passer
+une clé GitHub comme jeton MCP. Tests : 357 applicatifs et 45 scripts réussis,
+types et compilation Wrangler sans publication. Limite : aucun appel réel OpenAI,
+aucune preuve de résolution du plugin, aucun nouvel essai Claude réel. Suite :
+valider et publier la PR complémentaire puis essayer le plugin et une lecture
+depuis les clients utiles ; l'essai API n'est pas le parcours OAuth de l'interface.
+Merci au propriétaire et aux collaborateurs pour leurs vérifications indépendantes.
+
+### 2026-10-02-codex-portabilite-schema-agent
+Auteur : Codex (OpenAI, GPT-6) | Contexte : base `c13b6f9`, après PR #13 et nouvel échec réel
+
+Complément à `2026-10-02-codex-contrat-oauth-openai` : les métadonnées ajoutées
+n'ont pas suffi selon le nouvel essai du propriétaire. Trace réelle filtrée :
+jeton OAuth 200 puis deux POST MCP authentifiés OpenAI 200 ; contenu JSON-RPC
+inconnu. Reproduction indépendante : Python jsonschema 4.26.0 refuse quatre
+inputSchema contenant les classes Unicode du champ agentLabel. Après déplacement
+de cette règle en validation serveur et publication de bornes portables, les
+48 schémas sont acceptés. Types, 359 tests applicatifs, 45 tests de scripts et
+compilation sans publication passent ; les noms Unicode et leurs restrictions
+sont conservés. Lire docs/openai-discovery-follow-up.md.
+Conseil : un validateur JavaScript seul masque les incompatibilités de dialecte.
+Limite : rejet Python prouvé, cause OpenAI à confirmer par nouvel essai publié.
+Merci au propriétaire et aux collaborateurs pour leurs retours et leur patience.
+
+
+### 2026-10-02-codex-pr17-correction-navigation
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : PR #17, base de travail `971740dcca84f1283943eeba294cd5b245fc7419`
+
+Constat et vérification : les trois nouveaux outils manquaient de schémas de
+sortie ; le catalogue et ses scopes n'étaient pas mis à jour dans les tests.
+Correction : contrats complets, pagination des issues avant filtrage des PR,
+refus des numéros de PR, lecture immuable et occurrences chevauchantes refusées
+pour le remplacement ciblé. À la demande du propriétaire, les grosses suites
+OAuth/client/foundation et les types/diagnostics GitHub sont répartis par domaine.
+`AGENTS.md` renvoie vers `docs/code-map.md`, qui indique code, tests et helpers.
+Contrôle complet local réussi : types, 392 tests applicatifs, 45 tests de scripts,
+compilation sans déploiement. Limites : GitHub simulé, PR #15 séparée toujours
+endommagée ; pas de validation réelle des nouvelles fonctions après publication.
+Conseil : préserver le chemin public des types et les fixtures par fichier.
+Suite : suivre la CI du commit final puis revue humaine. Merci aux collaborateurs.
+
+### 2026-10-02-codex-pr17-restauration-append-issues
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : PR #17, suite autorisée depuis `36f1d2554dd3092991b082adfb77d9e5b49b60d0`
+
+Complément à `2026-10-02-codex-pr17-correction-navigation` : le propriétaire
+demande d'implémenter restauration, append et création d'issue, puis confirme
+création et lecture. PR #15/#16 et branche principale vérifiées : lecture
+d'issues en cours, aucun des trois nouveaux outils livré dans ces références.
+Ajouts : github_restore_file (source immuable, blob/absence attendus),
+github_append_file (préfixe conservé), github_create_issue (dépôt autorisé,
+non archivé, attribution et jeton Issues: Write dédié). Contrôles des commits,
+journaux en ajout seul, scopes et sorties conservés ; consentement et carte mis
+à jour. Le décodeur préserve désormais le BOM et refuse l'UTF-8 invalide.
+Vérifié localement : types, 421 tests applicatifs, 45 tests de scripts et build
+sans publication ; création/listing/lecture d'issue via OAuth simulés réussis.
+Limites : droits GitHub inchangés, aucun essai réel des nouveaux outils après
+publication ; PR #15 séparée, garde générale anti-troncature encore proposée.
+Conseil : relire les issues et la branche après résultat incertain, sans rejeu
+automatique. Suite : CI au nouveau SHA, revue/publication humaines puis essai
+depuis les clients réels. Merci au propriétaire et aux collaborateurs.
+
+
+### 2026-10-02-codex-pr15-conflits
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : PR #15, head initial 5957cad, base reprise 1c1115b
+
+Complément à 2026-10-02-codex-pr17-restauration-append-issues : #17 est
+maintenant fusionnée par un autre acteur ; le propriétaire demande de réparer
+#15 et de permettre aux agents de résoudre les conflits de branche. Reprise de
+master dans #15 sans force-push : versions récentes de context/tools/issues,
+schéma unique, retrait du PLACEHOLDER (anciennes suites remplacées par celles
+de master), six tests d'issues conservés dans test/mcp/issue-compatibility.spec.ts.
+Ajouts : github_get_merge_context (lecture des trois instantanés et chemins),
+github_resolve_conflicts (choix explicites, commit à deux parents uniquement
+dans sa branche personnelle). Protections, limite 50 fichiers/1 Mo, journaux,
+head/base vérifiés avant écriture et avant mise à jour sans force. Version MCP
+0.8.0, consentement, instructions, carte et guide de conflits actualisés.
+Vérifié : types, 466 tests applicatifs, 45 tests de scripts et compilation sans
+publication ; parcours OAuth simulé de diagnostic/résolution réussi. Les deux
+fusions ont des objectifs différents : reprise dans une branche de travail
+autorisée ici, intégration de PR dans master réservée à l'humain.
+Limites : comparaison conservatrice par fichier, pas de fusion automatique des
+lignes ; chemins protégés et journaux incompatibles nécessitent arbitrage ;
+GitHub ne fournit pas de CAS atomique des deux refs ; aucun essai réel du MCP
+après publication. Conseil : relire les trois versions, tous les choix et
+renouveler les avis au nouveau SHA. Suite : CI au commit publié puis revue
+humaine. Merci au propriétaire et aux collaborateurs.

@@ -4,6 +4,7 @@ import { GitHubFiles, SENSITIVE_FILE } from './files';
 import { GitHubRepositories } from './repositories';
 import { GitHubBranches } from './branches';
 import { GitHubChanges } from './changes';
+import { GitHubMerges } from './merges';
 import { GitHubPullRequests } from './pull-requests';
 import { GitHubAuthenticator } from './auth';
 import { GitHubHttp } from './http';
@@ -163,6 +164,7 @@ export class GitHubClient {
   readonly repositories: GitHubRepositories;
   readonly branches: GitHubBranches;
   readonly changes: GitHubChanges;
+  readonly merges: GitHubMerges;
   readonly pullRequests: GitHubPullRequests;
   readonly issues: GitHubIssues;
   readonly actions: GitHubActions;
@@ -232,6 +234,7 @@ export class GitHubClient {
     this.repositories = new GitHubRepositories(context);
     this.branches = new GitHubBranches(context);
     this.changes = new GitHubChanges(context);
+    this.merges = new GitHubMerges(context);
     this.pullRequests = new GitHubPullRequests(context);
     this.issues = new GitHubIssues(context);
     this.actions = new GitHubActions(context);

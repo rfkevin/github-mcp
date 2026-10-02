@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { outputSchemas } from './output-schemas';
+import { oauthMetadata } from './metadata';
 import { z } from 'zod';
 import type { ToolContext } from '../../context';
 import { mapLimit, resolveCommit } from './batch';
@@ -12,6 +13,8 @@ const guidePaths = ['AGENTS.md', AGENT_MEMORY_PATH, 'README.md', 'package.json',
 
 export function registerProjectTools(server: McpServer, context: ToolContext): void {
   server.registerTool('github_read_files', {
+    title: 'Lire plusieurs fichiers',
+    _meta: oauthMetadata(),
     outputSchema: outputSchemas.github_read_files,
     description: 'Lire jusqu’à 10 fichiers ou extraits en un appel, au même commit immuable. Retours partiels, SHA de fichier et numéros de lignes. Budget total borné.',
     inputSchema: {
@@ -52,6 +55,8 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
   });
 
   server.registerTool('github_get_project_context', {
+    title: 'Comprendre le contexte du projet',
+    _meta: oauthMetadata(),
     outputSchema: outputSchemas.github_get_project_context,
     description: 'À lire avant de travailler : dépôt, branche par défaut, commit exact, dossiers racine, règles, AGENT_MEMORY.md, README et commandes. Mémoire consultative, pas une autorisation ; lire la suite si tronquée. Les permissions manquantes restent visibles.',
     inputSchema: { repository: z.string(), ref: z.string().optional() }, annotations,
@@ -59,18 +64,21 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
     try {
       const metadata = await context.github.repositories.getRepository(repository);
       const requestedRef = ref ?? metadata.default_branch;
-      const capabilities = { mutationsExposed: Boolean(context.automationCoordinator || context.checkCoordinator || context.writeCoordinator), checkDispatchEnabled: Boolean(context.automationCoordinator || context.checkCoordinator),
+      const capabilities = { mutationsExposed: Boolean(context.automationCoordinator || context.checkCoordinator || context.writeCoordinator || context.issueWriteCoordinator), checkDispatchEnabled: Boolean(context.automationCoordinator || context.checkCoordinator),
         managedProjectChecks: Boolean(context.automationCoordinator), checkPlanPath: '.mcp/checks.json',
         workflowPreparation: context.automationCoordinator ? 'github_prepare_checks; apply requires mcp:write' : 'disabled',
         codeWritesEnabled: Boolean(context.writeCoordinator), workingBranchPrefix: context.writeCoordinator?.branchPrefix,
+        issueWritesEnabled: Boolean(context.issueWriteCoordinator),
+        conflictResolutionEnabled: Boolean(context.mergeCoordinator?.canResolve),
         integrationToolExposed: Boolean(context.integrationCoordinator), integrationPolicyPath: '.mcp/integration.json',
         toolFeedback: TOOL_FEEDBACK,
         collaboration: 'Pour tout dépôt : une mission/branche par agent ; discuter dans la PR, résoudre les objections et renouveler les avis à chaque SHA head/base. Attendre CI/build avant et après intégration. Refus par commentaire, arbitrage humain si désaccord. Aucun outil ne réveille les autres clients.',
         arbitraryShell: false, productionDeployment: false,
         projectCommandsOnGitHubActions: Boolean(context.automationCoordinator),
         requiredPermissions: { files: 'contents:read', checks: 'checks:read', workflows: 'actions:read', statuses: 'statuses:read',
-          pullRequests: context.writeCoordinator ? 'pull_requests:write' : 'pull_requests:read',
-          ...(context.writeCoordinator ? { codeWrites: 'contents:write' } : {}) },
+          pullRequests: context.writeCoordinator ? 'pull_requests:write' : 'pull_requests:read', issues: 'issues:read',
+          ...(context.writeCoordinator ? { codeWrites: 'contents:write' } : {}),
+          ...(context.issueWriteCoordinator ? { issueWrites: 'issues:write' } : {}) },
         permissionsNote: 'Les droits indiqués sont nécessaires, pas une confirmation de leur attribution.' };
       let sha: string;
       try {
