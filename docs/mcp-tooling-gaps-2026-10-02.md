@@ -1,6 +1,22 @@
 # MCP tooling gaps observed on 2026-10-02
 
-This document records concrete limitations encountered while repairing PR #15. It is intentionally documentation-only so the owner can implement the fixes locally and reconcile them with the other in-flight work.
+This document records concrete limitations encountered while repairing PR #15. The initial handoff was documentation-only; PR #17 subsequently added issue reads and targeted replacement. The observations below preserve the incident context. Current code/test paths are in [code-map.md](code-map.md).
+
+## PR #17 repair status
+
+The follow-up repair adds the three missing output schemas and tests for the issue
+reader, listing, permission isolation and targeted replacement. Catalogue tests
+assert the expected names and scopes rather than repeating global tool counts.
+Issue listing is paginated before filtering PRs and omits long bodies; issue
+detail rejects PR numbers and masks before truncating. Targeted replacement reads
+an immutable commit, rejects overlapping matches and retains commit protections.
+
+The long OAuth/client/foundation tests are split by domain, as are GitHub types
+and OAuth identity diagnostics. `AGENTS.md` and `docs/code-map.md` document the
+navigation and maintenance rules. PR #15 remains a separate, conflicting branch;
+its placeholder incident is not part of PR #17's file contents. A general
+truncation guard, restore/append operations and issue creation remain proposals,
+not features delivered by this repair.
 
 ## 1. `github_commit_changes` can accidentally replace an entire existing file
 

@@ -74,7 +74,7 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
         arbitraryShell: false, productionDeployment: false,
         projectCommandsOnGitHubActions: Boolean(context.automationCoordinator),
         requiredPermissions: { files: 'contents:read', checks: 'checks:read', workflows: 'actions:read', statuses: 'statuses:read',
-          pullRequests: context.writeCoordinator ? 'pull_requests:write' : 'pull_requests:read',
+          pullRequests: context.writeCoordinator ? 'pull_requests:write' : 'pull_requests:read', issues: 'issues:read',
           ...(context.writeCoordinator ? { codeWrites: 'contents:write' } : {}) },
         permissionsNote: 'Les droits indiqués sont nécessaires, pas une confirmation de leur attribution.' };
       let sha: string;

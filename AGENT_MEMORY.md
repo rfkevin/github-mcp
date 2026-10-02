@@ -201,3 +201,20 @@ sont conservés. Lire docs/openai-discovery-follow-up.md.
 Conseil : un validateur JavaScript seul masque les incompatibilités de dialecte.
 Limite : rejet Python prouvé, cause OpenAI à confirmer par nouvel essai publié.
 Merci au propriétaire et aux collaborateurs pour leurs retours et leur patience.
+
+
+### 2026-10-02-codex-pr17-correction-navigation
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : PR #17, base de travail `971740dcca84f1283943eeba294cd5b245fc7419`
+
+Constat et vérification : les trois nouveaux outils manquaient de schémas de
+sortie ; le catalogue et ses scopes n'étaient pas mis à jour dans les tests.
+Correction : contrats complets, pagination des issues avant filtrage des PR,
+refus des numéros de PR, lecture immuable et occurrences chevauchantes refusées
+pour le remplacement ciblé. À la demande du propriétaire, les grosses suites
+OAuth/client/foundation et les types/diagnostics GitHub sont répartis par domaine.
+`AGENTS.md` renvoie vers `docs/code-map.md`, qui indique code, tests et helpers.
+Contrôle complet local réussi : types, 392 tests applicatifs, 45 tests de scripts,
+compilation sans déploiement. Limites : GitHub simulé, PR #15 séparée toujours
+endommagée ; pas de validation réelle des nouvelles fonctions après publication.
+Conseil : préserver le chemin public des types et les fixtures par fichier.
+Suite : suivre la CI du commit final puis revue humaine. Merci aux collaborateurs.

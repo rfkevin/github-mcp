@@ -6,20 +6,21 @@ Les outils sont implémentés et testés localement avec GitHub simulé. Aucun t
 
 Trois conditions sont nécessaires :
 
-1. GitHub App : **Contents: Read and write** et **Pull requests: Read and write**, puis acceptation de ces droits dans l’installation. Les lectures conservent leurs jetons minimaux. Aucun droit Actions en écriture, Workflows, Administration ou approbation n’est nécessaire à ces cinq outils.
+1. GitHub App : **Contents: Read and write** et **Pull requests: Read and write**, puis acceptation de ces droits dans l’installation. Les lectures conservent leurs jetons minimaux. Aucun droit Actions en écriture, Workflows, Administration ou approbation n’est nécessaire à ces six outils.
 2. Serveur : variable texte non secrète `GITHUB_WRITES_ENABLED` à `true`. Elle reste absente de la configuration livrée. Conserver le réglage dans la configuration de déploiement, pas seulement dans le tableau de bord. Après modification de bindings Wrangler, exécuter `npm run cf-typegen`, puis publier au moment choisi. Garder les préversions désactivées pour les écritures.
 3. Client : nouveau consentement incluant **`mcp:read mcp:write offline_access`**. Vérifier les droits effectivement demandés : une simple reconnexion sans `mcp:write` ne suffit pas. L’écran de consentement explique les modifications et suppressions, les PR et le risque d’automatisations.
 
-Les anciens jetons de lecture ne gagnent aucun droit d’écriture. Retirer la variable, la vider ou la mettre à `false` masque les cinq outils même pour les anciens jetons d’écriture, ainsi que l’intégration optionnelle. Toute autre valeur refuse la configuration. Pour révoquer également le pouvoir détenu par l’App, retirer les permissions GitHub correspondantes.
+Les anciens jetons de lecture ne gagnent aucun droit d’écriture. Retirer la variable, la vider ou la mettre à `false` masque les six outils même pour les anciens jetons d’écriture, ainsi que l’intégration optionnelle. Toute autre valeur refuse la configuration. Pour révoquer également le pouvoir détenu par l’App, retirer les permissions GitHub correspondantes.
 
 **Les dépôts restent ceux sélectionnés dans l’installation GitHub**, sans liste parallèle dans le code ou dans la configuration du MCP. Chaque demande d’écriture vérifie la liste effective avant d’écrire. La lecture de cette liste est bornée à 1 000 dépôts : un dépôt non trouvé est refusé, jamais autorisé par défaut. GitHub contrôle aussi les droits lors de l’écriture. Une révocation concurrente sera appliquée selon les garanties de GitHub.
 
-## Les cinq outils
+## Les six outils
 
 | Outil | Paramètres essentiels | Résultat |
 | --- | --- | --- |
 | `github_create_branch` | `repository`, `task`, `expectedBaseSha`, `baseBranch` facultatif | `branch`, `sha`, `baseBranch` |
 | `github_commit_changes` | `repository`, `branch`, `expectedHeadSha`, `message`, `changes` et/ou `deletions` | `commitSha`, chemins modifiés et supprimés |
+| `github_replace_text` | `repository`, `branch`, `path`, `expectedHeadSha`, `expectedSha`, `oldText`, `newText`, `message`, `agentLabel` | commit avec la même trace, les mêmes protections et le même suivi CI |
 | `github_open_pull_request` | `repository`, `branch`, `expectedHeadSha`, `title`, `body` et `baseBranch` facultatifs | numéro, URL, brouillon, SHA observé et `headMatchesExpected` |
 | `github_comment_pull_request` | `repository`, `number`, `expectedHeadSha`, `body`, `agentLabel` ; `decision` et `expectedBaseSha` pour un avis | commentaire sur une PR ouverte interne, y compris d’un autre agent ; aucune approbation GitHub |
 | `github_comment_commit` | `repository`, `sha`, `body`, `agentLabel` | commentaire général sur un commit exact, sans modifier son code |
@@ -27,6 +28,15 @@ Les anciens jetons de lecture ne gagnent aucun droit d’écriture. Retirer la v
 Les outils de lecture `github_list_pull_requests` et `github_get_pull_request` permettent de retrouver une PR après une interruption. Avec `includeDiscussion=true`, `discussionPage` parcourt les commentaires généraux, revues et commentaires de code par pages de 20 ; suivre `nextDiscussionPage`. Les longs textes restent tronqués et signalés. `github_get_commit` lit un SHA et, sur demande, ses vingt premiers commentaires généraux. En cas de résultat d’écriture incertain, vérifier la branche ou la discussion complète avant de relancer.
 
 Lire le contexte et les fichiers avant de préparer un changement. Le SHA du commit (`sha`) sert pour la branche ; le SHA du blob (`blobSha` des lectures groupées, `sha` de `github_read_file`) sert pour chaque fichier.
+
+Pour un extrait d’un gros fichier, préférer `github_replace_text`. Le serveur lit
+le fichier complet au commit immuable attendu et remplace une seule occurrence
+exacte, avec contrôle du blob et de la tête de branche. Les occurrences chevauchantes
+sont ambiguës et refusées. `NO_CHANGE`, `TEXT_NOT_FOUND` et `TEXT_NOT_UNIQUE` n’écrivent
+rien. Le coordinateur conserve les protections des journaux, fichiers et branches,
+la signature du commit et le contrôle concurrent au moment d’écrire. Ce mécanisme
+ne vérifie pas la qualité du nouveau texte ; `github_commit_changes` conserve son
+contrat de remplacement complet, sans garde générale anti-troncature dans ce lot.
 
 Le nom de branche est construit par le serveur : `mcp/<identifiant GitHub authentifié>/<task>`. `task` est un libellé de 1 à 48 caractères minuscules, chiffres et tirets, sans tiret initial/final. Le client ne choisit pas l’identité. Les branches d’un autre utilisateur sont refusées. Plusieurs clients OAuth du même utilisateur partagent cependant son préfixe.
 

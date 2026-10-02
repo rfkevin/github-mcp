@@ -9,7 +9,7 @@ import type { AppEnv } from '../src/config';
 const controller = 'a'.repeat(40);
 const target = 'b'.repeat(40);
 const config = [{ repository: 'owner/project', ref: 'master', controllerSha: controller }];
-const input: CheckRequest = { repository: 'owner/project', sha: target, scope: 'unit', target: 'test/oauth.spec.ts' };
+const input: CheckRequest = { repository: 'owner/project', sha: target, scope: 'unit', target: 'test/oauth/catalogue.spec.ts' };
 
 async function fixture() {
   const reads = {

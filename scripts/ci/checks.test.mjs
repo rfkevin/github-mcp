@@ -10,9 +10,9 @@ test('quick utilise une installation et aucun déploiement', () => {
   assert.equal(plan.some(args => args.some(arg => arg.includes('wrangler'))), false);
 });
 test('unit ciblé ne lance que le fichier choisi', () => {
-  const plan = checkPlan('unit', 'test/oauth.spec.ts');
+  const plan = checkPlan('unit', 'test/oauth/catalogue.spec.ts');
   assert.equal(plan.length, 1);
-  assert.equal(plan[0].at(-1), 'test/oauth.spec.ts');
+  assert.equal(plan[0].at(-1), 'test/oauth/catalogue.spec.ts');
 });
 test('full compile uniquement en dry-run', () => {
   const plan = checkPlan('full');
@@ -27,11 +27,11 @@ test('lint et e2e non installés ne prétendent pas être testés', () => {
 });
 test('SHA complet et cible réservée à unit', () => {
   assert.throws(() => validateInputs('unit', '', 'master'));
-  assert.throws(() => validateInputs('quick', 'test/oauth.spec.ts'));
+  assert.throws(() => validateInputs('quick', 'test/oauth/catalogue.spec.ts'));
   assert.equal(validateInputs('quick', '', 'A'.repeat(40)).sha, 'a'.repeat(40));
 });
 test('validation du fichier cible réel', () => {
-  validateTarget(process.cwd(), 'test/oauth.spec.ts');
+  validateTarget(process.cwd(), 'test/oauth/catalogue.spec.ts');
   assert.throws(() => validateTarget(process.cwd(), 'test/absent.spec.ts'));
 });
 test('le filtre de documentation ne saute aucun fichier exécutable ou de configuration', () => {

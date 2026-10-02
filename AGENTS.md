@@ -43,6 +43,26 @@ dans le guide, puis le suivi CI du résultat. La branche principale et la
 production restent sous validation humaine. Si un client s’arrête, laisse un
 point de reprise honnête ; ne promets pas une surveillance qui n’existe pas.
 
+# Lisibilité, découpage et navigation
+
+Lire [docs/code-map.md](docs/code-map.md) pour trouver les points d’entrée et les
+tests du domaine concerné avant de chercher dans tout le dépôt. Actualiser cette
+carte quand un fichier est déplacé ou qu’un domaine est créé. Les chemins doivent
+indiquer le domaine et la responsabilité ; éviter les fichiers fourre-tout.
+
+Cette règle s’applique aussi aux tests : une suite par comportement ou famille
+d’opérations, helpers communs explicites dans le dossier du domaine, configuration
+et état isolés par fichier. Ne pas supprimer de cas ni affaiblir une assertion pour
+rendre un découpage vert. Vérifier les types et tous les tests après déplacement.
+
+Revoir le découpage d’un fichier autour de 250 lignes, et privilégier des modules
+de moins de 300 lignes lorsque les responsabilités peuvent être séparées clairement.
+Ce repère n’est pas un quota : conserver ensemble une responsabilité cohérente et
+éviter les microfichiers, cycles d’imports ou abstractions sans utilité. Garder un
+point d’entrée compatible lorsqu’un chemin public est déjà utilisé. Les fichiers
+générés, verrous de dépendances et journaux en ajout seul sont exclus : ne jamais
+découper les anciennes notes de mémoire ou de propositions sans décision du propriétaire.
+
 # Cloudflare Workers
 
 STOP. Your knowledge of Cloudflare Workers APIs and limits may be outdated. Always retrieve current documentation before any Workers, KV, R2, D1, Durable Objects, Queues, Vectorize, AI, or Agents SDK task.
