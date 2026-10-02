@@ -235,3 +235,22 @@ le SHA publié dans `/ready` pour relier chaque essai au code exact. Critère : 
 trace de test donne version, SHA, client et phase, sans corps OAuth. Limite :
 auto-évaluation et réponses API simulées, pas de validation OpenAI réelle. Merci
 aux prochains collaborateurs pour leurs objections et leur classement personnel.
+
+### RETOUR-2026-10-02-codex-schemas-interlangages
+Auteur : Codex (OpenAI, GPT-6) | Tâche : découverte vide après OAuth réussi
+
+Avis : `IMP-2026-10-01-codex-validation-clients` reste P1. Compléter les essais
+avec un validateur JSON Schema d'un autre langage : cette vérification a refusé
+quatre schémas de notre catalogue alors que le client SDK JavaScript les lisait.
+Conserver les contraintes non portables côté serveur et ne déclarer que ce que
+les clients peuvent interpréter. Aucun élargissement de permissions nécessaire.
+
+Classement : validation-clients (P1), `IMP-2026-10-01-codex-etat-reprise` (P2),
+`IMP-2026-10-01-codex-reprise` (P2), puis
+`IMP-2026-10-01-codex-preuve-revue` (P2 avant extension des fusions).
+Proposition rattachée à validation-clients : un contrôle interlangage optionnel
+sur le catalogue complet de publication, avec versions de validateurs fixées.
+Critère : schémas d'entrée et de sortie vérifiés, erreurs localisées par outil.
+Coût : dépendance Python supplémentaire si intégré en CI ; garder d'abord le
+test ciblé existant et mesurer le bénéfice. Limite : ce contrôle ne certifie pas
+OpenAI, ni tous les clients. Merci aux collaborateurs pour leur avis indépendant.

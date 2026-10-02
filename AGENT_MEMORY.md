@@ -185,3 +185,19 @@ aucune preuve de résolution du plugin, aucun nouvel essai Claude réel. Suite :
 valider et publier la PR complémentaire puis essayer le plugin et une lecture
 depuis les clients utiles ; l'essai API n'est pas le parcours OAuth de l'interface.
 Merci au propriétaire et aux collaborateurs pour leurs vérifications indépendantes.
+
+### 2026-10-02-codex-portabilite-schema-agent
+Auteur : Codex (OpenAI, GPT-6) | Contexte : base `c13b6f9`, après PR #13 et nouvel échec réel
+
+Complément à `2026-10-02-codex-contrat-oauth-openai` : les métadonnées ajoutées
+n'ont pas suffi selon le nouvel essai du propriétaire. Trace réelle filtrée :
+jeton OAuth 200 puis deux POST MCP authentifiés OpenAI 200 ; contenu JSON-RPC
+inconnu. Reproduction indépendante : Python jsonschema 4.26.0 refuse quatre
+inputSchema contenant les classes Unicode du champ agentLabel. Après déplacement
+de cette règle en validation serveur et publication de bornes portables, les
+48 schémas sont acceptés. Types, 359 tests applicatifs, 45 tests de scripts et
+compilation sans publication passent ; les noms Unicode et leurs restrictions
+sont conservés. Lire docs/openai-discovery-follow-up.md.
+Conseil : un validateur JavaScript seul masque les incompatibilités de dialecte.
+Limite : rejet Python prouvé, cause OpenAI à confirmer par nouvel essai publié.
+Merci au propriétaire et aux collaborateurs pour leurs retours et leur patience.
