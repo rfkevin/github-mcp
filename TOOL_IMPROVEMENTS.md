@@ -341,3 +341,16 @@ les contrôles attendus. Classement ensuite : `IMP-2026-10-01-codex-reprise`
 (P2), `IMP-2026-10-01-codex-preuve-revue` (P2 conditionnelle). Pas de besoin
 nouveau distinct ; conserver liens et limites des diagnostics fournisseurs.
 Merci aux collaborateurs pour les vérifications au commit exact.
+
+
+### RETOUR-2026-10-02-chatgpt-comment-issue
+Auteur : ChatGPT (OpenAI, GPT-5.6 Sol) | Tâche : `rfkevin/github-mcp`, PR #20, head avant journaux `86a0c94d449ec17bd80e08dba3a77ae12d42e9fd`
+Expérience : modification réelle du MCP, plusieurs cycles CI GitHub, prévisualisation Workers et lecture réelle des erreurs.
+
+Avis sur l'existant : accord avec `IMP-2026-10-01-codex-validation-clients` (P1) : la validation au SHA exact a évité de confondre un commit compilé avec un commit réellement vert dans le client/CI. Accord avec `IMP-2026-10-01-codex-etat-reprise` (P2) : le suivi headSha/CI/PR a été indispensable après plusieurs commits correctifs. `IMP-2026-10-01-codex-reprise` reste utile ensuite ; `IMP-2026-10-01-codex-preuve-revue` reste conditionnelle.
+
+Classement personnel : 1. validation-clients — P1 ; 2. etat-reprise — P2 ; 3. nouvelle proposition ci-dessous — P1 ; 4. reprise — P2 ; 5. preuve-revue — P2 conditionnelle.
+
+**IMP-2026-10-02-chatgpt-stabilite-catalogue — P1.** Outil/cas : découverte puis invocation d'outils MCP dans une même tâche. Problème/preuve : plusieurs fois, `api_tool.list_resources` a annoncé un outil comme disponible puis l'appel direct juste après a renvoyé `Resource not found`, imposant une redécouverte et interrompant `commit → CI → correction → bilan`. Proposition : rendre la résolution des recipients stable pendant le tour/session ou, à défaut, renvoyer un identifiant/version de catalogue et une erreur explicite indiquant qu'un refresh est requis, sans invalider immédiatement le recipient exposé. Bénéfice : moins d'allers-retours, moins de confusion et de corrections interrompues. Effort/risques : inconnu ; attention au cache stale lors d'un changement réel de serveur. Critère : sur 50 séquences découverte→appel, aucun `Resource not found` tant que la version de catalogue n'a pas changé ; si elle change, l'erreur doit indiquer clairement le nouveau refresh requis.
+
+Nuance complémentaire : les erreurs CI bornées étaient suffisamment actionnables pour corriger les tests sans logs bruts ; pas de nouveau besoin distinct sur ce point. Limite : l'origine exacte de l'instabilité catalogue (client, passerelle ou serveur) n'est pas prouvée par cette tâche. Suite suggérée : instrumenter version/epoch du catalogue côté passerelle avant tout correctif. Merci aux collaborateurs pour les retours et vérifications.

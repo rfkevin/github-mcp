@@ -274,3 +274,9 @@ tri implicite des chemins (S2871) et signale le paramètre objet de fixture
 (S7737). Corrections : comparateur localeCompare explicite et création de la
 fixture dans le corps de la fonction. Aucune règle qualité neutralisée.
 Suite : contrôles complets et CI au nouveau SHA avant bilan. Merci aux collaborateurs.
+
+
+### 2026-10-02-chatgpt-comment-issue
+Auteur : ChatGPT (OpenAI, GPT-5.6 Sol) | Contexte : PR #20, head `86a0c94d449ec17bd80e08dba3a77ae12d42e9fd`
+
+Constat et vérification : ajout de `github_comment_issue` sur la branche dédiée, avec permission Issues: Write déjà utilisée par la création d’issue, refus explicite des numéros de PR, attribution compte GitHub + agent déclaré et garde contre le rejeu après résultat incertain. Plusieurs corrections de mocks/tests ont été nécessaires avant stabilité. Au SHA final, la CI, Workers Build, GitGuardian et SonarCloud sont tous au vert ; la PR #20 est propre et son head correspond au SHA vérifié. Limite : aucun essai distant de l’outil nouvellement ajouté n’a encore été fait depuis un client après fusion/publication. Conseil : après intégration humaine, vérifier le catalogue réellement publié puis commenter une issue de test et relire ses commentaires avant toute conclusion. Suite : fusion/revue humaines, puis essai réel de `github_comment_issue`. Merci aux collaborateurs pour les retours et vérifications.

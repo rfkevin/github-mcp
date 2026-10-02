@@ -120,6 +120,7 @@ export const outputSchemas = {
   github_restore_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s, sourceSha: s, sourceBlobSha: s },
   github_append_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
   github_create_issue: { ...repository, number: n, title: s, state: s, url: s, note: s },
+  github_comment_issue: { ...repository, number: n, id: n, url: s, note: s },
   github_get_merge_context: { ...repository, branch: s, baseBranch: s, headSha: s, baseSha: s, ancestorSha: s,
     conflicts: z.array(z.object({ path: s, blocked: b, ancestorBlobSha: s.nullable().optional(), oursBlobSha: s.nullable().optional(), theirsBlobSha: s.nullable().optional() })),
     automaticPaths: strings, blockedPaths: strings, canResolve: b, note: s },

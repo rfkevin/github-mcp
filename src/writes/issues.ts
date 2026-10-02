@@ -9,11 +9,16 @@ export const createIssueSchema = z.object({
   body: z.string().max(30_000).default(''), agentLabel: agentLabelSchema.default('agent non précisé'),
 }).strict();
 
+export const commentIssueSchema = z.object({
+  repository: z.string().min(3).max(200), number: z.number().int().positive(),
+  body: z.string().trim().min(1).max(30_000), agentLabel: agentLabelSchema.default('agent non précisé'),
+}).strict();
+
 /** Dedicated Issues: Write token; never reuse a PR or contents token. */
 export class IssueWriteCoordinator {
   constructor(private readonly actor: string,
     private readonly repositories: Pick<GitHubClient['repositories'], 'listInstallationRepositories' | 'getRepository'>,
-    private readonly issues: Pick<GitHubClient['issues'], 'createIssue'>) {
+    private readonly issues: Pick<GitHubClient['issues'], 'createIssue' | 'getIssue' | 'createComment'>) {
     if (!/^[1-9][0-9]*$/.test(actor)) throw new InputValidationError('Identité d’écriture invalide.');
   }
   async createIssue(input: z.input<typeof createIssueSchema>) {
@@ -26,5 +31,17 @@ export class IssueWriteCoordinator {
     return { repository: args.repository, number: issue.number, title: issue.title,
       state: issue.state, url: issue.html_url,
       note: 'Issue créée ; peut déclencher notifications et automatisations. Si la réponse est perdue, relire les issues avant de relancer pour éviter un doublon.' };
+  }
+  async commentIssue(input: z.input<typeof commentIssueSchema>) {
+    const args = commentIssueSchema.parse(input);
+    assertSelectedRepository(args.repository, await this.repositories.listInstallationRepositories());
+    const metadata = await this.repositories.getRepository(args.repository);
+    if (metadata.archived) throw new InputValidationError('Ce dépôt est archivé.', 'REPOSITORY_ARCHIVED');
+    const issue = await this.issues.getIssue(args.repository, args.number);
+    if (issue.pull_request) throw new InputValidationError('Ce numéro désigne une PR. Utilisez github_comment_pull_request.', 'NOT_AN_ISSUE');
+    const body = `Commentaire MCP — compte GitHub ${this.actor} — agent déclaré : ${args.agentLabel}\n\n${args.body}`;
+    const comment = await mutation(() => this.issues.createComment(args.repository, args.number, body));
+    return { repository: args.repository, number: args.number, id: comment.id, url: comment.html_url,
+      note: 'Commentaire publié ; peut notifier les collaborateurs. Si la réponse est perdue, relire les commentaires de l’issue avant de réessayer pour éviter un doublon.' };
   }
 }
