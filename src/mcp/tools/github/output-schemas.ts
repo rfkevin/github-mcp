@@ -19,6 +19,8 @@ const pull = { number: n, title: s, state: s, draft: b.optional(), merged: b.opt
   branch: s, headSha: s, headRepository: s.optional(), base: s, baseSha: s.optional(),
   mergeable: b.nullable().optional(), mergeableState: s.optional() };
 const comment = { id: n, author: s.optional(), body: s, bodyTruncated: b, url: s };
+const issue = { number: n, title: s, state: s, url: s, author: s.optional(), labels: strings,
+  assignees: strings, body: s, bodyTruncated: b };
 const check = { name: s, status: s, conclusion: nullableString, url: nullableString };
 const treeEntry = z.looseObject({ path: s.optional(), type: s.optional(), sha: s.optional(), mode: s.optional(), size: n.optional() });
 const capabilities = z.object({ mutationsExposed: b, checkDispatchEnabled: b, managedProjectChecks: b,
@@ -98,6 +100,10 @@ export const outputSchemas = {
     reviewComments: z.array(z.object({ ...comment, path: s, line: n.nullable().optional() })).optional(),
     discussionPotentiallyTruncated: b.optional(), discussionPage: n.optional(), nextDiscussionPage: n.nullable().optional(),
     discussionOrder: s.optional() },
+  github_list_issues: { ...repository, issues: z.array(z.object(issue)), limit: n, potentiallyTruncated: b },
+  github_get_issue: { ...repository, ...issue,
+    comments: z.array(z.object(comment)).optional(), commentsPotentiallyTruncated: b.optional(),
+    commentsPage: n.optional(), nextCommentsPage: n.nullable().optional() },
   // The managed and legacy check controllers share these fields.
   github_run_checks: { ...run, sha: s.optional(), scope: s.optional(), target: s.optional(),
     reused: b, key: s, deduplication: s.optional() },
