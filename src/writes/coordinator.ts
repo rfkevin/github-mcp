@@ -9,7 +9,12 @@ const sha = z.string().regex(/^[a-f0-9]{40}$/i).transform(value => value.toLower
 const repository = z.string().min(3).max(200);
 const branch = z.string().min(1).max(240);
 const path = z.string().min(1).max(1024);
-export const agentLabelSchema = z.string().trim().regex(/^[\p{L}\p{N} ._-]{1,80}$/u);
+// Unicode property escapes are not portable between JSON Schema validators.
+// Keep the exact Unicode/length rule on the server, and publish portable metadata.
+export const agentLabelSchema = z.string().trim()
+  .refine(value => /^[\p{L}\p{N} ._-]{1,80}$/u.test(value), 'Nom d’agent invalide.')
+  .meta({ minLength: 1, maxLength: 80,
+    description: 'Nom déclaré de l’agent : 1 à 80 caractères, lettres, chiffres, espaces, points, tirets ou underscores.' });
 const agentLabel = agentLabelSchema.default('agent non précisé');
 export const createBranchSchema = z.object({ repository,
   task: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/),

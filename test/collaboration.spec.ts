@@ -12,9 +12,24 @@ import { GitHubCommits } from '../src/github/commits';
 import type { GitHubServiceContext } from '../src/github/service-context';
 import { assertWritablePath } from '../src/security/policy';
 import { TOOL_FEEDBACK } from '../src/tool-feedback';
+import { agentLabelSchema } from '../src/writes/coordinator';
 
 const HEAD = 'a'.repeat(40), BASE = 'b'.repeat(40), MAIN = 'c'.repeat(40), MERGED = 'd'.repeat(40);
 const REPO = 'owner/project';
+
+describe('noms d’agents Unicode validés côté serveur', () => {
+  it('conserve les accents, alphabets non latins, normalisation et limite en caractères Unicode', () => {
+    for (const label of ['Élodie GPT-6', '智能助手', 'وكيل', '𐐀'.repeat(80), 'Codex_1.0']) {
+      expect(agentLabelSchema.parse(`  ${label}  `)).toBe(label);
+    }
+  });
+  it('refuse toujours les noms vides, trop longs, multilignes et les caractères interdits', () => {
+    for (const label of ['', '   ', 'x'.repeat(81), '𐐀'.repeat(81), 'agent\nadmin', '<script>', 'agent/other', 'agent😀']) {
+      expect(agentLabelSchema.safeParse(label).success).toBe(false);
+    }
+  });
+});
+
 const expected: ExpectedCheck[] = [{ source: 'check', name: 'ci' }, { source: 'check', name: 'build' }];
 function review(agent: string, id: number, decision = 'agree', head = HEAD, base = BASE): GitHubComment {
   return { id, html_url: `https://github.com/${REPO}/pull/1#issuecomment-${id}`, created_at: '',

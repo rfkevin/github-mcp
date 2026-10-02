@@ -673,7 +673,7 @@ describe('Worker OAuth / MCP', () => {
       const listed = await send('/mcp', { method: 'POST', headers,
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
       expect(listed.status).toBe(200);
-      const tools = rpcResult(await listed.text()).tools as Array<{ name: string; inputSchema: { type: string };
+      const tools = rpcResult(await listed.text()).tools as Array<{ name: string; inputSchema: { type: string; properties: Record<string, unknown> };
         outputSchema: { type: string; properties: object } }>;
       expect(tools.map(tool => tool.name).sort()).toEqual(Object.keys(outputSchemas).sort());
       expect(tools).toHaveLength(24);
@@ -681,6 +681,14 @@ describe('Worker OAuth / MCP', () => {
         expect(tool.inputSchema.type).toBe('object');
         expect(tool.outputSchema.type).toBe('object');
         expect(Object.keys(tool.outputSchema.properties).length).toBeGreaterThan(0);
+      }
+      const signedTools = tools.filter(tool => 'agentLabel' in tool.inputSchema.properties);
+      expect(signedTools.map(tool => tool.name).sort()).toEqual([
+        'github_comment_commit', 'github_comment_pull_request', 'github_commit_changes', 'github_merge_integration',
+      ].sort());
+      for (const tool of signedTools) {
+        expect(tool.inputSchema.properties.agentLabel).toMatchObject({ type: 'string', minLength: 1, maxLength: 80 });
+        expect(tool.inputSchema.properties.agentLabel).not.toHaveProperty('pattern');
       }
     } finally {
       delete settings.GITHUB_WRITES_ENABLED;
