@@ -19,15 +19,16 @@ const pull = { number: n, title: s, state: s, draft: b.optional(), merged: b.opt
   branch: s, headSha: s, headRepository: s.optional(), base: s, baseSha: s.optional(),
   mergeable: b.nullable().optional(), mergeableState: s.optional() };
 const comment = { id: n, author: s.optional(), body: s, bodyTruncated: b, url: s };
+const issue = { number: n, title: s, state: s, url: s, author: s.optional() };
 const check = { name: s, status: s, conclusion: nullableString, url: nullableString };
 const treeEntry = z.looseObject({ path: s.optional(), type: s.optional(), sha: s.optional(), mode: s.optional(), size: n.optional() });
 const capabilities = z.object({ mutationsExposed: b, checkDispatchEnabled: b, managedProjectChecks: b,
-  checkPlanPath: s, workflowPreparation: s, codeWritesEnabled: b, workingBranchPrefix: s.optional(),
+  checkPlanPath: s, workflowPreparation: s, codeWritesEnabled: b, issueWritesEnabled: b, workingBranchPrefix: s.optional(),
   integrationToolExposed: b, integrationPolicyPath: s,
   toolFeedback: z.object({ repository: s, memoryPath: s, improvementsPath: s, branch: s, publication: s, note: s }),
   collaboration: s, arbitraryShell: z.literal(false), productionDeployment: z.literal(false),
   projectCommandsOnGitHubActions: b,
-  requiredPermissions: z.object({ files: s, checks: s, workflows: s, statuses: s, pullRequests: s, codeWrites: s.optional() }),
+  requiredPermissions: z.object({ files: s, checks: s, workflows: s, statuses: s, pullRequests: s, issues: s, codeWrites: s.optional(), issueWrites: s.optional() }),
   permissionsNote: s });
 const decision = z.object({ version: z.literal(1), agent: s, actor: s, head: s, base: s,
   decision: z.enum(['agree', 'changes_requested']), commentId: n });
@@ -36,6 +37,11 @@ const run = { ...repository, targetSha: s, controllerSha: s.optional(), runId: n
 
 export const outputSchemas = {
   github_list_repositories: { repositories: strings },
+  github_list_issues: { ...repository, issues: z.array(z.object(issue)), limit: n, page: n,
+    potentiallyTruncated: b, nextPage: n.nullable() },
+  github_get_issue: { ...repository, ...issue, labels: strings, assignees: strings,
+    body: s, bodyTruncated: b, comments: z.array(z.object(comment)),
+    commentsPotentiallyTruncated: b, commentsPage: n, nextCommentsPage: n.nullable() },
   github_get_project_guide: { ...atCommit, ref: s,
     documents: z.array(z.object({ path: s, sha: s.optional(), size: n.optional(), content: s.optional(),
       truncated: b.optional(), missing: b.optional() })) },
@@ -110,6 +116,10 @@ export const outputSchemas = {
   github_comment_pull_request: { ...repository, number: n, id: n, url: s, observedHeadSha: s, note: s },
   github_create_branch: { ...atCommit, baseBranch: s, branch: s },
   github_commit_changes: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
+  github_replace_text: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
+  github_restore_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s, sourceSha: s, sourceBlobSha: s },
+  github_append_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
+  github_create_issue: { ...repository, number: n, title: s, state: s, url: s, note: s },
   github_open_pull_request: { ...repository, number: n, url: s, draft: b, base: s, branch: s, headSha: s,
     headMatchesExpected: b, followUp, note: s },
   github_merge_integration: { ...atCommit, number: n, branch: s, alreadyIntegrated: b,

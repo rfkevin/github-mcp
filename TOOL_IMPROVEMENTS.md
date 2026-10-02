@@ -254,3 +254,53 @@ Critère : schémas d'entrée et de sortie vérifiés, erreurs localisées par o
 Coût : dépendance Python supplémentaire si intégré en CI ; garder d'abord le
 test ciblé existant et mesurer le bénéfice. Limite : ce contrôle ne certifie pas
 OpenAI, ni tous les clients. Merci aux collaborateurs pour leur avis indépendant.
+
+
+### RETOUR-2026-10-02-codex-pr17-correction-navigation
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : PR #17, base `971740dcca84f1283943eeba294cd5b245fc7419`
+Expérience : lectures MCP réelles de dépôts/PR/CI ; correction et tests locaux avec GitHub simulé.
+
+Avis sur l'existant : accord avec `IMP-2026-10-01-codex-validation-clients` :
+les outils étaient visibles et certaines lectures réelles fonctionnent dans cette
+session, mais une préversion verte ne remplace pas la CI ni un essai OAuth des
+nouvelles fonctions. Accord avec `IMP-2026-10-01-codex-etat-reprise` : le retour
+complet de la PR #17 a permis de distinguer son code du fichier endommagé de #15.
+`IMP-2026-10-01-codex-reprise` reste utile après un état de reprise fiable ;
+`IMP-2026-10-01-codex-preuve-revue` reste conditionnelle avant extension des fusions.
+
+Classement personnel : 1. validation-clients — P1, validation de la version
+réellement utilisée ; 2. etat-reprise — P2, continuité au bon SHA ; 3. reprise —
+P2, ensuite seulement ; 4. preuve-revue — P2 conditionnelle, intégration non utilisée.
+
+Aucune nouvelle proposition : les besoins d'édition ciblée, restauration et append
+étaient déjà décrits dans le commentaire 5950768081 de #17 et la note de Claude
+`2026-10-01-claude-conseils-frictions`. Le présent travail corrige l'outil ciblé
+déjà ajouté à #17 ; garde générale anti-troncature, restauration, append dédié et
+création d'issue restent à décider séparément. Le découpage demandé réduit le
+plus long fichier de tests de 1 285 à 289 lignes ; une carte précise les chemins.
+Limite : aucun gain de temps agent mesuré, pas de droits élargis ou de fusion.
+Suite : revue de #17 et essai réel après publication humaine. Merci aux collaborateurs.
+
+### RETOUR-2026-10-02-codex-pr17-restauration-append-issues
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : compléments autorisés à PR #17, base `36f1d25`
+
+Complément au retour `RETOUR-2026-10-02-codex-pr17-correction-navigation` :
+restauration, append et création d'issue ont maintenant été demandés explicitement
+par le propriétaire et implémentés ; aucune proposition n'a servi d'autorisation.
+Les besoins figurent déjà dans le commentaire 5950768081 et la note de Claude
+`2026-10-01-claude-conseils-frictions`, sans nouvelle proposition indépendante.
+Le parcours simulé crée, liste et lit une issue ; les refus Issues: Write
+n'empêchent pas les autres lectures ni les commentaires PR. L'append respecte
+les vrais contrôles des journaux, y compris BOM, CRLF et Unicode conservés.
+
+Avis et classement personnel : 1. `IMP-2026-10-01-codex-validation-clients`
+(P1), vérifier version publiée/catalogue/permissions réelles après revue ;
+2. `IMP-2026-10-01-codex-etat-reprise` (P2), relire les SHA et issues après
+réponse incertaine pour éviter un doublon ; 3. `IMP-2026-10-01-codex-reprise`
+(P2), utile une fois l'état fiable ; 4. `IMP-2026-10-01-codex-preuve-revue`
+(P2 conditionnelle avant extension des fusions). Accord avec ces propositions,
+sans présenter les tests locaux comme preuve de publication ni d'essai Claude.
+La garde générale anti-troncature reste séparée, les outils ciblés réduisent
+l'exposition sans la remplacer. Prochaine étape : revue humaine de #17 et essai
+réel avec permission acceptée ; pas de droit accordé ni de fusion ici.
+Merci aux collaborateurs pour leurs retours et vérifications indépendantes.

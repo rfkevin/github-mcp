@@ -201,3 +201,40 @@ sont conservés. Lire docs/openai-discovery-follow-up.md.
 Conseil : un validateur JavaScript seul masque les incompatibilités de dialecte.
 Limite : rejet Python prouvé, cause OpenAI à confirmer par nouvel essai publié.
 Merci au propriétaire et aux collaborateurs pour leurs retours et leur patience.
+
+
+### 2026-10-02-codex-pr17-correction-navigation
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : PR #17, base de travail `971740dcca84f1283943eeba294cd5b245fc7419`
+
+Constat et vérification : les trois nouveaux outils manquaient de schémas de
+sortie ; le catalogue et ses scopes n'étaient pas mis à jour dans les tests.
+Correction : contrats complets, pagination des issues avant filtrage des PR,
+refus des numéros de PR, lecture immuable et occurrences chevauchantes refusées
+pour le remplacement ciblé. À la demande du propriétaire, les grosses suites
+OAuth/client/foundation et les types/diagnostics GitHub sont répartis par domaine.
+`AGENTS.md` renvoie vers `docs/code-map.md`, qui indique code, tests et helpers.
+Contrôle complet local réussi : types, 392 tests applicatifs, 45 tests de scripts,
+compilation sans déploiement. Limites : GitHub simulé, PR #15 séparée toujours
+endommagée ; pas de validation réelle des nouvelles fonctions après publication.
+Conseil : préserver le chemin public des types et les fixtures par fichier.
+Suite : suivre la CI du commit final puis revue humaine. Merci aux collaborateurs.
+
+### 2026-10-02-codex-pr17-restauration-append-issues
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : PR #17, suite autorisée depuis `36f1d2554dd3092991b082adfb77d9e5b49b60d0`
+
+Complément à `2026-10-02-codex-pr17-correction-navigation` : le propriétaire
+demande d'implémenter restauration, append et création d'issue, puis confirme
+création et lecture. PR #15/#16 et branche principale vérifiées : lecture
+d'issues en cours, aucun des trois nouveaux outils livré dans ces références.
+Ajouts : github_restore_file (source immuable, blob/absence attendus),
+github_append_file (préfixe conservé), github_create_issue (dépôt autorisé,
+non archivé, attribution et jeton Issues: Write dédié). Contrôles des commits,
+journaux en ajout seul, scopes et sorties conservés ; consentement et carte mis
+à jour. Le décodeur préserve désormais le BOM et refuse l'UTF-8 invalide.
+Vérifié localement : types, 421 tests applicatifs, 45 tests de scripts et build
+sans publication ; création/listing/lecture d'issue via OAuth simulés réussis.
+Limites : droits GitHub inchangés, aucun essai réel des nouveaux outils après
+publication ; PR #15 séparée, garde générale anti-troncature encore proposée.
+Conseil : relire les issues et la branche après résultat incertain, sans rejeu
+automatique. Suite : CI au nouveau SHA, revue/publication humaines puis essai
+depuis les clients réels. Merci au propriétaire et aux collaborateurs.
