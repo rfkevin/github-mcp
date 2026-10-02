@@ -34,6 +34,7 @@ const decision = z.object({ version: z.literal(1), agent: s, actor: s, head: s, 
   decision: z.enum(['agree', 'changes_requested']), commentId: n });
 const run = { ...repository, targetSha: s, controllerSha: s.optional(), runId: n, url: s,
   status: nullableString, nextPollSeconds: n.nullable() };
+const batchError = z.object({ index: n, path: s, code: s, message: s });
 
 export const outputSchemas = {
   github_list_repositories: { repositories: strings },
@@ -75,22 +76,19 @@ export const outputSchemas = {
     limits: z.object({ checks: n, runs: n }), note: s },
   github_get_check_result: { ...atCommit, runId: n, shaMeaning: s, targetVerified: z.literal(false),
     status: nullableString, conclusion: nullableString, url: s, nextPollSeconds: n.nullable(),
-    jobs: z.array(z.object({ id: n, ...check, failedSteps: strings })), limit: n, potentiallyTruncated: b },
-  github_get_failure_report: { ...atCommit,
-    reports: z.array(z.union([
-      z.object({ id: n, name: s, conclusion: nullableString, url: nullableString,
-        annotations: z.array(z.object({ path: s, startLine: n, endLine: n, level: s, message: s })), potentiallyTruncated: b }),
-      z.object({ id: n, name: s, error: failure }),
-    ])), truncated: b, note: s },
-  github_get_quality_report: { ...atCommit, source: s, available: b, potentiallyTruncated: b,
-    checks: z.array(z.object({ ...check, summary: s })), limitation: s },
-  github_read_files: { ...atCommit, ref: s, partial: b,
-    files: z.array(z.union([
-      z.object({ path: s, blobSha: s, size: n, totalLines: n, startLine: n, endLine: n, outOfRange: b,
-        ...excerpt, nextStartLine: n.nullable() }),
-      z.object({ path: s, error: failure }),
-    ])) },
-  // A failed ref lookup is a partial context, not a failed tool invocation.
+    jobs: z.array(z.object({ id: n, name: s, status: nullableString, conclusion: nullableString, url: s,
+      failedSteps: z.array(z.object({ name: s, number: n, conclusion: nullableString })) })),
+    potentiallyTruncated: b, note: s },
+  github_get_failure_report: { ...atCommit, reports: z.array(z.object({ id: n, name: s, conclusion: nullableString, url: s,
+    annotations: z.array(z.object({ path: s, startLine: n.nullable(), endLine: n.nullable(), level: s, message: s })) })),
+    truncated: b, note: s },
+  github_get_quality_report: { ...atCommit, providers: z.array(z.object({ provider: s, name: s, status: s,
+    conclusion: nullableString, url: nullableString, note: s })), note: s },
+  github_read_files: { ...atCommit, partial: b, files: z.array(z.union([
+    z.object({ path: s, blobSha: s, size: n, totalLines: n, startLine: n, endLine: n, outOfRange: b,
+      ...excerpt, nextStartLine: n.nullable() }),
+    z.object({ path: s, error: failure }),
+  ])) },
   github_get_project_context: { ...repository, defaultBranch: s, ref: s, partial: b, capabilities,
     sha: s.optional(), error: failure.optional(),
     tree: z.union([z.object({ entries: z.array(treeEntry), truncated: b }), z.object({ error: failure })]).optional(),
@@ -104,7 +102,6 @@ export const outputSchemas = {
     reviewComments: z.array(z.object({ ...comment, path: s, line: n.nullable().optional() })).optional(),
     discussionPotentiallyTruncated: b.optional(), discussionPage: n.optional(), nextDiscussionPage: n.nullable().optional(),
     discussionOrder: s.optional() },
-  // The managed and legacy check controllers share these fields.
   github_run_checks: { ...run, sha: s.optional(), scope: s.optional(), target: s.optional(),
     reused: b, key: s, deduplication: s.optional() },
   github_get_agent_check_result: { ...run, sha: s.optional(), scope: s.optional(), target: s.optional(),
@@ -116,6 +113,9 @@ export const outputSchemas = {
   github_comment_pull_request: { ...repository, number: n, id: n, url: s, observedHeadSha: s, note: s },
   github_create_branch: { ...atCommit, baseBranch: s, branch: s },
   github_commit_changes: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
+  github_apply_changes: { ...repository, branch: s, atomic: z.literal(true), applied: b,
+    commitSha: s.optional(), changedPaths: strings.optional(), deletedPaths: strings.optional(), followUp: followUp.optional(), note: s.optional(),
+    operationCount: n.optional(), errors: z.array(batchError) },
   github_replace_text: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
   github_restore_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s, sourceSha: s, sourceBlobSha: s },
   github_append_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
