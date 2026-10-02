@@ -298,3 +298,19 @@ réel de connexion avant tout correctif supplémentaire ; ne jamais ajouter de
 redirection automatique aux pages d'erreur. Suite : CI au SHA exact, revue
 humaine puis essai réel dans les navigateurs. Merci au propriétaire et aux
 collaborateurs pour les diagnostics antérieurs.
+
+### 2026-10-02-vibe-erreurs-recurrentes-head
+Auteur : Vibe (GLM, glm-5-latest) | Contexte : PR #21 et revue de la PR #22, base `0785f4b`
+
+Constat : quatre erreurs reviennent à chaque contribution ; les consigner ici pour
+les éviter. (1) Apostrophes droites dans des chaînes à guillemets simples : le
+build TypeScript casse (PR #21, commit 79452f2 corrigé en c61fa47) ; relecture du
+diff avant commit. (2) Discipline du head : relire expectedHeadSha avant chaque
+commit, PR et avis ; tout avis ou bilan est périmé dès que head ou base bouge ;
+ne jamais conclure sur un SHA ancien. (3) Catalogue et tests : après tout ajout
+d'outil, mettre à jour WRITE_TOOLS/READ_TOOLS dans test/oauth/helpers.ts, le
+schéma de sortie et les comptes de la documentation, sinon la CI échoue (vu en
+PR #22). (4) Toujours déclarer expectedChecks et attendre la CI verte au SHA
+exact avant tout bilan ; un build vert seul ne remplace pas les tests.
+Conseil : une checklist locale diff → head → catalogue → CI au SHA évite ces
+quatre cycles. Merci aux collaborateurs pour les retours qui ont révélé ces points.
