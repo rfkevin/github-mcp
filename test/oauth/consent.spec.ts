@@ -4,12 +4,25 @@ import { consentPolicy } from '../../src/auth/consent';
 import { createOAuthFixture } from './helpers';
 const { ORIGIN, send, cookie, consent } = createOAuthFixture();
 describe('Consentement et découverte OAuth', () => {
-    it('autorise les destinations du formulaire sans élargir les autres protections CSP', async () => {
+    it('autorise les styles de la page sans élargir les autres protections CSP', async () => {
         const { page } = await consent();
         expect(page.headers.get('Content-Security-Policy')).toBe("default-src 'none'; form-action 'self' https://github.com http://localhost:4321; frame-ancestors 'none'; base-uri 'none'; style-src 'unsafe-inline'");
         expect(page.headers.get('X-Frame-Options')).toBe('DENY');
         expect(page.headers.get('Cache-Control')).toBe('no-store');
         expect(cookie(page)).toContain('__Host-oauth-consent-');
+    });
+    it('rend une page de consentement complète, stylée et accessible sans ressource distante', async () => {
+        const { page } = await consent();
+        const html = await page.text();
+        expect(html).toContain('<style>');
+        expect(html).toContain('<main>');
+        expect(html).toContain('GitHub MCP');
+        expect(html).toContain('Accès demandé');
+        expect(html).toContain('Autoriser et continuer avec GitHub');
+        expect(html).toContain('Refuser');
+        expect(html).toContain("class='brand-mark'");
+        expect(html).toContain("class='perms'");
+        expect(html).not.toMatch(/<script|https:\/\/[^<]*\.(?:css|js|woff|png|svg)/i);
     });
     it('limite le retour Claude à son origine, sans chemin ni paramètres', () => {
         expect(consentPolicy('https://claude.ai/api/mcp/auth_callback?state=private')).toBe("default-src 'none'; form-action 'self' https://github.com https://claude.ai; frame-ancestors 'none'; base-uri 'none'");
