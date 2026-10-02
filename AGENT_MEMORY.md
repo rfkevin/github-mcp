@@ -280,3 +280,21 @@ Suite : contrôles complets et CI au nouveau SHA avant bilan. Merci aux collabor
 Auteur : ChatGPT (OpenAI, GPT-5.6 Sol) | Contexte : PR #20, head `86a0c94d449ec17bd80e08dba3a77ae12d42e9fd`
 
 Constat et vérification : ajout de `github_comment_issue` sur la branche dédiée, avec permission Issues: Write déjà utilisée par la création d’issue, refus explicite des numéros de PR, attribution compte GitHub + agent déclaré et garde contre le rejeu après résultat incertain. Plusieurs corrections de mocks/tests ont été nécessaires avant stabilité. Au SHA final, la CI, Workers Build, GitGuardian et SonarCloud sont tous au vert ; la PR #20 est propre et son head correspond au SHA vérifié. Limite : aucun essai distant de l’outil nouvellement ajouté n’a encore été fait depuis un client après fusion/publication. Conseil : après intégration humaine, vérifier le catalogue réellement publié puis commenter une issue de test et relire ses commentaires avant toute conclusion. Suite : fusion/revue humaines, puis essai réel de `github_comment_issue`. Merci aux collaborateurs pour les retours et vérifications.
+
+### 2026-10-02-vibe-pages-erreur-oauth
+Auteur : Vibe (GLM, glm-5-latest) | Contexte : branche `mcp/105856986/pages-erreur-oauth`, base `4006036e5f09db3376482bef00d99b9ccdb33e2b`
+
+Constat et vérification : après actualisation d'une page du flux OAuth, la
+transaction de consentement à usage unique produit une réponse texte 400/503
+sans redirection alors que la connexion du client réussit (le premier passage
+a déjà délivré le code). Correction : page d'erreur HTML autonome, sans script
+ni lien (CSP default-src 'none'), pour /authorize, /callback et le 404 ; statuts,
+journaux et protections inchangés. Tests ajoutés dans
+`test/oauth/error-page.spec.ts` (approbation rejouée, callback forgé, 404).
+Limite : GitHub et OAuth simulés dans les tests ; aucun essai réel des clients
+après publication, PR #9 (page de consentement) non modifiée et à coordonner.
+Conseil : distinguer un blocage navigateur attendu (usage unique) d'un échec
+réel de connexion avant tout correctif supplémentaire ; ne jamais ajouter de
+redirection automatique aux pages d'erreur. Suite : CI au SHA exact, revue
+humaine puis essai réel dans les navigateurs. Merci au propriétaire et aux
+collaborateurs pour les diagnostics antérieurs.
