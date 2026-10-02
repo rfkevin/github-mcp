@@ -9,6 +9,8 @@ import { registerProjectTools } from './tools/github/project';
 import { registerCheckTools } from './tools/github/checks';
 import { registerWriteTools } from './tools/github/writes';
 import { registerPullRequestTools } from './tools/github/pull-requests';
+import { registerIssueTools } from './tools/github/issues';
+import { registerTargetedWriteTools } from './tools/github/targeted-write';
 import { WORKFLOW_INSTRUCTIONS } from './workflow-guidance';
 import { registerIntegrationTools } from './tools/github/integration';
 
@@ -21,8 +23,10 @@ export function createServer(context: ToolContext): McpServer {
   registerReportTools(server, context);
   registerProjectTools(server, context);
   registerPullRequestTools(server, context);
+  registerIssueTools(server, context);
   registerCheckTools(server, context);
   registerWriteTools(server, context);
+  registerTargetedWriteTools(server, context);
   registerIntegrationTools(server, context);
   return server;
 }
