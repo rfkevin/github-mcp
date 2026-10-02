@@ -6,15 +6,15 @@ Les outils sont implémentés et testés localement avec GitHub simulé, y compr
 
 Trois conditions sont nécessaires :
 
-1. GitHub App : **Contents: Read and write** pour les fichiers/branches, **Pull requests: Read and write** pour les PR, **Issues: Read** pour les lectures et **Issues: Read and write** pour créer une issue, puis acceptation des droits nécessaires dans l’installation. Les jetons de ces familles sont séparés : le refus Issues: Write ne bloque pas les autres. Aucun droit Actions en écriture, Workflows, Administration ou approbation n’est nécessaire à ces neuf outils.
+1. GitHub App : **Contents: Read and write** pour les fichiers/branches, **Pull requests: Read and write** pour les PR, **Issues: Read** pour les lectures et **Issues: Read and write** pour créer une issue, puis acceptation des droits nécessaires dans l’installation. Les jetons de ces familles sont séparés : le refus Issues: Write ne bloque pas les autres. Aucun droit Actions en écriture, Workflows, Administration ou approbation n’est nécessaire à ces dix outils.
 2. Serveur : variable texte non secrète `GITHUB_WRITES_ENABLED` à `true`. Elle reste absente de la configuration livrée. Conserver le réglage dans la configuration de déploiement, pas seulement dans le tableau de bord. Après modification de bindings Wrangler, exécuter `npm run cf-typegen`, puis publier au moment choisi. Garder les préversions désactivées pour les écritures.
 3. Client : nouveau consentement incluant **`mcp:read mcp:write offline_access`**. Vérifier les droits effectivement demandés : une simple reconnexion sans `mcp:write` ne suffit pas. L’écran de consentement explique les modifications et suppressions, les PR et le risque d’automatisations.
 
-Les anciens jetons de lecture ne gagnent aucun droit d’écriture. Retirer la variable, la vider ou la mettre à `false` masque les neuf outils même pour les anciens jetons d’écriture, ainsi que l’intégration optionnelle. Toute autre valeur refuse la configuration. Pour révoquer également le pouvoir détenu par l’App, retirer les permissions GitHub correspondantes.
+Les anciens jetons de lecture ne gagnent aucun droit d’écriture. Retirer la variable, la vider ou la mettre à `false` masque les dix outils même pour les anciens jetons d’écriture, ainsi que l’intégration optionnelle. Toute autre valeur refuse la configuration. Pour révoquer également le pouvoir détenu par l’App, retirer les permissions GitHub correspondantes.
 
 **Les dépôts restent ceux sélectionnés dans l’installation GitHub**, sans liste parallèle dans le code ou dans la configuration du MCP. Chaque demande d’écriture vérifie la liste effective avant d’écrire. La lecture de cette liste est bornée à 1 000 dépôts : un dépôt non trouvé est refusé, jamais autorisé par défaut. GitHub contrôle aussi les droits lors de l’écriture. Une révocation concurrente sera appliquée selon les garanties de GitHub.
 
-## Les neuf outils
+## Les dix outils
 
 | Outil | Paramètres essentiels | Résultat |
 | --- | --- | --- |
@@ -24,11 +24,18 @@ Les anciens jetons de lecture ne gagnent aucun droit d’écriture. Retirer la v
 | `github_restore_file` | `repository`, `branch`, `path`, `sourceRef`, `expectedHeadSha`, `expectedSha` (ou `null` si absent), `message`, `agentLabel` | contenu texte restauré, commit, `sourceSha`, `sourceBlobSha` et suivi CI |
 | `github_append_file` | `repository`, `branch`, `path`, `expectedHeadSha`, `expectedSha`, `text`, `message`, `agentLabel` | ajout exact en fin de fichier existant, commit et suivi CI |
 | `github_create_issue` | `repository`, `title`, `body` facultatif, `agentLabel` | numéro, titre, état et URL ; trace du compte/agent en tête du corps |
+| `github_resolve_conflicts` | `repository`, `branch`, `expectedHeadSha`, `expectedBaseSha`, `resolutions`, `message`, `agentLabel`, `baseBranch` facultatif | commit à deux parents sur sa branche personnelle et suivi CI |
 | `github_open_pull_request` | `repository`, `branch`, `expectedHeadSha`, `title`, `body` et `baseBranch` facultatifs | numéro, URL, brouillon, SHA observé et `headMatchesExpected` |
 | `github_comment_pull_request` | `repository`, `number`, `expectedHeadSha`, `body`, `agentLabel` ; `decision` et `expectedBaseSha` pour un avis | commentaire sur une PR ouverte interne, y compris d’un autre agent ; aucune approbation GitHub |
 | `github_comment_commit` | `repository`, `sha`, `body`, `agentLabel` | commentaire général sur un commit exact, sans modifier son code |
 
 Les outils de lecture `github_list_pull_requests` et `github_get_pull_request` permettent de retrouver une PR après une interruption. Avec `includeDiscussion=true`, `discussionPage` parcourt les commentaires généraux, revues et commentaires de code par pages de 20 ; suivre `nextDiscussionPage`. Les longs textes restent tronqués et signalés. `github_get_commit` lit un SHA et, sur demande, ses vingt premiers commentaires généraux. En cas de résultat d’écriture incertain, vérifier la branche ou la discussion complète avant de relancer.
+
+Pour des conflits, appeler d’abord `github_get_merge_context`, lire les trois
+versions, puis fournir tous les choix à `github_resolve_conflicts`. Le serveur
+reprend les changements de base dans sa branche personnelle et conserve les
+protections habituelles ; il ne fusionne pas la PR. Le parcours, les limites et
+la concurrence sont détaillés dans [conflict-resolution.md](conflict-resolution.md).
 
 Lire le contexte et les fichiers avant de préparer un changement. Le SHA du commit (`sha`) sert pour la branche ; le SHA du blob (`blobSha` des lectures groupées, `sha` de `github_read_file`) sert pour chaque fichier.
 

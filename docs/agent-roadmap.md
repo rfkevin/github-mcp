@@ -56,7 +56,7 @@ Un runner permanent, un cache de résultats persistant ou un verrou distribué n
 
 1. Valider ce lot sur GitHub et depuis Claude ; revoir les permissions effectives de l’installation.
 2. Activer et essayer le mode multi-dépôts sur un nouveau projet. Le premier quick peut démarrer au push avant fusion ; le lancement manuel exige le workflow sur la branche par défaut. L’ancien mode épinglé reste compatible mais n’est plus le parcours recommandé pour plusieurs projets.
-3. Valider les neuf outils d’écriture, la création et lecture d’issues, le parcours de discussion et, seulement après configuration du propriétaire, l’intégration. Tester aussi un client en lecture seule et la remise manuelle des propositions ; ne pas exposer d’autres services internes sans revue.
+3. Valider les dix outils d’écriture, la création et lecture d’issues, le parcours de discussion et, seulement après configuration du propriétaire, l’intégration. Tester aussi un client en lecture seule et la remise manuelle des propositions ; ne pas exposer d’autres services internes sans revue.
 4. Ajouter lint, E2E navigateur et Sonar détaillé si retenus. Ne pas injecter un jeton Sonar dans du code de PR non fiable.
 5. Configurer et éprouver la chaîne staging/production décrite dans [deployments.md](deployments.md). Elle réutilise le paquet compilé par la CI ; les ressources distantes et la migration de l’autodéploiement Cloudflare restent à effectuer.
 

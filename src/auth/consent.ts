@@ -83,7 +83,7 @@ export function consentPage(details: ConsentDescription, handle: string): string
   const permissions = [
     item('eye', 'Lire les dépôts autorisés', 'Consulter le code, les issues, les pull requests et l’état des contrôles des dépôts sélectionnés.'),
     write
-      ? item('edit', 'Proposer des changements', 'Créer des branches de travail, des commits avec ajouts, modifications, restaurations et suppressions de fichiers, des issues, pull requests et commentaires. Les fichiers sensibles et les contrôles de publication restent protégés.', 'warn')
+      ? item('edit', 'Proposer des changements', 'Créer des branches de travail, des commits avec ajouts, modifications, restaurations et suppressions de fichiers, des issues, pull requests et commentaires. Résoudre les conflits en reprenant une base dans sa branche de travail, sans fusionner la PR. Les fichiers sensibles et les contrôles de publication restent protégés.', 'warn')
       : item('lock', 'Accès en lecture seule', 'Ce consentement ne permet pas de modifier le code ni de créer des issues.'),
     integration
       ? item('shield', 'Intégration encadrée', 'Autoriser une fusion uniquement vers integration lorsqu’une politique du propriétaire, les contrôles et les accords requis sont présents. Des noms différents ne prouvent pas des agents indépendants.', 'warn')

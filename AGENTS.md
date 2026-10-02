@@ -50,6 +50,12 @@ tests du domaine concerné avant de chercher dans tout le dépôt. Actualiser ce
 carte quand un fichier est déplacé ou qu’un domaine est créé. Les chemins doivent
 indiquer le domaine et la responsabilité ; éviter les fichiers fourre-tout.
 
+Pour des conflits de branche, lire `docs/conflict-resolution.md`. Diagnostiquer
+les trois versions avant de choisir ; conserver les interfaces récentes et tous
+les cas de tests. Une reprise de base s’effectue dans la branche de travail,
+sans force-push ni fusion vers la branche principale. Après résolution, renouveler
+les avis et suivre les contrôles au nouveau SHA.
+
 Cette règle s’applique aussi aux tests : une suite par comportement ou famille
 d’opérations, helpers communs explicites dans le dossier du domaine, configuration
 et état isolés par fichier. Ne pas supprimer de cas ni affaiblir une assertion pour

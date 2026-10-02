@@ -23,7 +23,7 @@ const issue = { number: n, title: s, state: s, url: s, author: s.optional() };
 const check = { name: s, status: s, conclusion: nullableString, url: nullableString };
 const treeEntry = z.looseObject({ path: s.optional(), type: s.optional(), sha: s.optional(), mode: s.optional(), size: n.optional() });
 const capabilities = z.object({ mutationsExposed: b, checkDispatchEnabled: b, managedProjectChecks: b,
-  checkPlanPath: s, workflowPreparation: s, codeWritesEnabled: b, issueWritesEnabled: b, workingBranchPrefix: s.optional(),
+  checkPlanPath: s, workflowPreparation: s, codeWritesEnabled: b, issueWritesEnabled: b, conflictResolutionEnabled: b, workingBranchPrefix: s.optional(),
   integrationToolExposed: b, integrationPolicyPath: s,
   toolFeedback: z.object({ repository: s, memoryPath: s, improvementsPath: s, branch: s, publication: s, note: s }),
   collaboration: s, arbitraryShell: z.literal(false), productionDeployment: z.literal(false),
@@ -120,6 +120,11 @@ export const outputSchemas = {
   github_restore_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s, sourceSha: s, sourceBlobSha: s },
   github_append_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
   github_create_issue: { ...repository, number: n, title: s, state: s, url: s, note: s },
+  github_get_merge_context: { ...repository, branch: s, baseBranch: s, headSha: s, baseSha: s, ancestorSha: s,
+    conflicts: z.array(z.object({ path: s, blocked: b, ancestorBlobSha: s.nullable().optional(), oursBlobSha: s.nullable().optional(), theirsBlobSha: s.nullable().optional() })),
+    automaticPaths: strings, blockedPaths: strings, canResolve: b, note: s },
+  github_resolve_conflicts: { ...repository, branch: s, baseBranch: s, commitSha: s, changedPaths: strings,
+    deletedPaths: strings, baseSha: s, ancestorSha: s, followUp, note: s },
   github_open_pull_request: { ...repository, number: n, url: s, draft: b, base: s, branch: s, headSha: s,
     headMatchesExpected: b, followUp, note: s },
   github_merge_integration: { ...atCommit, number: n, branch: s, alreadyIntegrated: b,

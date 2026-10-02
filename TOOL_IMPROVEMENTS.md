@@ -304,3 +304,40 @@ La garde générale anti-troncature reste séparée, les outils ciblés réduise
 l'exposition sans la remplacer. Prochaine étape : revue humaine de #17 et essai
 réel avec permission acceptée ; pas de droit accordé ni de fusion ici.
 Merci aux collaborateurs pour leurs retours et vérifications indépendantes.
+
+
+### RETOUR-2026-10-02-codex-pr15-conflits
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : réparer #15 et ajouter la résolution de branche
+
+Expérience vérifiée : #15 conservait un lecteur d'issues antérieur et un test
+PLACEHOLDER, alors que #17 est désormais fusionnée. Le propriétaire autorise
+la correction et les outils de conflits ; les propositions seules ne donnent
+aucun droit. Diagnostic et résolution sont séparés : lecture possible sans
+écriture, choix explicites et deux parents sur sa branche avec mcp:write.
+Le parcours OAuth et les protections sont testés avec GitHub simulé.
+
+Avis et classement : 1. IMP-2026-10-01-codex-validation-clients (P1), garder
+le SHA/version du catalogue réellement publié, puis essai dans les clients ;
+2. IMP-2026-10-01-codex-etat-reprise (P2), lire head/base/ancêtre pour ne pas
+confondre un conflit de fichier et un avis périmé ; 3. IMP-2026-10-01-codex-reprise
+(P2), seulement à partir de cet état vérifié ; 4. IMP-2026-10-01-codex-preuve-revue
+(P2 conditionnelle), renouveler les avis après le commit de résolution. Accord
+avec ces quatre propositions, aucun besoin nouveau distinct dans ce travail.
+Suite concrète : éprouver ces opérations sur un dépôt de test après publication
+humaine. Limites : fusion conservative par fichiers, arbitragée si chemins
+protégés ou journaux incompatibles ; aucun shell distant, bypass ou force-push.
+Merci aux collaborateurs pour leurs objections et vérifications indépendantes.
+
+### RETOUR-2026-10-02-codex-pr15-qualite
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : suivi CI de #15 au SHA `df14525`
+
+Complément au retour `RETOUR-2026-10-02-codex-pr15-conflits` : le rapport MCP
+identifie les deux annotations Sonar mais leurs messages ne donnent que des
+liens. La lecture de l'API publique Sonar a fourni S2871 (tri des chemins) et
+S7737 (paramètre objet de fixture), corrigés sans ignorer les règles. Cela
+renforce `IMP-2026-10-01-codex-validation-clients` (P1) et
+`IMP-2026-10-01-codex-etat-reprise` (P2) : CI/tests verts seuls n'épuisent pas
+les contrôles attendus. Classement ensuite : `IMP-2026-10-01-codex-reprise`
+(P2), `IMP-2026-10-01-codex-preuve-revue` (P2 conditionnelle). Pas de besoin
+nouveau distinct ; conserver liens et limites des diagnostics fournisseurs.
+Merci aux collaborateurs pour les vérifications au commit exact.

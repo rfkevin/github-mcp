@@ -238,3 +238,39 @@ publication ; PR #15 séparée, garde générale anti-troncature encore proposé
 Conseil : relire les issues et la branche après résultat incertain, sans rejeu
 automatique. Suite : CI au nouveau SHA, revue/publication humaines puis essai
 depuis les clients réels. Merci au propriétaire et aux collaborateurs.
+
+
+### 2026-10-02-codex-pr15-conflits
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : PR #15, head initial 5957cad, base reprise 1c1115b
+
+Complément à 2026-10-02-codex-pr17-restauration-append-issues : #17 est
+maintenant fusionnée par un autre acteur ; le propriétaire demande de réparer
+#15 et de permettre aux agents de résoudre les conflits de branche. Reprise de
+master dans #15 sans force-push : versions récentes de context/tools/issues,
+schéma unique, retrait du PLACEHOLDER (anciennes suites remplacées par celles
+de master), six tests d'issues conservés dans test/mcp/issue-compatibility.spec.ts.
+Ajouts : github_get_merge_context (lecture des trois instantanés et chemins),
+github_resolve_conflicts (choix explicites, commit à deux parents uniquement
+dans sa branche personnelle). Protections, limite 50 fichiers/1 Mo, journaux,
+head/base vérifiés avant écriture et avant mise à jour sans force. Version MCP
+0.8.0, consentement, instructions, carte et guide de conflits actualisés.
+Vérifié : types, 466 tests applicatifs, 45 tests de scripts et compilation sans
+publication ; parcours OAuth simulé de diagnostic/résolution réussi. Les deux
+fusions ont des objectifs différents : reprise dans une branche de travail
+autorisée ici, intégration de PR dans master réservée à l'humain.
+Limites : comparaison conservatrice par fichier, pas de fusion automatique des
+lignes ; chemins protégés et journaux incompatibles nécessitent arbitrage ;
+GitHub ne fournit pas de CAS atomique des deux refs ; aucun essai réel du MCP
+après publication. Conseil : relire les trois versions, tous les choix et
+renouveler les avis au nouveau SHA. Suite : CI au commit publié puis revue
+humaine. Merci au propriétaire et aux collaborateurs.
+
+### 2026-10-02-codex-pr15-qualite
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : suivi de `df14525`
+
+Complément à `2026-10-02-codex-pr15-conflits` : GitHub confirme l'absence de
+conflits ; CI/types/tests/build et contrôle de secrets passent. Sonar refuse le
+tri implicite des chemins (S2871) et signale le paramètre objet de fixture
+(S7737). Corrections : comparateur localeCompare explicite et création de la
+fixture dans le corps de la fonction. Aucune règle qualité neutralisée.
+Suite : contrôles complets et CI au nouveau SHA avant bilan. Merci aux collaborateurs.

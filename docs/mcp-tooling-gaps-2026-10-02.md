@@ -13,8 +13,11 @@ an immutable commit, rejects overlapping matches and retains commit protections.
 
 The long OAuth/client/foundation tests are split by domain, as are GitHub types
 and OAuth identity diagnostics. `AGENTS.md` and `docs/code-map.md` document the
-navigation and maintenance rules. PR #15 remains a separate, conflicting branch;
-its placeholder incident is not part of PR #17's file contents. The owner then
+navigation and maintenance rules. PR #15 was subsequently reconciled with master:
+the obsolete placeholder test was removed, retaining the split OAuth suites;
+its six issue tests were adapted in `test/mcp/issue-compatibility.spec.ts`.
+Branch conflict diagnostics and explicit resolution are now described in
+[conflict-resolution.md](conflict-resolution.md). The owner then
 authorized `github_restore_file`, `github_append_file` and `github_create_issue`:
 they are now implemented with output contracts, isolated Issues: Write permission,
 OAuth consent wording and tests. See [writes.md](writes.md). A general truncation

@@ -5,6 +5,16 @@ import { GitHubApiError, InputValidationError } from './types';
 export const SENSITIVE_FILE = /(^|\/)(?:\.env(?:\.[^/]*)?|\.dev\.vars(?:\.[^/]*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa|id_ed25519|[^/]+\.(?:pem|key|p12|pfx))$/i;
 export const MAX_FILE_BYTES = 1_000_000;
 
+/** Lossless, bounded decoding for merge operations involving append-only journals. */
+export function decodeTextBlob(blob: { content: string; encoding: string; size: number }): string {
+  if (blob.encoding !== 'base64' || !Number.isSafeInteger(blob.size) || blob.size < 0 || blob.size > MAX_FILE_BYTES) {
+    throw new InputValidationError('Blob texte invalide ou trop grand.', 'MERGE_BLOB_INVALID');
+  }
+  const content = decodeBase64(blob.content);
+  if (new TextEncoder().encode(content).length !== blob.size) throw new InputValidationError('Blob texte incomplet.', 'MERGE_BLOB_INVALID');
+  return content;
+}
+
 function decodeBase64(value: string): string {
   if (value.length > Math.ceil(MAX_FILE_BYTES * 1.4)) {
     throw new InputValidationError('Fichier trop volumineux pour une lecture MCP.', 'FILE_TOO_LARGE');

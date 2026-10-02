@@ -70,7 +70,7 @@ Sources : [lancement manuel](https://docs.github.com/en/actions/how-tos/manage-w
 
 ## 5. Écritures MCP : activation séparée
 
-Les neuf outils d’écriture sont implémentés mais non activés par défaut. La création d’issue demande séparément Issues: Write ; les lectures d’issues utilisent Issues: Read. Ils peuvent être activés indépendamment des vérifications. Pour le parcours complet, ajouter ensuite le mode multi-dépôts décrit dans [multi-repository.md](multi-repository.md).
+Les dix outils d’écriture sont implémentés mais non activés par défaut. La création d’issue demande séparément Issues: Write ; les lectures d’issues utilisent Issues: Read. Ils peuvent être activés indépendamment des vérifications. Pour le parcours complet, ajouter ensuite le mode multi-dépôts décrit dans [multi-repository.md](multi-repository.md).
 
 - Examiner les automatisations de chaque dépôt sélectionné : création de branche, push ou PR peuvent lancer une CI ou un déploiement, même avec une PR en brouillon.
 - Passer **Contents** à **Read and write**, ajouter **Pull requests: Read and write**, enregistrer puis accepter les nouveaux droits dans l’installation. **Actions reste Read-only** pour ce lot. Ne pas ajouter Workflows, Administration, Issues ni de droit de contournement des branches.
