@@ -83,13 +83,13 @@ export function consentPage(details: ConsentDescription, handle: string): string
   const permissions = [
     item('eye', 'Lire les dépôts autorisés', 'Consulter le code, les issues, les pull requests et l’état des contrôles des dépôts sélectionnés.'),
     write
-      ? item('edit', 'Proposer des changements', 'Créer des branches de travail, commits, issues, pull requests et commentaires. Les fichiers sensibles et les contrôles de publication restent protégés.', 'warn')
+      ? item('edit', 'Proposer des changements', 'Créer des branches de travail, des commits avec ajouts, modifications, restaurations et suppressions de fichiers, des issues, pull requests et commentaires. Les fichiers sensibles et les contrôles de publication restent protégés.', 'warn')
       : item('lock', 'Accès en lecture seule', 'Ce consentement ne permet pas de modifier le code ni de créer des issues.'),
     integration
-      ? item('shield', 'Intégration encadrée', 'Autoriser une fusion uniquement vers la branche integration lorsqu’une politique du propriétaire, les contrôles et les accords requis sont présents.', 'warn')
+      ? item('shield', 'Intégration encadrée', 'Autoriser une fusion uniquement vers integration lorsqu’une politique du propriétaire, les contrôles et les accords requis sont présents. Des noms différents ne prouvent pas des agents indépendants.', 'warn')
       : item('shield', 'Pas de fusion vers la branche principale', 'Aucune fusion vers main/master, approbation GitHub de PR, fermeture de PR ou publication directe n’est exposée.'),
     automation
-      ? item('play', 'Lancer les vérifications du projet', 'Exécuter le workflow mcp-checks sur GitHub Actions. Avec l’écriture, le MCP peut préparer ce workflow sur une branche de travail.', 'warn')
+      ? item('play', 'Lancer les vérifications du projet', 'Exécuter le workflow mcp-checks sur GitHub Actions et préparer les commandes du projet avec le droit d’écriture. Les dépôts accessibles restent ceux de votre installation GitHub App, y compris ceux ajoutés ultérieurement.', 'warn')
       : checks
         ? item('play', 'Lancer les contrôles configurés', 'Exécuter agent-checks sur les dépôts explicitement configurés. Cela peut consommer des minutes GitHub Actions.', 'warn')
         : item('lock', 'Aucun workflow lancé directement', 'Ce consentement n’autorise pas le lancement direct de workflows GitHub Actions.'),
