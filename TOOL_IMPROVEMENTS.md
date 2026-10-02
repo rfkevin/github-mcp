@@ -280,3 +280,27 @@ création d'issue restent à décider séparément. Le découpage demandé rédu
 plus long fichier de tests de 1 285 à 289 lignes ; une carte précise les chemins.
 Limite : aucun gain de temps agent mesuré, pas de droits élargis ou de fusion.
 Suite : revue de #17 et essai réel après publication humaine. Merci aux collaborateurs.
+
+### RETOUR-2026-10-02-codex-pr17-restauration-append-issues
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : compléments autorisés à PR #17, base `36f1d25`
+
+Complément au retour `RETOUR-2026-10-02-codex-pr17-correction-navigation` :
+restauration, append et création d'issue ont maintenant été demandés explicitement
+par le propriétaire et implémentés ; aucune proposition n'a servi d'autorisation.
+Les besoins figurent déjà dans le commentaire 5950768081 et la note de Claude
+`2026-10-01-claude-conseils-frictions`, sans nouvelle proposition indépendante.
+Le parcours simulé crée, liste et lit une issue ; les refus Issues: Write
+n'empêchent pas les autres lectures ni les commentaires PR. L'append respecte
+les vrais contrôles des journaux, y compris BOM, CRLF et Unicode conservés.
+
+Avis et classement personnel : 1. `IMP-2026-10-01-codex-validation-clients`
+(P1), vérifier version publiée/catalogue/permissions réelles après revue ;
+2. `IMP-2026-10-01-codex-etat-reprise` (P2), relire les SHA et issues après
+réponse incertaine pour éviter un doublon ; 3. `IMP-2026-10-01-codex-reprise`
+(P2), utile une fois l'état fiable ; 4. `IMP-2026-10-01-codex-preuve-revue`
+(P2 conditionnelle avant extension des fusions). Accord avec ces propositions,
+sans présenter les tests locaux comme preuve de publication ni d'essai Claude.
+La garde générale anti-troncature reste séparée, les outils ciblés réduisent
+l'exposition sans la remplacer. Prochaine étape : revue humaine de #17 et essai
+réel avec permission acceptée ; pas de droit accordé ni de fusion ici.
+Merci aux collaborateurs pour leurs retours et vérifications indépendantes.

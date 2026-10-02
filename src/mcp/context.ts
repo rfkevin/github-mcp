@@ -3,6 +3,7 @@ import type { AppEnv } from '../config';
 import { checksConfig } from '../checks/config';
 import { CheckCoordinator } from '../checks/coordinator';
 import { WriteCoordinator } from '../writes/coordinator';
+import { IssueWriteCoordinator } from '../writes/issues';
 import { writesEnabled } from '../writes/config';
 import { automationEnabled } from '../automation/config';
 import { AutomationCoordinator } from '../automation/coordinator';
@@ -24,6 +25,7 @@ export type ToolContext = {
   workflows: GitHubClient['actions'];
   checkCoordinator?: CheckCoordinator;
   writeCoordinator?: WriteCoordinator;
+  issueWriteCoordinator?: IssueWriteCoordinator;
   automationCoordinator?: AutomationCoordinator;
   integrationCoordinator?: IntegrationCoordinator;
 };
@@ -73,6 +75,9 @@ export function createToolContext(env: AppEnv, actor: string, scopes: readonly s
       tokenPermissions: { metadata: 'read', contents: 'write' } });
     const pulls = new GitHubClient({ ...shared, policy: { readOnly: false },
       tokenPermissions: { metadata: 'read', pull_requests: 'write' } });
+    const issues = new GitHubClient({ ...shared, policy: { readOnly: false },
+      tokenPermissions: { metadata: 'read', issues: 'write' } });
+    context.issueWriteCoordinator = new IssueWriteCoordinator(actor, context.github.repositories, issues.issues);
     context.writeCoordinator = new WriteCoordinator(actor,
       { repositories: context.github.repositories, branches: context.reads.branches, commits: context.reads.commits },
       { branches: contents.branches, changes: contents.changes, pullRequests: pulls.pullRequests, issues: pulls.issues, commits: contents.commits });

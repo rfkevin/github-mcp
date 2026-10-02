@@ -64,10 +64,11 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
     try {
       const metadata = await context.github.repositories.getRepository(repository);
       const requestedRef = ref ?? metadata.default_branch;
-      const capabilities = { mutationsExposed: Boolean(context.automationCoordinator || context.checkCoordinator || context.writeCoordinator), checkDispatchEnabled: Boolean(context.automationCoordinator || context.checkCoordinator),
+      const capabilities = { mutationsExposed: Boolean(context.automationCoordinator || context.checkCoordinator || context.writeCoordinator || context.issueWriteCoordinator), checkDispatchEnabled: Boolean(context.automationCoordinator || context.checkCoordinator),
         managedProjectChecks: Boolean(context.automationCoordinator), checkPlanPath: '.mcp/checks.json',
         workflowPreparation: context.automationCoordinator ? 'github_prepare_checks; apply requires mcp:write' : 'disabled',
         codeWritesEnabled: Boolean(context.writeCoordinator), workingBranchPrefix: context.writeCoordinator?.branchPrefix,
+        issueWritesEnabled: Boolean(context.issueWriteCoordinator),
         integrationToolExposed: Boolean(context.integrationCoordinator), integrationPolicyPath: '.mcp/integration.json',
         toolFeedback: TOOL_FEEDBACK,
         collaboration: 'Pour tout dépôt : une mission/branche par agent ; discuter dans la PR, résoudre les objections et renouveler les avis à chaque SHA head/base. Attendre CI/build avant et après intégration. Refus par commentaire, arbitrage humain si désaccord. Aucun outil ne réveille les autres clients.',
@@ -75,7 +76,8 @@ export function registerProjectTools(server: McpServer, context: ToolContext): v
         projectCommandsOnGitHubActions: Boolean(context.automationCoordinator),
         requiredPermissions: { files: 'contents:read', checks: 'checks:read', workflows: 'actions:read', statuses: 'statuses:read',
           pullRequests: context.writeCoordinator ? 'pull_requests:write' : 'pull_requests:read', issues: 'issues:read',
-          ...(context.writeCoordinator ? { codeWrites: 'contents:write' } : {}) },
+          ...(context.writeCoordinator ? { codeWrites: 'contents:write' } : {}),
+          ...(context.issueWriteCoordinator ? { issueWrites: 'issues:write' } : {}) },
         permissionsNote: 'Les droits indiqués sont nécessaires, pas une confirmation de leur attribution.' };
       let sha: string;
       try {

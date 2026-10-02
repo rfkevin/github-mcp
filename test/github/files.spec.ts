@@ -34,6 +34,18 @@ describe('GitHubClient : files', () => {
         expect(contentsRequest?.url).toBe(`https://api.github.com/repos/owner/project/git/blobs/${FILE_SHA}`);
         expect(new Headers(contentsRequest?.init?.headers).get('Authorization')).toBe(`Bearer ${INSTALLATION_TOKEN}`);
     });
+    it.each(['\uFEFFdébut\r\nfin', '\uFEFF'])('préserve les octets UTF-8 et le BOM : %s', async content => {
+        const { fetcher } = createFetchStub({ type: 'file', encoding: 'base64', content: toBase64(content),
+            sha: FILE_SHA, path: FILE_PATH, size: new TextEncoder().encode(content).length });
+        const client = new GitHubClient({ appId: '123', privateKey, installationId: '456', fetcher });
+        expect((await client.files.getTextFile(REPOSITORY, FILE_PATH, 'main')).content).toBe(content);
+    });
+    it('refuse le décodage UTF-8 avec perte avant de pouvoir réécrire le fichier', async () => {
+        const { fetcher } = createFetchStub({ type: 'file', encoding: 'base64', content: btoa(String.fromCharCode(255)),
+            sha: FILE_SHA, path: FILE_PATH, size: 1 });
+        const client = new GitHubClient({ appId: '123', privateKey, installationId: '456', fetcher });
+        await expect(client.files.getTextFile(REPOSITORY, FILE_PATH, 'main')).rejects.toMatchObject({ code: 'NON_UTF8_FILE' });
+    });
     it('refuse une ressource qui n’est pas un fichier texte', async () => {
         const { fetcher } = createFetchStub({
             type: 'dir',

@@ -14,9 +14,12 @@ an immutable commit, rejects overlapping matches and retains commit protections.
 The long OAuth/client/foundation tests are split by domain, as are GitHub types
 and OAuth identity diagnostics. `AGENTS.md` and `docs/code-map.md` document the
 navigation and maintenance rules. PR #15 remains a separate, conflicting branch;
-its placeholder incident is not part of PR #17's file contents. A general
-truncation guard, restore/append operations and issue creation remain proposals,
-not features delivered by this repair.
+its placeholder incident is not part of PR #17's file contents. The owner then
+authorized `github_restore_file`, `github_append_file` and `github_create_issue`:
+they are now implemented with output contracts, isolated Issues: Write permission,
+OAuth consent wording and tests. See [writes.md](writes.md). A general truncation
+guard on full replacements remains a separate proposal. The observations below
+describe the earlier incident, not the current tool catalogue.
 
 ## 1. `github_commit_changes` can accidentally replace an entire existing file
 

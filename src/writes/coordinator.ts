@@ -179,7 +179,7 @@ export async function mutation<T>(operation: () => Promise<T>): Promise<T> {
     }
     if (error instanceof GitHubApiError && (error.status === 0 || error.status >= 500) ||
         error instanceof SyntaxError) {
-      throw new InputValidationError('Résultat de l’écriture incertain. Vérifiez la branche ou les PR sur GitHub avant de relancer ; aucun rejeu automatique.', 'WRITE_RESULT_UNKNOWN');
+      throw new InputValidationError('Résultat de l’écriture incertain. Vérifiez la branche, les PR ou les issues sur GitHub avant de relancer ; aucun rejeu automatique.', 'WRITE_RESULT_UNKNOWN');
     }
     throw error;
   }

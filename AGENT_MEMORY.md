@@ -218,3 +218,23 @@ compilation sans déploiement. Limites : GitHub simulé, PR #15 séparée toujou
 endommagée ; pas de validation réelle des nouvelles fonctions après publication.
 Conseil : préserver le chemin public des types et les fixtures par fichier.
 Suite : suivre la CI du commit final puis revue humaine. Merci aux collaborateurs.
+
+### 2026-10-02-codex-pr17-restauration-append-issues
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : PR #17, suite autorisée depuis `36f1d2554dd3092991b082adfb77d9e5b49b60d0`
+
+Complément à `2026-10-02-codex-pr17-correction-navigation` : le propriétaire
+demande d'implémenter restauration, append et création d'issue, puis confirme
+création et lecture. PR #15/#16 et branche principale vérifiées : lecture
+d'issues en cours, aucun des trois nouveaux outils livré dans ces références.
+Ajouts : github_restore_file (source immuable, blob/absence attendus),
+github_append_file (préfixe conservé), github_create_issue (dépôt autorisé,
+non archivé, attribution et jeton Issues: Write dédié). Contrôles des commits,
+journaux en ajout seul, scopes et sorties conservés ; consentement et carte mis
+à jour. Le décodeur préserve désormais le BOM et refuse l'UTF-8 invalide.
+Vérifié localement : types, 421 tests applicatifs, 45 tests de scripts et build
+sans publication ; création/listing/lecture d'issue via OAuth simulés réussis.
+Limites : droits GitHub inchangés, aucun essai réel des nouveaux outils après
+publication ; PR #15 séparée, garde générale anti-troncature encore proposée.
+Conseil : relire les issues et la branche après résultat incertain, sans rejeu
+automatique. Suite : CI au nouveau SHA, revue/publication humaines puis essai
+depuis les clients réels. Merci au propriétaire et aux collaborateurs.

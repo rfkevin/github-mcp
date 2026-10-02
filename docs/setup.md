@@ -6,7 +6,13 @@ Les lectures utilisent sept familles de jetons minimaux : metadata, contents, ch
 
 Le mode multi-dépôts ajoute `github_prepare_checks`, `github_run_checks` et `github_get_agent_check_result` avec `GITHUB_AUTOMATION_ENABLED=true` ET consentement `mcp:automation`. Préparer un commit exige aussi les droits d’écriture. La sélection GitHub définit les dépôts, sans configuration par dépôt dans le MCP. Voir [multi-repository.md](multi-repository.md). Le mode historique `GITHUB_CHECKS_CONFIG` / `mcp:checks` conserve ses deux outils pour compatibilité ; le mode multi-dépôts prend priorité si les deux sont autorisés.
 
-Le catalogue comprend dix-sept outils de lecture. Six outils optionnels, `github_create_branch`, `github_commit_changes`, `github_replace_text`, `github_open_pull_request`, `github_comment_pull_request` et `github_comment_commit`, nécessitent le réglage texte `GITHUB_WRITES_ENABLED=true` ET le consentement `mcp:write`. Absence, chaîne vide ou `false` les désactivent ; une autre valeur refuse la configuration. Les anciens consentements de lecture ne gagnent pas ces écritures. Les branches appartiennent à l’utilisateur authentifié, pas à un modèle certifié, et les dépôts proviennent de la sélection de l’installation. Voir [writes.md](writes.md).
+Le catalogue comprend dix-sept outils de lecture. Neuf outils optionnels, `github_create_branch`, `github_commit_changes`, `github_replace_text`, `github_restore_file`, `github_append_file`, `github_create_issue`, `github_open_pull_request`, `github_comment_pull_request` et `github_comment_commit`, nécessitent le réglage texte `GITHUB_WRITES_ENABLED=true` ET le consentement `mcp:write`. Absence, chaîne vide ou `false` les désactivent ; une autre valeur refuse la configuration. Les anciens consentements de lecture ne gagnent pas ces écritures. Les branches appartiennent à l’utilisateur authentifié, pas à un modèle certifié, et les dépôts proviennent de la sélection de l’installation. Voir [writes.md](writes.md).
+
+`github_create_issue` demande un jeton indépendant Issues: Write ; son refus ne
+bloque pas les fichiers, PR ou lectures d’issues. Accepter cette permission dans
+l’installation avant l’essai réel ; le code n’accorde aucun droit GitHub. Le
+contexte indique `issueWritesEnabled` et `requiredPermissions.issueWrites` quand
+l’outil est exposé, sans prétendre que l’App possède effectivement ces droits.
 
 `github_list_issues` renvoie une page GitHub filtrée des PR, sans les corps : suivre `nextPage` même si la page d’issues est vide. `potentiallyTruncated` reste vrai à la borne de 100 pages. `github_get_issue` refuse un numéro de PR, borne le corps à 12 000 octets et chaque commentaire à 2 000 octets après masquage des formats connus. Il expose les commentaires par pages de 20 et signale les extraits tronqués. Pour retrouver le code et ses tests : [code-map.md](code-map.md).
 

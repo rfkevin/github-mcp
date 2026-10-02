@@ -13,7 +13,8 @@ function decodeBase64(value: string): string {
   const bytes = Uint8Array.from(binary, character => character.codePointAt(0) ?? 0);
   if (bytes.length > MAX_FILE_BYTES) throw new InputValidationError('Fichier trop volumineux.', 'FILE_TOO_LARGE');
   if (bytes.includes(0)) throw new InputValidationError('Les fichiers binaires ne sont pas lisibles.', 'BINARY_FILE');
-  return new TextDecoder().decode(bytes);
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch { throw new InputValidationError('Le fichier n’est pas un texte UTF-8 valide.', 'NON_UTF8_FILE'); }
 }
 
 export class GitHubFiles {

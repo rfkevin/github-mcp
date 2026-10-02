@@ -23,12 +23,12 @@ const issue = { number: n, title: s, state: s, url: s, author: s.optional() };
 const check = { name: s, status: s, conclusion: nullableString, url: nullableString };
 const treeEntry = z.looseObject({ path: s.optional(), type: s.optional(), sha: s.optional(), mode: s.optional(), size: n.optional() });
 const capabilities = z.object({ mutationsExposed: b, checkDispatchEnabled: b, managedProjectChecks: b,
-  checkPlanPath: s, workflowPreparation: s, codeWritesEnabled: b, workingBranchPrefix: s.optional(),
+  checkPlanPath: s, workflowPreparation: s, codeWritesEnabled: b, issueWritesEnabled: b, workingBranchPrefix: s.optional(),
   integrationToolExposed: b, integrationPolicyPath: s,
   toolFeedback: z.object({ repository: s, memoryPath: s, improvementsPath: s, branch: s, publication: s, note: s }),
   collaboration: s, arbitraryShell: z.literal(false), productionDeployment: z.literal(false),
   projectCommandsOnGitHubActions: b,
-  requiredPermissions: z.object({ files: s, checks: s, workflows: s, statuses: s, pullRequests: s, issues: s, codeWrites: s.optional() }),
+  requiredPermissions: z.object({ files: s, checks: s, workflows: s, statuses: s, pullRequests: s, issues: s, codeWrites: s.optional(), issueWrites: s.optional() }),
   permissionsNote: s });
 const decision = z.object({ version: z.literal(1), agent: s, actor: s, head: s, base: s,
   decision: z.enum(['agree', 'changes_requested']), commentId: n });
@@ -117,6 +117,9 @@ export const outputSchemas = {
   github_create_branch: { ...atCommit, baseBranch: s, branch: s },
   github_commit_changes: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
   github_replace_text: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
+  github_restore_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s, sourceSha: s, sourceBlobSha: s },
+  github_append_file: { ...repository, branch: s, commitSha: s, changedPaths: strings, deletedPaths: strings, followUp, note: s },
+  github_create_issue: { ...repository, number: n, title: s, state: s, url: s, note: s },
   github_open_pull_request: { ...repository, number: n, url: s, draft: b, base: s, branch: s, headSha: s,
     headMatchesExpected: b, followUp, note: s },
   github_merge_integration: { ...atCommit, number: n, branch: s, alreadyIntegrated: b,

@@ -13,7 +13,7 @@ describe('Écritures MCP et séparation des droits', () => {
             expect(listed.status).toBe(200);
             expect(text).toContain('github_read_file');
             const api = vi.spyOn(globalThis, 'fetch');
-            for (const name of ['github_create_branch', 'github_commit_changes', 'github_open_pull_request']) {
+            for (const name of WRITE_TOOLS) {
                 expect(text).not.toContain(name);
                 const result = await callTool(headers, name, {}, 2);
                 expect(result.body).toContain('error');
