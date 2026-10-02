@@ -12,6 +12,7 @@ import { registerPullRequestTools } from './tools/github/pull-requests';
 import { registerIssueTools } from './tools/github/issues';
 import { registerTargetedWriteTools } from './tools/github/targeted-write';
 import { registerFileWriteTools } from './tools/github/file-writes';
+import { registerApplyChangesTool } from './tools/github/apply-changes';
 import { registerIssueWriteTools } from './tools/github/issue-writes';
 import { registerMergeTools } from './tools/github/merges';
 import { WORKFLOW_INSTRUCTIONS } from './workflow-guidance';
@@ -31,6 +32,7 @@ export function createServer(context: ToolContext): McpServer {
   registerWriteTools(server, context);
   registerTargetedWriteTools(server, context);
   registerFileWriteTools(server, context);
+  registerApplyChangesTool(server, context);
   registerIssueWriteTools(server, context);
   registerMergeTools(server, context);
   registerIntegrationTools(server, context);
