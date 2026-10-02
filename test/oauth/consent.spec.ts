@@ -12,8 +12,7 @@ describe('Consentement et découverte OAuth', () => {
         expect(cookie(page)).toContain('__Host-oauth-consent-');
     });
     it('rend une page de consentement complète, stylée et accessible sans ressource distante', async () => {
-        const { page } = await consent();
-        const html = await page.text();
+        const { html } = await consent();
         expect(html).toContain('<style>');
         expect(html).toContain('<main>');
         expect(html).toContain('GitHub MCP');
