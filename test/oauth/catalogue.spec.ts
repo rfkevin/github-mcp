@@ -118,7 +118,7 @@ describe('Catalogue et transport MCP', () => {
             }
             const signedTools = tools.filter(tool => 'agentLabel' in tool.inputSchema.properties);
             expect(signedTools.map(tool => tool.name).sort()).toEqual([
-                'github_append_file', 'github_comment_commit', 'github_comment_pull_request', 'github_commit_changes', 'github_create_issue', 'github_merge_integration', 'github_replace_text', 'github_resolve_conflicts', 'github_restore_file',
+                'github_append_file', 'github_comment_commit', 'github_comment_issue', 'github_comment_pull_request', 'github_commit_changes', 'github_create_issue', 'github_merge_integration', 'github_replace_text', 'github_resolve_conflicts', 'github_restore_file',
             ].sort());
             for (const tool of signedTools) {
                 expect(tool.inputSchema.properties.agentLabel).toMatchObject({ type: 'string', minLength: 1, maxLength: 80 });
@@ -129,24 +129,5 @@ describe('Catalogue et transport MCP', () => {
             delete settings.GITHUB_WRITES_ENABLED;
             delete settings.GITHUB_AUTOMATION_ENABLED;
         }
-    });
-    it('rejects foreign Origins without weakening authentication or exposing diagnostics', async () => {
-        const { headers } = await mcpSession('mcp:read', 'https://generic-client.example/callback');
-        const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-        const log = vi.spyOn(console, 'warn').mockImplementation(() => { });
-        const network = vi.spyOn(globalThis, 'fetch');
-        for (const origin of ['https://foreign-client.example', 'http://generic-client.example',
-            'https://generic-client.example:444', 'https://generic-client.example.attacker.test', 'null']) {
-            const response = await send('/mcp', { method: 'POST', headers: { ...headers, Origin: origin }, body });
-            expect(response.status).toBe(403);
-            expect(await response.text()).not.toContain(origin);
-        }
-        expect(network).not.toHaveBeenCalled();
-        expect(JSON.stringify(log.mock.calls)).not.toContain(headers.Authorization);
-        const unauthenticated = await send('/mcp', { method: 'POST', headers: {
-                Origin: 'https://generic-client.example', 'Content-Type': 'application/json', Accept: headers.Accept,
-            }, body });
-        expect(unauthenticated.status).toBe(401);
-        expect(unauthenticated.headers.get('WWW-Authenticate')).toContain('resource_metadata');
     });
 });

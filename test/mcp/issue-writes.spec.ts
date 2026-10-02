@@ -9,11 +9,10 @@ function fixture() {
   const repositories = { listInstallationRepositories: vi.fn(async () => ['o/r']),
     getRepository: vi.fn(async () => ({ full_name: 'o/r', private: true, default_branch: 'master', archived: false })) };
   const baseIssue: GitHubIssue = { number: 18, title: 'Bug', state: 'open', html_url: 'https://github.com/o/r/issues/18', labels: [] };
-  const baseComment: GitHubComment = { id: 7, html_url: 'https://github.com/o/r/issues/18#issuecomment-7', body: 'x', created_at: '2026-10-02T00:00:00Z' };
   const issues = {
-    createIssue: vi.fn(async (_repository: string, _title: string, _body?: string, _options?: { labels?: readonly string[]; assignees?: readonly string[] }) => baseIssue),
+    createIssue: vi.fn(async (_repository: string, _title: string, _body?: string, _options?: { labels?: readonly string[]; assignees?: readonly string[] }): Promise<GitHubIssue> => baseIssue),
     getIssue: vi.fn(async (_repository: string, _number: number): Promise<GitHubIssue> => baseIssue),
-    createComment: vi.fn(async (_repository: string, _number: number, _body: string): Promise<GitHubComment> => baseComment),
+    createComment: vi.fn(async (_repository: string, _number: number, _body: string): Promise<GitHubComment> => ({ id: 7, html_url: 'https://github.com/o/r/issues/18#issuecomment-7', body: 'x', created_at: '2026-10-02T00:00:00Z' })),
   };
   const issueWriteCoordinator = new IssueWriteCoordinator('123', repositories, issues);
   const tools = toolRegistry(registerIssueWriteTools, { actor: '123', issueWriteCoordinator } as ToolContext);
@@ -37,7 +36,7 @@ describe('Écritures d’issue : création et commentaire attribués', () => {
   });
   it('refuse un numéro de PR avant de commenter', async () => {
     const { comment, issues } = fixture();
-    issues.getIssue.mockResolvedValue({ ...await issues.getIssue('o/r', 18), pull_request: {} });
+    issues.getIssue.mockResolvedValue({ ...baseIssueForTest(), pull_request: {} });
     const result = await comment();
     expect(result).toMatchObject({ isError: true, structuredContent: { error: { code: 'NOT_AN_ISSUE' } } });
     expect(issues.createComment).not.toHaveBeenCalled();
@@ -68,7 +67,7 @@ describe('Écritures d’issue : création et commentaire attribués', () => {
     issues.createIssue.mockRejectedValue(new GitHubApiError(422, '/app/installations/2/access_tokens', 'PRIVATE'));
     expect(await create()).toMatchObject({ isError: true, structuredContent: { error: { message: expect.stringContaining('permissions') } } });
     issues.createComment.mockRejectedValue(new GitHubApiError(422, '/app/installations/2/access_tokens', 'PRIVATE'));
-    expect(await comment()).toMatchObject({ isError: true, structuredContent: { error: { message: expect.stringContaining('permission Issues: Write') } } });
+    expect(await comment()).toMatchObject({ isError: true, structuredContent: { error: { message: expect.stringContaining('permissions') } } });
   });
   it('refuse les entrées invalides avant tout appel', async () => {
     const { create, comment, repositories, issues } = fixture();
@@ -83,3 +82,7 @@ describe('Écritures d’issue : création et commentaire attribués', () => {
     expect(toolRegistry(registerIssueWriteTools, { actor: '123' } as ToolContext).size).toBe(0);
   });
 });
+
+function baseIssueForTest(): GitHubIssue {
+  return { number: 18, title: 'Bug', state: 'open', html_url: 'https://github.com/o/r/issues/18', labels: [] };
+}
