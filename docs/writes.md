@@ -6,7 +6,7 @@ Les outils sont implémentés et testés localement avec GitHub simulé, y compr
 
 Trois conditions sont nécessaires :
 
-1. GitHub App : **Contents: Read and write** pour les fichiers/branches, **Pull requests: Read and write** pour les PR, **Issues: Read** pour les lectures et **Issues: Read and write** pour créer une issue, puis acceptation des droits nécessaires dans l’installation. Les jetons de ces familles sont séparés : le refus Issues: Write ne bloque pas les autres. Aucun droit Actions en écriture, Workflows, Administration ou approbation n’est nécessaire à ces dix outils.
+1. GitHub App : **Contents: Read and write** pour les fichiers/branches, **Pull requests: Read and write** pour les PR, **Issues: Read** pour les lectures et **Issues: Read and write** pour créer une issue, puis acceptation des droits nécessaires dans l’installation. Les jetons de ces familles sont séparés : le refus Issues: Write ne bloque pas les autres. Aucun droit Actions en écriture, Workflows, Administration ou approbation n’est nécessaire à ces douze outils.
 2. Serveur : variable texte non secrète `GITHUB_WRITES_ENABLED` à `true`. Elle reste absente de la configuration livrée. Conserver le réglage dans la configuration de déploiement, pas seulement dans le tableau de bord. Après modification de bindings Wrangler, exécuter `npm run cf-typegen`, puis publier au moment choisi. Garder les préversions désactivées pour les écritures.
 3. Client : nouveau consentement incluant **`mcp:read mcp:write offline_access`**. Vérifier les droits effectivement demandés : une simple reconnexion sans `mcp:write` ne suffit pas. L’écran de consentement explique les modifications et suppressions, les PR et le risque d’automatisations.
 
