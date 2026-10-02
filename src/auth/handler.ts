@@ -27,8 +27,38 @@ const IDENTITY_FAILURE_MESSAGES: Record<string, string> = {
 
 const FALLBACK_FAILURE_MESSAGE = 'Connexion temporairement indisponible.';
 
-function textResponse(message: string, status: number): Response {
-  return new Response(message, { status, headers: { 'Cache-Control': 'no-store' } });
+// Page d'erreur autonome : sans script, sans lien et sans ressource distante, pour
+// ne jamais introduire d'open redirect ni exposer de détail sensible au navigateur.
+const ERROR_STYLE = [
+  'body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f4f7f6;color:#10201f;font:15px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,sans-serif}',
+  '@media (prefers-color-scheme:dark){body{background:#081210;color:#edf7f4}}',
+  'main{width:min(100%,440px);padding:26px 28px;background:rgba(255,255,255,.94);border:1px solid #d8e2df;border-radius:18px;box-shadow:0 24px 70px rgba(15,45,41,.13)}',
+  '@media (prefers-color-scheme:dark){main{background:rgba(15,27,24,.96);border-color:#28403b}}',
+  'h1{margin:0 0 10px;font-size:1.3rem;line-height:1.25;letter-spacing:-.02em}',
+  'p{margin:0 0 10px;color:#5a6b68}',
+  '.hint{font-size:.85rem}',
+].join('');
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, char => '&#' + char.charCodeAt(0) + ';');
+}
+
+function htmlErrorPage(title: string, message: string, status: number): Response {
+  const html = [
+    '<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<title>' + escapeHtml(title) + '</title><style>' + ERROR_STYLE + '</style></head><body><main>',
+    '<h1>' + escapeHtml(title) + '</h1>',
+    '<p>' + escapeHtml(message) + '</p>',
+    '<p class="hint">Recommencez la connexion depuis votre client, sans recharger cette page : chaque demande de connexion ne sert qu’une fois.</p>',
+    '</main></body></html>',
+  ].join('');
+  return new Response(html, { status, headers: {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; style-src 'unsafe-inline'",
+    'X-Frame-Options': 'DENY',
+  } });
 }
 
 function failureMessage(error: unknown): string {
@@ -155,7 +185,7 @@ export const authHandler = {
       if (url.pathname === '/callback' && request.method === 'GET') {
         return await handleCallback(request, env, oauth, value => { phase = value; });
       }
-      return textResponse('Introuvable', 404);
+      return htmlErrorPage('Page introuvable', 'Cette adresse ne fait pas partie du flux de connexion GitHub MCP.', 404);
     } catch (error) {
       console.warn(JSON.stringify({
         event: 'oauth_flow_failure',
@@ -169,9 +199,10 @@ export const authHandler = {
           : {}),
       }));
       if (error instanceof AuthorizationError || error instanceof CimdFetchError) {
-        return textResponse('Demande de connexion invalide ou expirée. Recommencez depuis votre client.', 400);
+        return htmlErrorPage('Connexion impossible à terminer',
+          'Demande de connexion invalide ou expirée. Recommencez depuis votre client.', 400);
       }
-      return textResponse(failureMessage(error), 503);
+      return htmlErrorPage('Connexion temporairement indisponible', failureMessage(error), 503);
     }
   },
 };
