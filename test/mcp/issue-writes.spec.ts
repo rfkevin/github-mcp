@@ -53,10 +53,14 @@ describe('Écritures d’issue : création et commentaire attribués', () => {
   it.each([0, 502])('signale un résultat incertain sans rejouer après une erreur %s', async status => {
     const { create, comment, issues } = fixture();
     issues.createIssue.mockRejectedValue(new GitHubApiError(status, '/issues', 'SECRET'));
-    expect(await create()).toMatchObject({ structuredContent: { error: { code: 'WRITE_RESULT_UNKNOWN', retryable: false } } });
+    const createResult = await create();
+    expect(createResult).toMatchObject({ structuredContent: { error: { code: 'WRITE_RESULT_UNKNOWN', retryable: false } } });
     issues.createComment.mockRejectedValue(new GitHubApiError(status, '/issues/18/comments', 'SECRET'));
-    expect(await comment()).toMatchObject({ structuredContent: { error: { code: 'WRITE_RESULT_UNKNOWN', retryable: false } } });
-    expect(JSON.stringify(await comment({ body: 'nouvel essai contrôlé' }))).not.toContain('SECRET');
+    const commentResult = await comment();
+    expect(commentResult).toMatchObject({ structuredContent: { error: { code: 'WRITE_RESULT_UNKNOWN', retryable: false } } });
+    expect(JSON.stringify({ createResult, commentResult })).not.toContain('SECRET');
+    expect(issues.createIssue).toHaveBeenCalledOnce();
+    expect(issues.createComment).toHaveBeenCalledOnce();
   });
   it('publie une erreur actionnable en cas de permission refusée', async () => {
     const { create, comment, issues } = fixture();
