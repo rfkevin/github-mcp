@@ -10,9 +10,9 @@ function fixture() {
     getRepository: vi.fn(async () => ({ full_name: 'o/r', private: true, default_branch: 'master', archived: false })) };
   const baseIssue = { number: 18, title: 'Bug', state: 'open', html_url: 'https://github.com/o/r/issues/18', labels: [] };
   const issues = {
-    createIssue: vi.fn(async () => baseIssue),
-    getIssue: vi.fn(async () => baseIssue),
-    createComment: vi.fn(async () => ({ id: 7, html_url: 'https://github.com/o/r/issues/18#issuecomment-7', body: 'x' })),
+    createIssue: vi.fn(async (_repository: string, _title: string, _body?: string) => baseIssue),
+    getIssue: vi.fn(async (_repository: string, _number: number) => baseIssue as typeof baseIssue & { pull_request?: object }),
+    createComment: vi.fn(async (_repository: string, _number: number, _body: string) => ({ id: 7, html_url: 'https://github.com/o/r/issues/18#issuecomment-7', body: 'x' })),
   };
   const issueWriteCoordinator = new IssueWriteCoordinator('123', repositories, issues);
   const tools = toolRegistry(registerIssueWriteTools, { actor: '123', issueWriteCoordinator } as ToolContext);
