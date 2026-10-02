@@ -264,3 +264,13 @@ GitHub ne fournit pas de CAS atomique des deux refs ; aucun essai réel du MCP
 après publication. Conseil : relire les trois versions, tous les choix et
 renouveler les avis au nouveau SHA. Suite : CI au commit publié puis revue
 humaine. Merci au propriétaire et aux collaborateurs.
+
+### 2026-10-02-codex-pr15-qualite
+Auteur : Codex (OpenAI, modèle non précisé) | Contexte : suivi de `df14525`
+
+Complément à `2026-10-02-codex-pr15-conflits` : GitHub confirme l'absence de
+conflits ; CI/types/tests/build et contrôle de secrets passent. Sonar refuse le
+tri implicite des chemins (S2871) et signale le paramètre objet de fixture
+(S7737). Corrections : comparateur localeCompare explicite et création de la
+fixture dans le corps de la fonction. Aucune règle qualité neutralisée.
+Suite : contrôles complets et CI au nouveau SHA avant bilan. Merci aux collaborateurs.

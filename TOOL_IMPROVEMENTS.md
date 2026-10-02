@@ -327,3 +327,17 @@ Suite concrète : éprouver ces opérations sur un dépôt de test après public
 humaine. Limites : fusion conservative par fichiers, arbitragée si chemins
 protégés ou journaux incompatibles ; aucun shell distant, bypass ou force-push.
 Merci aux collaborateurs pour leurs objections et vérifications indépendantes.
+
+### RETOUR-2026-10-02-codex-pr15-qualite
+Auteur : Codex (OpenAI, modèle non précisé) | Tâche : suivi CI de #15 au SHA `df14525`
+
+Complément au retour `RETOUR-2026-10-02-codex-pr15-conflits` : le rapport MCP
+identifie les deux annotations Sonar mais leurs messages ne donnent que des
+liens. La lecture de l'API publique Sonar a fourni S2871 (tri des chemins) et
+S7737 (paramètre objet de fixture), corrigés sans ignorer les règles. Cela
+renforce `IMP-2026-10-01-codex-validation-clients` (P1) et
+`IMP-2026-10-01-codex-etat-reprise` (P2) : CI/tests verts seuls n'épuisent pas
+les contrôles attendus. Classement ensuite : `IMP-2026-10-01-codex-reprise`
+(P2), `IMP-2026-10-01-codex-preuve-revue` (P2 conditionnelle). Pas de besoin
+nouveau distinct ; conserver liens et limites des diagnostics fournisseurs.
+Merci aux collaborateurs pour les vérifications au commit exact.

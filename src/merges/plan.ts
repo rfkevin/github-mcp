@@ -23,7 +23,7 @@ export function mergeTree(tree: { truncated: boolean; tree: GitHubTreeEntry[] })
 export function planMerge(ancestor: Map<string, MergeEntry>, ours: Map<string, MergeEntry>, theirs: Map<string, MergeEntry>): MergePlan {
   const updates = new Map<string, MergeEntry | undefined>(), rows: MergeRow[] = [];
   const paths = new Set([...ancestor.keys(), ...ours.keys(), ...theirs.keys()]);
-  for (const path of [...paths].sort()) {
+  for (const path of [...paths].sort((left, right) => left.localeCompare(right, 'en'))) {
     const a = ancestor.get(path), o = ours.get(path), t = theirs.get(path);
     // Directory hashes change with their children: merge only leaves. Type changes require human handling.
     if ([a, o, t].some(entry => entry?.type === 'tree')) {

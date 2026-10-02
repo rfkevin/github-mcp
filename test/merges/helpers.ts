@@ -13,9 +13,10 @@ export const args = { repository: 'o/r', branch: 'mcp/123/fix', expectedHeadSha:
 export const entry = (path: string, sha: string, extra = {}) => ({ path, sha, mode: '100644', type: 'blob', size: 5, ...extra });
 export const asTree = (entries: GitHubTreeEntry[]) => mergeTree({ truncated: false, tree: entries });
 
-export function mergeFixture(files = {
-  ancestor: [entry('app.ts', OLD)], ours: [entry('app.ts', OURS)], theirs: [entry('app.ts', THEIRS), entry('new.ts', EXTRA)],
-}) {
+export function mergeFixture(files?: { ancestor: GitHubTreeEntry[]; ours: GitHubTreeEntry[]; theirs: GitHubTreeEntry[] }) {
+  const snapshotFiles = files ?? {
+    ancestor: [entry('app.ts', OLD)], ours: [entry('app.ts', OURS)], theirs: [entry('app.ts', THEIRS), entry('new.ts', EXTRA)],
+  };
   const heads = { ours: HEAD, theirs: BASE };
   const blobs: Record<string, string> = { [OLD]: 'old', [OURS]: 'ours', [THEIRS]: 'their', [EXTRA]: 'extra' };
   const request = vi.fn(async (url: string, init?: RequestInit): Promise<unknown> => {
@@ -28,7 +29,7 @@ export function mergeFixture(files = {
     }
     if (url.includes('/git/trees/')) {
       const commit = url.split('/').at(-1);
-      return { truncated: false, tree: commit === HEAD ? files.ours : commit === BASE ? files.theirs : files.ancestor };
+      return { truncated: false, tree: commit === HEAD ? snapshotFiles.ours : commit === BASE ? snapshotFiles.theirs : snapshotFiles.ancestor };
     }
     if (url.includes('/git/ref/heads/')) return { object: { sha: url.endsWith('/master') ? heads.theirs : heads.ours } };
     if (url.includes('/git/blobs/')) {
