@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ToolContext } from '../../src/mcp/context';
 import { IssueWriteCoordinator } from '../../src/writes/issues';
-import { GitHubApiError } from '../../src/github/types';
+import { GitHubApiError, type GitHubComment, type GitHubIssue } from '../../src/github/types';
 import { registerIssueWriteTools } from '../../src/mcp/tools/github/issue-writes';
 import { toolRegistry } from './tool-registry';
 
