@@ -8,11 +8,12 @@ import { toolRegistry } from './tool-registry';
 function fixture() {
   const repositories = { listInstallationRepositories: vi.fn(async () => ['o/r']),
     getRepository: vi.fn(async () => ({ full_name: 'o/r', private: true, default_branch: 'master', archived: false })) };
-  const baseIssue = { number: 18, title: 'Bug', state: 'open', html_url: 'https://github.com/o/r/issues/18', labels: [] };
+  const baseIssue: GitHubIssue = { number: 18, title: 'Bug', state: 'open', html_url: 'https://github.com/o/r/issues/18', labels: [] };
+  const baseComment: GitHubComment = { id: 7, html_url: 'https://github.com/o/r/issues/18#issuecomment-7', body: 'x', created_at: '2026-10-02T00:00:00Z' };
   const issues = {
-    createIssue: vi.fn(async (_repository: string, _title: string, _body?: string) => baseIssue),
-    getIssue: vi.fn(async (_repository: string, _number: number) => baseIssue as typeof baseIssue & { pull_request?: object }),
-    createComment: vi.fn(async (_repository: string, _number: number, _body: string) => ({ id: 7, html_url: 'https://github.com/o/r/issues/18#issuecomment-7', body: 'x' })),
+    createIssue: vi.fn(async (_repository: string, _title: string, _body?: string, _options?: { labels?: readonly string[]; assignees?: readonly string[] }) => baseIssue),
+    getIssue: vi.fn(async (_repository: string, _number: number): Promise<GitHubIssue> => baseIssue),
+    createComment: vi.fn(async (_repository: string, _number: number, _body: string): Promise<GitHubComment> => baseComment),
   };
   const issueWriteCoordinator = new IssueWriteCoordinator('123', repositories, issues);
   const tools = toolRegistry(registerIssueWriteTools, { actor: '123', issueWriteCoordinator } as ToolContext);
