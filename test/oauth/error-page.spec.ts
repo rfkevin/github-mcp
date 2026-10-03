@@ -7,7 +7,7 @@ describe('Pages d’erreur claires du flux OAuth', () => {
         const headers = { Cookie: cookie(page) };
         const form = new URLSearchParams({ handle, decision: 'approve' });
         const first = await send('/authorize', { method: 'POST', headers, body: form });
-        expect(first.status).toBe(302);
+        expect(first.status).toBe(200);
         const replay = await send('/authorize', { method: 'POST', headers, body: form });
         expect(replay.status).toBe(400);
         expect(replay.headers.get('Location')).toBeNull();

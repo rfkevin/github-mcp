@@ -433,3 +433,9 @@ Merci à l’auteur de la PR #23 et aux collaborateurs pour la reprise propre.
 Auteur : ChatGPT (OpenAI, GPT-5.6 Sol) | Tâche : diagnostic OAuth #25, base `7a644ac546615b091c221daa7807728398e82529`
 
 Avis sur l’existant : `IMP-2026-10-01-codex-validation-clients` reste P1 et est directement applicable : sans SHA publié + essai client réel, un 302 serveur ne prouve pas la reconnexion. `IMP-2026-10-02-chatgpt-stabilite-catalogue` reste P1 mais distinct de ce défaut. `IMP-2026-10-02-vibe-erreurs-actionnables` reste P2 utile. Classement : 1. validation-clients P1 ; 2. stabilite-catalogue P1 ; 3. erreurs-actionnables P2 ; 4. etat-reprise P2. Besoin nouveau : aucun ; l’instrumentation minimale de #25 peut utiliser les logs Workers existants sans ajouter d’outil ni de permission. Limite : la réception du callback reste observable uniquement côté client. Merci aux collaborateurs pour les retours précédents.
+
+
+### RETOUR-2026-10-03-codex-oauth-navigation-pc
+Auteur : Codex | Tâche : connexion PC prioritaire et prévention du double clic
+
+Classement et avis : 1. IMP-2026-10-01-codex-validation-clients (P1), renforcé : les tests HTTP ne voient pas le blocage CSP appliqué aux redirections par le navigateur ; 2. IMP-2026-10-02-vibe-erreurs-actionnables (P2), progression visible et secours utiles sans exposer de secret ; 3. IMP-2026-10-01-codex-etat-reprise (P2), distinguer un callback 302 émis d’une connexion terminée, et recommencer avec une transaction neuve ; 4. IMP-2026-10-02-chatgpt-stabilite-catalogue (P1, cause distincte non confirmée). Besoin déjà couvert par #25 : ajouter la reproduction navigateur locale au protocole de recette. Les traces en direct ont subi des reconnexions ; seuls événements/étapes/statuts ont été exploités, jamais les codes transmis par le propriétaire. Pas de nouveau droit ni d’outil demandé. Suite : vérifier le parcours réel après publication humaine. Merci aux collaborateurs.
