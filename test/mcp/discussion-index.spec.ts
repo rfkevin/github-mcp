@@ -8,8 +8,8 @@ import { toolRegistry } from './tool-registry';
 
 const comment = (id: number, over: Partial<GitHubComment> = {}): GitHubComment => ({
   id,
-  html_url: \`https://github.com/o/r/issues/11#issuecomment-\${id}\`,
-  created_at: \`2026-10-03T00:00:00.\${String(id).padStart(6, '0')}Z\`,
+  html_url: `https://github.com/o/r/issues/11#issuecomment-${id}`,
+  created_at: `2026-10-03T00:00:00.${String(id).padStart(6, '0')}Z`,
   body: '',
   user: { login: 'owner' },
   ...over,
