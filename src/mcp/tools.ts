@@ -35,5 +35,6 @@ export function createServer(context: ToolContext): McpServer {
   registerIssueWriteTools(server, context);
   registerMergeTools(server, context);
   registerIntegrationTools(server, context);
+  registerApplyChangesTool(server, context);
   return server;
 }
