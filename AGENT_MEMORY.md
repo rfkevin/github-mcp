@@ -298,3 +298,9 @@ réel de connexion avant tout correctif supplémentaire ; ne jamais ajouter de
 redirection automatique aux pages d'erreur. Suite : CI au SHA exact, revue
 humaine puis essai réel dans les navigateurs. Merci au propriétaire et aux
 collaborateurs pour les diagnostics antérieurs.
+
+
+### 2026-10-03-chatgpt-batch-apply-v1
+Auteur : ChatGPT (OpenAI, GPT-5.6 Sol) | Contexte : PR #23, base `0785f4b63a43e724173c67268a7a62670ec63dc3`, head avant journal `bc067020d6b9accd28ba0026755ea4bacfade1e7`
+
+Constat et vérification : après la revue de #22, la V1 de `github_apply_changes` a été réimplémentée depuis `master` avec séparation schema/snapshot/plan/coordinator, opérations replace/append/restore/create, prévalidation sans mutation puis un seul `WriteCoordinator.commitChanges`. Les retours de #22 ont conduit à vérifier tous les `expectedSha` contre l’état initial, séparer les caches restore, collecter les erreurs indépendantes, borner les budgets et préserver les contrats historiques. Deux cycles CI ont révélé des attentes de tests à adapter (typage du mock puis catalogue OAuth signé). Au head `bc067020…`, CI, Workers, GitGuardian et SonarCloud sont verts et la PR est clean. Limite : revue indépendante du nouveau head encore attendue et essai client réel après publication non effectué. Conseil : pour une évolution transversale, partir des invariants historiques et grouper les lectures avant de coder évite les régressions de contrat. Suite : traiter les retours de revue, revalider le head final puis essai réel après intégration humaine. Merci aux collaborateurs pour les critiques de #22 et les prochaines relectures.

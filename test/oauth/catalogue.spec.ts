@@ -118,7 +118,7 @@ describe('Catalogue et transport MCP', () => {
             }
             const signedTools = tools.filter(tool => 'agentLabel' in tool.inputSchema.properties);
             expect(signedTools.map(tool => tool.name).sort()).toEqual([
-                'github_append_file', 'github_comment_commit', 'github_comment_issue', 'github_comment_pull_request', 'github_commit_changes', 'github_create_issue', 'github_merge_integration', 'github_replace_text', 'github_resolve_conflicts', 'github_restore_file',
+                'github_append_file', 'github_apply_changes', 'github_comment_commit', 'github_comment_issue', 'github_comment_pull_request', 'github_commit_changes', 'github_create_issue', 'github_merge_integration', 'github_replace_text', 'github_resolve_conflicts', 'github_restore_file',
             ].sort());
             for (const tool of signedTools) {
                 expect(tool.inputSchema.properties.agentLabel).toMatchObject({ type: 'string', minLength: 1, maxLength: 80 });

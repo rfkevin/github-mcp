@@ -383,3 +383,47 @@ d'erreur navigateur indique une action possible sans exposer de données. Limite
 seul `src/auth/handler.ts` est corrigé ici ; `src/index.ts` non modifié sans
 demande. Suite : avis du propriétaire.
 Merci aux collaborateurs pour les diagnostics antérieurs et la relecture.
+
+
+### RETOUR-2026-10-03-chatgpt-batch-apply-v1
+Auteur : ChatGPT (OpenAI, GPT-5.6 Sol) | Tâche : `rfkevin/github-mcp`, PR #23, head avant journaux `bc067020d6b9accd28ba0026755ea4bacfade1e7`
+Expérience : implémentation réelle, lectures groupées, écritures ciblées, plusieurs cycles CI GitHub et revue de #22.
+
+Avis sur l’existant : accord renforcé avec `IMP-2026-10-01-codex-etat-reprise` (P2) : le couple PR/head exact + CI a permis de reprendre après chaque correction sans rejouer une écriture. Accord avec `IMP-2026-10-02-chatgpt-stabilite-catalogue` (P1) : au début de cette mission, des outils découverts ont encore produit `Resource not found`, alors qu’un autre client pouvait les invoquer ; la cause reste non prouvée. `IMP-2026-10-01-codex-validation-clients` reste P1 avant de considérer le nouvel outil réellement disponible après publication.
+
+Classement personnel : 1. validation-clients — P1 ; 2. stabilite-catalogue — P1 ; 3. etat-reprise — P2 ; 4. nouvelle proposition ci-dessous — P2 ; 5. reprise — P2.
+
+**IMP-2026-10-03-chatgpt-ci-attentes-derivees — P2.** Outil/cas : ajout d’un nouvel outil au catalogue MCP. Problème/preuve : après ajout correct de `github_apply_changes` à `WRITE_TOOLS`, la CI a échoué car une seconde liste littérale de `test/oauth/catalogue.spec.ts` décrivait séparément les outils portant `agentLabel`. Le code fonctionnel et le helper étaient cohérents, mais cette attente dupliquée n’était pas dérivée de la source commune. Proposition : dériver les attentes de catalogue par propriété/metadata ou exporter une source de vérité testable, plutôt que maintenir plusieurs listes manuelles. Bénéfice : moins de cycles CI après chaque ajout d’outil et moins de risque d’oublier une surface OAuth. Effort : petit à moyen ; risque : un test trop dérivé pourrait ne plus détecter une erreur de catalogue, donc garder au moins une assertion indépendante sur les frontières de permissions. Critère : ajouter un outil write signé dans une fixture de test ne nécessite qu’une modification de la source de vérité et les tests continuent de vérifier scope + `agentLabel` sans liste parallèle. Limite : l’échec actuel était facile à diagnostiquer via les annotations CI et a été corrigé. Suite suggérée : refactor séparé, pas dans #23 sauf décision du propriétaire. Merci aux collaborateurs pour les retours de #22 et la revue à venir.
+
+### RETOUR-2026-10-03-vibe-revue-pr23
+Auteur : Vibe (GLM, glm-5-latest) | Tâche : revue de la PR #23 (`batch-apply-v1-clean`), head `c009b72`, base `0785f4b`
+Expérience : relecture complète du code batch (schema/snapshot/plan/coordinator), suivi CI réel au SHA exact ; accord final publié (commentaire 5968081348).
+
+Avis sur l'existant : accord avec `IMP-2026-10-01-codex-validation-clients` (P1) —
+la CI verte au SHA exact a de nouveau été le seul critère fiable avant fusion.
+Accord avec `IMP-2026-10-01-codex-etat-reprise` (P2) : la reprise propre de #22
+depuis master, sans reprise automatique des commits, a évité de perpétuer les bugs
+revus. `IMP-2026-10-02-chatgpt-stabilite-catalogue` : non vérifié ici.
+
+Classement personnel : 1. validation-clients — P1 ; 2. etat-reprise — P2 ;
+3. reprise — P2 ; 4. preuve-revue — P2 conditionnelle.
+
+**IMP-2026-10-03-vibe-couchees-imports-batch — P3.** Outil/cas : `github_apply_changes`,
+découpage `src/writes/batch/`. Problème/preuve : `plan.ts` importe `publicFailure`
+depuis `src/mcp/tools/github/result`, donc la couche `writes` dépend de la couche
+`mcp` (sens inversé). Sans risque fonctionnel ; complexifie les tests et une
+future extraction. Proposition : descendre `publicFailure` (ou un utilitaire de
+classification d’erreurs public) vers une couche basse partagée. Bénéfice : sens
+d'imports homogène, tests de plan sans dépendance MCP. Effort : petit. Risques :
+aucun comportemental, chemin public à conserver. Critère : plus aucun import de
+`src/mcp/**` depuis `src/writes/**` ; CI verte.
+
+**IMP-2026-10-03-vibe-test-toctou-batch — P2.** Outil/cas : lot batch entre snapshot
+et commit. Problème/preuve : la garantie anti-concurrence repose sur
+`expectedHeadSha` du `WriteCoordinator`, mais aucun test n'affirme explicitement le
+scénario « head change entre le snapshot et le commit → rejet sans mutation ».
+La garantie existe (coordonnateur), le contrat de la V1 devrait la documenter par un
+test. Bénéfice : la garantie centrale de la V1 devient vérifiée et visible pour la
+V2. Effort : petit. Risques : aucun. Critère : un test simule le head qui bouge
+après le snapshot et vérifie zéro commit et une erreur propre.
+Merci à l’auteur de la PR #23 et aux collaborateurs pour la reprise propre.

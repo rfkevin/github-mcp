@@ -20,6 +20,7 @@ Les anciens jetons de lecture ne gagnent aucun droit d’écriture. Retirer la v
 | --- | --- | --- |
 | `github_create_branch` | `repository`, `task`, `expectedBaseSha`, `baseBranch` facultatif | `branch`, `sha`, `baseBranch` |
 | `github_commit_changes` | `repository`, `branch`, `expectedHeadSha`, `message`, `changes` et/ou `deletions` | `commitSha`, chemins modifiés et supprimés |
+| `github_apply_changes` | `repository`, `branch`, `expectedHeadSha`, `message`, `agentLabel`, 1–50 `operations` | `applied`, `rejected` ou `unchanged` ; un seul commit au maximum |
 | `github_replace_text` | `repository`, `branch`, `path`, `expectedHeadSha`, `expectedSha`, `oldText`, `newText`, `message`, `agentLabel` | commit avec la même trace, les mêmes protections et le même suivi CI |
 | `github_restore_file` | `repository`, `branch`, `path`, `sourceRef`, `expectedHeadSha`, `expectedSha` (ou `null` si absent), `message`, `agentLabel` | contenu texte restauré, commit, `sourceSha`, `sourceBlobSha` et suivi CI |
 | `github_append_file` | `repository`, `branch`, `path`, `expectedHeadSha`, `expectedSha`, `text`, `message`, `agentLabel` | ajout exact en fin de fichier existant, commit et suivi CI |
