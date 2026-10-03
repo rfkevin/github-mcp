@@ -171,6 +171,19 @@ export class GitHubPullRequests {
     );
   }
 
+  getReview(repository: string, pullNumber: number, reviewId: number): Promise<GitHubReview> {
+    const { assertPositiveInteger, repoPath, request } = this.dependencies;
+    assertPositiveInteger(pullNumber, 'Numéro de Pull Request');
+    assertPositiveInteger(reviewId, 'Identifiant de revue');
+    return request<GitHubReview>(repoPath(repository, `/pulls/${pullNumber}/reviews/${reviewId}`));
+  }
+
+  getReviewComment(repository: string, commentId: number): Promise<GitHubReviewComment> {
+    const { assertPositiveInteger, repoPath, request } = this.dependencies;
+    assertPositiveInteger(commentId, 'Identifiant de commentaire de revue');
+    return request<GitHubReviewComment>(repoPath(repository, `/pulls/comments/${commentId}`));
+  }
+
   listReviews(repository: string, pullNumber: number, limit = 100, page?: number): Promise<GitHubReview[]> {
     const { assertPositiveInteger, paginateArray, repoPath, request, withQuery } = this.dependencies;
     assertPositiveInteger(pullNumber, 'Numéro de Pull Request');

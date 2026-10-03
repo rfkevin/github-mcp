@@ -53,6 +53,7 @@ export type GitHubReview = {
     body?: string | null;
     user?: GitHubUser;
     html_url?: string;
+    submitted_at?: string;
 };
 export type GitHubReviewComment = {
     id: number;
@@ -61,6 +62,8 @@ export type GitHubReviewComment = {
     body: string;
     user?: GitHubUser;
     html_url: string;
+    created_at?: string;
+    updated_at?: string;
 };
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
 export type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';

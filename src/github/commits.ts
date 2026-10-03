@@ -14,6 +14,12 @@ export class GitHubCommits {
       this.dependencies.withQuery(this.commentPath(repository, sha), { per_page: 20 }));
   }
 
+  getComment(repository: string, commentId: number): Promise<GitHubCommitComment> {
+    const { assertPositiveInteger, repoPath, request } = this.dependencies;
+    assertPositiveInteger(commentId, 'Identifiant de commentaire de commit');
+    return request<GitHubCommitComment>(repoPath(repository, `/comments/${commentId}`));
+  }
+
   createComment(repository: string, sha: string, body: string): Promise<GitHubCommitComment> {
     if (!body.trim() || body.length > 12_000) throw new InputValidationError('Commentaire vide ou trop long.');
     return this.dependencies.request<GitHubCommitComment>(this.commentPath(repository, sha), {

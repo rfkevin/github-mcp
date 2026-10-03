@@ -11,6 +11,7 @@ import { registerWriteTools } from './tools/github/writes';
 import { registerPullRequestTools } from './tools/github/pull-requests';
 import { registerIssueTools } from './tools/github/issues';
 import { registerDiscussionIndexTools } from './tools/github/discussion-index';
+import { registerDiscussionItemTools } from './tools/github/discussion-items';
 import { registerTargetedWriteTools } from './tools/github/targeted-write';
 import { registerFileWriteTools } from './tools/github/file-writes';
 import { registerIssueWriteTools } from './tools/github/issue-writes';
@@ -30,6 +31,7 @@ export function createServer(context: ToolContext): McpServer {
   registerPullRequestTools(server, context);
   registerIssueTools(server, context);
   registerDiscussionIndexTools(server, context);
+  registerDiscussionItemTools(server, context);
   registerCheckTools(server, context);
   registerWriteTools(server, context);
   registerTargetedWriteTools(server, context);
