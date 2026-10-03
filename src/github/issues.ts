@@ -111,6 +111,17 @@ export class GitHubIssues {
     return paginateArray(repoPath(repository, `/issues/${issueNumber}/comments`), limit);
   }
 
+  /** Page GitHub paramétrable pour l’index compact des discussions : ordre de création croissant par défaut. */
+  listCommentsPage(repository: string, issueNumber: number, options: { perPage: number; page: number }): Promise<GitHubComment[]> {
+    const { assertPositiveInteger, repoPath, request, withQuery } = this.dependencies;
+    assertPositiveInteger(issueNumber, 'Numéro d’issue ou de Pull Request');
+    assertPositiveInteger(options.page, 'Page');
+    assertPositiveInteger(options.perPage, 'Limite de page');
+    return request(withQuery(repoPath(repository, `/issues/${issueNumber}/comments`), {
+      per_page: Math.min(options.perPage, 100), page: options.page,
+    }));
+  }
+
   getComment(repository: string, commentId: number): Promise<GitHubComment> {
     const { assertPositiveInteger, repoPath, request } = this.dependencies;
     assertPositiveInteger(commentId, 'Identifiant de commentaire');

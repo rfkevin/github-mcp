@@ -10,6 +10,7 @@ import { registerCheckTools } from './tools/github/checks';
 import { registerWriteTools } from './tools/github/writes';
 import { registerPullRequestTools } from './tools/github/pull-requests';
 import { registerIssueTools } from './tools/github/issues';
+import { registerDiscussionIndexTools } from './tools/github/discussion-index';
 import { registerTargetedWriteTools } from './tools/github/targeted-write';
 import { registerFileWriteTools } from './tools/github/file-writes';
 import { registerIssueWriteTools } from './tools/github/issue-writes';
@@ -28,6 +29,7 @@ export function createServer(context: ToolContext): McpServer {
   registerProjectTools(server, context);
   registerPullRequestTools(server, context);
   registerIssueTools(server, context);
+  registerDiscussionIndexTools(server, context);
   registerCheckTools(server, context);
   registerWriteTools(server, context);
   registerTargetedWriteTools(server, context);
