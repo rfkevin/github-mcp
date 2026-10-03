@@ -38,7 +38,7 @@ export function registerIssueTools(server: McpServer, context: ToolContext): voi
     try {
       if (offset > 0 && !revision) throw new InputValidationError('Une révision est requise pour continuer la lecture.', 'COMMENT_REVISION_REQUIRED');
       const comment = await context.issues.getComment(repository, commentId);
-      const page = pageMaskedContent(comment.body ?? '', offset, limit, revision);
+      const page = await pageMaskedContent(comment.body ?? '', offset, limit, revision);
       toolSuccess(context, 'get_issue_comment');
       return textPayload({ repository, commentId: comment.id, author: comment.user?.login, url: comment.html_url,
         createdAt: comment.created_at, updatedAt: comment.updated_at ?? null, maskingVersion: 'known-secrets-v1', ...page });

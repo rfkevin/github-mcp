@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { InputValidationError } from '../../../github/types';
 import { redactDiagnostic } from './reports';
 
@@ -6,23 +5,24 @@ export const MASKING_VERSION = 'known-secrets-v1';
 const encoder = new TextEncoder();
 const fatalDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
 
-export function maskedRevision(content: string): string {
-  return createHash('sha256').update(MASKING_VERSION).update('\0').update(content).digest('hex');
+export async function maskedRevision(content: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(`${MASKING_VERSION}\0${content}`));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function isContinuationByte(byte: number): boolean {
   return (byte & 0xc0) === 0x80;
 }
 
-export function pageMaskedContent(
+export async function pageMaskedContent(
   value: string,
   offset: number,
   limit: number,
   expectedRevision?: string,
-): { content: string; offset: number; nextOffset: number | null; totalBytes: number; revision: string; truncated: boolean } {
+): Promise<{ content: string; offset: number; nextOffset: number | null; totalBytes: number; revision: string; truncated: boolean }> {
   const masked = redactDiagnostic(value);
   const bytes = encoder.encode(masked);
-  const revision = maskedRevision(masked);
+  const revision = await maskedRevision(masked);
   if (expectedRevision && expectedRevision !== revision) {
     throw new InputValidationError('Le commentaire a changé depuis la page précédente. Reprenez la lecture à zéro.', 'DISCUSSION_ITEM_CHANGED');
   }
