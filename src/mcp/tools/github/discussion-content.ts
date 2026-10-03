@@ -4,7 +4,7 @@ import { redactDiagnostic } from './reports';
 
 export const MASKING_VERSION = 'known-secrets-v1';
 const encoder = new TextEncoder();
-const fatalDecoder = new TextDecoder('utf-8', { fatal: true });
+const fatalDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
 
 export function maskedRevision(content: string): string {
   return createHash('sha256').update(MASKING_VERSION).update('\0').update(content).digest('hex');
