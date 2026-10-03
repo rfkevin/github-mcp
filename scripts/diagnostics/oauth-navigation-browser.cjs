@@ -4,20 +4,15 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
-const ts = require('typescript');
+const os = require('node:os');
+const { buildSync } = require('esbuild');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
-function load(file) {
-  const source = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
-  const exports = {};
-  vm.runInNewContext(source, { exports, URL, Response, Headers,
-    require: name => load(path.resolve(path.dirname(file), name + '.ts')) });
-  return exports;
-}
-const { consentPage, consentPagePolicy } = load(path.resolve('src/auth/consent.ts'));
-const { navigationPage } = load(path.resolve('src/auth/navigation.ts'));
+// Compile only the two fixed repository entry points, never data from a request.
+const output = fs.mkdtempSync(path.join(os.tmpdir(), 'github-mcp-oauth-browser-'));
+buildSync({ entryPoints: { consent: 'src/auth/consent.ts', navigation: 'src/auth/navigation.ts' },
+  bundle: true, platform: 'node', format: 'cjs', outdir: output, logLevel: 'silent' });
+const { consentPage, consentPagePolicy } = require(path.join(output, 'consent.js'));
+const { navigationPage } = require(path.join(output, 'navigation.js'));
 async function start(handler) {
   const server = http.createServer((req, res) => Promise.resolve(handler(req, res)).catch(error => { res.writeHead(500).end(); console.error(error); }));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
