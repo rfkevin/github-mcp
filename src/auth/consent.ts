@@ -1,3 +1,4 @@
+import { CONSENT_SUBMIT_SCRIPT } from './consent-submit';
 import type { ConsentDescription } from '@cloudflare/workers-oauth-provider';
 
 const escape = (value: string): string =>
@@ -13,10 +14,9 @@ export function consentPolicy(validatedRedirectUri: string): string {
   return `default-src 'none'; form-action ${sources.join(' ')}; frame-ancestors 'none'; base-uri 'none'`;
 }
 
-// This page is deliberately self-contained: no scripts, remote images, fonts or requests.
-// Inline CSS is the only extra resource allowed; every other directive inherits default-src none.
-export function consentPagePolicy(validatedRedirectUri: string): string {
-  return `${consentPolicy(validatedRedirectUri)}; style-src 'unsafe-inline'`;
+// Self-contained page: only the fixed submission guard is authorized by a nonce.
+export function consentPagePolicy(validatedRedirectUri: string, nonce: string): string {
+  return `${consentPolicy(validatedRedirectUri)}; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'`;
 }
 
 const STYLE = `
@@ -52,6 +52,7 @@ button{width:100%;min-height:48px;padding:12px 18px;border:1px solid var(--line)
 button.primary{border-color:var(--accent);background:var(--accent);color:var(--accent-ink)}
 button.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
 button:not(.primary):hover{background:var(--soft)}
+button:disabled{opacity:.6;cursor:wait}
 button:active{transform:translateY(1px)}
 button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
 .foot{display:flex;align-items:flex-start;gap:8px;margin:15px 0 0;color:var(--muted);font-size:.78rem}
@@ -75,7 +76,7 @@ type Tone = 'info' | 'warn';
 const item = (name: keyof typeof ICONS, title: string, text: string, tone: Tone = 'info'): string =>
   `<li${tone === 'warn' ? " class='warn'" : ''}><span class='ico'>${icon(name)}</span><div><strong>${title}</strong><p>${text}</p></div></li>`;
 
-export function consentPage(details: ConsentDescription, handle: string): string {
+export function consentPage(details: ConsentDescription, handle: string, nonce: string): string {
   const write = details.scope.includes('mcp:write');
   const integration = write && details.scope.includes('mcp:integration');
   const automation = details.scope.includes('mcp:automation');
@@ -141,10 +142,12 @@ export function consentPage(details: ConsentDescription, handle: string): string
         <button class='primary' name='decision' value='approve'>Autoriser et continuer avec GitHub</button>
         <button name='decision' value='deny'>Refuser</button>
       </div>
+      <p id="connection-status" role="status" aria-live="polite"></p>
     </form>
     <p class='foot'>${icon('lock', 15)}<span>Connexion sécurisée via GitHub. Aucun mot de passe GitHub n’est demandé par cette page.</span></p>
   </section>
 </main>
+<script nonce="${escape(nonce)}">${CONSENT_SUBMIT_SCRIPT}</script>
 </body>
 </html>`;
 }

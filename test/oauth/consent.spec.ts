@@ -1,3 +1,4 @@
+import { navigationTarget } from './navigation-helpers';
 import { SELF } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
 import { consentPolicy } from '../../src/auth/consent';
@@ -5,8 +6,10 @@ import { createOAuthFixture } from './helpers';
 const { ORIGIN, send, cookie, consent } = createOAuthFixture();
 describe('Consentement et découverte OAuth', () => {
     it('autorise les styles de la page sans élargir les autres protections CSP', async () => {
-        const { page } = await consent();
-        expect(page.headers.get('Content-Security-Policy')).toBe("default-src 'none'; form-action 'self' https://github.com http://localhost:4321; frame-ancestors 'none'; base-uri 'none'; style-src 'unsafe-inline'");
+        const { page, html } = await consent();
+        const nonce = /<script nonce="([^"]+)">/.exec(html)?.[1];
+        expect(nonce).toBeTruthy();
+        expect(page.headers.get('Content-Security-Policy')).toBe("default-src 'none'; form-action 'self' https://github.com http://localhost:4321; frame-ancestors 'none'; base-uri 'none'; style-src 'unsafe-inline'; script-src 'nonce-" + nonce + "'");
         expect(page.headers.get('X-Frame-Options')).toBe('DENY');
         expect(page.headers.get('Cache-Control')).toBe('no-store');
         expect(cookie(page)).toContain('__Host-oauth-consent-');
@@ -21,7 +24,7 @@ describe('Consentement et découverte OAuth', () => {
         expect(html).toContain('Refuser');
         expect(html).toContain("class='brand-mark'");
         expect(html).toContain("class='perms'");
-        expect(html).not.toMatch(/<script|https:\/\/[^<]*\.(?:css|js|woff|png|svg)/i);
+        expect(html).not.toMatch(/<script(?! nonce=)|https:\/\/[^<]*\.(?:css|js|woff|png|svg)/i);
     });
     it('limite le retour Claude à son origine, sans chemin ni paramètres', () => {
         expect(consentPolicy('https://claude.ai/api/mcp/auth_callback?state=private')).toBe("default-src 'none'; form-action 'self' https://github.com https://claude.ai; frame-ancestors 'none'; base-uri 'none'");
@@ -97,7 +100,7 @@ describe('Consentement et découverte OAuth', () => {
         const headers = { Cookie: cookie(page) };
         const form = new URLSearchParams({ handle, decision: 'approve' });
         const first = await send('/authorize', { method: 'POST', headers, body: form });
-        expect(first.status).toBe(302);
+        expect(first.status).toBe(200);
         const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => { });
         const replay = await send('/authorize', { method: 'POST', headers, body: form });
         expect(replay.status).toBe(400);
@@ -111,7 +114,7 @@ describe('Consentement et découverte OAuth', () => {
         const { handle, page } = await consent();
         const response = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle, decision: 'deny' }) });
-        expect(response.status).toBe(302);
-        expect(new URL(response.headers.get('Location')!).searchParams.get('error')).toBe('access_denied');
+        expect(response.status).toBe(200);
+        expect(new URL(await navigationTarget(response)).searchParams.get('error')).toBe('access_denied');
     });
 });

@@ -1,3 +1,4 @@
+import { navigationTarget } from './navigation-helpers';
 import { describe, expect, it, vi } from 'vitest';
 import { createOAuthFixture } from './helpers';
 const { ORIGIN, send, cookie, consent } = createOAuthFixture();
@@ -6,8 +7,8 @@ describe('Erreurs d’outil et diagnostics fermés', () => {
         const { handle, page, client, verifier } = await consent();
         const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle, decision: 'approve' }) });
-        expect(approved.status).toBe(302);
-        const upstreamState = new URL(approved.headers.get('Location')!).searchParams.get('state')!;
+        expect(approved.status).toBe(200);
+        const upstreamState = new URL(await navigationTarget(approved)).searchParams.get('state')!;
         const identity = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
             const url = String(input);
             if (url === 'https://github.com/login/oauth/access_token') {

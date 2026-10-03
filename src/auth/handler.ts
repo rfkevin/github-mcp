@@ -1,6 +1,7 @@
 import { AuthorizationError, CimdFetchError, authorizationErrorRedirect } from '@cloudflare/workers-oauth-provider';
 import { isAllowedUser, type AuthEnv } from '../config';
 import { consentPage, consentPagePolicy } from './consent';
+import { navigationPage } from './navigation';
 import { GitHubIdentityError, githubIdentity, githubSignInUrl } from './github';
 
 type PhaseReporter = (phase: string) => void;
@@ -20,11 +21,11 @@ function clientRedirectCategory(value: string): RedirectCategory {
   }
 }
 
-function reportRedirect(env: AuthEnv, phase: string, location: string | null, destination: RedirectCategory): void {
+function reportRedirect(env: AuthEnv, phase: string, location: string | null, destination: RedirectCategory, status = 302): void {
   console.info(JSON.stringify({
     event: 'oauth_redirect_handoff',
     phase,
-    status: 302,
+    status,
     locationPresent: location !== null,
     destination,
     buildSha: env.BUILD_SHA ?? null,
@@ -104,9 +105,10 @@ async function handleAuthorizeGet(
   const details = await oauth.describeConsent(auth);
   reportPhase('authorize.begin_consent');
   const consent = await oauth.beginConsent(auth);
+  const nonce = crypto.randomUUID();
   consent.headers.set('Content-Type', 'text/html; charset=utf-8');
-  consent.headers.set('Content-Security-Policy', consentPagePolicy(details.redirectUri));
-  return new Response(consentPage(details, consent.handle), { headers: consent.headers });
+  consent.headers.set('Content-Security-Policy', consentPagePolicy(details.redirectUri, nonce));
+  return new Response(consentPage(details, consent.handle, nonce), { headers: consent.headers });
 }
 
 async function handleAuthorizePost(
@@ -123,7 +125,7 @@ async function handleAuthorizePost(
   if (form.get('decision') !== 'approve') {
     reportPhase('authorize.deny_consent');
     const denied = await oauth.denyConsent(request, handle);
-    return new Response(null, { status: 302, headers: denied.headers });
+    return navigationPage(denied.redirectTo, denied.headers);
   }
 
   reportPhase('authorize.approve_consent');
@@ -135,9 +137,9 @@ async function handleAuthorizePost(
     headers: approved.headers,
   });
   reportPhase('authorize.build_github_redirect');
-  upstream.headers.set('Location', await githubSignInUrl(env, upstream.state, verifier));
-  reportRedirect(env, 'authorize.redirect_to_github', upstream.headers.get('Location'), 'github_authorize');
-  return new Response(null, { status: 302, headers: upstream.headers });
+  const target = await githubSignInUrl(env, upstream.state, verifier);
+  reportRedirect(env, 'authorize.navigate_to_github', null, 'github_authorize', 200);
+  return navigationPage(target, upstream.headers);
 }
 
 async function handleCallback(

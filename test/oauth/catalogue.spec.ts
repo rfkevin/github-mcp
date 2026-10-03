@@ -1,3 +1,4 @@
+import { navigationTarget } from './navigation-helpers';
 import { describe, expect, it, vi } from 'vitest';
 import { codeChallenge } from '../../src/auth/github';
 import { outputSchemas } from '../../src/mcp/tools/github/output-schemas';
@@ -68,8 +69,8 @@ describe('Catalogue et transport MCP', () => {
         expect(handle).toBeTruthy();
         const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle: handle!, decision: 'approve' }) });
-        expect(approved.status).toBe(302);
-        const state = new URL(approved.headers.get('Location')!).searchParams.get('state')!;
+        expect(approved.status).toBe(200);
+        const state = new URL(await navigationTarget(approved)).searchParams.get('state')!;
         const callback = await send(`/callback?code=upstream-code&state=${encodeURIComponent(state)}`, { headers: { Cookie: cookie(approved) } });
         expect(callback.status).toBe(302);
         const tokenResponse = await send('/oauth/token', { method: 'POST', body: new URLSearchParams({

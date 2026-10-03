@@ -1,3 +1,4 @@
+import { navigationTarget } from './navigation-helpers';
 import { describe, expect, it, vi } from 'vitest';
 import { createOAuthFixture } from './helpers';
 const { ORIGIN, settings, send, cookie, consent } = createOAuthFixture();
@@ -62,8 +63,8 @@ describe('Callback GitHub et validation d’identité', () => {
             headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle, decision: 'approve' }),
         });
-        expect(approved.status).toBe(302);
-        const upstreamState = new URL(approved.headers.get('Location')!).searchParams.get('state')!;
+        expect(approved.status).toBe(200);
+        const upstreamState = new URL(await navigationTarget(approved)).searchParams.get('state')!;
         const oneTimeCode = 'test-one-time-code-must-not-be-logged';
         const privateErrorDescription = 'private-upstream-description-must-not-be-logged';
         const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -124,8 +125,8 @@ describe('Callback GitHub et validation d’identité', () => {
         const { handle, page } = await consent();
         const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle, decision: 'approve' }) });
-        expect(approved.status).toBe(302);
-        const upstreamState = new URL(approved.headers.get('Location')!).searchParams.get('state')!;
+        expect(approved.status).toBe(200);
+        const upstreamState = new URL(await navigationTarget(approved)).searchParams.get('state')!;
         let userCalls = 0;
         const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
             const url = String(input);
@@ -158,8 +159,8 @@ describe('Callback GitHub et validation d’identité', () => {
         const { handle, page } = await consent();
         const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle, decision: 'approve' }) });
-        expect(approved.status).toBe(302);
-        const upstreamState = new URL(approved.headers.get('Location')!).searchParams.get('state')!;
+        expect(approved.status).toBe(200);
+        const upstreamState = new URL(await navigationTarget(approved)).searchParams.get('state')!;
         const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
             const url = String(input);
             if (url === 'https://github.com/login/oauth/access_token') {
@@ -191,8 +192,8 @@ describe('Callback GitHub et validation d’identité', () => {
         const { handle, page, client, verifier } = await consent();
         const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle, decision: 'approve' }) });
-        expect(approved.status).toBe(302);
-        const github = new URL(approved.headers.get('Location')!);
+        expect(approved.status).toBe(200);
+        const github = new URL(await navigationTarget(approved));
         expect(github.origin).toBe('https://github.com');
         expect(github.searchParams.get('code_challenge_method')).toBe('S256');
         const upstreamState = github.searchParams.get('state')!;
@@ -214,8 +215,8 @@ describe('Callback GitHub et validation d’identité', () => {
         expect(location.searchParams.get('state')).toBe('client-state');
         const redirectLogs = redirectDiagnostic.mock.calls.map(([entry]) => String(entry));
         expect(redirectLogs).toContain(JSON.stringify({
-            event: 'oauth_redirect_handoff', phase: 'authorize.redirect_to_github', status: 302,
-            locationPresent: true, destination: 'github_authorize', buildSha: null,
+            event: 'oauth_redirect_handoff', phase: 'authorize.navigate_to_github', status: 200,
+            locationPresent: false, destination: 'github_authorize', buildSha: null,
         }));
         expect(redirectLogs).toContain(JSON.stringify({
             event: 'oauth_redirect_handoff',
@@ -275,8 +276,8 @@ describe('Callback GitHub et validation d’identité', () => {
         const { handle, page } = await consent();
         const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle, decision: 'approve' }) });
-        expect(approved.status).toBe(302);
-        const upstreamState = new URL(approved.headers.get('Location')!).searchParams.get('state')!;
+        expect(approved.status).toBe(200);
+        const upstreamState = new URL(await navigationTarget(approved)).searchParams.get('state')!;
         const canary = 'destination-must-not-be-revealed';
         const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
             const url = String(input);
