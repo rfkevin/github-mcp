@@ -16,6 +16,7 @@ import { registerIssueWriteTools } from './tools/github/issue-writes';
 import { registerMergeTools } from './tools/github/merges';
 import { WORKFLOW_INSTRUCTIONS } from './workflow-guidance';
 import { registerIntegrationTools } from './tools/github/integration';
+import { registerApplyChangesTool } from './tools/github/apply-changes';
 
 export function createServer(context: ToolContext): McpServer {
   const server = new McpServer({ name: 'github-mcp', version: '0.8.0' }, { instructions: WORKFLOW_INSTRUCTIONS });
