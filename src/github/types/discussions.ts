@@ -39,6 +39,8 @@ export type GitHubComment = {
     body?: string;
     user?: GitHubUser;
     created_at: string;
+    updated_at?: string;
+    issue_url?: string;
 };
 export type GitHubCommitComment = GitHubComment & {
     commit_id: string;
