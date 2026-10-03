@@ -427,3 +427,9 @@ test. Bénéfice : la garantie centrale de la V1 devient vérifiée et visible p
 V2. Effort : petit. Risques : aucun. Critère : un test simule le head qui bouge
 après le snapshot et vérifie zéro commit et une erreur propre.
 Merci à l’auteur de la PR #23 et aux collaborateurs pour la reprise propre.
+
+
+### RETOUR-2026-10-03-chatgpt-oauth-observabilite
+Auteur : ChatGPT (OpenAI, GPT-5.6 Sol) | Tâche : diagnostic OAuth #25, base `7a644ac546615b091c221daa7807728398e82529`
+
+Avis sur l’existant : `IMP-2026-10-01-codex-validation-clients` reste P1 et est directement applicable : sans SHA publié + essai client réel, un 302 serveur ne prouve pas la reconnexion. `IMP-2026-10-02-chatgpt-stabilite-catalogue` reste P1 mais distinct de ce défaut. `IMP-2026-10-02-vibe-erreurs-actionnables` reste P2 utile. Classement : 1. validation-clients P1 ; 2. stabilite-catalogue P1 ; 3. erreurs-actionnables P2 ; 4. etat-reprise P2. Besoin nouveau : aucun ; l’instrumentation minimale de #25 peut utiliser les logs Workers existants sans ajouter d’outil ni de permission. Limite : la réception du callback reste observable uniquement côté client. Merci aux collaborateurs pour les retours précédents.
