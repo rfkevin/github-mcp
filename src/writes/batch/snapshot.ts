@@ -7,7 +7,7 @@ type Dependencies = {
   files: { getTextFile(repository: string, path: string, ref: string): Promise<TextFile> };
   commits: { getCommit(repository: string, ref: string): Promise<{ sha: string }> };
 };
-export type BatchSnapshot = { headSha: string; files: Map<string, TextFile | undefined>; sources: Map<string, TextFile> };
+export type BatchSnapshot = { headSha: string; files: Map<string, TextFile | undefined>; sources: Map<string, TextFile>; sourceRefs: Map<string, string> };
 
 export async function loadBatchSnapshot(deps: Dependencies, repository: string, branch: string, expectedHeadSha: string, operations: readonly BatchOperation[]): Promise<BatchSnapshot> {
   const headSha = (await deps.branches.getBranchHead(repository, branch)).toLowerCase();
@@ -22,6 +22,7 @@ export async function loadBatchSnapshot(deps: Dependencies, repository: string, 
     }
   });
   const refCache = new Map<string, Promise<string>>();
+  const sourceRefs = new Map<string, string>();
   const sources = new Map<string, TextFile>();
   const restores = operations.filter((operation): operation is Extract<BatchOperation, { type: 'restore' }> => operation.type === 'restore');
   await mapLimit(restores, 3, async operation => {
@@ -33,10 +34,11 @@ export async function loadBatchSnapshot(deps: Dependencies, repository: string, 
       refCache.set(operation.sourceRef, resolved);
     }
     const commitSha = await resolved;
+    sourceRefs.set(operation.sourceRef, commitSha);
     const key = `${repository}\n${commitSha}\n${operation.path}`;
     if (!sources.has(key)) sources.set(key, await deps.files.getTextFile(repository, operation.path, commitSha));
   });
-  return { headSha, files, sources };
+  return { headSha, files, sources, sourceRefs };
 }
 
 async function mapLimit<T>(values: readonly T[], limit: number, work: (value: T) => Promise<void>): Promise<void> {

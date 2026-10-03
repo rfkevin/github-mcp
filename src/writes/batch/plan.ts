@@ -14,16 +14,17 @@ export function planBatchChanges(repository: string, operations: readonly BatchO
   const failedPaths = new Set<string>();
   const initialSha = new Map<string, string | undefined>();
   for (const [path, file] of snapshot.files) { working.set(path, file?.content); initialSha.set(path, file?.sha.toLowerCase()); }
-
-  const isolated = new Map<string, number>();
-  for (const operation of operations) if (operation.type === 'restore' || operation.type === 'create') isolated.set(operation.path, (isolated.get(operation.path) ?? 0) + 1);
   const counts = new Map<string, number>();
-  for (const operation of operations) counts.set(operation.path, (counts.get(operation.path) ?? 0) + 1);
+  const isolatedPaths = new Set<string>();
+  for (const operation of operations) {
+    counts.set(operation.path, (counts.get(operation.path) ?? 0) + 1);
+    if (operation.type === 'restore' || operation.type === 'create') isolatedPaths.add(operation.path);
+  }
 
   operations.forEach((operation, index) => {
     if (failedPaths.has(operation.path)) { states.push({ index, path: operation.path, state: 'not_evaluated' }); return; }
     try {
-      if ((operation.type === 'restore' || operation.type === 'create') && counts.get(operation.path)! > 1 || isolated.has(operation.path) && counts.get(operation.path)! > 1) {
+      if (isolatedPaths.has(operation.path) && counts.get(operation.path)! > 1) {
         throw new InputValidationError('create et restore doivent être seuls sur leur chemin en V1.', 'OPERATION_COMBINATION_DENIED');
       }
       const currentSha = initialSha.get(operation.path);
@@ -42,8 +43,8 @@ export function planBatchChanges(repository: string, operations: readonly BatchO
         working.set(operation.path, appendExact(current, operation.text));
       } else if (operation.type === 'create') working.set(operation.path, operation.content);
       else {
-        const commitSha = resolveSourceSha(snapshot, operation.sourceRef);
-        const source = snapshot.sources.get(`${repository}\n${commitSha}\n${operation.path}`);
+        const commitSha = snapshot.sourceRefs.get(operation.sourceRef);
+        const source = commitSha ? snapshot.sources.get(`${repository}\n${commitSha}\n${operation.path}`) : undefined;
         if (!source) throw new InputValidationError('Source de restauration introuvable.', 'RESTORE_SOURCE_MISSING');
         working.set(operation.path, source.content);
       }
@@ -66,16 +67,4 @@ export function planBatchChanges(repository: string, operations: readonly BatchO
     if (content !== undefined) changes.push({ path, content, ...(initial ? { expectedSha: initial.sha } : {}) });
   }
   return { changes, errors, operations: states };
-}
-
-function resolveSourceSha(snapshot: BatchSnapshot, sourceRef: string): string {
-  if (/^[a-f0-9]{40}$/i.test(sourceRef)) return sourceRef.toLowerCase();
-  const suffix = `\n${sourceRef}`;
-  void suffix;
-  const keys = [...snapshot.sources.keys()];
-  const matchingCommits = keys.map(key => key.split('\n')[1]);
-  if (matchingCommits.length === 1) return matchingCommits[0];
-  const pathMatch = keys.find(key => snapshot.sources.has(key));
-  if (!pathMatch) throw new InputValidationError('Référence source non résolue.', 'RESTORE_SOURCE_MISSING');
-  return pathMatch.split('\n')[1];
 }
