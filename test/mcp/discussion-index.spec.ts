@@ -87,7 +87,7 @@ describe('index compact des discussions', () => {
   });
 
   it('refuse un curseur mal formé et un curseur d’une autre discussion', async () => {
-    const { list } = fixture(Array.from({ length: 60 }, (_, index) => comment(index + 1)));
+    const { list } = fixture(Array.from({ length: 150 }, (_, index) => comment(index + 1)));
     const first = (await list({ limit: 50 })).structuredContent as Record<string, unknown>;
     const cursor = first.nextCursor as string;
     expect(await list({ cursor: '!!!' })).toMatchObject({ isError: true, structuredContent: { error: { code: 'INVALID_CURSOR' } } });
@@ -97,7 +97,7 @@ describe('index compact des discussions', () => {
 
   it('demande des pages GitHub de taille paramétrable plafonnée à 100', async () => {
     const request = vi.fn(async () => []);
-    const service = new GitHubIssues({ request, repoPath: () => '/repos/o/r/issues',
+    const service = new GitHubIssues({ request, repoPath: (_repository: string, path: string) => '/repos/o/r' + path,
       withQuery: (p: string, q: Record<string, string | number>) => p + '?' + new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)])),
       assertPositiveInteger: () => { } } as unknown as GitHubServiceContext);
     await service.listCommentsPage('o/r', 11, { perPage: 150, page: 2 });
