@@ -1,7 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { ToolContext } from '../../context';
-import { InputValidationError } from '../../../github/types';
 import { fileSha, fileWriteInputs, readWriteTarget } from './file-write-context';
 import { oauthMetadata } from './metadata';
 import { outputSchemas } from './output-schemas';
@@ -20,11 +19,7 @@ export function registerTargetedWriteTools(server: McpServer, context: ToolConte
   }, async args => {
     try {
       const file = (await readWriteTarget(context, args))!;
-      const first = file.content.indexOf(args.oldText);
-      if (first < 0) throw new InputValidationError('Le texte attendu est introuvable ; relisez le fichier.', 'TEXT_NOT_FOUND');
-      if (file.content.indexOf(args.oldText, first + 1) >= 0) throw new InputValidationError('Le texte attendu apparaît plusieurs fois ; fournissez un contexte plus précis.', 'TEXT_NOT_UNIQUE');
-      if (args.oldText === args.newText) throw new InputValidationError('Le remplacement ne change pas le fichier.', 'NO_CHANGE');
-      const content = file.content.slice(0, first) + args.newText + file.content.slice(first + args.oldText.length);
+      const content = replaceExactOnce(file.content, args.oldText, args.newText);
       const result = await context.writeCoordinator!.commitChanges({ repository: args.repository, branch: args.branch, expectedHeadSha: args.expectedHeadSha,
         message: args.message, agentLabel: args.agentLabel, changes: [{ path: args.path, content, expectedSha: file.sha }], deletions: [] });
       toolSuccess(context, 'replace_text'); return textPayload(result);
