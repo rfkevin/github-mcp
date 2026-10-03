@@ -24,7 +24,9 @@ describe('github_apply_changes', () => {
     const result = await apply([{ type: 'replace', path: 'a.txt', expectedSha: BLOB, oldText: 'old', newText: 'new' }]);
     expect(result.structuredContent).toMatchObject({ status: 'applied', applied: true, atomic: true, commitSha: NEXT });
     expect(commitChanges).toHaveBeenCalledOnce();
-    expect(commitChanges.mock.calls[0][0].changes).toEqual([{ path: 'a.txt', content: 'new', expectedSha: BLOB }]);
+    expect(commitChanges).toHaveBeenCalledWith(expect.objectContaining({
+      changes: [{ path: 'a.txt', content: 'new', expectedSha: BLOB }],
+    }));
   });
   it('retourne rejected sans commit et collecte les erreurs', async () => {
     const { apply, commitChanges } = fixture();
