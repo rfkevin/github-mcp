@@ -6,6 +6,7 @@ import { fileSha, fileWriteInputs, readWriteTarget } from './file-write-context'
 import { oauthMetadata } from './metadata';
 import { outputSchemas } from './output-schemas';
 import { textPayload, toolFailure, toolSuccess } from './result';
+import { replaceExactOnce } from '../../../writes/text-transforms';
 
 const annotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
 
