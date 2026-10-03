@@ -187,6 +187,7 @@ describe('Callback GitHub et validation d’identité', () => {
             .not.toContain('private-upstream-token');
     });
     it.each([123, 999])('valide le parcours OAuth pour l’utilisateur %s', async (userId) => {
+        const redirectDiagnostic = vi.spyOn(console, 'info').mockImplementation(() => { });
         const { handle, page, client, verifier } = await consent();
         const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle, decision: 'approve' }) });
@@ -211,6 +212,20 @@ describe('Callback GitHub et validation d’identité', () => {
         network.mockRestore();
         const location = new URL(callback.headers.get('Location')!);
         expect(location.searchParams.get('state')).toBe('client-state');
+        const redirectLogs = redirectDiagnostic.mock.calls.map(([entry]) => String(entry));
+        expect(redirectLogs).toContain(JSON.stringify({
+            event: 'oauth_redirect_handoff', phase: 'authorize.redirect_to_github', status: 302,
+            locationPresent: true, destination: 'github_authorize', buildSha: null,
+        }));
+        expect(redirectLogs).toContain(JSON.stringify({
+            event: 'oauth_redirect_handoff',
+            phase: userId === 999 ? 'callback.redirect_client_denied' : 'callback.redirect_client_success',
+            status: 302, locationPresent: true, destination: 'http_loopback', buildSha: null,
+        }));
+        const redirectDiagnosticText = redirectLogs.join('\n');
+        expect(redirectDiagnosticText).not.toContain('client-state');
+        expect(redirectDiagnosticText).not.toContain('localhost:4321');
+        expect(redirectDiagnosticText).not.toContain('upstream-code');
         if (userId === 999) {
             expect(location.searchParams.get('error')).toBe('access_denied');
             expect(location.searchParams.has('code')).toBe(false);

@@ -5,6 +5,32 @@ import { GitHubIdentityError, githubIdentity, githubSignInUrl } from './github';
 
 type PhaseReporter = (phase: string) => void;
 
+type RedirectCategory = 'github_authorize' | 'http_loopback' | 'https_client' | 'custom_scheme' | 'invalid';
+
+function clientRedirectCategory(value: string): RedirectCategory {
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]')) {
+      return 'http_loopback';
+    }
+    if (url.protocol === 'https:') return 'https_client';
+    return url.protocol ? 'custom_scheme' : 'invalid';
+  } catch {
+    return 'invalid';
+  }
+}
+
+function reportRedirect(env: AuthEnv, phase: string, location: string | null, destination: RedirectCategory): void {
+  console.info(JSON.stringify({
+    event: 'oauth_redirect_handoff',
+    phase,
+    status: 302,
+    locationPresent: location !== null,
+    destination,
+    buildSha: env.BUILD_SHA ?? null,
+  }));
+}
+
 // Messages publics par catégorie : jamais d'URL, de code, d'identifiant ni de corps
 // de réponse GitHub. Le détail exploitable reste dans le journal structuré.
 const IDENTITY_FAILURE_MESSAGES: Record<string, string> = {
@@ -110,6 +136,7 @@ async function handleAuthorizePost(
   });
   reportPhase('authorize.build_github_redirect');
   upstream.headers.set('Location', await githubSignInUrl(env, upstream.state, verifier));
+  reportRedirect(env, 'authorize.redirect_to_github', upstream.headers.get('Location'), 'github_authorize');
   return new Response(null, { status: 302, headers: upstream.headers });
 }
 
@@ -125,7 +152,9 @@ async function handleCallback(
   const code = url.searchParams.get('code');
 
   if (!code || url.searchParams.has('error')) {
-    upstream.headers.set('Location', authorizationErrorRedirect(upstream.request, 'access_denied'));
+    const redirectTo = authorizationErrorRedirect(upstream.request, 'access_denied');
+    upstream.headers.set('Location', redirectTo);
+    reportRedirect(env, 'callback.redirect_client_error', upstream.headers.get('Location'), clientRedirectCategory(redirectTo));
     return new Response(null, { status: 302, headers: upstream.headers });
   }
 
@@ -133,7 +162,9 @@ async function handleCallback(
   const userId = await githubIdentity(env, code, upstream.data.verifier, undefined, reportPhase);
   reportPhase('callback.check_user');
   if (!isAllowedUser(env, userId)) {
-    upstream.headers.set('Location', authorizationErrorRedirect(upstream.request, 'access_denied'));
+    const redirectTo = authorizationErrorRedirect(upstream.request, 'access_denied');
+    upstream.headers.set('Location', redirectTo);
+    reportRedirect(env, 'callback.redirect_client_denied', upstream.headers.get('Location'), clientRedirectCategory(redirectTo));
     return new Response(null, { status: 302, headers: upstream.headers });
   }
 
@@ -146,6 +177,7 @@ async function handleCallback(
     props: { userId },
   });
   upstream.headers.set('Location', result.redirectTo);
+  reportRedirect(env, 'callback.redirect_client_success', upstream.headers.get('Location'), clientRedirectCategory(result.redirectTo));
   return new Response(null, { status: 302, headers: upstream.headers });
 }
 
