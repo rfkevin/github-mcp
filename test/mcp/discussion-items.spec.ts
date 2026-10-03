@@ -37,7 +37,7 @@ describe('lecture ciblée des autres discussions', () => {
   it('exige pullNumber pour une revue et refuse les chemins sensibles', async () => {
     const { get, pullRequests } = fixture();
     expect(await get({ kind: 'pull_request_review', id: 3 })).toMatchObject({ isError: true, structuredContent: { error: { code: 'PULL_NUMBER_REQUIRED' } } });
-    pullRequests.getReviewComment.mockResolvedValueOnce({ id: 9, path: '.env', line: 1, body: 'secret', html_url: 'https://example.invalid' });
+    pullRequests.getReviewComment.mockResolvedValueOnce({ id: 9, path: '.env', line: 1, body: 'secret', user: { login: 'reviewer' }, html_url: 'https://example.invalid', created_at: '2026-10-03T10:01:00Z', updated_at: '2026-10-03T10:02:00Z' });
     expect(await get({ kind: 'pull_request_review_comment', id: 9 })).toMatchObject({ isError: true, structuredContent: { error: { code: 'SENSITIVE_FILE' } } });
   });
 });
