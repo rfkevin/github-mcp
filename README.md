@@ -1,4 +1,4 @@
-# GitHub MCP personnel
+# GitHub MCP personnel (branche de test batch)
 
 Serveur MCP sur Cloudflare Workers, accessible depuis un client distant comme Claude sur téléphone. Connexion OAuth, utilisateurs autorisés explicitement et dépôts sélectionnés dans une GitHub App.
 
