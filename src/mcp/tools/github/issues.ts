@@ -7,6 +7,7 @@ import { oauthMetadata } from './metadata';
 import { outputSchemas } from './output-schemas';
 import { printable, textPayload, toolFailure, toolSuccess } from './result';
 import { safeDiagnostic } from './reports';
+import { pageMaskedContent } from './discussion-content';
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const summary = (issue: GitHubIssue) => ({ number: issue.number, title: safeDiagnostic(issue.title, 1_000),
@@ -26,6 +27,22 @@ export function registerIssueTools(server: McpServer, context: ToolContext): voi
       return textPayload({ repository, issues: result.issues.map(summary), limit, page,
         potentiallyTruncated: result.potentiallyTruncated, nextPage: result.potentiallyTruncated && page < 100 ? page + 1 : null });
     } catch (error) { return toolFailure(context, 'list_issues', 'Lecture des issues impossible. Vérifiez la permission Issues: Read de la GitHub App.', error); }
+  });
+  server.registerTool('github_get_issue_comment', {
+    title: 'Lire un commentaire d’issue ou de PR', _meta: oauthMetadata(),
+    outputSchema: outputSchemas.github_get_issue_comment,
+    description: 'Lire un commentaire général d’issue ou de PR par identifiant, avec continuation UTF-8 sans perte. Commencer à offset=0 puis réutiliser revision et nextOffset. Nécessite Issues: Read.',
+    inputSchema: { repository: z.string(), commentId: z.number().int().positive(), offset: z.number().int().min(0).default(0),
+      limit: z.number().int().min(1).max(12_000).default(4_000), revision: z.string().regex(/^[a-f0-9]{64}$/).optional() }, annotations,
+  }, async ({ repository, commentId, offset, limit, revision }) => {
+    try {
+      if (offset > 0 && !revision) throw new InputValidationError('Une révision est requise pour continuer la lecture.', 'COMMENT_REVISION_REQUIRED');
+      const comment = await context.issues.getComment(repository, commentId);
+      const page = pageMaskedContent(comment.body ?? '', offset, limit, revision);
+      toolSuccess(context, 'get_issue_comment');
+      return textPayload({ repository, commentId: comment.id, author: comment.user?.login, url: comment.html_url,
+        createdAt: comment.created_at, updatedAt: comment.updated_at ?? null, maskingVersion: 'known-secrets-v1', ...page });
+    } catch (error) { return toolFailure(context, 'get_issue_comment', 'Lecture du commentaire impossible. Vérifiez la permission Issues: Read de la GitHub App.', error); }
   });
   server.registerTool('github_get_issue', {
     title: 'Lire une issue GitHub et ses commentaires', _meta: oauthMetadata(),

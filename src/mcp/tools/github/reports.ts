@@ -13,12 +13,16 @@ const failed = (conclusion: string | null): boolean =>
   conclusion !== null && ['failure', 'timed_out', 'action_required', 'startup_failure', 'stale'].includes(conclusion);
 
 /** Masquage des formats connus, pas une garantie de détection universelle des secrets. */
-export function safeDiagnostic(value: string, maxBytes = 4_000): string {
-  return printable(value
+export function redactDiagnostic(value: string): string {
+  return value
     .replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-\r\n]*PRIVATE KEY-----|$)/g, '[clé masquée]')
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/g, '[jeton masqué]')
     .replace(/\bBearer\s+[^\s"']+/gi, 'Bearer [masqué]')
-    .replace(/([?&](?:token|secret|code|key|signature|sig|access_token)=)[^&\s"']+/gi, '$1[masqué]'), maxBytes).content;
+    .replace(/([?&](?:token|secret|code|key|signature|sig|access_token)=)[^&\s"']+/gi, '$1[masqué]');
+}
+
+export function safeDiagnostic(value: string, maxBytes = 4_000): string {
+  return printable(redactDiagnostic(value), maxBytes).content;
 }
 
 export function registerReportTools(server: McpServer, context: ToolContext): void {

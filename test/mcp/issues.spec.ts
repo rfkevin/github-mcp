@@ -10,10 +10,12 @@ const issue: GitHubIssue = { number: 11, title: 'Bug', state: 'open', html_url: 
     body: 'Details', user: { login: 'owner' }, labels: ['bug', { name: 'mcp' }], assignees: [{ login: 'owner' }] };
 function fixture() {
     const issues = { getIssue: vi.fn(async (): Promise<GitHubIssue> => issue),
+        getComment: vi.fn(async (): Promise<GitHubComment> => ({ id: 7, html_url: `${issue.html_url}#issuecomment-7`, created_at: '2026-10-03T00:00:00Z', body: 'A😀B', user: { login: 'reviewer' } })),
         listComments: vi.fn(async (): Promise<GitHubComment[]> => []),
         listIssuesPage: vi.fn(async () => ({ issues: [issue], potentiallyTruncated: false })) };
     const call = toolRegistry(registerIssueTools, { actor: '123', issues } as unknown as ToolContext);
     return { issues, get: (args: object = {}) => call.get('github_get_issue')!({ repository: 'o/r', number: 11, ...args }),
+        getComment: (args: object = {}) => call.get('github_get_issue_comment')!({ repository: 'o/r', commentId: 7, offset: 0, limit: 3, ...args }),
         list: (args: object = {}) => call.get('github_list_issues')!({ repository: 'o/r', ...args }) };
 }
 describe('MCP Issues : réponses bornées et séparées des PR', () => {
@@ -49,6 +51,14 @@ describe('MCP Issues : réponses bornées et séparées des PR', () => {
         issues.listComments.mockResolvedValue(Array.from({ length: 20 }, (_, id) => ({ id, html_url: issue.html_url, created_at: '' })));
         expect((await get({ commentsPage: 2 })).structuredContent).toMatchObject({ commentsPotentiallyTruncated: true, nextCommentsPage: 3 });
         expect((await get({ commentsPage: 100 })).structuredContent).toMatchObject({ commentsPotentiallyTruncated: true, nextCommentsPage: null });
+    });
+    it('lit un commentaire ciblé avec continuation UTF-8 et révision obligatoire', async () => {
+        const { getComment } = fixture();
+        const first = (await getComment()).structuredContent as Record<string, unknown>;
+        expect(first).toMatchObject({ commentId: 7, content: 'A😀', offset: 0, nextOffset: 5, truncated: true });
+        const second = (await getComment({ offset: first.nextOffset, revision: first.revision })).structuredContent;
+        expect(second).toMatchObject({ content: 'B', offset: 5, nextOffset: null, truncated: false });
+        expect(await getComment({ offset: 5 })).toMatchObject({ isError: true, structuredContent: { error: { code: 'COMMENT_REVISION_REQUIRED' } } });
     });
     it('ne publie pas les messages d’erreur distants', async () => {
         const { get, issues } = fixture();

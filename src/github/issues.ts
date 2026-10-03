@@ -111,6 +111,12 @@ export class GitHubIssues {
     return paginateArray(repoPath(repository, `/issues/${issueNumber}/comments`), limit);
   }
 
+  getComment(repository: string, commentId: number): Promise<GitHubComment> {
+    const { assertPositiveInteger, repoPath, request } = this.dependencies;
+    assertPositiveInteger(commentId, 'Identifiant de commentaire');
+    return request<GitHubComment>(repoPath(repository, `/issues/comments/${commentId}`));
+  }
+
   updateComment(repository: string, commentId: number, body: string): Promise<GitHubComment> {
     const { assertPositiveInteger, repoPath, request } = this.dependencies;
     assertPositiveInteger(commentId, 'Identifiant de commentaire');
