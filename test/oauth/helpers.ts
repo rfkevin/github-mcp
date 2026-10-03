@@ -9,7 +9,7 @@ export const READ_TOOLS = ['github_list_repositories', 'github_get_project_guide
     'github_get_check_result', 'github_get_failure_report', 'github_get_quality_report', 'github_read_files',
     'github_get_project_context', 'github_list_pull_requests', 'github_get_pull_request', 'github_list_issues', 'github_get_issue', 'github_get_merge_context'];
 export const WRITE_TOOLS = ['github_comment_commit', 'github_comment_pull_request', 'github_comment_issue', 'github_create_branch',
-    'github_commit_changes', 'github_open_pull_request', 'github_replace_text', 'github_restore_file', 'github_append_file', 'github_create_issue', 'github_resolve_conflicts'];
+    'github_commit_changes', 'github_apply_changes', 'github_open_pull_request', 'github_replace_text', 'github_restore_file', 'github_append_file', 'github_create_issue', 'github_resolve_conflicts'];
 // A separate fixture is created by each spec; mocks and bindings stay local.
 export function createOAuthFixture() {
     const ORIGIN = 'https://github-mcp.example';
