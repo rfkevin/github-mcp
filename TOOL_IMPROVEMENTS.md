@@ -439,3 +439,26 @@ Avis sur l’existant : `IMP-2026-10-01-codex-validation-clients` reste P1 et es
 Auteur : Codex | Tâche : connexion PC prioritaire et prévention du double clic
 
 Classement et avis : 1. IMP-2026-10-01-codex-validation-clients (P1), renforcé : les tests HTTP ne voient pas le blocage CSP appliqué aux redirections par le navigateur ; 2. IMP-2026-10-02-vibe-erreurs-actionnables (P2), progression visible et secours utiles sans exposer de secret ; 3. IMP-2026-10-01-codex-etat-reprise (P2), distinguer un callback 302 émis d’une connexion terminée, et recommencer avec une transaction neuve ; 4. IMP-2026-10-02-chatgpt-stabilite-catalogue (P1, cause distincte non confirmée). Besoin déjà couvert par #25 : ajouter la reproduction navigateur locale au protocole de recette. Les traces en direct ont subi des reconnexions ; seuls événements/étapes/statuts ont été exploités, jamais les codes transmis par le propriétaire. Pas de nouveau droit ni d’outil demandé. Suite : vérifier le parcours réel après publication humaine. Merci aux collaborateurs.
+
+### RETOUR-2026-10-04-deepseek-consultation-reelle
+Auteur : DeepSeek (DeepSeek, v4-pro) | Tâche : consultation finale T50 `rfkevin/project-mcp-collab` #2 ; connexion réelle d'un client au MCP (OAuth + débogage), lectures d'issues/discussions, commentaires
+Expérience : essai réel — OAuth de bout en bout, `github_get_issue`, `github_list_discussion_items`, `github_get_issue_comment`, `github_comment_issue` ; aucune modification du serveur.
+
+Avis sur l'existant :
+- `IMP-2026-10-01-codex-validation-clients` → accord renforcé (P1) : le catalogue varie par client ; `list_discussion_items`/`get_issue_comment` sont exposées dans ce client, absentes chez Codex. La règle « vérifier le catalogue réel du client » a évité des hypothèses.
+- `IMP-2026-10-04-antigravity-discussion-index` → accord (P2), vécu : `github_get_issue` a tronqué le corps de l'issue #2 (`bodyTruncated: true`) ; la lecture ciblée par ID a rendu les corps complets.
+- `IMP-2026-10-01-codex-etat-reprise` → accord (P2), utile pour reprendre entre phases sans rejouer d'écritures.
+- `IMP-2026-10-02-chatgpt-stabilite-catalogue` → non vérifié (aucun « Resource not found » rencontré dans cette session).
+
+Classement personnel : 1. validation-clients — P1 ; 2. nouvelle proposition ci-dessous — P2 ; 3. antigravity-discussion-index — P2 ; 4. etat-reprise — P2 ; 5. stabilite-catalogue — P1 (à confirmer par d'autres essais).
+
+**IMP-2026-10-04-deepseek-route-auth-401-sous-chemin — P2.**
+Outil/cas : connexion d'un client MCP au serveur ; un sous-chemin sous `/mcp` est pointé par erreur.
+Problème/preuve : `OAuthProvider` est monté avec `apiRoute: '/mcp'` (`src/index.ts`) ; le provider challenge donc toute l'arborescence `/mcp/*` (401 sans jeton) alors que seul `/mcp` appelle `mcpHandler`. Vécu : `POST /mcp/collaboration` sans jeton → 401 (fait croire que l'URL est bonne), avec jeton valide → 404 « Not Found ». Le `www-authenticate` pointait bien `resource_metadata` → `"resource": ".../mcp"`, mais aucun client ne la résolvait automatiquement. ~30 min perdues.
+Proposition : (a) ne challenger que le chemin exact du handler et laisser les sous-chemins inconnus répondre 404 ; ou (b) faire lire aux clients la métadonnée `resource` et journaliser un avertissement quand l'URL fournie diffère. Sans correctif, documenter ce comportement dans `docs/mcp-compatibility.md`.
+Bénéfice : distinguer « mal authentifié » de « mauvais chemin » sans aller-retour ; moins de diagnostics erronés.
+Effort/risques : petit (routage) à moyen (clients) ; risque d'élargir le périmètre d'authentification si le challenge est mal recentré.
+Critère de réussite : un client pointant un sous-chemin inexistant reçoit un 404 clair (ou un avertissement de ressource) avant tout essai d'authentification, sans jeton valide.
+Limites : cause confirmée par lecture de `src/index.ts` et comportement HTTP observé ; le comportement exact du provider sur les sous-chemins reste à valider en test.
+Suite suggérée au propriétaire : choisir (a) ou (b), ou documenter en attendant un besoin réel.
+Merci aux collaborateurs (Codex, Vibe GLM, Grok, ChatGPT, Antigravity) et à Kevin.
