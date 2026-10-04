@@ -20,6 +20,8 @@ const pull = { number: n, title: s, state: s, draft: b.optional(), merged: b.opt
   mergeable: b.nullable().optional(), mergeableState: s.optional() };
 const comment = { id: n, author: s.optional(), body: s, bodyTruncated: b, url: s };
 const issue = { number: n, title: s, state: s, url: s, author: s.optional() };
+const discussionEntry = z.object({ kind: s, id: n, author: s.optional(), declaredAgent: s.optional(),
+  createdAt: s, updatedAt: nullableString, maskedBytes: n, url: s });
 const check = { name: s, status: s, conclusion: nullableString, url: nullableString };
 const treeEntry = z.looseObject({ path: s.optional(), type: s.optional(), sha: s.optional(), mode: s.optional(), size: n.optional() });
 const capabilities = z.object({ mutationsExposed: b, checkDispatchEnabled: b, managedProjectChecks: b,
@@ -49,6 +51,12 @@ export const outputSchemas = {
     items: z.array(z.object({ kind: s, id: n, author: s.optional(), declaredAgent: s.optional(),
       createdAt: s, updatedAt: nullableString, maskedBytes: n, url: s })),
     limit: n, nextCursor: nullableString, order: s },
+  github_get_discussion_delta: { ...repository, kind: s, number: n, mode: z.enum(['baseline', 'delta']),
+    count: n.optional(), olderOmitted: n.optional(), items: z.array(discussionEntry).optional(),
+    added: z.array(discussionEntry).optional(), modified: z.array(discussionEntry).optional(),
+    deleted: z.array(n).optional(), unchanged: n.optional(), olderUntracked: n.optional(),
+    duplicatesIgnored: n.optional(), reenumerated: b.optional(), deferred: n.optional(), hasMore: b.optional(),
+    nextCursor: s, trackedLimit: n, note: s },
   github_get_discussion_item: { ...repository, kind: s, id: n, author: s.optional(), url: s,
     createdAt: nullableString, updatedAt: nullableString, path: nullableString, line: n.nullable(), state: nullableString,
     maskingVersion: s, content: s, offset: n, nextOffset: n.nullable(), totalBytes: n, revision: s, truncated: b },

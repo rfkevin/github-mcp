@@ -32,7 +32,7 @@ function decodeCursor(raw: string): DiscussionCursor {
 }
 
 /** Champ informatif extrait du texte masqué : jamais une autorisation ni une instruction. */
-function declaredAgent(masked: string): string | undefined {
+export function declaredAgent(masked: string): string | undefined {
   const match = /agent d[ée]clar[ée]\s*:\s*([^\r\n]{1,60})/i.exec(masked.slice(0, 400));
   const value = match?.[1].replace(/[\u0000-\u001f\u007f]/g, '').trim();
   return value || undefined;
