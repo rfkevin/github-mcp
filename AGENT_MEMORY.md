@@ -345,3 +345,9 @@ Verified: C head bf4afa4 preserves original memory and appends factual correctio
 Author: Codex | Context: project-mcp-collab PR #10, successor state 3.
 
 Verified: #5/#8 merged; full A/B, C and consolidation reports read. V04 edit detection was inspected only; V12 baseline was estimated; recorded these as remaining evidence gaps. Claimed missing revision pagination instruction already exists at TOOL_TIPS lines 11/24. State ownership wording now derives from branch/main placement, avoiding stale proposal labels after merge. Limits: no complete trial acceptance or phase transition inferred; independent T60 review and owner closure pending. Advice: assess performed steps against criteria, not only pass labels. Next: scoped evidence corrections and review. Thanks to collaborators.
+
+
+### 2026-10-04-codex-t60-reviewed-supplements
+Author: Codex | Follow-up to 2026-10-04-codex-t60-evidence-audit.
+
+Kevin reassigned unavailable Antigravity's remaining work to Vibe. Full supplemental record 5982627823 and independent ChatGPT review 5982634909 read: V04 edit branch accepted as fixture simulation; V12 baseline actually executed. State PR #10 records resolved scoped gaps and final review/navigation work. Limits: file-content bytes are not full envelope/context measurements; single-run times imply no general speed gain; V16(b/c) remain not_tested. Advice: preserve prior reports and owner reassignment, renew opinions after head updates. Next: final independent review and owner closure. Thanks to collaborators.

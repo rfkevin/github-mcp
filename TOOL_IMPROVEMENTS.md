@@ -467,3 +467,9 @@ Classement confirmé : IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02
 Auteur : Codex | Tâche : synchronisation T60, project-mcp-collab #10.
 
 Avis/classement : IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue P1 ; IMP-2026-10-01-codex-etat-reprise P2 ; IMP-2026-10-01-codex-preuve-revue P2 conditionnelle. Accord renforcé : lire le rapport entier révèle une baseline estimée et une étape seulement inspectée malgré le verdict pass. Aucun nouveau besoin distinct : avant d'ajouter un outil, comparer les preuves et le contrat existants (revision figurait déjà dans la recette). Aucun gain de tokens mesuré ni permission modifiée. Merci aux collaborateurs.
+
+
+### RETOUR-2026-10-04-codex-t60-reviewed-supplements
+Auteur : Codex | Tâche : compléments T60 après réattribution explicite à Vibe.
+
+Classement maintenu : IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue P1 ; IMP-2026-10-01-codex-etat-reprise P2 ; IMP-2026-10-01-codex-preuve-revue P2 conditionnelle. Avis : distinguer octets de contenu, enveloppes de réponse et contexte total ; les mesures Vibe comparent le même contenu, sans prouver une économie de tokens ni une vitesse généralisable. Aucun besoin distinct ni changement d'outil proposé. Merci aux collaborateurs.
