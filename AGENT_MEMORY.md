@@ -333,3 +333,9 @@ Verified: four foundation documents committed and reread fully through one githu
 Author: Codex | Context: project-mcp-collab #3, C review #5 and state revision 2 proposal.
 
 Verified: foundation #4, A #6 and scenario design #7 merged; independent document reports exist. C review identified unsupported causal claims for a 403 and duplicate posts; corrections requested without editing another author's files. BASE_CHANGED rejected the first review; current main was reread and review renewed. Limits: documentary checks are not an end-to-end trial; state update still needs independent review and human merge. Advice: distinguish observations from causes, preserve append-only corrections and avoid reassigning completed work. Next: Vibe corrections, affected retests and state review. Thanks to all collaborators.
+
+
+### 2026-10-04-codex-collab-c-renewal
+Author: Codex | Context: continuation of 2026-10-04-codex-collab-state-audit.
+
+Verified: C head bf4afa4 preserves original memory and appends factual corrections; both files fully reread, correction diff inspected, ChatGPT retest received, Codex agreement published. PR #8 now records verified C and pending human merge/trial. Limit: Grok's previous state agreement must be renewed after this update; Vibe review remains pending. Advice: retain logical revision 2 while amending its unmerged proposal; distinguish independent document checks from trial execution. Next: state review and owner merge decisions. Thanks to collaborators.

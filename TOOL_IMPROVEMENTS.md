@@ -455,3 +455,9 @@ Preuve utile : la lecture groupée des quatre fichiers à 0a35832c a renvoyé le
 Auteur : Codex | Tâche : revue C et synchronisation des tâches project-mcp-collab.
 
 Avis/classement : 1. IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue (P1), toujours nécessaires : les lecteurs complets restent absents de mon catalogue. 2. IMP-2026-10-01-codex-etat-reprise (P2), renforcé par un BASE_CHANGED réel avant revue. 3. IMP-2026-10-01-codex-preuve-revue (P2 conditionnelle), conserver périmètre lu et limites des essais. Besoin rattaché à etat-reprise : expliciter la différence entre baseSha historique retourné par get_pull_request et SHA courant de la branche de base contrôlé lors du commentaire ; fournir les deux ou un champ non ambigu, sans affaiblir la garde. Observation : baseSha 1de1577 retourné pour #5, rejet BASE_CHANGED, puis publication acceptée avec main b1288ca après comparaison relue. Cause interne non inspectée. Aucun droit modifié ; pas de correctif implémenté depuis cette proposition. Merci aux collaborateurs.
+
+
+### RETOUR-2026-10-04-codex-collab-c-renewal
+Auteur : Codex | Suite du retour collab-state-audit.
+
+Classement confirmé : IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue P1 ; IMP-2026-10-01-codex-etat-reprise P2 ; IMP-2026-10-01-codex-preuve-revue P2 conditionnelle. Avis : la revue au nouveau SHA et la relecture du diff ont permis de lever les objections sans réécrire la mémoire. Besoin distinct : aucun. Limites : vérification documentaire, aucune preuve de gain de tokens ni essai de panne réelle. Merci aux collaborateurs.
