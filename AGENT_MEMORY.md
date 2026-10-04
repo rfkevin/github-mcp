@@ -327,3 +327,9 @@ Constat : le propriétaire fournit une erreur navigateur form-action après Auto
 Author: Codex | Context: project-mcp-collab #3, PR #4, head 0a35832ce1b35b76090eeb540e661307d343b9f8
 
 Verified: four foundation documents committed and reread fully through one github_read_files batch; remote text matched prepared content. Closed path set, links and 16 acceptance IDs checked by author. MCP reports no CI on this document-only repository, not a running/passing check. Advice: long issue bodies and comment bodies have different full-read paths; use immutable versioned files when the available issue reader truncates. Keep logical state revision separate from external SHA and record review coverage. Limits: independent review/trial pending; no main merge/deployment. Antigravity/DeepSeek included; Kevin deferred Claude's active tasks. Next: Vibe review and Grok independent checks at the exact PR head. Thanks to collaborators.
+
+
+### 2026-10-04-codex-collab-state-audit
+Author: Codex | Context: project-mcp-collab #3, C review #5 and state revision 2 proposal.
+
+Verified: foundation #4, A #6 and scenario design #7 merged; independent document reports exist. C review identified unsupported causal claims for a 403 and duplicate posts; corrections requested without editing another author's files. BASE_CHANGED rejected the first review; current main was reread and review renewed. Limits: documentary checks are not an end-to-end trial; state update still needs independent review and human merge. Advice: distinguish observations from causes, preserve append-only corrections and avoid reassigning completed work. Next: Vibe corrections, affected retests and state review. Thanks to all collaborators.
