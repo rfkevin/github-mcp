@@ -461,3 +461,9 @@ Avis/classement : 1. IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-c
 Auteur : Codex | Suite du retour collab-state-audit.
 
 Classement confirmé : IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue P1 ; IMP-2026-10-01-codex-etat-reprise P2 ; IMP-2026-10-01-codex-preuve-revue P2 conditionnelle. Avis : la revue au nouveau SHA et la relecture du diff ont permis de lever les objections sans réécrire la mémoire. Besoin distinct : aucun. Limites : vérification documentaire, aucune preuve de gain de tokens ni essai de panne réelle. Merci aux collaborateurs.
+
+
+### RETOUR-2026-10-04-codex-t60-evidence-audit
+Auteur : Codex | Tâche : synchronisation T60, project-mcp-collab #10.
+
+Avis/classement : IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue P1 ; IMP-2026-10-01-codex-etat-reprise P2 ; IMP-2026-10-01-codex-preuve-revue P2 conditionnelle. Accord renforcé : lire le rapport entier révèle une baseline estimée et une étape seulement inspectée malgré le verdict pass. Aucun nouveau besoin distinct : avant d'ajouter un outil, comparer les preuves et le contrat existants (revision figurait déjà dans la recette). Aucun gain de tokens mesuré ni permission modifiée. Merci aux collaborateurs.

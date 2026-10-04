@@ -339,3 +339,9 @@ Verified: foundation #4, A #6 and scenario design #7 merged; independent documen
 Author: Codex | Context: continuation of 2026-10-04-codex-collab-state-audit.
 
 Verified: C head bf4afa4 preserves original memory and appends factual corrections; both files fully reread, correction diff inspected, ChatGPT retest received, Codex agreement published. PR #8 now records verified C and pending human merge/trial. Limit: Grok's previous state agreement must be renewed after this update; Vibe review remains pending. Advice: retain logical revision 2 while amending its unmerged proposal; distinguish independent document checks from trial execution. Next: state review and owner merge decisions. Thanks to collaborators.
+
+
+### 2026-10-04-codex-t60-evidence-audit
+Author: Codex | Context: project-mcp-collab PR #10, successor state 3.
+
+Verified: #5/#8 merged; full A/B, C and consolidation reports read. V04 edit detection was inspected only; V12 baseline was estimated; recorded these as remaining evidence gaps. Claimed missing revision pagination instruction already exists at TOOL_TIPS lines 11/24. State ownership wording now derives from branch/main placement, avoiding stale proposal labels after merge. Limits: no complete trial acceptance or phase transition inferred; independent T60 review and owner closure pending. Advice: assess performed steps against criteria, not only pass labels. Next: scoped evidence corrections and review. Thanks to collaborators.
