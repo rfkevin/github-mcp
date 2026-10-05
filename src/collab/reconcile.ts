@@ -15,8 +15,11 @@ export type Reconciliation = {
 };
 
 export function reconcilePublication(expectedOperationId: string, expectedPayload: unknown, observed?: ObservedPublication): Reconciliation {
+  return reconcileFingerprint(expectedOperationId, payloadFingerprint(expectedPayload), observed);
+}
+
+export function reconcileFingerprint(expectedOperationId: string, expectedFingerprint: string, observed?: ObservedPublication): Reconciliation {
   if (!observed) return { status: 'unknown', reason: 'No readback evidence was supplied.', safeToRetry: false };
-  const expectedFingerprint = payloadFingerprint(expectedPayload);
   const receipt = observed.content ? parseReceiptMarker(observed.content) : undefined;
   if (!receipt) return { status: 'missing', reason: 'Target exists but carries no valid CC-2 receipt.', safeToRetry: false };
   if (receipt.operationId !== expectedOperationId) {
