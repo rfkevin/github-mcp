@@ -35,7 +35,7 @@ export async function executePublication<T>(receipt: DurableReceipt, step: Publi
     if (!readback) return { value, operation: record(published), receipt: published };
     try {
       const observed = await readback(value);
-      const reconciliation = reconcilePublication(published.operationId, { fingerprint: published.payloadFingerprint }, observed);
+      const reconciliation = reconcileFingerprint(published.operationId, published.payloadFingerprint, observed);
       const confirmed = reconciliation.status === 'confirmed';
       const finalReceipt = buildReceipt({ ...published, outcome: confirmed ? 'effective' : 'unknown', reconcileRequired: !confirmed, steps });
       return { value, operation: record(finalReceipt), receipt: finalReceipt, reconciliation };
