@@ -131,22 +131,24 @@ export function buildCollabContext(stateContent: string, request: ContextRequest
       .filter(source => !source.readComplete && source.continuation)
       .map(source => ({ location: source.location, continuation: { offset: source.continuation!.offset, revision: source.continuation!.revision } }))
     : [];
-  const alreadyTracked = new Set((previous ? previous.sources : []).map(source => source.location));
-  const unread = sources
-    .map(source => source.location)
-    .filter(location => !alreadyTracked.has(location));
-
   const stateCoverage: SourceCoverage = {
     location: stateLocation,
     fingerprint: fingerprintContent(stateContent),
     readComplete: true,
     observedAt: snapshot.headers.based_on_sha,
   };
+  const mergedCoverage = mergeCoverage(previous ? previous.sources : [], [stateCoverage]);
+  const readCompleteLocations = new Set(mergedCoverage
+    .filter(source => source.readComplete)
+    .map(source => source.location));
+  const unread = sources
+    .map(source => source.location)
+    .filter(location => !readCompleteLocations.has(location));
   const nextCheckpoint = encodeCheckpoint({
     v: 1,
     scope: request.scope,
     stateRevision: revision,
-    sources: mergeCoverage(previous ? previous.sources : [], [stateCoverage]),
+    sources: mergedCoverage,
     createdAt: request.timestamp ?? '',
   });
 
