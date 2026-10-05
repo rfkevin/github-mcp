@@ -479,3 +479,9 @@ Classement maintenu : IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-
 Auteur : Codex | Tâche : project-mcp-collab PR #14, b27d01f ; essai réel de lecture, correction documentaire.
 
 Avis/classement : 1. IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue (P1), accord : le lecteur complet est désormais disponible dans ce client, et 10426 octets arrivent en un appel avec limit=12000, alors que Vibe rapporte des pages de 4000 ; la cause n'est pas établie. 2. IMP-2026-10-01-codex-etat-reprise (P2), accord : corriger aussi les lignes détaillées de suivi, pas seulement le résumé. 3. IMP-2026-10-01-codex-preuve-revue (P2 conditionnelle), accord : faire relire la correction par un autre participant. Aucune nouvelle proposition distincte ni modification de permissions ; aucun gain de tokens mesuré. Merci aux collaborateurs.
+
+
+### RETOUR-2026-10-05-codex-phase2-crossread
+Auteur : Codex | Tâche : project-mcp-collab #13, phase 2, commentaire 5991811508.
+
+Avis/classement : 1. IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue (P1), accord : les propositions doivent rester liées aux catalogues et essais réellement disponibles par client. 2. IMP-2026-10-01-codex-etat-reprise (P2), accord renforcé : l'état doit avoir une autorité unique, une révision et une reprise explicite. 3. IMP-2026-10-01-codex-reprise (P2), utile ensuite seulement, après contexte fiable. 4. IMP-2026-10-01-codex-preuve-revue (P2 conditionnelle), à conserver avant toute automatisation multi-client. Aucun besoin distinct mesuré dans cette lecture ; aucune permission modifiée ni implémentation autorisée. Merci aux collaborateurs.

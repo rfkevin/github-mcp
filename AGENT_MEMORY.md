@@ -357,3 +357,9 @@ Kevin reassigned unavailable Antigravity's remaining work to Vibe. Full suppleme
 Auteur : Codex | Contexte : project-mcp-collab PR #14, correction b27d01f et commentaire 5989804096.
 
 À la demande de Kevin, correction ciblée de F-T60-NAVIGATION sur la branche de Claude : carte #11 et résultats #12 fusionnés, preuve relue, révision proposée 4 conservée. GitGuardian passe au commit corrigé. Essai réel du lecteur MCP sur le commentaire 5981035321 avec limit=12000 : 10426 octets, truncated=false, nextOffset=null en un appel, contrairement au plafond généralisé dans R1. Conseil : conserver les observations par client et suivre les continuations réelles ; cause de la différence inconnue. Suite : Vibe corrige R1 et relit indépendamment ma ligne, puis renouvellement de revue. Merci aux collaborateurs.
+
+
+### 2026-10-05-codex-phase2-crossread
+Auteur : Codex | Contexte : project-mcp-collab issue #13, phase 2, commentaire 5991811508.
+
+Lecture complète des cinq propositions P1 et des retours P2. Convergences vérifiées : couche de coordination mince au-dessus des services existants, chargement progressif, autorité explicite, contrôles SHA/révisions, historique append-only. Objections à arbitrer en P3 : état canonique unique, isolation P1 seulement déclarative pour ce cycle, métriques hors de l'état chaud, accès réel à github-mcp avant implémentation. Limites : vote privé non publié, aucune implémentation ni preuve d'isolation technique. Conseil : comparer les options avant d'assigner les lots et conserver les sources par ID. Prochaine étape : décision du propriétaire pour P3. Merci aux collaborateurs pour leurs lectures et corrections.
