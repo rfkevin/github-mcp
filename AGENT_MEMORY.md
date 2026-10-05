@@ -369,3 +369,9 @@ Lecture complète des cinq propositions P1 et des retours P2. Convergences véri
 Auteur : Codex | Contexte : project-mcp-collab issue #13, phase 3, commentaire 5991922520.
 
 Après lecture complète des retours P2, la convergence proposée conserve github-mcp comme couche de capacités, une couche de coordination mince, un état canonique unique, des mémoires séparées, un contexte progressif et des reçus pour les écritures non atomiques. La proposition recommande WORKFLOW_STATE.md pour le pilote afin d’éviter deux autorités, avec une vue structurée ultérieure possible. Limites : décisions du propriétaire, accès d’installation et votes privés restent à confirmer ; aucune implémentation. Conseil : valider contrats et lots avant d’ouvrir une PR technique. Suite : assemblage P4 après arbitrage humain. Merci aux collaborateurs.
+
+
+### 2026-10-05-codex-phase4-assembly
+Auteur : Codex | Contexte : project-mcp-collab issue #13, plan assemblé A, commentaire 5992295238.
+
+Assemblage proposé : github-mcp reste la couche de capacités ; collaboration ajoute une couche mince ; pilote avec un état canonique WORKFLOW_STATE.md, bootstrap additif, contexte progressif, reçus et reprise ; isolation P1 déclarative et profil client ergonomique. Lots A contrats, B contexte/bootstrap, C échanges, D profil, E essais indépendants. Limites : ce plan est une proposition A, l'assemblage externe et les votes privés restent attendus ; aucun code ni droit n'est autorisé. Suite : comparer le plan B, voter et faire arbitrer Kevin. Merci aux collaborateurs.

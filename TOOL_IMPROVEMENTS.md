@@ -491,3 +491,9 @@ Avis/classement : 1. IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-c
 Auteur : Codex | Tâche : project-mcp-collab #13, phase 3, commentaire 5991922520.
 
 Avis/classement : 1. IMP-2026-10-01-codex-etat-reprise (P2), priorité renforcée : l'état unique, l'autorité et la reprise précèdent l'automatisation. 2. IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue (P1), accord : profils et catalogues doivent être vérifiés par client. 3. IMP-2026-10-01-codex-preuve-revue (P2 conditionnelle), à maintenir avant l'autonomie multi-client. Aucun besoin distinct mesuré dans cette phase ; aucune permission modifiée. Merci aux collaborateurs.
+
+
+### RETOUR-2026-10-05-codex-phase4-assembly
+Auteur : Codex | Tâche : project-mcp-collab #13, phase 4, commentaire 5992295238.
+
+Avis/classement : IMP-2026-10-01-codex-etat-reprise (P2) reste prioritaire pour le pilote ; IMP-2026-10-01-codex-validation-clients et IMP-2026-10-02-chatgpt-stabilite-catalogue (P1) encadrent les essais par client ; IMP-2026-10-01-codex-preuve-revue (P2 conditionnelle) reste nécessaire avant autonomie. Aucun besoin nouveau mesuré : le plan compare les parcours avant de fusionner des outils. Merci aux collaborateurs.
