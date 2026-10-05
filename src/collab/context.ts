@@ -125,19 +125,18 @@ export function buildCollabContext(stateContent: string, request: ContextRequest
   }
   for (const path of ownedPaths) sources.push({ location: path, kind: 'owned_path', peerProposal: false });
 
-  const readComplete = previous ? previous.sources.filter(source => source.readComplete).map(source => source.location) : [];
-  const partial = previous
-    ? previous.sources
-      .filter(source => !source.readComplete && source.continuation)
-      .map(source => ({ location: source.location, continuation: { offset: source.continuation!.offset, revision: source.continuation!.revision } }))
-    : [];
+  /** Coverage from a checkpoint whose scope differs is never reused: fingerprints of another masking are not comparable. */
+  const inScopeSources = previous && scopeMatch ? previous.sources : [];
+  const partial = inScopeSources
+    .filter(source => !source.readComplete && source.continuation)
+    .map(source => ({ location: source.location, continuation: { offset: source.continuation!.offset, revision: source.continuation!.revision } }));
   const stateCoverage: SourceCoverage = {
     location: stateLocation,
     fingerprint: fingerprintContent(stateContent),
     readComplete: true,
     observedAt: snapshot.headers.based_on_sha,
   };
-  const mergedCoverage = mergeCoverage(previous ? previous.sources : [], [stateCoverage]);
+  const mergedCoverage = mergeCoverage(inScopeSources, [stateCoverage]);
   const readCompleteLocations = new Set(mergedCoverage
     .filter(source => source.readComplete)
     .map(source => source.location));
@@ -151,6 +150,8 @@ export function buildCollabContext(stateContent: string, request: ContextRequest
     sources: mergedCoverage,
     createdAt: request.timestamp ?? '',
   });
+
+  const readComplete = [...readCompleteLocations];
 
   return {
     cycle: {

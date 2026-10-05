@@ -95,6 +95,28 @@ describe('contexte progressif de collaboration', () => {
     expect(envelope.coverage.readComplete).toContain('rfkevin/project-mcp-collab#16/5994414388');
   });
 
+  it('un checkpoint d un autre scope n est jamais fusionné : couverture repartie de zéro', () => {
+    const otherScope: CheckpointScope = { ...scope, repository: 'rfkevin/other-repo' };
+    const foreignRead: SourceCoverage = { location: 'rfkevin/other-repo#16/1', fingerprint: 'AAAAAAAA', readComplete: true, observedAt: '2026-10-05T12:26:26Z' };
+    const checkpoint = encodeCheckpoint({ v: 1, scope: otherScope, stateRevision: 2, sources: [foreignRead], createdAt: '2026-10-05T13:00:00Z' });
+    const envelope = buildCollabContext(state, request({ checkpoint }));
+    expect(envelope.coverage.scopeMatch).toBe(false);
+    expect(envelope.coverage.rescanRequired).toBe(true);
+    expect(envelope.coverage.readComplete).not.toContain('rfkevin/other-repo#16/1');
+    const decoded = JSON.parse(atob(envelope.nextCheckpoint.replace(/-/g, '+').replace(/_/g, '/')));
+    expect(decoded.sources.map((entry: { location: string }) => entry.location)).not.toContain('rfkevin/other-repo#16/1');
+    expect(decoded.sources).toHaveLength(1);
+  });
+
+  it('une reprise sans énumération courante reste conservative : rescan exigé, sources suivies non prouvées inchangées', () => {
+    const peer: SourceCoverage = { location: 'rfkevin/project-mcp-collab#16/5994414388', fingerprint: 'AAAAAAAA', readComplete: true, observedAt: '2026-10-05T12:26:26Z' };
+    const checkpoint = encodeCheckpoint({ v: 1, scope, stateRevision: 2, sources: [peer], createdAt: '2026-10-05T13:00:00Z' });
+    const envelope = buildCollabContext(state, request({ checkpoint }));
+    expect(envelope.coverage.rescanRequired).toBe(true);
+    expect(envelope.coverage.toReread).toEqual([]);
+    expect(envelope.coverage.missing).toEqual([5994414388]);
+  });
+
   it('exclusion P1 contractuelle et contamination consignée', () => {
     const p1State = state.replace('phase: P5', 'phase: P1');
     const peer: SourceCoverage = { location: 'rfkevin/project-mcp-collab#13/5984463500', fingerprint: 'AAAAAAAA', readComplete: true, observedAt: '2026-10-05T10:00:00Z', peerProposal: true };
