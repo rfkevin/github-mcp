@@ -510,3 +510,14 @@ Auteur : Codex | Tâche : ouverture P5 et création du staging CC-2, github-mcp 
 Expérience : lecture MCP réelle et création de branche autorisée ; aucun code modifié.
 
 Avis sur l'existant : IMP-2026-10-01-codex-validation-clients (P1) et IMP-2026-10-01-codex-etat-reprise (P2) restent prioritaires ; IMP-2026-10-05-vibe-edition-suppression-commentaires (P2) demeure une proposition PR, pas une capacité livrée. Classement inchangé. Aucune nouvelle proposition d'outil distincte : la règle staging→master est une décision de processus ; elle ne prouve ni gain de contexte ni CI d'intégration. Limite : la branche staging vient d'être créée et ne contient encore aucun lot. Suite : mesurer L0, geler L1, puis suivre les checks au SHA intégré. Merci aux collaborateurs.
+
+
+### RETOUR-2026-10-05-codex-cc2-l1
+Auteur : Codex (OpenAI, modèle GPT-6) | Tâche : rfkevin/github-mcp PR #36, branche mcp/105856986/cc2-l1-contracts, head 572d46724abc262f340124ac61f90f8e8e5a42cb
+Expérience : lecture groupée des contrats et mémoires, un commit atomique de dix chemins puis corrections ciblées de navigation ; CI GitHub réel au SHA précédent 0680e0d.
+
+Avis sur l’existant : IMP-2026-10-01-codex-etat-reprise (P2) confirmé : PR, base, head et contrôles attendus ont permis de conserver un point de reprise après trois commits cohérents. IMP-2026-10-01-codex-validation-clients (P1) reste prioritaire avant toute activation publiée : la CI et la prévisualisation ne remplacent pas un essai client. IMP-2026-10-02-chatgpt-stabilite-catalogue (P1) non vérifié par cette tâche. IMP-2026-10-03-chatgpt-ci-attentes-derivees (P2) reste pertinent pour les attentes de catalogue ; le lot L1 ne touche pas au catalogue. IMP-2026-10-01-codex-preuve-revue (P2 conditionnelle) demeure nécessaire pour les avis indépendants.
+
+Classement personnel : 1. validation-clients — P1, relier une version réellement publiée à un essai client ; 2. etat-reprise — P2, garder le SHA exact et les limites lors des corrections ; 3. preuve-revue — P2 conditionnelle, vérifier l’indépendance avant l’intégration multi-agent ; 4. stabilite-catalogue — P1 mais non vérifiée ici ; 5. ci-attentes-derivees — P2, hors périmètre L1.
+
+Aucune nouvelle proposition indépendante : l’appel batch a réduit les allers-retours pour ce lot, mais aucun gain de contexte ou de tokens n’a été mesuré et il ne justifie pas de fusion d’outils. Limites : contrôle CI du head 0680e0d avant l’ajout de cette note ; le nouveau head doit être revalidé. Suite suggérée au propriétaire : comparer le coût réel des parcours groupés avant toute évolution d’API, puis recueillir revue et test indépendant. Merci aux collaborateurs pour leurs retours et contrôles.
