@@ -83,19 +83,13 @@ describe('CC-1 compatibility and contract errors', () => {
   });
 
   it('preserves harmless extension sections', () => {
-    const extended = CC2_STATE + '
-## Extension notes
-| key | value |
-| --- | --- |
-| extra | preserved |
-';
+    const extended = CC2_STATE + '\n## Extension notes\n| key | value |\n| --- | --- |\n| extra | preserved |\n';
     const snapshot = parseWorkflowState(extended);
     expect(snapshot.sections['Extension notes'][0].rows[0]).toEqual(['extra', 'preserved']);
   });
 
   it('rejects missing control keys, bad revisions, SHAs and phases', () => {
-    expect(() => parseWorkflowState(CC2_STATE.replace('phase: P5
-', ''))).toThrow(/Missing control key/);
+    expect(() => parseWorkflowState(CC2_STATE.replace('phase: P5\n', ''))).toThrow(/Missing control key/);
     expect(() => parseWorkflowState(CC2_STATE.replace('revision: 2', 'revision: two'))).toThrow(/positive integer/);
     expect(() => parseWorkflowState(CC2_STATE.replace('base_revision: 1', 'base_revision: 9'))).toThrow(/base_revision/);
     expect(() => parseWorkflowState(CC2_STATE.replace('based_on_sha: abcdef1', 'based_on_sha: notasha'))).toThrow(/hexadecimal/);
@@ -105,14 +99,12 @@ describe('CC-1 compatibility and contract errors', () => {
   it('rejects duplicate task ids and duplicate actors', () => {
     const duplicateTask = CC2_STATE.replace(
       '| L1 | in_progress | Codex | 1 | branch:l1 | implement |',
-      '| L1 | in_progress | Codex | 1 | branch:l1 | implement |
-| L1 | review | Codex | 1 | branch:l1 | review |',
+      '| L1 | in_progress | Codex | 1 | branch:l1 | implement |\n| L1 | review | Codex | 1 | branch:l1 | review |',
     );
     expect(() => parseWorkflowState(duplicateTask)).toThrow(/twice/);
     const duplicateActor = CC2_STATE.replace(
       '| Codex | author | L1 PR |',
-      '| Codex | author | L1 PR |
-| Codex | reviewer | L1 review |',
+      '| Codex | author | L1 PR |\n| Codex | reviewer | L1 review |',
     );
     expect(() => parseWorkflowState(duplicateActor)).toThrow(/twice/);
   });
