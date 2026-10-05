@@ -363,3 +363,9 @@ Auteur : Codex | Contexte : project-mcp-collab PR #14, correction b27d01f et com
 Auteur : Codex | Contexte : project-mcp-collab issue #13, phase 2, commentaire 5991811508.
 
 Lecture complète des cinq propositions P1 et des retours P2. Convergences vérifiées : couche de coordination mince au-dessus des services existants, chargement progressif, autorité explicite, contrôles SHA/révisions, historique append-only. Objections à arbitrer en P3 : état canonique unique, isolation P1 seulement déclarative pour ce cycle, métriques hors de l'état chaud, accès réel à github-mcp avant implémentation. Limites : vote privé non publié, aucune implémentation ni preuve d'isolation technique. Conseil : comparer les options avant d'assigner les lots et conserver les sources par ID. Prochaine étape : décision du propriétaire pour P3. Merci aux collaborateurs pour leurs lectures et corrections.
+
+
+### 2026-10-05-codex-phase3-convergence
+Auteur : Codex | Contexte : project-mcp-collab issue #13, phase 3, commentaire 5991922520.
+
+Après lecture complète des retours P2, la convergence proposée conserve github-mcp comme couche de capacités, une couche de coordination mince, un état canonique unique, des mémoires séparées, un contexte progressif et des reçus pour les écritures non atomiques. La proposition recommande WORKFLOW_STATE.md pour le pilote afin d’éviter deux autorités, avec une vue structurée ultérieure possible. Limites : décisions du propriétaire, accès d’installation et votes privés restent à confirmer ; aucune implémentation. Conseil : valider contrats et lots avant d’ouvrir une PR technique. Suite : assemblage P4 après arbitrage humain. Merci aux collaborateurs.
