@@ -335,3 +335,10 @@ Constat et vérification : L1 ajoute des contrats purs CC-STATE-1, un parseur Ma
 
 ## 2026-10-05 — CC-2 L2 checkpoint portable (Vibe GLM)
 - Livraison L2 (contexte read-only progressif) sur la branche mcp/105856986/cc2-l2-context à partir du staging cc2-integration : fingerprint par source (FNV-1a 48 bits), jamais un simple lastSeen{id, updatedAt} ; édition tardive détectée par changement d'empreinte même sur un identifiant ancien ; source suivie absente de l'énumération = rescan explicite requis (limite de suivi des suppressions jamais effacée du contrat) ; scope du checkpoint = dépôt+ref+version de masquage (SHA mobile toléré) ; exclusion contractuelle des propositions de pairs avant la phase permise avec contamination consignée. Le checkpoint est la preuve de lecture du client, pas une autorisation.
+
+
+## 2026-10-05 — CC-2 L5 collective memory pure engine (Grok)
+- Author lot L5 on branch mcp/105856986/cc2-l5-memory from staging cc2-integration: pure evaluation only (`candidates` / `voting` / `projection`).
+- Voting policy v1: fixed electorate, Q=max(2,floor(N/2)+1), keep needs quorum + strict keep majority + ≥2 non-proposer keeps; reject needs strict reject majority; else deferred/pending; N<3 always pending.
+- Decision accepted still publication=pending until L4 Git write. Hypotheses allowed without complete evidence; observed/verified still require complete sources (L1).
+- No MCP tool, no journal append, no GLOBAL_MEMORY protection path in this PR — persistence is L4+follow-up.
