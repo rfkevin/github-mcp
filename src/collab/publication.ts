@@ -1,6 +1,6 @@
 import type { OperationRecord, PublicationState } from './contracts';
 import { buildReceipt, operationId, payloadFingerprint, receiptMarker, type DurableReceipt, type ReceiptTarget } from './receipts';
-import { reconcilePublication, type ObservedPublication, type Reconciliation } from './reconcile';
+import { reconcileFingerprint, type ObservedPublication, type Reconciliation } from './reconcile';
 
 export type PublicationStep<T> = {
   stepId: string;
