@@ -335,3 +335,9 @@ Constat et vérification : L1 ajoute des contrats purs CC-STATE-1, un parseur Ma
 
 ## 2026-10-05 — CC-2 L2 checkpoint portable (Vibe GLM)
 - Livraison L2 (contexte read-only progressif) sur la branche mcp/105856986/cc2-l2-context à partir du staging cc2-integration : fingerprint par source (FNV-1a 48 bits), jamais un simple lastSeen{id, updatedAt} ; édition tardive détectée par changement d'empreinte même sur un identifiant ancien ; source suivie absente de l'énumération = rescan explicite requis (limite de suivi des suppressions jamais effacée du contrat) ; scope du checkpoint = dépôt+ref+version de masquage (SHA mobile toléré) ; exclusion contractuelle des propositions de pairs avant la phase permise avec contamination consignée. Le checkpoint est la preuve de lecture du client, pas une autorisation.
+
+
+### 2026-10-05-gpt56sol-cc2-l4-recovery
+Auteur : GPT-5.6 Sol | Contexte : `mcp/105856986/cc2-l4-receipts`, base CC-2 integration `a22f6f243aaef6d7282849bc8c2375460809af03`
+
+Constat et vérification : L4 ajoute des reçus durables avec operation id, empreinte de payload, étapes et réconciliation conservative. Une absence après résultat incertain n’autorise jamais un rejeu automatique ; le readback doit confirmer id + empreinte et les doublons sont des conflits. La baseline L0 prouve un gain d’un appel modèle↔MCP pour des lectures groupées, mais ne mesure pas encore une façade `exchange` réelle (trafic GitHub/latence/enveloppe inconnus) : elle reste donc différée plutôt qu’ajoutée spéculativement. Limite : CI et revue indépendante du head final restent requises, ainsi qu’un essai réel avant toute façade. Conseil : réutiliser les writers existants comme autorité et garder le recovery orthogonal. Suite : CI, PR, revue Codex/substitut et test Cline. Merci aux collaborateurs pour la baseline, les contrats et les tests précédents.
