@@ -67,3 +67,10 @@ ou `rg --files test/oauth/`. Élargir seulement si cette carte ne couvre pas le 
 Lors d’un déplacement, mettre à jour les liens et imports, puis vérifier qu’aucun
 test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 `github-client.spec.ts` et `foundation.spec.ts` ont été réparties dans les dossiers ci-dessus.
+
+## CC-2 L2 — contexte et checkpoint (mcp/105856986/cc2-l2-context)
+
+- src/collab/reading-checkpoint.ts : checkpoint portable borné (version, scope, empreintes par source), diff d'édition tardive et rescan explicite, fusion de couverture append-only.
+- src/collab/context.ts : envelope progressive read-only (cycle, tâche, guidance, exclusion P1, couverture, continuation) sur les contrats L1.
+- src/mcp/tools/github/collab-context.ts : outil github_collab_context (lecture seule, reprise cross-chat).
+- test/collab/reading-checkpoint.spec.ts, test/collab/context.spec.ts, test/mcp/collab-context.spec.ts.
