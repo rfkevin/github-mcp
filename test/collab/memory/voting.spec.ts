@@ -109,17 +109,19 @@ describe('L5 voting policy', () => {
       recordBallot(electorate, candidate, { voter: 'Vibe GLM', value: 'keep', recordedAt: 't2' }),
       recordBallot(electorate, candidate, { voter: 'Cline', value: 'keep', recordedAt: 't3' }),
       recordBallot(electorate, candidate, { voter: 'Codex', value: 'keep', recordedAt: 't4' }),
+      recordBallot(electorate, candidate, { voter: 'GPT-5.6 Sol', value: 'keep', recordedAt: 't5' }),
       {
         candidateId: 'mem-1',
         candidateVersion: '0',
         proposedScope: 'global_usage' as const,
         voter: 'Muse Spark',
         value: 'keep' as const,
-        recordedAt: 't5',
+        recordedAt: 't6',
       },
     ];
     const outcome = evaluateCheckpoint(candidate, electorate, events);
-    expect(outcome.keep).toBe(3);
+    // Vibe reject superseded; stale v0 ignored; 4 keep meets Q=4
+    expect(outcome.keep).toBe(4);
     expect(outcome.decision).toBe('accepted');
   });
 
