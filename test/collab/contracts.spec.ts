@@ -57,7 +57,15 @@ describe('CC-2 contract invariants', () => {
         { candidateId: 'mem-1', voter: 'Vibe', value: 'keep' as const },
       ],
     };
-    const candidateV1 = { ...candidate, version: '1' };
+    const candidateV1 = {
+      id: 'mem-1',
+      version: '1',
+      scope: 'global_usage' as const,
+      statement: 'Use bounded delta reads before full discussion reads.',
+      knowledgeState: 'hypothesis' as const,
+      source: { location: 'issue-16#comment-1', revision: 1, completeness: 'complete' as const },
+      proposedBy: 'Codex',
+    };
     expect(() => validateMemoryDecision(decision, candidateV1)).toThrow(/different version/);
     expect(() => validateMemoryDecision({ ...decision, candidateId: 'mem-2', candidateVersion: '1' }, candidateV1)).toThrow(/candidate id/);
   });

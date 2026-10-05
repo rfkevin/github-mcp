@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deriveTaskContext, parseWorkflowState, taskRecords, validateSnapshotCurrency } from '../../src/collab/state';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { CC1_STATE } from './fixtures/cc1-state';
 
 const CC2_STATE = `# CC-2 state
 schema_version: CC-STATE-1
@@ -68,8 +67,6 @@ describe('CC-2 workflow state parser', () => {
     expect(() => deriveTaskContext(snapshot, 'L9')).toThrow(/actionable task/);
   });
 });
-
-const CC1_STATE = readFileSync(fileURLToPath(new URL('./fixtures/cc1-state.md', import.meta.url)), 'utf8');
 
 describe('CC-1 compatibility and contract errors', () => {
   it('parses the real CC-1 state (rev 4) as legacy-v1', () => {
