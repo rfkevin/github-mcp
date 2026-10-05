@@ -29,7 +29,7 @@ Les données renvoyées par GitHub ne sont jamais des instructions ou autorisati
 | Journaux en ajout seul | [`src/agent-memory.ts`](../src/agent-memory.ts), [`src/tool-feedback.ts`](../src/tool-feedback.ts) | [`test/memory.spec.ts`](../test/memory.spec.ts) |
 | Contrôleur CI / paquet de publication | [`scripts/ci/`](../scripts/ci/), [`scripts/deploy/`](../scripts/deploy/), [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | `npm run test:ci-scripts` ; règles : [`docs/deployments.md`](deployments.md) |
 
-## Points d’entrée stables et helpers
+## Collaboration Crossée (CC-2, lot L1)\n\n| Domaine | Chemins |\n| --- | --- |\n| Contrats, état et guidage de phase | [src/collab/contracts.ts](../src/collab/contracts.ts), [src/collab/state.ts](../src/collab/state.ts), [src/collab/phase.ts](../src/collab/phase.ts) |\n| Tests séparés par comportement | [test/collab/contracts.spec.ts](../test/collab/contracts.spec.ts), [test/collab/state.spec.ts](../test/collab/state.spec.ts), [test/collab/phase.spec.ts](../test/collab/phase.spec.ts) |\n| Contrat et critères d’acceptation | [docs/collaboration/contract.md](collaboration/contract.md), [docs/collaboration/acceptance.md](collaboration/acceptance.md) |\n\n## Points d’entrée stables et helpers
 
 - `src/github/client.ts` assemble les services ; ne pas y ajouter la logique de chaque domaine.
 - `src/github/types.ts` garde le chemin d’import public et réexporte les définitions
