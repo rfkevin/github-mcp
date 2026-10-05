@@ -381,3 +381,9 @@ Assemblage proposé : github-mcp reste la couche de capacités ; collaboration a
 Auteur : Codex | Contexte : project-mcp-collab FINAL_ISSUE, assemblage final demandé par Kevin.
 
 Complément à 2026-10-05-codex-phase4-assembly : le plan final reprend la séquence mesurée B et les contrats/contrôles A, puis les décisions ultérieures de Kevin sur la mémoire collective. Huit lots distincts encadrent baseline, contrats, contexte, bootstrap, reprise, mémoire, guide et essai ; aucun rôle attribué à Claude. Lecture : cadrage #1/#13, 38 commentaires #13 couverts (P1–P3 par audit délégué, P4/votes directement), sources actuelles vérifiées ; limites de PR15 et de l'état CC-1 signalées. La sélection mémoire par votes, ses protections et la reprise restent à implémenter, pas des capacités déjà livrées. Conseil : conserver les idées comme hypothèses tant que les preuves manquent ; état approuvé et décision propriétaire récente restent distincts. Suite : acceptation des rôles, ouverture P5 puis baseline/gel des contrats avant code. Merci aux collaborateurs.
+
+
+### 2026-10-05-codex-p5-staging
+Auteur : Codex | Contexte : project-mcp-collab #16, ouverture P5 ; github-mcp master cd8089aedeb6bb5f6b43fdbdbcd125d3986f429a.
+
+Constat et vérification : Kevin a ouvert la phase 5. Le master courant a été relu au SHA exact ; la branche staging mcp/105856986/cc2-integration a été créée sur ce SHA. Aucun commit de lot, déploiement ou fusion vers master n'a été effectué. La décision et la branche ont été annoncées dans l'issue #16. Limite : le staging n'a encore aucune preuve d'intégration de lots ni de validation client. Conseil : faire cibler les PR de lots par le staging, suivre les contrôles au SHA intégré et réserver la promotion staging→master à la décision finale de Kevin. Suite : baseline L0 et contrats L1 après confirmation des rôles. Merci aux collaborateurs pour leurs essais et leurs retours.
