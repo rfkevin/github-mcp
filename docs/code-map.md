@@ -74,3 +74,12 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - src/collab/context.ts : envelope progressive read-only (cycle, tâche, guidance, exclusion P1, couverture, continuation) sur les contrats L1.
 - src/mcp/tools/github/collab-context.ts : outil github_collab_context (lecture seule, reprise cross-chat).
 - test/collab/reading-checkpoint.spec.ts, test/collab/context.spec.ts, test/mcp/collab-context.spec.ts.
+
+
+## CC-2 L4 — publication recovery
+
+- `src/collab/receipts.ts` : operation IDs, payload fingerprints and portable durable receipt markers.
+- `src/collab/reconcile.ts` : readback/reconciliation and conservative uncertain-write recovery.
+- `src/collab/publication.ts` : generic publication lifecycle with step outcomes and reconciliation requirement.
+- `test/collab/receipts.spec.ts`, `test/collab/publication.spec.ts` : receipt identity, conflicts, duplicate claims, successful readback and uncertain writes.
+- `docs/collaboration/publication-recovery.md` : G3 evidence and measured decision to defer the `exchange` façade until a paired trial proves a net win.
