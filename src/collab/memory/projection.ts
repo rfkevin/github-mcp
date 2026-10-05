@@ -10,11 +10,9 @@ export type MemoryEntryStatus = {
 };
 
 export type ProjectionQuery = {
-  /** Target repository for applicability filtering. */
+  /** Target repository; filters by candidate.applicability when both are set. */
   repository?: string;
-  /** Preferred scopes; default all. */
   scopes?: MemoryScope[];
-  /** When true, hypotheses are returned with an explicit advisory flag. */
   includeHypotheses?: boolean;
 };
 
@@ -27,48 +25,53 @@ export type ProjectedMemory = {
   pending: number;
 };
 
-/**
- * Context selects relevant applicable entries. It does not dump journals.
- * A hypothesis never appears as unconditional instruction.
- */
+/** applicability empty = all repos; otherwise comma-separated repo names or *. */
+export function matchesApplicability(applicability: string | undefined, repository: string | undefined): boolean {
+  if (!repository) return true;
+  if (!applicability || !applicability.trim()) return true;
+  const tokens = applicability.split(',').map((part) => part.trim()).filter(Boolean);
+  if (tokens.includes('*') || tokens.includes('all')) return true;
+  return tokens.includes(repository);
+}
+
+function advisoryFor(entry: MemoryEntryStatus): string {
+  if (entry.knowledgeState === 'hypothesis') {
+    return 'Hypothesis only: not an instruction until verified and accepted.';
+  }
+  if (entry.decision === 'accepted' && entry.publication !== 'effective') {
+    return 'Accepted by vote; publication still ' + entry.publication + '.';
+  }
+  if (entry.decision === 'accepted') {
+    return 'Accepted memory; treat as advisory lesson with source pointers.';
+  }
+  return 'Not promoted: decision=' + entry.decision + '.';
+}
+
 export function projectMemory(
   entries: readonly MemoryEntryStatus[],
   query: ProjectionQuery = {},
 ): ProjectedMemory {
   const scopes = query.scopes ? new Set(query.scopes) : null;
   const selected: ProjectedMemory['entries'] = [];
-  let accepted = 0;
-  let deferred = 0;
-  let rejected = 0;
-  let contested = 0;
-  let pending = 0;
+  const counts = { accepted: 0, deferred: 0, rejected: 0, contested: 0, pending: 0 };
 
   for (const entry of entries) {
     if (scopes && !scopes.has(entry.candidate.scope)) continue;
     if (entry.knowledgeState === 'hypothesis' && query.includeHypotheses === false) continue;
+    if (!matchesApplicability(entry.candidate.applicability, query.repository)) continue;
 
-    if (entry.decision === 'accepted') accepted += 1;
-    else if (entry.decision === 'deferred') deferred += 1;
-    else if (entry.decision === 'rejected') rejected += 1;
-    else if (entry.decision === 'contested') contested += 1;
-    else pending += 1;
+    if (entry.decision === 'accepted') counts.accepted += 1;
+    else if (entry.decision === 'deferred') counts.deferred += 1;
+    else if (entry.decision === 'rejected') counts.rejected += 1;
+    else if (entry.decision === 'contested') counts.contested += 1;
+    else counts.pending += 1;
 
-    const advisory =
-      entry.knowledgeState === 'hypothesis'
-        ? 'Hypothesis only: not an instruction until verified and accepted.'
-        : entry.decision === 'accepted' && entry.publication !== 'effective'
-          ? 'Accepted by vote; publication still ' + entry.publication + '.'
-          : entry.decision === 'accepted'
-            ? 'Accepted memory; treat as advisory lesson with source pointers.'
-            : 'Not promoted: decision=' + entry.decision + '.';
-
-    selected.push({ ...entry, advisory });
+    selected.push({ ...entry, advisory: advisoryFor(entry) });
   }
 
-  return { entries: selected, accepted, deferred, rejected, contested, pending };
+  return { entries: selected, ...counts };
 }
 
-/** Final regroup listing for L7-style collection. */
 export function summarizeCollection(entries: readonly MemoryEntryStatus[]): {
   accepted: string[];
   deferred: string[];
@@ -76,17 +79,14 @@ export function summarizeCollection(entries: readonly MemoryEntryStatus[]): {
   contested: string[];
   pending: string[];
 } {
+  const key = (entry: MemoryEntryStatus) => entry.candidate.id + '@' + entry.candidate.version;
   const bucket = (decision: MemoryEntryStatus['decision']) =>
-    entries
-      .filter((entry) => entry.decision === decision)
-      .map((entry) => entry.candidate.id + '@' + entry.candidate.version);
+    entries.filter((entry) => entry.decision === decision).map(key);
   return {
     accepted: bucket('accepted'),
     deferred: bucket('deferred'),
     rejected: bucket('rejected'),
     contested: bucket('contested'),
-    pending: entries
-      .filter((entry) => entry.decision === 'pending' || entry.decision === 'none')
-      .map((entry) => entry.candidate.id + '@' + entry.candidate.version),
+    pending: entries.filter((entry) => entry.decision === 'pending' || entry.decision === 'none').map(key),
   };
 }

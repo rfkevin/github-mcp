@@ -4,12 +4,10 @@ import { candidateKey } from './candidates';
 import type { VersionedCandidate } from './candidates';
 
 export type ElectorateSnapshot = {
-  /** Participants who accepted the cycle and were active when the checkpoint opened. */
   roster: string[];
   openedAt: string;
-  /** UTC close time or explicit all-ballots condition label. */
+  /** ISO-8601 UTC close time, or the literal token all-ballots. */
   closesAt: string;
-  /** Fixed N for this checkpoint; silence does not reduce N. */
   n: number;
 };
 
@@ -18,6 +16,11 @@ export type BallotEvent = MemoryBallot & {
   proposedScope: MemoryCandidate['scope'];
   recordedAt: string;
 };
+
+/** Explicit proof that the announced checkpoint may be evaluated. */
+export type ClosureEvidence =
+  | { kind: 'time'; now: string }
+  | { kind: 'all_ballots_received' };
 
 export type EvaluationOutcome = {
   decision: MemoryDecision | 'pending';
@@ -31,9 +34,9 @@ export type EvaluationOutcome = {
   nonProposerKeep: number;
   reason: string;
   effectiveBallots: BallotEvent[];
+  closed: boolean;
 };
 
-/** Q = max(2, floor(N/2)+1) among non-abstaining capacity; N is fixed at open. */
 export function computeQuorum(n: number): number {
   if (!Number.isSafeInteger(n) || n < 1) {
     throw new StateContractError('INVALID_ELECTORATE', 'Electorate size must be a positive integer');
@@ -48,6 +51,9 @@ export function openElectorate(roster: readonly string[], openedAt: string, clos
   }
   if (cleaned.length < 1) {
     throw new StateContractError('INVALID_ELECTORATE', 'Electorate needs at least one participant');
+  }
+  if (!closesAt.trim()) {
+    throw new StateContractError('INVALID_CHECKPOINT_CLOSURE', 'A checkpoint needs closesAt (UTC time or all-ballots)');
   }
   return { roster: cleaned, openedAt, closesAt, n: cleaned.length };
 }
@@ -85,16 +91,67 @@ export function recordBallot(
   };
 }
 
+/** True only when the announced close condition is met; never from quorum alone. */
+export function isCheckpointClosed(
+  electorate: ElectorateSnapshot,
+  events: readonly BallotEvent[],
+  closure: ClosureEvidence,
+): boolean {
+  if (closure.kind === 'time') {
+    if (electorate.closesAt === 'all-ballots') return false;
+    return closure.now >= electorate.closesAt;
+  }
+  const effective = latestBallots(events).filter((event) => electorate.roster.includes(event.voter));
+  const voters = new Set(effective.map((event) => event.voter));
+  return electorate.roster.every((name) => voters.has(name));
+}
+
+function pending(
+  quorum: number,
+  tallies: { keep: number; defer: number; reject: number; abstain: number; nonAbstaining: number; nonProposerKeep: number },
+  effective: BallotEvent[],
+  reason: string,
+  closed: boolean,
+): EvaluationOutcome {
+  return {
+    decision: 'pending',
+    publication: 'pending',
+    quorum,
+    ...tallies,
+    reason,
+    effectiveBallots: effective,
+    closed,
+  };
+}
+
+function tallyBallots(effective: BallotEvent[], proposedBy: string) {
+  let keep = 0;
+  let defer = 0;
+  let reject = 0;
+  let abstain = 0;
+  let nonProposerKeep = 0;
+  for (const ballot of effective) {
+    if (ballot.value === 'keep') {
+      keep += 1;
+      if (ballot.voter !== proposedBy) nonProposerKeep += 1;
+    } else if (ballot.value === 'defer') defer += 1;
+    else if (ballot.value === 'reject') reject += 1;
+    else abstain += 1;
+  }
+  return { keep, defer, reject, abstain, nonAbstaining: keep + defer + reject, nonProposerKeep };
+}
+
 /**
- * Evaluate at announced closure only. Uncast votes are absence, not agreement.
- * keep: quorum + strict keep majority among non-abstaining + >=2 non-proposer keep.
- * reject: quorum + strict reject majority; else defer/pending.
+ * Evaluate only with explicit closure evidence. Quorum alone never closes early.
+ * keep: quorum + strict keep majority + >=2 non-proposer keep.
+ * reject: quorum + strict reject majority; else deferred.
  * N < 3: always pending broader review.
  */
 export function evaluateCheckpoint(
   candidate: VersionedCandidate,
   electorate: ElectorateSnapshot,
   events: readonly BallotEvent[],
+  closure: ClosureEvidence,
 ): EvaluationOutcome {
   const quorum = computeQuorum(electorate.n);
   const matching = events.filter(
@@ -104,83 +161,48 @@ export function evaluateCheckpoint(
       && event.proposedScope === candidate.scope,
   );
   const effective = latestBallots(matching).filter((event) => electorate.roster.includes(event.voter));
+  const tallies = tallyBallots(effective, candidate.proposedBy);
+  const closed = isCheckpointClosed(electorate, matching, closure);
 
-  let keep = 0;
-  let defer = 0;
-  let reject = 0;
-  let abstain = 0;
-  let nonProposerKeep = 0;
-  for (const ballot of effective) {
-    if (ballot.value === 'keep') {
-      keep += 1;
-      if (ballot.voter !== candidate.proposedBy) nonProposerKeep += 1;
-    } else if (ballot.value === 'defer') defer += 1;
-    else if (ballot.value === 'reject') reject += 1;
-    else abstain += 1;
+  if (!closed) {
+    return pending(
+      quorum,
+      tallies,
+      effective,
+      'Checkpoint not closed: wait for closesAt or all-ballots-received; quorum alone is not final',
+      false,
+    );
   }
-  const nonAbstaining = keep + defer + reject;
 
   if (electorate.n < 3) {
-    return {
-      decision: 'pending',
-      publication: 'pending',
-      quorum,
-      keep,
-      defer,
-      reject,
-      abstain,
-      nonAbstaining,
-      nonProposerKeep,
-      reason: 'Fewer than three active participants: retain pending broader review',
-      effectiveBallots: effective,
-    };
+    return pending(quorum, tallies, effective, 'Fewer than three active participants: retain pending broader review', true);
   }
 
-  if (nonAbstaining < quorum) {
-    return {
-      decision: 'pending',
-      publication: 'pending',
-      quorum,
-      keep,
-      defer,
-      reject,
-      abstain,
-      nonAbstaining,
-      nonProposerKeep,
-      reason: 'Quorum not reached among non-abstaining ballots',
-      effectiveBallots: effective,
-    };
+  if (tallies.nonAbstaining < quorum) {
+    return pending(quorum, tallies, effective, 'Quorum not reached among non-abstaining ballots', true);
   }
 
-  if (keep > defer + reject && nonProposerKeep >= 2) {
+  if (tallies.keep > tallies.defer + tallies.reject && tallies.nonProposerKeep >= 2) {
     return {
       decision: 'accepted',
       publication: 'pending',
       quorum,
-      keep,
-      defer,
-      reject,
-      abstain,
-      nonAbstaining,
-      nonProposerKeep,
+      ...tallies,
       reason: 'Keep majority with two non-proposer favors; publication still pending Git write',
       effectiveBallots: effective,
+      closed: true,
     };
   }
 
-  if (reject > keep + defer) {
+  if (tallies.reject > tallies.keep + tallies.defer) {
     return {
       decision: 'rejected',
       publication: 'pending',
       quorum,
-      keep,
-      defer,
-      reject,
-      abstain,
-      nonAbstaining,
-      nonProposerKeep,
+      ...tallies,
       reason: 'Reject majority among non-abstaining ballots',
       effectiveBallots: effective,
+      closed: true,
     };
   }
 
@@ -188,14 +210,10 @@ export function evaluateCheckpoint(
     decision: 'deferred',
     publication: 'pending',
     quorum,
-    keep,
-    defer,
-    reject,
-    abstain,
-    nonAbstaining,
-    nonProposerKeep,
+    ...tallies,
     reason: 'No strict keep or reject majority (tie, missing non-proposer support, or defer-heavy)',
     effectiveBallots: effective,
+    closed: true,
   };
 }
 
