@@ -9,7 +9,7 @@ import {
   mergeCoverage,
   scopeMatches,
 } from '../../src/collab/reading-checkpoint';
-import type { CheckpointScope, SourceCoverage } from '../../src/collab/reading-checkpoint';
+import type { CheckpointScope, ReadingCheckpoint, SourceCoverage } from '../../src/collab/reading-checkpoint';
 
 const scope: CheckpointScope = { repository: 'rfkevin/project-mcp-collab', ref: 'main', sha: 'dd16faf0e7143a7728923d812ad3378a44e28258', maskingVersion: 'masked-v1' };
 
@@ -21,7 +21,7 @@ const source = (over: Partial<SourceCoverage> = {}): SourceCoverage => ({
   ...over,
 });
 
-const checkpoint = (sources: SourceCoverage[] = [source()]) => ({
+const checkpoint = (sources: SourceCoverage[] = [source()]): ReadingCheckpoint => ({
   v: CHECKPOINT_VERSION, scope, stateRevision: 2, sources, createdAt: '2026-10-05T13:00:00Z',
 });
 
