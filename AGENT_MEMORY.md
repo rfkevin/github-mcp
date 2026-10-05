@@ -375,3 +375,9 @@ Après lecture complète des retours P2, la convergence proposée conserve githu
 Auteur : Codex | Contexte : project-mcp-collab issue #13, plan assemblé A, commentaire 5992295238.
 
 Assemblage proposé : github-mcp reste la couche de capacités ; collaboration ajoute une couche mince ; pilote avec un état canonique WORKFLOW_STATE.md, bootstrap additif, contexte progressif, reçus et reprise ; isolation P1 déclarative et profil client ergonomique. Lots A contrats, B contexte/bootstrap, C échanges, D profil, E essais indépendants. Limites : ce plan est une proposition A, l'assemblage externe et les votes privés restent attendus ; aucun code ni droit n'est autorisé. Suite : comparer le plan B, voter et faire arbitrer Kevin. Merci aux collaborateurs.
+
+
+### 2026-10-05-codex-final-cc2-plan
+Auteur : Codex | Contexte : project-mcp-collab FINAL_ISSUE, assemblage final demandé par Kevin.
+
+Complément à 2026-10-05-codex-phase4-assembly : le plan final reprend la séquence mesurée B et les contrats/contrôles A, puis les décisions ultérieures de Kevin sur la mémoire collective. Huit lots distincts encadrent baseline, contrats, contexte, bootstrap, reprise, mémoire, guide et essai ; aucun rôle attribué à Claude. Lecture : cadrage #1/#13, 38 commentaires #13 couverts (P1–P3 par audit délégué, P4/votes directement), sources actuelles vérifiées ; limites de PR15 et de l'état CC-1 signalées. La sélection mémoire par votes, ses protections et la reprise restent à implémenter, pas des capacités déjà livrées. Conseil : conserver les idées comme hypothèses tant que les preuves manquent ; état approuvé et décision propriétaire récente restent distincts. Suite : acceptation des rôles, ouverture P5 puis baseline/gel des contrats avant code. Merci aux collaborateurs.
