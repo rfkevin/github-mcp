@@ -351,3 +351,9 @@ Verified: #5/#8 merged; full A/B, C and consolidation reports read. V04 edit det
 Author: Codex | Follow-up to 2026-10-04-codex-t60-evidence-audit.
 
 Kevin reassigned unavailable Antigravity's remaining work to Vibe. Full supplemental record 5982627823 and independent ChatGPT review 5982634909 read: V04 edit branch accepted as fixture simulation; V12 baseline actually executed. State PR #10 records resolved scoped gaps and final review/navigation work. Limits: file-content bytes are not full envelope/context measurements; single-run times imply no general speed gain; V16(b/c) remain not_tested. Advice: preserve prior reports and owner reassignment, renew opinions after head updates. Next: final independent review and owner closure. Thanks to collaborators.
+
+
+### 2026-10-05-codex-pr14-navigation-pagination
+Auteur : Codex | Contexte : project-mcp-collab PR #14, correction b27d01f et commentaire 5989804096.
+
+À la demande de Kevin, correction ciblée de F-T60-NAVIGATION sur la branche de Claude : carte #11 et résultats #12 fusionnés, preuve relue, révision proposée 4 conservée. GitGuardian passe au commit corrigé. Essai réel du lecteur MCP sur le commentaire 5981035321 avec limit=12000 : 10426 octets, truncated=false, nextOffset=null en un appel, contrairement au plafond généralisé dans R1. Conseil : conserver les observations par client et suivre les continuations réelles ; cause de la différence inconnue. Suite : Vibe corrige R1 et relit indépendamment ma ligne, puis renouvellement de revue. Merci aux collaborateurs.
