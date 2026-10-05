@@ -17,3 +17,18 @@ Candidates carry a scope (MCP internal, global usage or project), a knowledge st
 ## Boundaries
 
 This lot only adds pure modules, unit tests and navigation documentation. Tool registration, GitHub writes, persistent ballots, branch promotion and production activation belong to later lots and the owner approval gate.
+
+## Legacy compatibility
+
+A legacy CC-1 document (no schema_version) only requires the control keys CC-1 already records: workflow_id, revision, next_action, canonical_ref, based_on_sha and phase. CC-2-only keys (base_revision, framing_*, plan_*, execution_ref, contract_ref, acceptance_ref) are validated when present and required only for versioned CC-STATE-1 documents. The real CC-1 state rev 4 is covered by a dedicated fixture test.
+
+## Ambiguity and currency
+
+Duplicate task ids and duplicate actors are explicit parse errors. validateSnapshotCurrency flags a snapshot as stale when a newer owner revision or a different observed head exists. validateTaskAssignment enforces distinct author, reviewer and tester.
+
+## Cross-lot contract surfaces
+
+- SourceReference records completeness (complete/partial/unavailable), observed updatedAt, blob SHA and continuation offset; L2 owns the reading-checkpoint implementation on top of it.
+- OperationRecord and PublicationReceipt freeze the publication and receipt shapes; L4 owns their persistence and reconciliation.
+- MemoryCandidate carries an explicit version; decisions must match the candidate id and version, and ballots must match their decision.
+- inspectBootstrap (L3) is intentionally not frozen here; its shape is decided at G1 together with L3 owned paths.

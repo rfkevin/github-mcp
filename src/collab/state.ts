@@ -8,14 +8,18 @@ import {
 } from './contracts';
 import type { MarkdownTable, Phase, RoleRecord, StateSnapshot, TaskRecord } from './contracts';
 
-const REQUIRED_HEADERS = [
+const LEGACY_REQUIRED_HEADERS = [
   'workflow_id',
   'revision',
   'next_action',
-  'base_revision',
   'canonical_ref',
   'based_on_sha',
   'phase',
+] as const;
+
+const VERSIONED_REQUIRED_HEADERS = [
+  ...LEGACY_REQUIRED_HEADERS,
+  'base_revision',
   'framing_version',
   'framing_ref',
   'plan_version',
@@ -121,15 +125,17 @@ export function parseWorkflowState(content: string): StateSnapshot {
   const headerLines = firstSection < 0 ? lines : lines.slice(0, firstSection);
   const headers = parseHeaders(headerLines);
 
-  for (const key of REQUIRED_HEADERS) {
+  const legacySchema = headers.schema_version === undefined;
+  if (!legacySchema) assertSchemaVersion(headers.schema_version);
+  for (const key of legacySchema ? LEGACY_REQUIRED_HEADERS : VERSIONED_REQUIRED_HEADERS) {
     if (!headers[key]) fail('MISSING_CONTROL_KEY', 'Missing control key: ' + key, key);
   }
 
-  const legacySchema = headers.schema_version === undefined;
-  if (!legacySchema) assertSchemaVersion(headers.schema_version);
   const revision = parseRevision(headers.revision);
-  const baseRevision = parseRevision(headers.base_revision, 'base_revision');
-  if (baseRevision >= revision) fail('INVALID_REVISION_ORDER', 'base_revision must be lower than revision');
+  if (headers.base_revision !== undefined) {
+    const baseRevision = parseRevision(headers.base_revision, 'base_revision');
+    if (baseRevision >= revision) fail('INVALID_REVISION_ORDER', 'base_revision must be lower than revision');
+  }
   assertPhase(headers.phase);
   assertSha(headers.based_on_sha, 'based_on_sha');
 
@@ -146,7 +152,14 @@ export function parseWorkflowState(content: string): StateSnapshot {
     assertTaskStatus(row[tasks.headers.indexOf('status')]);
   }
 
-  void roles;
+  const actors = roles.rows.map((row) => row[roles.headers.indexOf('Actor')]);
+  if (new Set(actors).size !== actors.length) {
+    fail('DUPLICATE_ACTOR', 'A participant appears twice in the Roles table');
+  }
+  const taskIds = tasks.rows.map((row) => row[tasks.headers.indexOf('id')]);
+  if (new Set(taskIds).size !== taskIds.length) {
+    fail('DUPLICATE_TASK_ID', 'A task id appears twice in the Tasks table');
+  }
   return {
     schemaVersion: legacySchema ? 'legacy-v1' : headers.schema_version,
     legacySchema,
@@ -159,14 +172,24 @@ export function parseWorkflowState(content: string): StateSnapshot {
 export function taskRecords(snapshot: StateSnapshot): TaskRecord[] {
   const table = tableWithHeaders(snapshot, 'Tasks', ['id', 'status', 'owner', 'version', 'ref', 'next_action']);
   const index = (name: string): number => table.headers.indexOf(name);
-  return table.rows.map((row) => ({
-    id: row[index('id')],
-    status: assertTaskStatus(row[index('status')]),
-    owner: row[index('owner')],
-    version: row[index('version')],
-    ref: row[index('ref')],
-    nextAction: row[index('next_action')],
-  }));
+  return table.rows.map((row) => {
+    const optional = (name: string): string | undefined => {
+      const position = index(name);
+      return position >= 0 ? row[position] : undefined;
+    };
+    return {
+      id: row[index('id')],
+      status: assertTaskStatus(row[index('status')]),
+      owner: row[index('owner')],
+      role: optional('role'),
+      ownedPaths: optional('owned_paths'),
+      dependencies: optional('dependencies'),
+      blocker: optional('blocker'),
+      version: row[index('version')],
+      ref: row[index('ref')],
+      nextAction: row[index('next_action')],
+    };
+  });
 }
 
 export function roleRecords(snapshot: StateSnapshot): RoleRecord[] {
@@ -194,4 +217,19 @@ export function deriveTaskContext(snapshot: StateSnapshot, taskId?: string): Tas
     throw new StateContractError(taskId ? 'TASK_NOT_FOUND' : 'NO_ACTIONABLE_TASK', 'No actionable task was found');
   }
   return { phase: assertPhase(snapshot.headers.phase), task, snapshot };
+}
+
+export interface SnapshotCurrency {
+  revision?: number;
+  sha?: string;
+}
+
+export function validateSnapshotCurrency(snapshot: StateSnapshot, observed: SnapshotCurrency): void {
+  const revision = parseRevision(snapshot.headers.revision);
+  if (observed.revision !== undefined && observed.revision > revision) {
+    throw new StateContractError('STALE_REVISION', 'A newer owner decision exists: the snapshot is stale');
+  }
+  if (observed.sha !== undefined && observed.sha !== snapshot.headers.based_on_sha) {
+    throw new StateContractError('STALE_SHA', 'The observed head differs from based_on_sha: the snapshot is stale');
+  }
 }

@@ -84,6 +84,20 @@ export function assertDistinctRoles(roles: readonly AgentRole[]): void {
   }
 }
 
+export function assertDistinctParticipants(participants: readonly string[]): void {
+  const present = participants.map((participant) => participant.trim()).filter(Boolean);
+  if (new Set(present).size !== present.length) {
+    throw new StateContractError('DUPLICATE_PARTICIPANT', 'Author, reviewer and tester must be distinct participants');
+  }
+}
+
+export function validateTaskAssignment(author: string, reviewer: string, tester: string): void {
+  if (!author.trim() || !reviewer.trim() || !tester.trim()) {
+    throw new StateContractError('INVALID_TASK_ASSIGNMENT', 'A task needs an author, a reviewer and a tester');
+  }
+  assertDistinctParticipants([author, reviewer, tester]);
+}
+
 export interface MarkdownTable {
   headers: string[];
   rows: string[][];
@@ -107,19 +121,36 @@ export interface TaskRecord {
   id: string;
   status: TaskStatus;
   owner: string;
+  /** Declared participant role for this task, when the state records one. */
+  role?: string;
+  /** Paths owned by the task ('none' when not applicable). */
+  ownedPaths?: string;
+  /** Task dependencies ('none' when not applicable). */
+  dependencies?: string;
+  /** Current blocker ('none' when not applicable). */
+  blocker?: string;
   version: string;
   ref: string;
   nextAction: string;
 }
 
+export type SourceCompleteness = 'complete' | 'partial' | 'unavailable';
+
 export interface SourceReference {
   location: string;
   revision: number;
-  complete: boolean;
+  completeness: SourceCompleteness;
+  /** Observed updatedAt of the source, when the client can see it. */
+  updatedAt?: string;
+  /** Blob SHA of the file variant read, when observable. */
+  blobSha?: string;
+  /** Offset of the next page when completeness is 'partial'. */
+  continuationOffset?: number;
 }
 
 export interface MemoryCandidate {
   id: string;
+  version: string;
   scope: MemoryScope;
   statement: string;
   knowledgeState: KnowledgeState;
@@ -136,6 +167,7 @@ export interface MemoryBallot {
 
 export interface MemoryDecisionRecord {
   candidateId: string;
+  candidateVersion: string;
   scope: MemoryScope;
   decision: MemoryDecision;
   publication: PublicationState;
@@ -145,15 +177,19 @@ export interface MemoryDecisionRecord {
 }
 
 export function validateMemoryCandidate(candidate: MemoryCandidate): void {
-  if (!candidate.id.trim() || !candidate.statement.trim() || !candidate.proposedBy.trim()) {
-    throw new StateContractError('INVALID_MEMORY_CANDIDATE', 'A memory candidate needs id, statement and proposer');
+  if (!candidate.id.trim() || !candidate.version.trim() || !candidate.statement.trim() || !candidate.proposedBy.trim()) {
+    throw new StateContractError('INVALID_MEMORY_CANDIDATE', 'A memory candidate needs id, version, statement and proposer');
   }
   oneOf(candidate.scope, MEMORY_SCOPES, 'INVALID_MEMORY_SCOPE', 'scope');
   oneOf(candidate.knowledgeState, KNOWLEDGE_STATES, 'INVALID_KNOWLEDGE_STATE', 'knowledgeState');
+  oneOf(candidate.source.completeness, ['complete', 'partial', 'unavailable'] as const, 'INVALID_SOURCE_COMPLETENESS', 'completeness');
   if (!candidate.source.location.trim() || !Number.isSafeInteger(candidate.source.revision) || candidate.source.revision < 1) {
     throw new StateContractError('INVALID_MEMORY_SOURCE', 'A memory candidate needs a complete source reference');
   }
-  if (!candidate.source.complete) {
+  if (candidate.source.completeness === 'partial' && !Number.isSafeInteger(candidate.source.continuationOffset ?? NaN)) {
+    throw new StateContractError('INVALID_CONTINUATION', 'A partial source reference must record its continuation offset');
+  }
+  if (candidate.source.completeness !== 'complete') {
     throw new StateContractError('INCOMPLETE_MEMORY_SOURCE', 'A memory candidate cannot be decided without complete evidence');
   }
 }
@@ -165,9 +201,18 @@ export function validateMemoryBallot(ballot: MemoryBallot): void {
   oneOf(ballot.value, BALLOT_VALUES, 'INVALID_BALLOT_VALUE', 'value');
 }
 
-export function validateMemoryDecision(decision: MemoryDecisionRecord): void {
-  if (!decision.candidateId.trim() || !decision.decidedBy.trim()) {
-    throw new StateContractError('INVALID_MEMORY_DECISION', 'A decision needs a candidate and decider');
+export function validateMemoryDecision(decision: MemoryDecisionRecord, candidate?: MemoryCandidate): void {
+  if (!decision.candidateId.trim() || !decision.candidateVersion.trim() || !decision.decidedBy.trim()) {
+    throw new StateContractError('INVALID_MEMORY_DECISION', 'A decision needs a candidate, its version and a decider');
+  }
+  if (candidate) {
+    if (candidate.id !== decision.candidateId) {
+      throw new StateContractError('CANDIDATE_ID_MISMATCH', 'The decision does not match the candidate id');
+    }
+    if (candidate.version !== decision.candidateVersion) {
+      throw new StateContractError('CANDIDATE_VERSION_MISMATCH', 'The decision was taken on a different version of the candidate');
+    }
+    validateMemoryCandidate(candidate);
   }
   oneOf(decision.scope, MEMORY_SCOPES, 'INVALID_MEMORY_SCOPE', 'scope');
   oneOf(decision.decision, MEMORY_DECISIONS, 'INVALID_MEMORY_DECISION', 'decision');
@@ -179,4 +224,46 @@ export function validateMemoryDecision(decision: MemoryDecisionRecord): void {
     throw new StateContractError('INSUFFICIENT_BALLOTS', 'The decision does not contain its declared quorum');
   }
   decision.ballots.forEach(validateMemoryBallot);
+  decision.ballots.forEach((ballot) => {
+    if (ballot.candidateId !== decision.candidateId) {
+      throw new StateContractError('BALLOT_CANDIDATE_MISMATCH', 'A ballot does not match the decided candidate');
+    }
+  });
+}
+
+export interface OperationStep {
+  stepId: string;
+  outcome: 'success' | 'failure' | 'unknown';
+}
+
+export interface OperationRecord {
+  operationId: string;
+  payloadFingerprint: string;
+  steps: OperationStep[];
+}
+
+export interface PublicationReceipt {
+  operationId: string;
+  ref: string;
+  outcome: PublicationState;
+  reconcileRequired: boolean;
+}
+
+export function validateOperationRecord(record: OperationRecord): void {
+  if (!record.operationId.trim() || !record.payloadFingerprint.trim()) {
+    throw new StateContractError('INVALID_OPERATION', 'An operation needs an id and a payload fingerprint');
+  }
+  record.steps.forEach((step) => {
+    if (!step.stepId.trim()) {
+      throw new StateContractError('INVALID_OPERATION_STEP', 'An operation step needs an id');
+    }
+    oneOf(step.outcome, ['success', 'failure', 'unknown'] as const, 'INVALID_OPERATION_OUTCOME', 'outcome');
+  });
+}
+
+export function validatePublicationReceipt(receipt: PublicationReceipt): void {
+  if (!receipt.operationId.trim() || !receipt.ref.trim()) {
+    throw new StateContractError('INVALID_RECEIPT', 'A receipt needs an operation id and a ref');
+  }
+  oneOf(receipt.outcome, PUBLICATION_STATES, 'INVALID_PUBLICATION_STATE', 'outcome');
 }
