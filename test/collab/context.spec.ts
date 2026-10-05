@@ -67,7 +67,7 @@ describe('contexte progressif de collaboration', () => {
       '| L2 | in_progress | Vibe GLM | author | src/collab/context.ts, src/collab/reading-checkpoint.ts | L1 | none | 1 | branch:l2 | implement |',
       '| L2 | in_progress | Vibe GLM | author | src/collab/context.ts, src/collab/reading-checkpoint.ts | L1 | none | 1 | branch:l2 | implement |\n| L2b | in_progress | Vibe GLM | author | src/other.ts | L1 | none | 1 | branch:l2b | implement |',
     );
-    expect(() => buildCollabContext(twoTasks, request({ participant: 'Vibe GLM' }))).toThrow(/AMBIGUOUS/);
+    expect(() => buildCollabContext(twoTasks, request({ participant: 'Vibe GLM' }))).toThrow(/Several actionable tasks fit participant/);
   });
 
   it('signale un snapshot périmé face à une décision owner plus récente', () => {

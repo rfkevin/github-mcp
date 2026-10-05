@@ -131,9 +131,10 @@ export function buildCollabContext(stateContent: string, request: ContextRequest
       .filter(source => !source.readComplete && source.continuation)
       .map(source => ({ location: source.location, continuation: { offset: source.continuation!.offset, revision: source.continuation!.revision } }))
     : [];
+  const alreadyTracked = new Set((previous ? previous.sources : []).map(source => source.location));
   const unread = sources
     .map(source => source.location)
-    .filter(location => !previous || !previous.sources.some(source => source.location === location));
+    .filter(location => !alreadyTracked.has(location));
 
   const stateCoverage: SourceCoverage = {
     location: stateLocation,
