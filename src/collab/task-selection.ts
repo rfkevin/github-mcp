@@ -8,7 +8,7 @@ export const ACTIONABLE_STATUSES = ['proposed', 'accepted', 'in_progress', 'revi
 /** Comment le participant est lié à la tâche retenue. */
 export type TaskParticipation = 'owner' | 'reviewer' | 'tester';
 
-/** Pourquoi cette tâche a été retenue ; aucune valeur ne résulte d'un choix arbitraire. */
+/** Pourquoi cette tâche a été retenue ; aucune valeur ne résulte d'un choix arbitraire ni d'un rang de statut. */
 export type TaskSelectionReason =
   | 'task_id'
   | 'single_candidate'
@@ -19,6 +19,7 @@ export type TaskSelectionReason =
 export type SelectedTask = { record: TaskRecord; participation: TaskParticipation | null; selectedBy: TaskSelectionReason };
 
 type Candidate = { record: TaskRecord; participation: TaskParticipation };
+type Pointer = { reason: TaskSelectionReason; text: string };
 
 const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -34,36 +35,9 @@ function mentionsTask(text: string, id: string): boolean {
   return new RegExp('(^|[^\\w-])' + escape(id) + '($|[^\\w-])').test(text);
 }
 
-/** Colonnes reviewer/tester optionnelles du tableau Tasks, lues sans modifier le contrat L1. */
-function responsibilityColumns(snapshot: StateSnapshot): Map<string, { reviewer?: string; tester?: string }> {
-  const table = (snapshot.sections['Tasks'] ?? []).find(candidate => candidate.headers.includes('id') && candidate.headers.includes('status'));
-  const columns = new Map<string, { reviewer?: string; tester?: string }>();
-  if (!table) return columns;
-  const at = (row: string[], name: string): string | undefined => {
-    const position = table.headers.indexOf(name);
-    return position >= 0 ? row[position] : undefined;
-  };
-  for (const row of table.rows) columns.set(at(row, 'id') ?? '', { reviewer: at(row, 'reviewer'), tester: at(row, 'tester') });
-  return columns;
-}
-
-/** Tâches actionnables où le participant est owner (égalité exacte, comme avant), reviewer ou tester déclaré. */
-function participantCandidates(snapshot: StateSnapshot, participant: string): Candidate[] {
-  const columns = responsibilityColumns(snapshot);
-  const candidates: Candidate[] = [];
-  for (const record of taskRecords(snapshot)) {
-    if (!ACTIONABLE_STATUSES.includes(record.status)) continue;
-    const extra = columns.get(record.id) ?? {};
-    if (record.owner === participant) candidates.push({ record, participation: 'owner' });
-    else if (cellNames(extra.tester, participant)) candidates.push({ record, participation: 'tester' });
-    else if (cellNames(extra.reviewer, participant)) candidates.push({ record, participation: 'reviewer' });
-  }
-  return candidates;
-}
-
 /** Pointeurs canoniques, dans l'ordre : la ligne Roles du participant, puis le next_action d'en-tête s'il le nomme. */
-function canonicalPointers(snapshot: StateSnapshot, participant: string): Array<{ reason: TaskSelectionReason; text: string }> {
-  const pointers: Array<{ reason: TaskSelectionReason; text: string }> = [];
+function canonicalPointers(snapshot: StateSnapshot, participant: string): Pointer[] {
+  const pointers: Pointer[] = [];
   const role = roleRecords(snapshot).find(record => record.actor === participant);
   if (role) pointers.push({ reason: 'roles_pending_evidence', text: role.pendingEvidence });
   const headerNext = snapshot.headers.next_action ?? '';
@@ -71,12 +45,39 @@ function canonicalPointers(snapshot: StateSnapshot, participant: string): Array<
   return pointers;
 }
 
-const describe = (candidates: Candidate[]): string => candidates.map(candidate => candidate.record.id + ' (' + candidate.participation + ')').join(', ');
+/**
+ * Tâches actionnables du participant.
+ * - owner (égalité exacte, comme avant) : toujours candidate, c'est la responsabilité directe de l'état ;
+ * - tester/reviewer : candidate seulement si un pointeur canonique cite l'id de la tâche. Une cellule tester/reviewer
+ *   seule peut rester périmée (ex. « pass at <sha>; renew ») : elle ne doit pas réveiller l'agent sur un ancien travail.
+ */
+function participantCandidates(snapshot: StateSnapshot, participant: string, pointers: Pointer[]): Candidate[] {
+  const cited = (id: string): boolean => pointers.some(pointer => mentionsTask(pointer.text, id));
+  const candidates: Candidate[] = [];
+  for (const record of taskRecords(snapshot)) {
+    if (!ACTIONABLE_STATUSES.includes(record.status)) continue;
+    if (record.owner === participant) candidates.push({ record, participation: 'owner' });
+    else if (cellNames(record.tester, participant) && cited(record.id)) candidates.push({ record, participation: 'tester' });
+    else if (cellNames(record.reviewer, participant) && cited(record.id)) candidates.push({ record, participation: 'reviewer' });
+  }
+  return candidates;
+}
+
+const describe = (candidates: Candidate[]): string =>
+  candidates.map(candidate => candidate.record.id + ' (' + candidate.participation + ', ' + candidate.record.status + ')').join(', ');
+
+/** Participation déclarée d'un participant sur une tâche donnée, sans exigence de pointeur (chemin taskId explicite). */
+function declaredParticipation(record: TaskRecord, participant: string): TaskParticipation | null {
+  if (record.owner === participant) return 'owner';
+  if (cellNames(record.tester, participant)) return 'tester';
+  if (cellNames(record.reviewer, participant)) return 'reviewer';
+  return null;
+}
 
 /**
- * Sélection déterministe de la mission d'un participant.
+ * Sélection déterministe de la mission d'un participant (« <agent>, go »).
  * Une seule candidate : retenue. Plusieurs : la première source canonique (Roles, puis next_action d'en-tête)
- * qui en cite exactement une la désigne. Sinon échec fermé AMBIGUOUS_TASK : aucun choix arbitraire.
+ * qui en cite exactement une la désigne. Sinon échec fermé AMBIGUOUS_TASK : ni choix arbitraire, ni rang de statut.
  */
 export function selectTask(snapshot: StateSnapshot, request: { participant?: string; taskId?: string }): SelectedTask | null {
   const records = taskRecords(snapshot);
@@ -85,16 +86,15 @@ export function selectTask(snapshot: StateSnapshot, request: { participant?: str
     if (!found) {
       throw new StateContractError('TASK_NOT_FOUND', 'No task matches id ' + request.taskId + ' in the canonical state');
     }
-    const participation = request.participant
-      ? participantCandidates(snapshot, request.participant).find(candidate => candidate.record.id === found.id)?.participation ?? null
-      : null;
+    const participation = request.participant ? declaredParticipation(found, request.participant) : null;
     return { record: found, participation, selectedBy: 'task_id' };
   }
   if (request.participant) {
-    const candidates = participantCandidates(snapshot, request.participant);
+    const pointers = canonicalPointers(snapshot, request.participant);
+    const candidates = participantCandidates(snapshot, request.participant, pointers);
     if (candidates.length === 0) return null;
     if (candidates.length === 1) return { ...candidates[0], selectedBy: 'single_candidate' };
-    for (const pointer of canonicalPointers(snapshot, request.participant)) {
+    for (const pointer of pointers) {
       const cited = candidates.filter(candidate => mentionsTask(pointer.text, candidate.record.id));
       if (cited.length === 1) return { ...cited[0], selectedBy: pointer.reason };
     }

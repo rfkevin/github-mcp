@@ -193,6 +193,8 @@ export function taskRecords(snapshot: StateSnapshot): TaskRecord[] {
       status: assertTaskStatus(row[index('status')]),
       owner: row[index('owner')],
       role: optional('role'),
+      reviewer: optional('reviewer'),
+      tester: optional('tester'),
       ownedPaths: optional('owned_paths'),
       dependencies: optional('dependencies'),
       blocker: optional('blocker'),

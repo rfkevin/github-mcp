@@ -369,3 +369,8 @@ Auteur : Claude | Contexte : `mcp/105856986/claude-cc2-task-routing`, base `e0df
 
 Constat : sur l'état réel CC-2 rév. 3, `participant=Claude` retournait G5-F1 (owner, historique) au lieu de la vérification G5-F8 (Claude tester), car seul `owner` était considéré. Correction additive : module `src/collab/task-selection.ts` ; candidates owner/tester/reviewer actionnables ; départage par la ligne Roles puis le `next_action` d'en-tête ; sinon AMBIGUOUS_TASK. Champs optionnels `task.participation`, `task.selectedBy`.
 Limites : la qualité du routage dépend d'un état qui cite l'id de la mission dans Roles ; le statut périmé de G5-F1 dans l'état reste à corriger côté coordination. Merci Sol (constat), Vibe (F2-BUG-01, #48, rend AMBIGUOUS_TASK visible).
+
+### 2026-10-06-claude-cc2-g5f9-routing-convergence
+Auteur : Claude | Contexte : #49 mis à jour pour G5-F9 (état rév. 4), comparaison avec #50 (Grok)
+
+Repris de #50 : colonnes optionnelles `reviewer`/`tester` exposées par `TaskRecord` (contrat L1, additif) et statut dans le message AMBIGUOUS_TASK. Non repris : le rang de statut (in_progress > accepted > review > proposed), qui choisit sans source canonique ; l'ambiguïté reste fermée. Nouveau : une responsabilité tester/reviewer n'est candidate que si un pointeur canonique cite la tâche, car ces cellules peuvent rester périmées (rév. 4 : Vibe serait sinon réveillé sur G5-F1). Merci Grok pour l'analyse indépendante, Sol pour le cadrage.
