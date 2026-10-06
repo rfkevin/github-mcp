@@ -11,6 +11,9 @@ const failure = z.object({ code: s, message: s, retryable: b });
 const excerpt = { content: s, truncated: b };
 const repository = { repository: s };
 const atCommit = { ...repository, sha: s };
+// Collaboration envelopes grow additively. Their nested objects stay open so that a client
+// holding an older tools/list schema keeps validating responses that carry newer optional fields.
+const open = <T extends z.ZodRawShape>(shape: T) => z.looseObject(shape);
 const expectedCheck = z.object({ source: z.enum(['check', 'workflow', 'status']), name: s });
 const followUp = z.object({ taskComplete: z.literal(false), reason: s, nextTool: s,
   arguments: z.object({ repository: s, ref: s, expectedChecks: z.array(expectedCheck).optional() }),
@@ -134,14 +137,14 @@ export const outputSchemas = {
     note: s, manualDispatch: s, applied: b, expectedHeadSha: s.optional(), unchanged: b.optional(), commitSha: s.optional(),
     deletedPaths: strings.optional(), changes: z.array(z.object({ path: s, content: s, expectedSha: s.optional() })).optional() },
   github_collab_context: { ...atCommit, ref: s, workflowStatePath: s,
-    cycle: z.object({ workflowId: s, phase: s, revision: n, baseRevision: n.nullable(), schemaVersion: s, legacy: b, stale: b, staleReason: s.optional() }),
-    task: z.object({ id: s, status: s, owner: s, role: s.nullable(), ownedPaths: strings, dependencies: s.nullable(), blocker: s.nullable(), version: s, ref: s, nextAction: s,
+    cycle: open({ workflowId: s, phase: s, revision: n, baseRevision: n.nullable(), schemaVersion: s, legacy: b, stale: b, staleReason: s.optional() }),
+    task: open({ id: s, status: s, owner: s, role: s.nullable(), ownedPaths: strings, dependencies: s.nullable(), blocker: s.nullable(), version: s, ref: s, nextAction: s,
       participation: z.enum(['owner', 'reviewer', 'tester']).nullable().optional(), selectedBy: s.optional() }).nullable(),
-    guidance: z.object({ phase: s, role: s, actions: strings, ownerDecisionRequired: b, advisory: s }),
-    evidence: z.object({ stateLocation: s, stateSha: s, framingRef: s.nullable(), planRef: s.nullable(), executionRef: s.nullable(), contractRef: s.nullable(), acceptanceRef: s.nullable() }),
-    peerProposalExclusion: z.object({ active: b, reason: s, contamination: strings }),
-    sources: z.array(z.object({ location: s, kind: s, peerProposal: b })),
-    coverage: z.object({ resumed: b, scopeMatch: b, readComplete: strings, toReread: z.array(n), refreshed: strings, partial: z.array(z.object({ location: s, continuation: z.object({ offset: n, revision: s }) })), missing: z.array(n), rescanRequired: b, deletionTrackingLimitation: s, unread: strings }),
+    guidance: open({ phase: s, role: s, actions: strings, ownerDecisionRequired: b, advisory: s }),
+    evidence: open({ stateLocation: s, stateSha: s, framingRef: s.nullable(), planRef: s.nullable(), executionRef: s.nullable(), contractRef: s.nullable(), acceptanceRef: s.nullable() }),
+    peerProposalExclusion: open({ active: b, reason: s, contamination: strings }),
+    sources: z.array(open({ location: s, kind: s, peerProposal: b })),
+    coverage: open({ resumed: b, scopeMatch: b, readComplete: strings, toReread: z.array(n), refreshed: strings, partial: z.array(open({ location: s, continuation: open({ offset: n, revision: s }) })), missing: z.array(n), rescanRequired: b, deletionTrackingLimitation: s, unread: strings }),
     nextCheckpoint: s, advisory: s },
   github_comment_commit: { ...atCommit, id: n, url: s, note: s },
   github_comment_pull_request: { ...repository, number: n, id: n, url: s, observedHeadSha: s, note: s },
