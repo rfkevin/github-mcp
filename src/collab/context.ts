@@ -11,6 +11,26 @@ const PEER_PROPOSAL_PERMITTED = ['P2', 'P3', 'P4', 'P5', 'P6'];
 const ACTIONABLE_STATUSES = ['proposed', 'accepted', 'in_progress', 'review'];
 const COVERAGE_NOTE = 'Reading coverage is a fact about fetched content, not proof that the model understood it.';
 
+/** G5-F3: Markdown link syntax is not a readable location; link targets are. */
+const MARKDOWN_LINK = /\[([^\]]*)\]\(([^)\s]+)\)/g;
+
+/** Extract Markdown link targets from a reference value; an empty result means the value carries no link syntax. */
+export function extractLinkTargets(value: string): string[] {
+  const targets: string[] = [];
+  for (const match of value.matchAll(MARKDOWN_LINK)) {
+    const target = match[2];
+    if (target && !targets.includes(target)) targets.push(target);
+  }
+  return targets;
+}
+
+/** Readable locations for a reference value: link targets when present, otherwise the trimmed value itself. */
+function refLocations(value: string): string[] {
+  const trimmed = value.trim();
+  const targets = extractLinkTargets(trimmed);
+  return targets.length > 0 ? targets : [trimmed];
+}
+
 export type ContextRequest = {
   scope: CheckpointScope;
   participant?: string;
@@ -121,9 +141,18 @@ export function buildCollabContext(stateContent: string, request: ContextRequest
     ['acceptance_ref', 'acceptance'],
   ] as const;
   for (const [key, kind] of refKinds) {
-    if (snapshot.headers[key]) sources.push({ location: snapshot.headers[key], kind, peerProposal: false });
+    const value = snapshot.headers[key];
+    if (value) {
+      for (const location of refLocations(value)) {
+        sources.push({ location, kind, peerProposal: false });
+      }
+    }
   }
-  for (const path of ownedPaths) sources.push({ location: path, kind: 'owned_path', peerProposal: false });
+  for (const path of ownedPaths) {
+    for (const location of refLocations(path)) {
+      sources.push({ location, kind: 'owned_path', peerProposal: false });
+    }
+  }
 
   /** Coverage from a checkpoint whose scope differs is never reused: fingerprints of another masking are not comparable. */
   const inScopeSources = previous && scopeMatch ? previous.sources : [];
