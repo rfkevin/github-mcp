@@ -151,4 +151,64 @@ describe('contexte progressif de collaboration', () => {
     expect(decoded.stateRevision).toBe(2);
     expect(envelope.coverage.unread).not.toContain(stateEntry.location);
   });
+
+  it('F2 sélection : in_progress gagne sur review pour le même owner ; tester matche sans être owner', () => {
+    const multi = [
+      '# CC-2 state',
+      'schema_version: CC-STATE-1',
+      'workflow_id: cc2',
+      'revision: 3',
+      'next_action: run G5-F8',
+      'base_revision: 2',
+      'canonical_ref: main',
+      'based_on_sha: abcdef1234567890abcdef1234567890abcdef12',
+      'phase: P6',
+      'framing_version: 1',
+      'framing_ref: issue-16',
+      'plan_version: 1',
+      'plan_ref: issue-16',
+      'execution_ref: issue-16',
+      'contract_ref: docs/collaboration/contract.md',
+      'acceptance_ref: docs/collaboration/acceptance.md',
+      '',
+      '## Owner decisions',
+      'Owner assigned G5-F8.',
+      '',
+      '## Roles',
+      '| Actor | Scoped acceptance/assignment | Pending evidence |',
+      '| --- | --- | --- |',
+      '| Kevin | owner | none |',
+      '| Vibe GLM | G5-F8 operator | evidence |',
+      '| Claude | G5-F8 verifier | verdict |',
+      '',
+      '## Tasks',
+      '| id | status | owner | role | reviewer | tester | owned_paths | dependencies | blocker | version | ref | next_action |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| G5-F1 | review | Claude | author | GPT-5.6 Sol | Vibe GLM | WORKFLOW_STATE.md | G5 | none | 1 | branch:state | residual review |',
+      '| G5-F8 | in_progress | Vibe GLM | tester | GPT-5.6 Sol | Claude | none | G5-F3 | none | 1 | portalshall | bootstrap runtime |',
+      '| OLD | done | Vibe GLM | author | none | none | none | none | none | 1 | old | none |',
+      '',
+      '## Evidence',
+      '| source | state |',
+      '| --- | --- |',
+      '| issue-16 | verified |',
+    ].join('\n') + '\n';
+
+    const vibe = buildCollabContext(multi, request({ participant: 'Vibe GLM' }));
+    expect(vibe.task?.id).toBe('G5-F8');
+
+    const claude = buildCollabContext(multi, request({ participant: 'Claude' }));
+    expect(claude.task?.id).toBe('G5-F8');
+
+    const none = buildCollabContext(multi, request({ participant: 'Muse Spark' }));
+    expect(none.task).toBeNull();
+  });
+
+  it('F2 sélection : deux in_progress pour le même participant => AMBIGUOUS_TASK', () => {
+    const ambiguous = state.replace(
+      '| L2 | in_progress | Vibe GLM | author | src/collab/context.ts, src/collab/reading-checkpoint.ts | L1 | none | 1 | branch:l2 | implement |',
+      '| A | in_progress | Vibe GLM | author | src/a.ts | none | none | 1 | a | work |\n| B | in_progress | Vibe GLM | author | src/b.ts | none | none | 1 | b | work |',
+    );
+    expect(() => buildCollabContext(ambiguous, request({ participant: 'Vibe GLM' }))).toThrow(/AMBIGUOUS_TASK|Several actionable/);
+  });
 });
