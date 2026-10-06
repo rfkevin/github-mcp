@@ -1,0 +1,42 @@
+name: deploy-cc2-test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cc2-test
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # F2 uniquement : interdit master et toute autre branche.
+    if: github.ref == 'refs/heads/mcp/105856986/cc2-integration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: cc2-test
+      url: https://github-mcp-cc2-test.rfahedkevin.workers.dev
+
+    steps:
+      - name: Checkout du candidat CC-2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Installer Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.19.0'
+          cache: npm
+          package-manager-cache: false
+
+      - name: Installer les dépendances
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+
+      - name: Vérifier le candidat avant déploiement
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+        run: npm run
