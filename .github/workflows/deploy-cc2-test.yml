@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   deploy:
-    # F2 uniquement : interdit master et toute autre branche.
+    # F2 uniquement : aucune exécution depuis master ou une autre branche.
     if: github.ref == 'refs/heads/mcp/105856986/cc2-integration'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -39,4 +39,21 @@ jobs:
       - name: Vérifier le candidat avant déploiement
         env:
           WRANGLER_SEND_METRICS: 'false'
-        run: npm run
+        run: npm run check:full
+
+      - name: Déployer uniquement le Worker CC-2 de test
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: npx wrangler deploy --env cc2-test
+
+      - name: Vérifier /ready
+        run: |
+          curl --fail --silent --show-error \
+            https://github-mcp-cc2-test.rfahedkevin.workers.dev/ready
+
+      - name: Vérifier la découverte OAuth
+        run: |
+          curl --fail --silent --show-error \
+            https://github-mcp-cc2-test.rfahedkevin.workers.dev/.well-known/oauth-authorization-server 
