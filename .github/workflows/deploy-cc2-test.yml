@@ -1,6 +1,9 @@
 name: deploy-cc2-test
 
 on:
+  push:
+    branches:
+    - mcp/105856986/cc2-integration
   workflow_dispatch:
 
 permissions:
