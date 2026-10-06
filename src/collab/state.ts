@@ -71,6 +71,17 @@ function parseTables(lines: string[], section: string): MarkdownTable[] {
       index += 1;
     }
     tables.push({ headers, rows });
+    /**
+     * G-L1-T1: a truncated table must fail instead of silently dropping the rows that follow.
+     * After a table ends, the next non-empty line may not look like table content: a row without
+     * its trailing pipe, or rows separated from the table by a blank line, are a truncation, not
+     * prose. Two tables in one section must be separated by at least one non-empty prose line.
+     */
+    let lookahead = index;
+    while (lookahead < lines.length && lines[lookahead].trim() === '') lookahead += 1;
+    if (lookahead < lines.length && lines[lookahead].trim().startsWith('|')) {
+      fail('TABLE_TRUNCATED', 'Table in ' + section + ' is truncated or malformed: a table line follows the table end (missing trailing | or blank line inside the table)', section);
+    }
   }
   return tables;
 }
