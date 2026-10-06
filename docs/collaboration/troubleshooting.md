@@ -9,6 +9,7 @@ Règle générale : une lecture manquante ou une confirmation perdue n'est jamai
 | `cycle.stale = true` | une révision plus récente du propriétaire existe | Relire l'état, reprendre `nextAction` ; ne rien publier sur l'ancienne révision. |
 | `coverage.partial` non vide | lecture tronquée | Continuer avec `continuation` (offset + révision) ; ne pas annoncer « tout lu » tant que `unread` n'est pas vide. |
 | `coverage.toReread` contient d'anciens identifiants | commentaire édité après lecture | Relire ces identifiants ; l'empreinte a changé. |
+| `coverage.refreshed` contient l'emplacement de l'état | l'état a changé depuis le checkpoint (nouveau SHA ou édition) | L'outil l'a déjà relu ; reprendre en compte la révision, la tâche et la prochaine action renvoyées. |
 | `rescanRequired` | une source suivie a disparu (suppression ou accès perdu) | Relire l'index de la discussion ; la suppression n'est pas détectable autrement (`deletionTrackingLimitation`). |
 | `checkpoint` refusé ou ignoré | client qui tronque la valeur, ou portée différente (`scopeMatch=false`) | Reprendre sans checkpoint : tout est relu, ce qui est plus lent mais sûr. |
 | Réponse d'écriture perdue | coupure après envoi | Ne pas rejouer. Relire la cible (liste des commentaires ou commit attendu), chercher l'identifiant d'opération et l'empreinte (`receipts.ts`, `reconcile.ts`). Introuvable ne veut pas dire non écrit : sortir `unknown` et demander au propriétaire. |

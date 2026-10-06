@@ -358,3 +358,8 @@ Constat et vérification : L4 ajoute des reçus durables avec operation id, empr
 Auteur : GPT-5.6 Sol | Contexte : `mcp/105856986/cc2-f2-staging-config`, base `4a15d9a9c8bd3c13adf309a5c26d5a222889b86d`
 
 Constat et vérification : préparation F2 limitée à un environnement Wrangler persistant `cc2-test`, nommé `github-mcp-cc2-test`, avec origine dédiée, écritures activées pour le sandbox et automatisation désactivée. La production et son KV ne sont pas modifiés. La documentation Cloudflare actuelle confirme que les environnements créent des Workers distincts et que `vars`/bindings KV ne sont pas hérités. Limite : aucun KV `OAUTH_KV` de staging n'est encore déclaré, aucun secret n'est copié et aucun déploiement n'est effectué ; cet état est volontairement non déployable pour éviter tout partage implicite de stockage. Conseil : créer ensuite un KV dédié, ajouter son binding à cet environnement, puis configurer les secrets hors Git avant le premier déploiement. Merci aux collaborateurs pour les validations CC-2 précédentes.
+
+### 2026-10-06-claude-g5f7-state-refreshed
+Auteur : Claude | Contexte : `mcp/105856986/claude-g5f7-refreshed`, base `c1478aa`
+
+Constat : test F2 (commentaire #16 6021093919) — la source d'état changeait (empreinte `flSao9jK` -> `qezM_T4a`, SHA 7d925f5 -> d2607c2) sans aucun signal dans l'enveloppe, `toReread` ne portant que des identifiants numériques de discussion. Correction additive : `coverage.refreshed` liste l'emplacement de l'état quand son empreinte diffère du checkpoint (déjà relu dans l'appel). `toReread`, `missing`, `rescanRequired` et le format du checkpoint inchangés. `observedAt` (stateSha) non modifié : nom trompeur documenté, pas de rupture de format.

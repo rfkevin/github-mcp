@@ -140,7 +140,7 @@ export const outputSchemas = {
     evidence: z.object({ stateLocation: s, stateSha: s, framingRef: s.nullable(), planRef: s.nullable(), executionRef: s.nullable(), contractRef: s.nullable(), acceptanceRef: s.nullable() }),
     peerProposalExclusion: z.object({ active: b, reason: s, contamination: strings }),
     sources: z.array(z.object({ location: s, kind: s, peerProposal: b })),
-    coverage: z.object({ resumed: b, scopeMatch: b, readComplete: strings, toReread: z.array(n), partial: z.array(z.object({ location: s, continuation: z.object({ offset: n, revision: s }) })), missing: z.array(n), rescanRequired: b, deletionTrackingLimitation: s, unread: strings }),
+    coverage: z.object({ resumed: b, scopeMatch: b, readComplete: strings, toReread: z.array(n), refreshed: strings, partial: z.array(z.object({ location: s, continuation: z.object({ offset: n, revision: s }) })), missing: z.array(n), rescanRequired: b, deletionTrackingLimitation: s, unread: strings }),
     nextCheckpoint: s, advisory: s },
   github_comment_commit: { ...atCommit, id: n, url: s, note: s },
   github_comment_pull_request: { ...repository, number: n, id: n, url: s, observedHeadSha: s, note: s },
