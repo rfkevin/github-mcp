@@ -1,6 +1,8 @@
 import { StateContractError } from './contracts';
-import type { AgentRole, StateSnapshot, TaskRecord } from './contracts';
-import { parseWorkflowState, taskRecords, validateSnapshotCurrency } from './state';
+import type { AgentRole } from './contracts';
+import { parseWorkflowState, validateSnapshotCurrency } from './state';
+import { selectTask } from './task-selection';
+import type { TaskParticipation, TaskSelectionReason } from './task-selection';
 import { derivePhaseGuidance } from './phase';
 import type { PhaseGuidance } from './phase';
 import { DELETION_TRACKING_LIMITATION, decodeCheckpoint, diffSources, encodeCheckpoint, fingerprintContent, mergeCoverage, scopeMatches } from './reading-checkpoint';
@@ -8,7 +10,6 @@ import type { CheckpointScope, SourceCoverage, SourceObservation } from './readi
 
 /** Phases où les propositions de pairs sont lisibles ; avant cela l'exclusion P1 est contractuelle. */
 const PEER_PROPOSAL_PERMITTED = ['P2', 'P3', 'P4', 'P5', 'P6'];
-const ACTIONABLE_STATUSES = ['proposed', 'accepted', 'in_progress', 'review'];
 const COVERAGE_NOTE = 'Reading coverage is a fact about fetched content, not proof that the model understood it.';
 
 /** G5-F3: Markdown link syntax is not a readable location; link targets are. */
@@ -55,7 +56,7 @@ export type ContextSource = {
 
 export type ContextEnvelope = {
   cycle: { workflowId: string; phase: string; revision: number; baseRevision: number | null; schemaVersion: string; legacy: boolean; stale: boolean; staleReason?: string };
-  task: { id: string; status: string; owner: string; role: string | null; ownedPaths: string[]; dependencies: string | null; blocker: string | null; version: string; ref: string; nextAction: string } | null;
+  task: { id: string; status: string; owner: string; role: string | null; ownedPaths: string[]; dependencies: string | null; blocker: string | null; version: string; ref: string; nextAction: string; participation: TaskParticipation | null; selectedBy: TaskSelectionReason } | null;
   guidance: PhaseGuidance;
   evidence: { stateLocation: string; stateSha: string; framingRef: string | null; planRef: string | null; executionRef: string | null; contractRef: string | null; acceptanceRef: string | null };
   peerProposalExclusion: { active: boolean; reason: string; contamination: string[] };
@@ -64,31 +65,6 @@ export type ContextEnvelope = {
   nextCheckpoint: string;
   advisory: string;
 };
-
-function selectTask(snapshot: StateSnapshot, request: ContextRequest): TaskRecord | null {
-  const records = taskRecords(snapshot);
-  if (request.taskId) {
-    const found = records.find(record => record.id === request.taskId);
-    if (!found) {
-      throw new StateContractError('TASK_NOT_FOUND', 'No task matches id ' + request.taskId + ' in the canonical state');
-    }
-    return found;
-  }
-  if (request.participant) {
-    const mine = records.filter(record => record.owner === request.participant && ACTIONABLE_STATUSES.includes(record.status));
-    if (mine.length === 0) return null;
-    if (mine.length > 1) {
-      throw new StateContractError('AMBIGUOUS_TASK', 'Several actionable tasks fit participant ' + request.participant + ' (' + mine.map(record => record.id).join(', ') + '): specify taskId.');
-    }
-    return mine[0];
-  }
-  const actionable = records.filter(record => ACTIONABLE_STATUSES.includes(record.status));
-  if (actionable.length === 0) return null;
-  if (actionable.length > 1) {
-    throw new StateContractError('AMBIGUOUS_TASK', 'Several actionable tasks fit the instruction (' + actionable.map(record => record.id).join(', ') + '): specify taskId or participant.');
-  }
-  return actionable[0];
-}
 
 export function buildCollabContext(stateContent: string, request: ContextRequest): ContextEnvelope {
   const snapshot = parseWorkflowState(stateContent);
@@ -112,7 +88,8 @@ export function buildCollabContext(stateContent: string, request: ContextRequest
     }
   }
 
-  const task = selectTask(snapshot, request);
+  const selected = selectTask(snapshot, request);
+  const task = selected?.record ?? null;
   const role = request.role ?? 'consultant';
   const guidance = derivePhaseGuidance(phase, role);
 
@@ -196,11 +173,12 @@ export function buildCollabContext(stateContent: string, request: ContextRequest
       stale,
       ...(staleReason ? { staleReason } : {}),
     },
-    task: task
+    task: selected && task
       ? {
         id: task.id, status: task.status, owner: task.owner, role: task.role ?? null,
         ownedPaths, dependencies: task.dependencies ?? null, blocker: task.blocker ?? null,
         version: task.version, ref: task.ref, nextAction: task.nextAction,
+        participation: selected.participation, selectedBy: selected.selectedBy,
       }
       : null,
     guidance,

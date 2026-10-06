@@ -72,6 +72,7 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 ## CC-2 L2 — contexte et checkpoint (mcp/105856986/cc2-l2-context)
 
 - src/collab/reading-checkpoint.ts : checkpoint portable borné (version, scope, empreintes par source), diff d'édition tardive et rescan explicite, fusion de couverture append-only.
+- src/collab/task-selection.ts : routage déterministe de la mission d'un participant (owner/tester/reviewer, pointeurs Roles puis next_action, échec fermé AMBIGUOUS_TASK) ; tests test/collab/task-selection.spec.ts sur l'état réel CC-2 rév. 3.
 - src/collab/context.ts : envelope progressive read-only (cycle, tâche, guidance, exclusion P1, couverture, continuation) sur les contrats L1.
 - src/mcp/tools/github/collab-context.ts : outil github_collab_context (lecture seule, reprise cross-chat).
 - test/collab/reading-checkpoint.spec.ts, test/collab/context.spec.ts, test/mcp/collab-context.spec.ts.
