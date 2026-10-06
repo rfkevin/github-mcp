@@ -173,3 +173,7 @@ post-fusion et la production doivent rester distincts.
 Référence API : [fusion de branche GitHub](https://docs.github.com/en/rest/branches/branches#merge-a-branch).
 Les protections et consentements réels, ainsi que le parcours entre plusieurs
 clients, doivent encore être vérifiés sur un dépôt de test après publication.
+
+## Cycle de collaboration CC-2
+
+Pour rejoindre, reprendre ou démarrer un cycle CC-2, suivre le guide court [collaboration/usage.md](collaboration/usage.md) (dépannage : [collaboration/troubleshooting.md](collaboration/troubleshooting.md)). Il complète ce parcours commun sans le remplacer : mêmes règles de revue, de SHA exact et de frontière de phase.

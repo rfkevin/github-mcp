@@ -84,3 +84,11 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `src/collab/publication.ts` : generic publication lifecycle with step outcomes and reconciliation requirement.
 - `test/collab/receipts.spec.ts`, `test/collab/publication.spec.ts` : receipt identity, conflicts, duplicate claims, successful readback and uncertain writes.
 - `docs/collaboration/publication-recovery.md` : G3 evidence and measured decision to defer the `exchange` façade until a paired trial proves a net win.
+
+## CC-2 L6 — guide, dépannage et décision de profil
+
+- `docs/collaboration/usage.md` : démarrer, rejoindre/reprendre, table « où se trouve quoi » par domaine et lot, enregistrements compacts, contrat de distribution par API (documentation seule).
+- `docs/collaboration/troubleshooting.md` : erreurs et reprises (mauvaise ref ou droit refusé, source partielle, révision périmée, commentaire édité, curseur non pris en charge, écriture incertaine, mémoire en attente, participant absent).
+- `docs/collaboration/profile-decision.md` : décision G4 mesurée (catalogue conservé, aucun filtrage) et critère de réouverture.
+- `src/mcp/workflow-guidance.ts` : renvoi court vers `github_collab_context` et `usage.md`.
+- `test/collab/guide.spec.ts` : chemins, liens et noms d'outils cités par le guide, plus le renvoi des consignes d'initialisation.
