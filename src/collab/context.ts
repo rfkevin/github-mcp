@@ -9,6 +9,13 @@ import type { CheckpointScope, SourceCoverage, SourceObservation } from './readi
 /** Phases où les propositions de pairs sont lisibles ; avant cela l'exclusion P1 est contractuelle. */
 const PEER_PROPOSAL_PERMITTED = ['P2', 'P3', 'P4', 'P5', 'P6'];
 const ACTIONABLE_STATUSES = ['proposed', 'accepted', 'in_progress', 'review'];
+/** Higher wins when a participant has several actionable tasks (F2 short wake « agent, go »). */
+const ACTIONABLE_STATUS_RANK: Record<string, number> = {
+  in_progress: 4,
+  accepted: 3,
+  review: 2,
+  proposed: 1,
+};
 const COVERAGE_NOTE = 'Reading coverage is a fact about fetched content, not proof that the model understood it.';
 
 /** G5-F3: Markdown link syntax is not a readable location; link targets are. */
@@ -65,6 +72,29 @@ export type ContextEnvelope = {
   advisory: string;
 };
 
+function participantAssigned(record: TaskRecord, participant: string): boolean {
+  return record.owner === participant
+    || record.reviewer === participant
+    || record.tester === participant;
+}
+
+function pickPreferredActionable(candidates: TaskRecord[], label: string): TaskRecord | null {
+  if (candidates.length === 0) return null;
+  let bestRank = 0;
+  for (const record of candidates) {
+    const rank = ACTIONABLE_STATUS_RANK[record.status] ?? 0;
+    if (rank > bestRank) bestRank = rank;
+  }
+  const top = candidates.filter(record => (ACTIONABLE_STATUS_RANK[record.status] ?? 0) === bestRank);
+  if (top.length > 1) {
+    throw new StateContractError(
+      'AMBIGUOUS_TASK',
+      'Several actionable tasks fit ' + label + ' at status rank ' + top[0]!.status + ' (' + top.map(record => record.id).join(', ') + '): specify taskId.',
+    );
+  }
+  return top[0]!;
+}
+
 function selectTask(snapshot: StateSnapshot, request: ContextRequest): TaskRecord | null {
   const records = taskRecords(snapshot);
   if (request.taskId) {
@@ -75,19 +105,15 @@ function selectTask(snapshot: StateSnapshot, request: ContextRequest): TaskRecor
     return found;
   }
   if (request.participant) {
-    const mine = records.filter(record => record.owner === request.participant && ACTIONABLE_STATUSES.includes(record.status));
-    if (mine.length === 0) return null;
-    if (mine.length > 1) {
-      throw new StateContractError('AMBIGUOUS_TASK', 'Several actionable tasks fit participant ' + request.participant + ' (' + mine.map(record => record.id).join(', ') + '): specify taskId.');
-    }
-    return mine[0];
+    const mine = records.filter(record =>
+      participantAssigned(record, request.participant!) && ACTIONABLE_STATUSES.includes(record.status));
+    return pickPreferredActionable(mine, 'participant ' + request.participant);
   }
   const actionable = records.filter(record => ACTIONABLE_STATUSES.includes(record.status));
-  if (actionable.length === 0) return null;
-  if (actionable.length > 1) {
-    throw new StateContractError('AMBIGUOUS_TASK', 'Several actionable tasks fit the instruction (' + actionable.map(record => record.id).join(', ') + '): specify taskId or participant.');
-  }
-  return actionable[0];
+  return pickPreferredActionable(
+    actionable,
+    'the instruction (no participant)',
+  );
 }
 
 export function buildCollabContext(stateContent: string, request: ContextRequest): ContextEnvelope {

@@ -123,6 +123,10 @@ export interface TaskRecord {
   owner: string;
   /** Declared participant role for this task, when the state records one. */
   role?: string;
+  /** Declared reviewer label, when the Tasks table records one. */
+  reviewer?: string;
+  /** Declared tester label, when the Tasks table records one. */
+  tester?: string;
   /** Paths owned by the task ('none' when not applicable). */
   ownedPaths?: string;
   /** Task dependencies ('none' when not applicable). */
