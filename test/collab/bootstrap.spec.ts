@@ -69,7 +69,14 @@ describe('amorçage additif : planificateur', () => {
       'AGENTS.md': file(EMBEDDED_TEMPLATES['AGENTS.md']!),
       'AGENT_MEMORY.md': file(EMBEDDED_TEMPLATES['AGENT_MEMORY.md']!),
     });
-    expect(result.status).toBe('unchanged');
+    expect(result.status).toBe('ready');
+    expect(result.operations.map(op => op.path)).toEqual([RECORD_PATH]);
+    expect(result.entries.filter(item => item.action === 'create').map(item => item.target)).toEqual([RECORD_PATH]);
+  });
+
+  it('modèle incompatible et registre absent : aucune opération, le registre n’est pas planifié', async () => {
+    const result = await plan({ 'AGENT_MEMORY.md': file('sans titre') });
+    expect(result.status).toBe('action_required');
     expect(result.operations).toEqual([]);
   });
 

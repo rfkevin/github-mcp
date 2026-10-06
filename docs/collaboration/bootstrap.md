@@ -16,14 +16,14 @@ Objectif : donner à un dépôt les fichiers minimaux de collaboration (`AGENTS.
 | Identique au modèle | `unchanged` | rien |
 | Existant, compatible (`requiredPatterns` satisfaits) | `kept` | conservé, jamais écrasé |
 | Existant, incompatible | `action_required` | **aucune** opération planifiée (tout ou rien) ; décision explicite du propriétaire |
-| Registre absent et des créations prévues | `create` | `docs/collaboration/bootstrap-manifest.json` |
+| Registre absent (même si les modèles existent déjà) | `create` | `docs/collaboration/bootstrap-manifest.json`, sauf si un `action_required` bloque le plan |
 | Registre différent | `action_required` | pas de mise à jour automatique |
 
 Garde-fous : modèles épinglés par SHA-256 (`TEMPLATE_SHA_MISMATCH` si altéré) ; sources de dépôt épinglées sur un commit de 40 hex ; chemins cibles validés (`assertWritablePath`, fichiers sensibles refusés, chemin du registre réservé, doublons insensibles à la casse refusés) ; registre déterministe dérivé du seul manifeste.
 
 ## Exemples mesurés (planificateur, tests `test/collab/bootstrap.spec.ts`)
 
-- Dépôt déjà équipé (github-mcp, project-mcp-collab) : fichiers existants conservés ou identiques → `unchanged` / `kept`, zéro opération.
+- Dépôt déjà équipé sans registre (github-mcp, project-mcp-collab) : modèles `kept` / `unchanged`, une seule création (le registre) ; une fois le registre en place, `unchanged` et zéro opération.
 - Dépôt vide : `ready`, 3 créations (`AGENTS.md`, `AGENT_MEMORY.md`, registre).
 - `AGENT_MEMORY.md` sans titre : `action_required`, zéro opération.
 

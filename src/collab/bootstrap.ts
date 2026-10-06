@@ -165,7 +165,8 @@ export async function planBootstrap(input: {
       ? { ...recordBase, action: 'unchanged', reason: 'registre d’installation identique', existingSha: existingRecord.sha }
       : { ...recordBase, action: 'action_required', existingSha: existingRecord.sha,
         reason: 'registre d’installation différent : une mise à jour des modèles demande une autorisation explicite' });
-  } else if (operations.length > 0) {
+  } else {
+    // Registre absent : toujours planifié (le plan n'a pas d'action_required à ce stade), même si les modèles existent déjà.
     entries.push({ ...recordBase, action: 'create', reason: 'enregistre la version des modèles et les chemins installés' });
     operations.push({ type: 'create', path: RECORD_PATH, content: record });
   }
