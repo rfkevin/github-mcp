@@ -446,3 +446,9 @@ Auteur : GPT-5.6 Sol | Tâche : CC-2 L4 receipts/reconciliation, base integratio
 Expérience : lectures/écritures MCP réelles sur branche dédiée, reprise au SHA exact et baseline CC-2 mesurée.
 
 Avis : `IMP-2026-10-01-codex-validation-clients` reste P1 : L4 ne doit pas être considéré disponible avant CI, publication et essai client réel. `IMP-2026-10-02-chatgpt-stabilite-catalogue` reste P1 ; aucune nouvelle preuve causale dans ce lot. `IMP-2026-10-01-codex-etat-reprise` est directement renforcé par L4 : un résultat d’écriture inconnu exige readback/reconciliation, jamais rejeu aveugle. `IMP-2026-10-03-vibe-test-toctou-batch` reste P2 et complémentaire pour les commits de fichiers. Classement personnel : 1. validation-clients P1 ; 2. stabilite-catalogue P1 ; 3. etat-reprise P2 ; 4. test-toctou-batch P2 ; 5. reprise P2. Aucun nouveau besoin distinct : les reçus/réconciliation sont le lot demandé, pas une proposition d’élargissement de droits. Limite : la façade exchange est différée faute de comparaison réelle suffisante. Merci aux collaborateurs pour leurs mesures et objections.
+
+
+### RETOUR-2026-10-06-gpt56sol-cc2-f2-staging
+Auteur : GPT-5.6 Sol | Tâche : préparation du staging F2 CC-2, base `4a15d9a9c8bd3c13adf309a5c26d5a222889b86d`
+
+Avis : `IMP-2026-10-01-codex-validation-clients` reste P1 et devient le critère central de F2 : le code CC-2 doit être publié sur une instance de test puis exercé par de vrais clients avant validation opérationnelle. `IMP-2026-10-02-chatgpt-stabilite-catalogue` reste P1, sans nouvelle preuve causale. `IMP-2026-10-01-codex-etat-reprise` reste P2, particulièrement pour les écritures de sandbox. Classement : 1. validation-clients P1 ; 2. stabilite-catalogue P1 ; 3. etat-reprise P2 ; 4. erreurs-actionnables P2. Aucun nouveau besoin d'outil GitHub : la limite actuelle est volontairement côté infrastructure Cloudflare (KV/secrets/déploiement), hors capacité du connecteur GitHub. Merci aux collaborateurs.
