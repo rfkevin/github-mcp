@@ -60,6 +60,20 @@ describe('outil github_collab_context', () => {
     expect(typeof payload.nextCheckpoint).toBe('string');
   });
 
+  it('F2-BUG-01 : une erreur de contrat d état expose son code (AMBIGUOUS_TASK) au lieu d un échec générique', async () => {
+    const twoTasks = state.replace(
+      '| L2 | in_progress | Vibe GLM | 1 | branch:l2 | implement |',
+      '| L2 | in_progress | Vibe GLM | 1 | branch:l2 | implement |\n| L3 | in_progress | Claude | 1 | branch:l3 | implement |',
+    );
+    const handler = fixture(twoTasks);
+    const result = await handler({ repository: 'rfkevin/project-mcp-collab', ref: sha });
+    expect(result.isError).toBe(true);
+    const failure = (result.structuredContent as { error: { code: string; message: string; retryable: boolean } }).error;
+    expect(failure.code).toBe('AMBIGUOUS_TASK');
+    expect(failure.message).toContain('taskId');
+    expect(failure.retryable).toBe(false);
+  });
+
   it('échoue proprement sur un état illisible', async () => {
     const handler = fixture('not a workflow state');
     const result = await handler({ repository: 'rfkevin/project-mcp-collab', ref: sha });
