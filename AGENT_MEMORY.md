@@ -347,3 +347,8 @@ Constat et vérification : L4 ajoute des reçus durables avec operation id, empr
 - Rebased clean onto staging after L4 (branch mcp/105856986/cc2-l5-memory-v2) to avoid AGENT_MEMORY conflict lock.
 - Pure evaluation: candidates / voting / projection. ClosureEvidence required; applicability filter enforced; publication stays pending until L4 write.
 - Prior review agree (Sol) + test pass (Vibe) were at dd29bf4 on the conflicted branch; renew on this head.
+
+## 2026-10-06 — CC-2 G5-F3 link-target extraction (Vibe GLM)
+- Livraison G5-F3 (acceptance-results.md G5-F3) sur la branche mcp/105856986/cc2-g5f3-link-targets depuis le staging cc2-integration (0a2063a7) : les emplacements de sources extraient désormais les cibles des liens Markdown au lieu de la syntaxe brute ; les refs sans lien sont inchangées ; evidence.* et task.ownedPaths conservent la valeur brute du header pour fidélité.
+- Compatibilité checkpoints : aucun changement de schéma ni de version ; une location de checkpoint enregistrée comme lien brut rescane une fois (comportement conservatif assumé, aligné sur l absence jamais traitée comme preuve).
+- Tests : extractLinkTargets (cible unique/multiple/dédupliquée/sans lien) + fixture link-refs-state avec plan_ref/execution_ref/owned_paths en Markdown ; assertions sources/unread purs et evidence brut. CI au SHA exact de la PR.
