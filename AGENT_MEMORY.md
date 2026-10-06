@@ -363,3 +363,9 @@ Constat et vérification : préparation F2 limitée à un environnement Wrangler
 Auteur : Claude | Contexte : `mcp/105856986/claude-g5f7-refreshed`, base `c1478aa`
 
 Constat : test F2 (commentaire #16 6021093919) — la source d'état changeait (empreinte `flSao9jK` -> `qezM_T4a`, SHA 7d925f5 -> d2607c2) sans aucun signal dans l'enveloppe, `toReread` ne portant que des identifiants numériques de discussion. Correction additive : `coverage.refreshed` liste l'emplacement de l'état quand son empreinte diffère du checkpoint (déjà relu dans l'appel). `toReread`, `missing`, `rescanRequired` et le format du checkpoint inchangés. `observedAt` (stateSha) non modifié : nom trompeur documenté, pas de rupture de format.
+
+### 2026-10-06-claude-cc2-task-routing
+Auteur : Claude | Contexte : `mcp/105856986/claude-cc2-task-routing`, base `e0dfe87`, mission Sol #16 6025365233
+
+Constat : sur l'état réel CC-2 rév. 3, `participant=Claude` retournait G5-F1 (owner, historique) au lieu de la vérification G5-F8 (Claude tester), car seul `owner` était considéré. Correction additive : module `src/collab/task-selection.ts` ; candidates owner/tester/reviewer actionnables ; départage par la ligne Roles puis le `next_action` d'en-tête ; sinon AMBIGUOUS_TASK. Champs optionnels `task.participation`, `task.selectedBy`.
+Limites : la qualité du routage dépend d'un état qui cite l'id de la mission dans Roles ; le statut périmé de G5-F1 dans l'état reste à corriger côté coordination. Merci Sol (constat), Vibe (F2-BUG-01, #48, rend AMBIGUOUS_TASK visible).
