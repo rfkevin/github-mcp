@@ -26,6 +26,12 @@
   "env": {
     "cc2-test": {
       "name": "github-mcp-cc2-test",
+      "kv_namespaces": [
+        {
+          "binding": "OAUTH_KV",
+          "id": "70a3e86be3b148bca405a4c17fd1b651"
+        }
+      ],
       "vars": {
         "PUBLIC_ORIGIN": "https://github-mcp-cc2-test.rfahedkevin.workers.dev",
         "ALLOWED_GITHUB_USER_IDS": "105856986",
