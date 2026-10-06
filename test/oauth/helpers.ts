@@ -8,7 +8,7 @@ import { codeChallenge } from '../../src/auth/github';
 export const READ_TOOLS = ['github_list_repositories', 'github_get_project_guide', 'github_read_file',
     'github_list_directory', 'github_search_code', 'github_get_commit', 'github_compare_refs', 'github_ci_status', 'github_collab_context',
     'github_get_check_result', 'github_get_failure_report', 'github_get_quality_report', 'github_read_files',
-    'github_get_project_context', 'github_list_pull_requests', 'github_get_pull_request', 'github_list_issues', 'github_get_issue', 'github_get_issue_comment', 'github_list_discussion_items', 'github_get_discussion_item', 'github_get_discussion_delta', 'github_get_merge_context'];
+    'github_get_project_context', 'github_list_pull_requests', 'github_get_pull_request', 'github_list_issues', 'github_get_issue', 'github_get_issue_comment', 'github_list_discussion_items', 'github_get_discussion_item', 'github_get_discussion_delta', 'github_plan_project_bootstrap', 'github_get_merge_context'];
 export const WRITE_TOOLS = ['github_comment_commit', 'github_comment_pull_request', 'github_comment_issue', 'github_create_branch',
     'github_commit_changes', 'github_apply_changes', 'github_open_pull_request', 'github_replace_text', 'github_restore_file', 'github_append_file', 'github_create_issue', 'github_resolve_conflicts'];
 // A separate fixture is created by each spec; mocks and bindings stay local.
