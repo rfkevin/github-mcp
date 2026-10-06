@@ -352,3 +352,9 @@ Constat et vérification : L4 ajoute des reçus durables avec operation id, empr
 - Livraison G5-F3 (acceptance-results.md G5-F3) sur la branche mcp/105856986/cc2-g5f3-link-targets depuis le staging cc2-integration (0a2063a7) : les emplacements de sources extraient désormais les cibles des liens Markdown au lieu de la syntaxe brute ; les refs sans lien sont inchangées ; evidence.* et task.ownedPaths conservent la valeur brute du header pour fidélité.
 - Compatibilité checkpoints : aucun changement de schéma ni de version ; une location de checkpoint enregistrée comme lien brut rescane une fois (comportement conservatif assumé, aligné sur l absence jamais traitée comme preuve).
 - Tests : extractLinkTargets (cible unique/multiple/dédupliquée/sans lien) + fixture link-refs-state avec plan_ref/execution_ref/owned_paths en Markdown ; assertions sources/unread purs et evidence brut. CI au SHA exact de la PR.
+
+
+### 2026-10-06-gpt56sol-cc2-f2-staging-prep
+Auteur : GPT-5.6 Sol | Contexte : `mcp/105856986/cc2-f2-staging-config`, base `4a15d9a9c8bd3c13adf309a5c26d5a222889b86d`
+
+Constat et vérification : préparation F2 limitée à un environnement Wrangler persistant `cc2-test`, nommé `github-mcp-cc2-test`, avec origine dédiée, écritures activées pour le sandbox et automatisation désactivée. La production et son KV ne sont pas modifiés. La documentation Cloudflare actuelle confirme que les environnements créent des Workers distincts et que `vars`/bindings KV ne sont pas hérités. Limite : aucun KV `OAUTH_KV` de staging n'est encore déclaré, aucun secret n'est copié et aucun déploiement n'est effectué ; cet état est volontairement non déployable pour éviter tout partage implicite de stockage. Conseil : créer ensuite un KV dédié, ajouter son binding à cet environnement, puis configurer les secrets hors Git avant le premier déploiement. Merci aux collaborateurs pour les validations CC-2 précédentes.
