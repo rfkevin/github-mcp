@@ -3,7 +3,7 @@ import type { GitHubClient } from '../github/client';
 import { GitHubApiError, GitHubConflictError, InputValidationError } from '../github/types';
 import { SENSITIVE_FILE } from '../github/files';
 import { assertSelectedRepository, assertWritableBranch, assertWritablePath, validateChangeSet } from '../security/policy';
-import { verificationFollowUp } from '../mcp/workflow-guidance';
+import { verificationFollowUp } from '../workflow/follow-up';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/i).transform(value => value.toLowerCase());
 const repository = z.string().min(3).max(200);

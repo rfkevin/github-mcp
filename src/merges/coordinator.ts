@@ -4,7 +4,7 @@ import { InputValidationError } from '../github/types';
 import { SENSITIVE_FILE } from '../github/files';
 import { assertSelectedRepository, assertWritableBranch } from '../security/policy';
 import { agentLabelSchema, mutation } from '../writes/coordinator';
-import { verificationFollowUp } from '../mcp/workflow-guidance';
+import { verificationFollowUp } from '../workflow/follow-up';
 
 const repository = z.string().min(3).max(200), branch = z.string().min(1).max(240);
 const sha = z.string().regex(/^[a-f0-9]{40}$/i).transform(value => value.toLowerCase());

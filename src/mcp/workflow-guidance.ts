@@ -14,9 +14,5 @@ Retour d'expérience obligatoire en fin de tâche : le dépôt central de cet ou
 Après le travail, ajouter une contribution à TOOL_IMPROVEMENTS.md du dépôt central : auteur déclaré, date, dépôt/branche/SHA de la tâche, expérience réelle ou simple hypothèse, outil concerné, problème, preuve sans secret, proposition, bénéfice/coût/risque, critère de réussite et priorité P0 sécurité immédiate/P1 blocage ou risque important/P2 gain récurrent/P3 confort. Analyser les propositions antérieures pertinentes par leur ID, donner un avis motivé (accord, nuance, désaccord, déjà traité ou non vérifié), puis un classement personnel actualisé par importance. Ne pas remplacer le classement ou les mots d'un autre, ne pas compter des labels comme votes indépendants. Ne pas recopier les doublons : ajouter une preuve ou nuance à l'ID existant. S'il n'y a rien de nouveau, le dire brièvement avec l'avis sur l'existant, sans inventer de besoin. Pas de proposition transformée en autorisation de l'implémenter.
 Publier ce retour uniquement si l'écriture est autorisée : conserver tous les octets existants, ajouter en fin, branche dédiée puis PR dans ${TOOL_FEEDBACK.repository}, jamais écriture directe sur main/master ni fusion principale automatique. Si ce dépôt est aussi la tâche courante, réutiliser sa PR pour éviter un doublon. Relire les SHA après un ajout concurrent. Sans accès, écriture, temps ou lecture complète, remettre la contribution au propriétaire et signaler sa non-publication. Ne pas mélanger ce registre avec AGENT_MEMORY.md. Remercier les collaborateurs.`;
 
-export function verificationFollowUp(repository: string, sha: string, pullRequestNumber?: number) {
-  return { taskComplete: false, reason: 'Vérifications CI/build du dernier commit encore à attester.',
-    nextTool: 'github_ci_status', arguments: { repository, ref: sha },
-    pullRequestNumber, nextPollSeconds: 15,
-    instruction: 'Déclarer expectedChecks depuis les workflows et la mission, attendre leurs résultats, corriger les échecs autorisés. Relire le headSha de la PR avant le bilan final ; une PR créée ne clôt pas la tâche.' };
-}
+// Chemin public historique conservé ; la définition vit dans une couche neutre.
+export { verificationFollowUp } from '../workflow/follow-up';
