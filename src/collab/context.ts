@@ -60,7 +60,7 @@ export type ContextEnvelope = {
   evidence: { stateLocation: string; stateSha: string; framingRef: string | null; planRef: string | null; executionRef: string | null; contractRef: string | null; acceptanceRef: string | null };
   peerProposalExclusion: { active: boolean; reason: string; contamination: string[] };
   sources: ContextSource[];
-  coverage: { resumed: boolean; scopeMatch: boolean; readComplete: string[]; toReread: number[]; partial: Array<{ location: string; continuation: { offset: number; revision: string } }>; missing: number[]; rescanRequired: boolean; deletionTrackingLimitation: string; unread: string[] };
+  coverage: { resumed: boolean; scopeMatch: boolean; readComplete: string[]; toReread: number[]; refreshed: string[]; partial: Array<{ location: string; continuation: { offset: number; revision: string } }>; missing: number[]; rescanRequired: boolean; deletionTrackingLimitation: string; unread: string[] };
   nextCheckpoint: string;
   advisory: string;
 };
@@ -165,6 +165,9 @@ export function buildCollabContext(stateContent: string, request: ContextRequest
     readComplete: true,
     observedAt: snapshot.headers.based_on_sha,
   };
+  /** The state has no discussion id, so diffSources cannot flag it: report a tracked source whose fingerprint differs from the freshly read content. */
+  const previousState = inScopeSources.find(source => source.location === stateLocation);
+  const refreshed = previousState && previousState.fingerprint !== stateCoverage.fingerprint ? [stateLocation] : [];
   const mergedCoverage = mergeCoverage(inScopeSources, [stateCoverage]);
   const readCompleteLocations = new Set(mergedCoverage
     .filter(source => source.readComplete)
@@ -218,7 +221,7 @@ export function buildCollabContext(stateContent: string, request: ContextRequest
     },
     sources,
     coverage: {
-      resumed: previous !== null, scopeMatch, readComplete, toReread: diff.changed, partial,
+      resumed: previous !== null, scopeMatch, readComplete, toReread: diff.changed, refreshed, partial,
       missing: diff.missing, rescanRequired: diff.rescanRequired,
       deletionTrackingLimitation: DELETION_TRACKING_LIMITATION, unread,
     },

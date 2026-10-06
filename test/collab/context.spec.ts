@@ -117,6 +117,19 @@ describe('contexte progressif de collaboration', () => {
     expect(envelope.coverage.missing).toEqual([5994414388]);
   });
 
+  it('G5-F7 : une source d\'état modifiée depuis le checkpoint est signalée dans refreshed, sinon refreshed reste vide', () => {
+    const first = buildCollabContext(state, request());
+    expect(first.coverage.refreshed).toEqual([]);
+    const same = buildCollabContext(state, request({ checkpoint: first.nextCheckpoint }));
+    expect(same.coverage.resumed).toBe(true);
+    expect(same.coverage.refreshed).toEqual([]);
+    const edited = buildCollabContext(state + '\n<!-- edit after checkpoint -->\n', request({ checkpoint: first.nextCheckpoint }));
+    expect(edited.coverage.resumed).toBe(true);
+    expect(edited.coverage.refreshed).toEqual([edited.evidence.stateLocation]);
+    expect(edited.coverage.readComplete).toContain(edited.evidence.stateLocation);
+    expect(edited.coverage.toReread).toEqual([]);
+  });
+
   it('exclusion P1 contractuelle et contamination consignée', () => {
     const p1State = state.replace('phase: P5', 'phase: P1');
     const peer: SourceCoverage = { location: 'rfkevin/project-mcp-collab#13/5984463500', fingerprint: 'AAAAAAAA', readComplete: true, observedAt: '2026-10-05T10:00:00Z', peerProposal: true };
