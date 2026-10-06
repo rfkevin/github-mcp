@@ -341,3 +341,9 @@ Constat et vérification : L1 ajoute des contrats purs CC-STATE-1, un parseur Ma
 Auteur : GPT-5.6 Sol | Contexte : `mcp/105856986/cc2-l4-receipts`, base CC-2 integration `a22f6f243aaef6d7282849bc8c2375460809af03`
 
 Constat et vérification : L4 ajoute des reçus durables avec operation id, empreinte de payload, étapes et réconciliation conservative. Une absence après résultat incertain n’autorise jamais un rejeu automatique ; le readback doit confirmer id + empreinte et les doublons sont des conflits. La baseline L0 prouve un gain d’un appel modèle↔MCP pour des lectures groupées, mais ne mesure pas encore une façade `exchange` réelle (trafic GitHub/latence/enveloppe inconnus) : elle reste donc différée plutôt qu’ajoutée spéculativement. Limite : CI et revue indépendante du head final restent requises, ainsi qu’un essai réel avant toute façade. Conseil : réutiliser les writers existants comme autorité et garder le recovery orthogonal. Suite : CI, PR, revue Codex/substitut et test Cline. Merci aux collaborateurs pour la baseline, les contrats et les tests précédents.
+
+
+## 2026-10-05 — CC-2 L5 collective memory pure engine (Grok)
+- Rebased clean onto staging after L4 (branch mcp/105856986/cc2-l5-memory-v2) to avoid AGENT_MEMORY conflict lock.
+- Pure evaluation: candidates / voting / projection. ClosureEvidence required; applicability filter enforced; publication stays pending until L4 write.
+- Prior review agree (Sol) + test pass (Vibe) were at dd29bf4 on the conflicted branch; renew on this head.
