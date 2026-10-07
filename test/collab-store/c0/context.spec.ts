@@ -55,6 +55,8 @@ describe('C0 S5 — cross-cycle memory query', () => {
     const p95 = percentile(samples, 95);
     metric('S5_query_ms_p50', percentile(samples, 50));
     metric('S5_query_ms_p95', p95);
-    expect(p95).toBeLessThanOrEqual(50);
+    // Cloud rerun: queries cross the network from the tester's machine, so the 50 ms criterion
+    // (meant for a Worker next to D1) is reported, not asserted. It is checked with C2 on cc3-test.
+    if (!(globalThis as { __C0_CLOUD__?: boolean }).__C0_CLOUD__) expect(p95).toBeLessThanOrEqual(50);
   });
 });

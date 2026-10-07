@@ -5,6 +5,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
     "test:unit": "vitest run",
+    "test:c0-cloud": "vitest run -c vitest.c0-cloud.config.mts",
     "test:ci-scripts": "node --test scripts/ci/checks.test.mjs scripts/deploy/deploy.test.mjs scripts/automation/runner.test.mjs scripts/diagnostics/openai-mcp.test.mjs",
     "diagnose:openai": "node scripts/diagnostics/openai-mcp.mjs",
     "check:quick": "node scripts/ci/run-checks.mjs quick",

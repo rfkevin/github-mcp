@@ -41,7 +41,13 @@ export default {
       apiRoute: '/mcp', apiHandler: mcpHandler, defaultHandler: authHandler,
       authorizeEndpoint: '/authorize', tokenEndpoint: '/oauth/token', clientRegistrationEndpoint: '/oauth/register',
       scopesSupported: scopes,
-      requiredScopes: writes ? ['mcp:read', 'mcp:write'] : ['mcp:read'],
+      // mcp:checks est exigé seulement quand GITHUB_CHECKS_CONFIG est configuré : les clients
+      // le demandent alors dès la connexion (sans configuration manuelle des scopes).
+      requiredScopes: [
+        'mcp:read',
+        ...(writes ? ['mcp:write'] : []),
+        ...(scopes.includes('mcp:checks') ? ['mcp:checks'] : []),
+      ],
       resourceMetadata: { resource: `${origin}/mcp`, authorization_servers: [origin] },
       clientIdMetadataDocumentEnabled: true,
     });

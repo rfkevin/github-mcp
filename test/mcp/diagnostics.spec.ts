@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GitHubApiError } from '../../src/github/client';
 import { GitHubHttp } from '../../src/github/http';
 import { InputValidationError } from '../../src/github/types';
 import type { ToolContext } from '../../src/mcp/context';
 import { safeDiagnostic } from '../../src/mcp/tools/github/reports';
 import { collectCiStatus } from '../../src/mcp/tools/github/ci';
-import { failureMessage, publicFailure, textPayload } from '../../src/mcp/tools/github/result';
+import { failureMessage, publicFailure, textPayload, toolFailure } from '../../src/mcp/tools/github/result';
 import { mapLimit } from '../../src/mcp/tools/github/batch';
 import { readJson } from '../../src/github/response';
 import { SHA, OTHER, context } from './helpers';
@@ -33,6 +33,20 @@ describe('foundation: diagnostics et cohérence', () => {
         expect(publicFailure(new GitHubApiError(422, '/app/installations/{id}/access_tokens', 'CANARY')))
             .toMatchObject({ code: 'APP_PERMISSIONS_REJECTED', retryable: false });
         expect(JSON.stringify(publicFailure(new GitHubApiError(403, '/private', 'CANARY')))).not.toContain('CANARY');
+    });
+    it('affiche le code fermé dans le texte quand le message est le repli générique', () => {
+        vi.spyOn(console, 'log').mockImplementation(() => { });
+        const generic = toolFailure({ actor: '1' } as ToolContext, 'run_checks', 'Impossible de lancer ces vérifications.',
+            new GitHubApiError(422, '/repos/o/r/actions/workflows/agent-checks.yml/dispatches', 'CANARY'));
+        expect(generic.content[0].text).toBe('Impossible de lancer ces vérifications. Code : GITHUB_API_422.');
+        expect(generic.structuredContent.error).toMatchObject({ code: 'GITHUB_API_422', retryable: false });
+        expect(JSON.stringify(generic)).not.toContain('CANARY');
+        expect(toolFailure({ actor: '1' } as ToolContext, 'run_checks', 'Échec.', new Error('TOKEN_CANARY')).content[0].text)
+            .toBe('Échec. Code : UNEXPECTED_ERROR.');
+        const explicit = toolFailure({ actor: '1' } as ToolContext, 'run_checks', 'Échec.',
+            new InputValidationError('Le contrôleur a changé.', 'CONTROLLER_CHANGED'));
+        expect(explicit.content[0].text).toBe('Le contrôleur a changé.');
+        vi.restoreAllMocks();
     });
     it('borne les sorties et ne recopie pas un résultat trop gros', () => {
         expect(() => textPayload({ data: 'x'.repeat(170000) })).toThrow('Résultat trop volumineux');

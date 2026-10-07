@@ -65,7 +65,8 @@
         "GITHUB_OAUTH_CLIENT_ID": "Iv23liaWMkDZAKSVWClX",
         "GITHUB_WRITES_ENABLED": "true",
         "GITHUB_AUTOMATION_ENABLED": "false",
-        "COLLAB_STORE_ENABLED": "true"
+        "COLLAB_STORE_ENABLED": "true",
+        "GITHUB_CHECKS_CONFIG": "[{\"repository\":\"rfkevin/github-mcp\",\"ref\":\"master\",\"controllerSha\":\"fc2da1dbd51988dfc9e3f1ac1e224e56dfc47814\"}]"
       }
     }
   },
