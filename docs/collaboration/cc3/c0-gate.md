@@ -49,7 +49,7 @@ Same scenarios, same code, through `npm run test:c0-cloud` ([c0-cloud-run.md](c0
 
 What this proves: D1 `batch()` atomicity, the CAS condition, idempotency, rollback and export/import behave on the real service exactly as locally.
 
-What this does not prove: any Worker-to-D1 latency. The S5 and append timings above are dominated by the link between the tester's machine and Cloudflare. In cloud mode the harness now **reports** the S5 value without asserting 50 ms (`__C0_CLOUD__` in `cloud-setup.ts`); the local run still asserts it. The 50 ms criterion has to be measured with a deployed Worker on `cc3-test` during C2, and the result recorded here. Not done: D1 Time Travel restore as extra S6 evidence.
+What this does not prove: any Worker-to-D1 latency. The S5 and append timings above are dominated by the link between the tester's machine and Cloudflare. In cloud mode the harness now **reports** the S5 value without asserting 50 ms (`__C0_CLOUD__` in `cloud-setup.ts`); the local and CI runs report p95 and assert only a 50 ms median after five warm-up queries, because a shared CI runner exceeded the p95 once (154 ms, deploy-cc3-test run 37658176122) without any code change. The 50 ms criterion has to be measured with a deployed Worker on `cc3-test` during C2, and the result recorded here. Not done: D1 Time Travel restore as extra S6 evidence.
 
 Decision needed from the owner: accept the gate on correctness and start C2, with the latency check moved to C2, or wait for a latency measurement first.
 
