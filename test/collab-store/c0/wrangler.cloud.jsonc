@@ -1,0 +1,24 @@
+{
+  // CC-3 C0 cloud rerun (K3/K4): the SAME scenarios as the local gate, but the two D1
+  // bindings are real, remote D1 databases. Scratch databases only: the suite drops
+  // and recreates the prototype tables, so never point this at a product database.
+  "name": "github-mcp-c0-cloud",
+  "main": "../../../src/index.ts",
+  "account_id": "8508df2ab3bc8d7e6e2d37fde83dcbb3",
+  "compatibility_date": "2026-09-26",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "d1_databases": [
+    {
+      "binding": "COLLAB_DB",
+      "database_name": "github-mcp-cc3-c0",
+      "database_id": "REPLACE_WITH_C0_SCRATCH_D1_ID",
+      "remote": true
+    },
+    {
+      "binding": "COLLAB_DB_RESTORE",
+      "database_name": "github-mcp-cc3-c0-restore",
+      "database_id": "REPLACE_WITH_C0_RESTORE_D1_ID",
+      "remote": true
+    }
+  ]
+}
