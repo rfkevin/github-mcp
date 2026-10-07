@@ -2,6 +2,7 @@
  * CC-3 C4 — memory_entries lifecycle (plan §4, I4).
  * Versioned rows: propose → activate (reviewer ≠ author) → supersede/retire.
  * Never in-place text rewrite; never silent delete.
+ * Budgets, alarms, participant isolation, protected kinds, hypothesis expiry.
  */
 import {
   validateMemoryActivation,
