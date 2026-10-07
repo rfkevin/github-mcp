@@ -1,4 +1,4 @@
-import OAuthProvider from '@cloudflare/workers-oauth-provider';
+import OAuthProvider, { getOAuthApi, type OAuthHelpers, type OAuthProviderOptions } from '@cloudflare/workers-oauth-provider';
 import { assertConfigured, publicOrigin, type AppEnv, type AuthEnv } from './config';
 import { authHandler } from './auth/handler';
 import { mcpHandler } from './mcp/handler';
@@ -7,6 +7,7 @@ import { writesEnabled } from './writes/config';
 import { automationEnabled } from './automation/config';
 import { collabStoreEnabled, type CollabStoreEnv } from './collab-store/store/config';
 import { collabMcpHandler } from './collab-store/mcp/handler';
+import { OWNER_PATH, handleOwnerRequest, type OwnerRouteEnv } from './collab-store/owner/handler';
 
 export default {
   async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
@@ -37,7 +38,7 @@ export default {
       // CC-3 C2 : 'collab:' n'est proposé que si le store est réellement monté.
       ...(collabStoreEnabled((env as CollabStoreEnv).COLLAB_STORE_ENABLED) && (env as CollabStoreEnv).COLLAB_DB ? ['collab:'] : []),
     ];
-    const provider = new OAuthProvider<AuthEnv>({
+    const providerOptions: OAuthProviderOptions<AuthEnv> = {
       apiRoute: '/mcp', apiHandler: mcpHandler, defaultHandler: authHandler,
       authorizeEndpoint: '/authorize', tokenEndpoint: '/oauth/token', clientRegistrationEndpoint: '/oauth/register',
       scopesSupported: scopes,
@@ -50,7 +51,16 @@ export default {
       ],
       resourceMetadata: { resource: `${origin}/mcp`, authorization_servers: [origin] },
       clientIdMetadataDocumentEnabled: true,
-    });
+    };
+    const provider = new OAuthProvider<AuthEnv>(providerOptions);
+    // CC-3 C5 : canal owner (I7), servi hors des fournisseurs OAuth (aucun jeton n'y donne accès) ;
+    // non monté sans configuration complète. La liste des clients OAuth sert seulement à retrouver
+    // le client d'un pseudonyme unregistered:… lors d'une association.
+    if (new URL(request.url).pathname === OWNER_PATH) {
+      const owner = await handleOwnerRequest(request, env as unknown as OwnerRouteEnv, origin, undefined,
+        () => listOAuthClientIds(getOAuthApi(providerOptions, env as AuthEnv)));
+      if (owner) return owner;
+    }
     // CC-3 C2 : second OAuthProvider, même Worker, resource RFC 8707 dédiée
     // (${origin}/collab/mcp). Endpoints authorize/token/register partagés : une
     // requête dont l'indicateur resource vise le store est routée vers ce
@@ -91,4 +101,17 @@ async function requestedResource(request: Request, pathname: string): Promise<st
     } catch { return null; }
   }
   return null;
+}
+
+/** Identifiants des clients OAuth enregistrés (pagination bornée), pour le canal owner. */
+async function listOAuthClientIds(helpers: OAuthHelpers): Promise<string[]> {
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const result = await helpers.listClients({ limit: 1000, cursor });
+    ids.push(...result.items.map(client => client.clientId));
+    cursor = result.cursor;
+    if (!cursor) break;
+  }
+  return ids;
 }

@@ -37,6 +37,8 @@ export const outputSchemas = {
     revision: z.number(),
     tasks: z.array(z.object(contextTask)),
     participant_id: z.string().nullable().optional(),
+    // CC-3 C5 : identité dérivée du jeton (I8).
+    caller: z.object({ participant_id: z.string(), status: z.enum(['registered', 'unregistered']) }).optional(),
   },
   collab_get_delta: {
     cycle_id: z.string(),
