@@ -1,0 +1,176 @@
+/**
+ * CC-3 C2 — store-owned schema management.
+ *
+ * CANONICAL_SCHEMA_SQL is a byte-for-byte copy of the C1 reference
+ * (src/collab-store/schema/0001_init.sql): C1 owns the schema, C2 never edits
+ * it. A CI test asserts equality after whitespace normalization, so the two
+ * can never drift silently.
+ *
+ * The C0 prototype (src/collab-store/proto) is a frozen artifact and is NOT
+ * consumed here (C1 review reco #3).
+ */
+
+export const CANONICAL_SCHEMA_SQL = [
+  '-- CC-3 C1 — 0001_init.sql : portable standard SQL (D1 + stock SQLite).',
+  '-- No engine-specific options. Revisions start at 1 (F3); expected_rev 0 = creation.',
+  '-- All timestamps: INTEGER unix seconds (no date functions).',
+  '',
+  'CREATE TABLE IF NOT EXISTS participants (',
+  '  participant_id TEXT PRIMARY KEY,',
+  '  display_label TEXT NOT NULL,',
+  '  status TEXT NOT NULL DEFAULT \'active\'',
+  ');',
+  '',
+  'CREATE TABLE IF NOT EXISTS participant_clients (',
+  '  oauth_client_id TEXT PRIMARY KEY,',
+  '  participant_id TEXT NOT NULL REFERENCES participants(participant_id),',
+  '  approved_event_seq INTEGER',
+  ');',
+  '',
+  'CREATE TABLE IF NOT EXISTS cycles (',
+  '  cycle_id TEXT PRIMARY KEY,',
+  '  project TEXT NOT NULL DEFAULT \'\',',
+  '  phase TEXT NOT NULL DEFAULT \'P1\',',
+  '  revision INTEGER NOT NULL DEFAULT 1,',
+  '  status TEXT NOT NULL DEFAULT \'open\'',
+  ');',
+  '',
+  'CREATE TABLE IF NOT EXISTS phase_definitions (',
+  '  cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),',
+  '  phase TEXT NOT NULL,',
+  '  entry_conditions TEXT NOT NULL DEFAULT \'[]\',',
+  '  expected_outputs TEXT NOT NULL DEFAULT \'[]\',',
+  '  exit_conditions TEXT NOT NULL DEFAULT \'[]\',',
+  '  auto_advance TEXT NOT NULL DEFAULT \'none\',',
+  '  PRIMARY KEY (cycle_id, phase)',
+  ');',
+  '',
+  'CREATE TABLE IF NOT EXISTS tasks (',
+  '  task_id TEXT NOT NULL,',
+  '  cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),',
+  '  owner_pid TEXT NOT NULL,',
+  '  reviewer_pid TEXT NOT NULL,',
+  '  tester_pid TEXT NOT NULL,',
+  '  status TEXT NOT NULL DEFAULT \'proposed\',',
+  '  owned_paths TEXT NOT NULL DEFAULT \'[]\',',
+  '  target_ref TEXT NOT NULL DEFAULT \'\',',
+  '  next_action TEXT NOT NULL DEFAULT \'\',',
+  '  revision INTEGER NOT NULL DEFAULT 1,',
+  '  PRIMARY KEY (cycle_id, task_id)',
+  ');',
+  '',
+  'CREATE TABLE IF NOT EXISTS events (',
+  '  seq INTEGER PRIMARY KEY AUTOINCREMENT,',
+  '  cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),',
+  '  at INTEGER NOT NULL,',
+  '  type TEXT NOT NULL,',
+  '  participant_id TEXT NOT NULL,',
+  '  session_id TEXT NOT NULL DEFAULT \'\',',
+  '  role TEXT NOT NULL DEFAULT \'\',',
+  '  payload_json TEXT NOT NULL,',
+  '  expected_rev INTEGER NOT NULL DEFAULT 0,',
+  '  idempotency_key TEXT NOT NULL UNIQUE,',
+  '  evidence_ref TEXT NOT NULL DEFAULT \'\'',
+  ');',
+  'CREATE INDEX IF NOT EXISTS idx_events_cycle_seq ON events(cycle_id, seq);',
+  'CREATE INDEX IF NOT EXISTS idx_events_cycle_type ON events(cycle_id, type);',
+  '',
+  'CREATE TABLE IF NOT EXISTS sealed_items (',
+  '  id TEXT PRIMARY KEY,',
+  '  cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),',
+  '  phase TEXT NOT NULL,',
+  '  participant_id TEXT NOT NULL,',
+  '  content_hash TEXT NOT NULL,',
+  '  content TEXT NOT NULL,',
+  '  revealed_at INTEGER',
+  ');',
+  '',
+  'CREATE TABLE IF NOT EXISTS memory_entries (',
+  '  id TEXT NOT NULL,',
+  '  version INTEGER NOT NULL DEFAULT 1,',
+  '  scope TEXT NOT NULL,',
+  '  kind TEXT NOT NULL,',
+  '  text TEXT NOT NULL,',
+  '  evidence_refs TEXT NOT NULL DEFAULT \'[]\',',
+  '  confidence TEXT NOT NULL DEFAULT \'hypothesis\',',
+  '  status TEXT NOT NULL DEFAULT \'candidate\',',
+  '  author_pid TEXT NOT NULL,',
+  '  reviewer_pid TEXT NOT NULL DEFAULT \'\',',
+  '  supersedes TEXT,',
+  '  uses INTEGER NOT NULL DEFAULT 0,',
+  '  last_used_rev INTEGER,',
+  '  expires_rev INTEGER,',
+  '  PRIMARY KEY (id, version)',
+  ');',
+  'CREATE INDEX IF NOT EXISTS idx_memory_scope_status ON memory_entries(scope, status);',
+  '',
+  'CREATE TABLE IF NOT EXISTS evidence_ledger (',
+  '  seq INTEGER PRIMARY KEY AUTOINCREMENT,',
+  '  subject_pid TEXT NOT NULL,',
+  '  producer TEXT NOT NULL,',
+  '  kind TEXT NOT NULL,',
+  '  payload_json TEXT NOT NULL,',
+  '  evidence_ref TEXT NOT NULL DEFAULT \'\',',
+  '  at INTEGER NOT NULL',
+  ');',
+  'CREATE INDEX IF NOT EXISTS idx_ledger_subject ON evidence_ledger(subject_pid, seq);',
+  '',
+  'CREATE TABLE IF NOT EXISTS owner_decisions (',
+  '  request_id TEXT PRIMARY KEY,',
+  '  decision TEXT NOT NULL,',
+  '  access_subject TEXT NOT NULL,',
+  '  at INTEGER NOT NULL,',
+  '  event_seq INTEGER REFERENCES events(seq)',
+  ');',
+  '',
+  'CREATE TABLE IF NOT EXISTS checkpoints (',
+  '  participant_id TEXT NOT NULL,',
+  '  cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),',
+  '  last_seen_seq INTEGER NOT NULL DEFAULT 0,',
+  '  PRIMARY KEY (participant_id, cycle_id)',
+  ');',
+  '',
+  'CREATE TABLE IF NOT EXISTS quota_counters (',
+  '  day TEXT PRIMARY KEY,',
+  '  writes INTEGER NOT NULL DEFAULT 0',
+  ');',
+  ''
+].join('\n');
+
+/**
+ * Store-internal table (never part of the canonical schema): the transactional
+ * CAS guard row. CHECK(ok = 1) makes a failing guard abort the whole D1 batch.
+ */
+export const STORE_INTERNAL_SCHEMA = [
+  'CREATE TABLE IF NOT EXISTS collab_store_guard (ok INTEGER NOT NULL CHECK (ok = 1))',
+];
+
+/**
+ * Store-owned migration 0002 (C1 review reco #2): events.model_meta is listed in
+ * plan CC-PLAN-3/v1.1 §3.2 but was absent from the frozen C1 schema.
+ */
+export const STORE_MIGRATION_0002 =
+  "ALTER TABLE events ADD COLUMN model_meta TEXT NOT NULL DEFAULT ''";
+
+const ENSURED = new WeakSet<object>();
+
+function runnableStatements(sql: string): string[] {
+  return sql.split(';').map(part => part.trim())
+    .filter(part => part.split('\n').some(line => line.trim() && !line.trim().startsWith('--')));
+}
+
+export async function ensureSchema(db: D1Database): Promise<void> {
+  if (ENSURED.has(db as unknown as object)) return;
+  await db.batch([
+    ...runnableStatements(CANONICAL_SCHEMA_SQL).map(statement => db.prepare(statement)),
+    ...STORE_INTERNAL_SCHEMA.map(statement => db.prepare(statement)),
+  ]);
+  try {
+    // Idempotent: SQLite refuses a duplicate column, which is the expected
+    // outcome when the migration already ran.
+    await db.prepare(STORE_MIGRATION_0002).run();
+  } catch (error) {
+    if (!/duplicate column/i.test(String(error))) throw error;
+  }
+  ENSURED.add(db as unknown as object);
+}
