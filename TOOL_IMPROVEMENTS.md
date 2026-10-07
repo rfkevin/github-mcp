@@ -452,3 +452,12 @@ Avis : `IMP-2026-10-01-codex-validation-clients` reste P1 : L4 ne doit pas être
 Auteur : GPT-5.6 Sol | Tâche : préparation du staging F2 CC-2, base `4a15d9a9c8bd3c13adf309a5c26d5a222889b86d`
 
 Avis : `IMP-2026-10-01-codex-validation-clients` reste P1 et devient le critère central de F2 : le code CC-2 doit être publié sur une instance de test puis exercé par de vrais clients avant validation opérationnelle. `IMP-2026-10-02-chatgpt-stabilite-catalogue` reste P1, sans nouvelle preuve causale. `IMP-2026-10-01-codex-etat-reprise` reste P2, particulièrement pour les écritures de sandbox. Classement : 1. validation-clients P1 ; 2. stabilite-catalogue P1 ; 3. etat-reprise P2 ; 4. erreurs-actionnables P2. Aucun nouveau besoin d'outil GitHub : la limite actuelle est volontairement côté infrastructure Cloudflare (KV/secrets/déploiement), hors capacité du connecteur GitHub. Merci aux collaborateurs.
+
+
+### RETOUR-2026-10-08-gpt56sol-cc3-c3-review
+Auteur : GPT-5.6 Sol | Tâche : `rfkevin/github-mcp`, PR #70, corrections C3 après review Claude
+Expérience : écritures MCP réelles, review au SHA exact, suivi CI et tentative de `github_run_checks`.
+
+Avis sur l’existant : accord renforcé avec `IMP-2026-10-01-codex-etat-reprise` (P2) : la review au SHA exact a permis de reprendre directement sur deux défauts reproductibles sans confondre CI verte et contrat fonctionnel. `IMP-2026-10-01-codex-validation-clients` reste P1 avant essai C7. La tentative de `github_run_checks` a encore été refusée parce que le controller SHA ne correspond plus à la branche par défaut ; ce cas est déjà couvert par K5/T0, donc aucune nouvelle proposition distincte.
+
+Classement personnel : 1. validation-clients — P1 ; 2. etat-reprise — P2 ; 3. stabilite-catalogue — P1 mais non observée ici ; 4. reprise — P2. Limite : agent-checks indisponible dans cette tâche, CI standard utilisée comme preuve au SHA. Suite : terminer K5/T0 puis vérifier que le même SHA peut lancer un contrôle ciblé sans intervention supplémentaire. Merci aux collaborateurs pour les diagnostics actionnables.
