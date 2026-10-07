@@ -14,8 +14,8 @@ describe('CC-3 C3 — phase policies', () => {
     await db.prepare("INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, 'open')").bind(cycle).run();
     await db.prepare([
       'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
-      "VALUES (?1, 'P1', '[]', '[{"role":"author","kind":"proposal.submit","count":1}]', '[]', 'policy-p1')",
-    ].join(' ')).bind(cycle).run();
+      "VALUES (?1, 'P1', '[]', ?2, '[]', 'policy-p1')",
+    ].join(' ')).bind(cycle, JSON.stringify([{ role: 'author', kind: 'proposal.submit', count: 1 }])).run();
     await db.prepare([
       'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
       "VALUES (?1, 1, 'proposal.submit', 'sol', '', 'author', '{}', 0, ?2, '')",
