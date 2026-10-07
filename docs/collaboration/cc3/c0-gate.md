@@ -1,11 +1,13 @@
 # CC-3 C0 — D1 gate report
 
 Plan: CC-PLAN-3/v1.1 ([#25](https://github.com/rfkevin/project-mcp-collab/issues/25)) · Author: Claude · Reviewer: Grok · Tester: Muse Spark
-Base: `cc3-integration` @ `30b3168` · Status: **local part complete; cloud rerun pending K3**
+Base: `cc3-integration` @ `30b3168` · Status: **local part complete; cloud rerun executed 2026-10-07: correctness green on a real D1, latency criterion deferred to C2**
 
 ## Verdict
 
-**GO for D1 (local evidence), conditional on the cloud rerun on `cc3-test`.**
+**GO for D1, confirmed on a real D1 database for correctness (see "Cloud rerun" below). The S5 latency criterion (50 ms p95) is not verified yet and moves to C2 on `cc3-test`. Final acceptance of the gate is the owner's decision.**
+
+(Original local verdict: GO on local evidence, conditional on the cloud rerun.)
 
 All six scenarios pass on local D1 (Miniflare/workerd SQLite) through the real D1 API (`prepare`, `batch`, `first`, `all`). The guarantee that matters most is the atomicity of `batch()`. It is both documented by Cloudflare ("batched statements are SQL transactions … aborts or rolls back the entire sequence") and demonstrated by S2.
 
@@ -28,6 +30,28 @@ Postgres is not needed at this stage. The verdict becomes final when the same su
 Local timings come from Miniflare and say nothing about network latency. The cloud rerun must report its own p50/p95.
 
 Mutation check: with the revision condition removed from the event insert, S1 fails. The `UNIQUE (cycle_id, rev)` constraint still rejects the second writer with a raw constraint error instead of a `STALE` + delta, so it is a second line of defence, not the contract.
+
+## Cloud rerun (2026-10-07, real D1)
+
+Same scenarios, same code, through `npm run test:c0-cloud` ([c0-cloud-run.md](c0-cloud-run.md)). Two scratch D1 databases (`github-mcp-cc3-c0`, `github-mcp-cc3-c0-restore`), remote bindings, wrangler 4.143.0. Executed by the owner on his own machine over a slow mobile connection (his words: EDGE/3G); the output was pasted into the discussion, not archived as a file.
+
+| Scenario | Result on real D1 |
+| --- | --- |
+| S1 concurrency | **100/100** (exactly 1 success + 1 `STALE` + delta) |
+| S1b idempotency | pass (original event returned, no write) |
+| S2 crash mid-mutation | pass (full rollback, same `op_id` retried) |
+| S3 replay + S6 restore | pass (200 events; export, empty DB, import, identical hash; `EXPORT_GAP` rejected) |
+| Quota guard | pass (`quota_exhausted`, nothing written) |
+| S4 role packet | pass (5 994 tokens for a 6 000 budget; fails closed) |
+| S5 memory query: results and cycle coverage | pass |
+| S5 memory query: 50 ms p95 | **not met in the first run: p50 265 ms / p95 1 072 ms** (network from the tester's machine) |
+| Append latency | p50 449 ms / p95 1 180 ms (same network path) |
+
+What this proves: D1 `batch()` atomicity, the CAS condition, idempotency, rollback and export/import behave on the real service exactly as locally.
+
+What this does not prove: any Worker-to-D1 latency. The S5 and append timings above are dominated by the link between the tester's machine and Cloudflare. In cloud mode the harness now **reports** the S5 value without asserting 50 ms (`__C0_CLOUD__` in `cloud-setup.ts`); the local run still asserts it. The 50 ms criterion has to be measured with a deployed Worker on `cc3-test` during C2, and the result recorded here. Not done: D1 Time Travel restore as extra S6 evidence.
+
+Decision needed from the owner: accept the gate on correctness and start C2, with the latency check moved to C2, or wait for a latency measurement first.
 
 ## CAS design proven here (input for C1/C2)
 
