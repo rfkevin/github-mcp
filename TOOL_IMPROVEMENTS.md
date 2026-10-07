@@ -449,3 +449,75 @@ Avis sur l’existant : `IMP-2026-10-03-vibe-test-toctou-batch` → traité par 
 Classement personnel : 1. validation-clients — P1 ; 2. stabilite-catalogue — P1 conditionnel à une reproduction ; 3. etat-reprise — P2 ; 4. ci-attentes-derivees — P2 ; 5. nouvelle proposition ci-dessous — P3.
 
 **IMP-2026-10-07-claude-replace-ancre — P3.** Outil/cas : `replace` de `github_apply_changes` pour supprimer ou déplacer un gros bloc. Problème/preuve : déplacer ~60 lignes vers un nouveau module a imposé d'envoyer le bloc deux fois (création + `oldText` exact), soit ~6 Ko recopiés à la main ; une faute de frappe aurait été refusée (sûr) mais coûteuse. Proposition : variante `replaceRange` bornant le bloc par deux ancres uniques courtes (`startText`, `endText`) avec le SHA du blob, ou opération `move` intra-dépôt. Bénéfice : moins d'octets et de risque de transcription lors des refactors. Effort : petit à moyen ; risque : ancres ambiguës, à refuser si non uniques ou chevauchantes. Critère : déplacer un bloc de 60 lignes en envoyant moins de 300 caractères d'ancrage, avec rejet sans écriture en cas d'ancre multiple. Merci aux collaborateurs.
+
+### RETOUR-2026-10-04-deepseek-consultation-reelle
+Auteur : DeepSeek (DeepSeek, v4-pro) | Tâche : consultation finale T50 `rfkevin/project-mcp-collab` #2 ; connexion réelle d'un client au MCP (OAuth + débogage), lectures d'issues/discussions, commentaires
+Expérience : essai réel — OAuth de bout en bout, `github_get_issue`, `github_list_discussion_items`, `github_get_issue_comment`, `github_comment_issue` ; aucune modification du serveur.
+
+Avis sur l'existant :
+- `IMP-2026-10-01-codex-validation-clients` → accord renforcé (P1) : le catalogue varie par client ; `list_discussion_items`/`get_issue_comment` sont exposées dans ce client, absentes chez Codex. La règle « vérifier le catalogue réel du client » a évité des hypothèses.
+- `IMP-2026-10-04-antigravity-discussion-index` → accord (P2), vécu : `github_get_issue` a tronqué le corps de l'issue #2 (`bodyTruncated: true`) ; la lecture ciblée par ID a rendu les corps complets.
+- `IMP-2026-10-01-codex-etat-reprise` → accord (P2), utile pour reprendre entre phases sans rejouer d'écritures.
+- `IMP-2026-10-02-chatgpt-stabilite-catalogue` → non vérifié (aucun « Resource not found » rencontré dans cette session).
+
+Classement personnel : 1. validation-clients — P1 ; 2. nouvelle proposition ci-dessous — P2 ; 3. antigravity-discussion-index — P2 ; 4. etat-reprise — P2 ; 5. stabilite-catalogue — P1 (à confirmer par d'autres essais).
+
+**IMP-2026-10-04-deepseek-route-auth-401-sous-chemin — P2.**
+Outil/cas : connexion d'un client MCP au serveur ; un sous-chemin sous `/mcp` est pointé par erreur.
+Problème/preuve : `OAuthProvider` est monté avec `apiRoute: '/mcp'` (`src/index.ts`) ; le provider challenge donc toute l'arborescence `/mcp/*` (401 sans jeton) alors que seul `/mcp` appelle `mcpHandler`. Vécu : `POST /mcp/collaboration` sans jeton → 401 (fait croire que l'URL est bonne), avec jeton valide → 404 « Not Found ». Le `www-authenticate` pointait bien `resource_metadata` → `"resource": ".../mcp"`, mais aucun client ne la résolvait automatiquement. ~30 min perdues.
+Proposition : (a) ne challenger que le chemin exact du handler et laisser les sous-chemins inconnus répondre 404 ; ou (b) faire lire aux clients la métadonnée `resource` et journaliser un avertissement quand l'URL fournie diffère. Sans correctif, documenter ce comportement dans `docs/mcp-compatibility.md`.
+Bénéfice : distinguer « mal authentifié » de « mauvais chemin » sans aller-retour ; moins de diagnostics erronés.
+Effort/risques : petit (routage) à moyen (clients) ; risque d'élargir le périmètre d'authentification si le challenge est mal recentré.
+Critère de réussite : un client pointant un sous-chemin inexistant reçoit un 404 clair (ou un avertissement de ressource) avant tout essai d'authentification, sans jeton valide.
+Limites : cause confirmée par lecture de `src/index.ts` et comportement HTTP observé ; le comportement exact du provider sur les sous-chemins reste à valider en test.
+Suite suggérée au propriétaire : choisir (a) ou (b), ou documenter en attendant un besoin réel.
+Merci aux collaborateurs (Codex, Vibe GLM, Grok, ChatGPT, Antigravity) et à Kevin.
+
+### RETOUR-2026-10-05-vibe-edition-suppression-commentaires
+Auteur : Vibe GLM (Mistral, glm-5-latest) | Tâche : essai multi-agents `rfkevin/project-mcp-collab` (issues #1/#3, PRs #4-#14), main `f55ab46`, PR #14 head `194c6d2` ; contexte : consolidation T60 + test R6 indépendant par ChatGPT (commentaire 5988954087).
+Expérience : réelle — publication et lecture lossless de ~40 commentaires de coordination, reviews au SHA exact, exécution des scénarios V01-V16.
+
+**IMP-2026-10-05-vibe-edition-suppression-commentaires — P2.** Outil/cas : commentaires d'issue et de PR — le canal de communication principal du workflow multi-agents.
+Problème/preuve (trois incidents réels du trial) :
+1. V04-EDIT (détection d'édition) : aucun client exposé n'a d'outil d'édition → l'exercice a dû être une simulation disclosed (record Vibe 5982627823) ; ChatGPT, testeur indépendant, a confirmé la même absence (5988954087).
+2. R6 `github_get_discussion_delta` : les modes `modified`/`deleted` restent sans run indépendant faute d'outils d'édition/suppression pour les produire (disclosure PR #14) — l'outil ne peut pas être pleinement validé par ses utilisateurs.
+3. V15 (wrong-target, incident Claude documenté dans l'issue #2, commentaire 5979384064) : un commentaire posté sur la mauvaise issue persiste définitivement ; aucune remédiation possible.
+Proposition : deux opérations serveur-side avec préconditions strictes — `github_edit_issue_comment` (commentId + expectedContentHash ou expectedUpdatedAt du corps actuel + nouveau texte ; le serveur remplace par le nouveau texte et GitHub conserve l'historique d'édition public natif, aligné avec l'esprit append-only) et `github_delete_issue_comment` (gated : autorisation explicite du propriétaire par dépôt, jamais par défaut). Comme pour les fichiers, toute édition doit porter la trace MCP (agent déclaré, date).
+Bénéfice : V04-EDIT devient testable en réel ; les modes R6 modified/deleted deviennent vérifiables ; les erreurs de ciblage deviennent corrigeables ; la détection d'édition (updatedAt au même ID) cesse d'être une fixture théorique.
+Coût/risques : petit effort (l'API GitHub existe : PATCH/DELETE /repos/{}/issues/comments). Risque principal, à ne pas cacher : **tous les agents partagent le même compte bot**, donc le serveur ne peut pas distinguer l'auteur — n'importe quel agent pourrait réécrire le commentaire d'un autre. Mitigations : précondition obligatoire sur le contenu (l'éditeur doit prouver qu'il a lu l'état actuel, collision = refus), historique d'édition public GitHub conservé (toute réécriture est visible et traçable), et pour la suppression : opt-in par dépôt par le propriétaire uniquement.
+Critère de réussite : un commentaire de >4000 B édité via MCP apparaît `modified` dans `github_get_discussion_delta` avec le même ID ; la réédition avec un expectedContentHash périmé est refusée ; la suppression n'est possible que sur un dépôt explicitement autorisé.
+Priorité : P2 — gain récurrent à chaque cycle de collaboration.
+
+Avis sur l'existant : `IMP-2026-10-01-codex-preuve-revue` (P2) reste pertinent et distinct : il traite de l'identité des relecteurs, pas de la mutabilité des commentaires ; l'édition avec historique public GitHub renforce même sa thèse (traçabilité). `IMP-2026-10-04-claude-lecture-corps-issue` (P2, à consigner) est complémentaire : lecture lossless des corps + édition/suppression des commentaires couvrent le cycle de vie complet du canal. Aucune proposition existante ne couvre l'édition ou la suppression de commentaires (27 entrées vérifiées).
+Classement personnel actualisé (parmi les besoins ouverts) : 1. validation-clients (P1, préalable à toute attestation) ; 2. stabilite-catalogue (P1) ; 3. edition-suppression-commentaires (P2, ce retour) ; 4. lecture-corps-issue (P2) ; 5. preuve-revue (P2). Je ne remplace aucun classement existant.
+Limite : je n'ai pas testé l'API GitHub d'édition/suppression en direct ; l'effort annoncé est estimé depuis la documentation publique, pas mesuré. Merci à Claude pour la consolidation PR #14 qui a rendu ce gap visible, à ChatGPT pour le test R6, et à Kevin pour l'arbitrage du workflow.
+### RETOUR-2026-10-07-claude-cc3-k5-c5
+Auteur : Claude (Anthropic, Opus 5.5 configuré) | Tâche : `rfkevin/github-mcp`, `cc3-integration` `8d2d998` → `298ef4d` ; PR #62, #63 (fusionnées), #64 (C5) ; revue de #60
+Expérience : essai réel de `github_run_checks` sur cc3-test, lecture de journaux Workers, écritures par lots, revue avec `check:full` local au SHA exact.
+
+Avis sur l'existant : `IMP-2026-10-01-codex-validation-clients` → accord renforcé (P1) : deux sessions du même client voyaient 36 et 38 outils selon le jeton émis ; seul un essai daté par session est probant. `IMP-2026-10-02-chatgpt-stabilite-catalogue` → nuance : ici l'écart venait des scopes du jeton, pas d'une instabilité ; distinguer les deux causes avant tout correctif. `IMP-2026-10-02-vibe-erreurs-actionnables` → traité en partie par #62 (code fermé dans le texte des échecs d'outil, motifs OAuth `client_unknown`, `redirect_uri_invalid`, `resource_invalid`, `oauthError`). `IMP-2026-10-07-claude-replace-ancre` → renforcé : C5 a demandé de recopier environ 40 Ko à la main. `IMP-2026-10-04-deepseek-route-auth-401-sous-chemin` et `IMP-2026-10-05-vibe-edition-suppression-commentaires` (PR #33 et #35 non intégrées) → non vérifiés dans cette tâche.
+
+Classement personnel : 1. validation-clients — P1 ; 2. nouvelle proposition ci-dessous — P2 ; 3. replace-ancre — P2 (remontée depuis P3) ; 4. etat-reprise — P2 ; 5. stabilite-catalogue — P1 conditionnel à une reproduction hors changement de scopes.
+
+**IMP-2026-10-07-claude-patch-unifie — P2.** Outil/cas : `github_apply_changes` pour un lot déjà écrit et testé localement. Problème/preuve : C5 (22 fichiers, environ 1 300 lignes) a été publié en cinq appels, en recopiant chaque fichier ; la seule garantie contre une erreur de transcription a été un `git diff` manuel après coup. Proposition : opération `patch` acceptant un diff unifié par fichier, avec le SHA du blob de base, appliqué sans fuzz (contexte exact exigé, sinon refus sans écriture). Bénéfice : publier exactement l'arbre testé, avec moins d'octets et sans recopie. Effort : moyen. Risques : diff ambigu ou fins de ligne ; refuser tout hunk non exact et préserver CRLF/BOM comme `append`. Critère : un lot de 20 fichiers publié en un appel dont l'arbre résultant est identique octet pour octet à l'arbre local testé ; tout hunk décalé est refusé. Limites : besoin observé sur un seul gros lot. Suite suggérée au propriétaire : décider entre `patch` et `replaceRange`, sans les cumuler.
+Merci aux collaborateurs pour leurs propositions et leurs relectures.
+
+
+### RETOUR-2026-10-07-vibe-cc3-c2
+Auteur : Vibe GLM | Tâche : `rfkevin/github-mcp`, lot C2 (PR #60), base `54a2c03`, head mergé `3a82d3f`
+Expérience : usage réel intensif du MCP sur un lot complet (branche, 6+ `github_apply_changes` multi-fichiers, commit de merge via `github_resolve_conflicts` sur base avancée, PR draft, suivi CI à chaque SHA, 3 reviews croisées, consignations board). Dette assumée depuis CC-1 : ce retour clôture ma contribution en retard.
+
+Avis sur l'existant :
+- `IMP-2026-10-03-vibe-couchees-imports-batch` et `IMP-2026-10-03-vibe-test-toctou-batch` : traités par #53 (confirmé, mes lots C2 ont bénéficié du sens d'imports propre et de la garantie anti-concurrence sans régression).
+- `IMP-2026-10-07-claude-replace-ancre` : accord, vécu aussi en C2 — déplacer de gros blocs (schéma SQL canonique, wrangler.jsonc) a imposé des `oldText` longs et coûteux à transcrire exactement.
+- `IMP-2026-10-02-vibe-erreurs-actionnables` : renforcé — deux diagnostics C2 (UNEXPECTED_ERROR de `ensureSchema`, 404 du SDK sur `route` non documentée) n'ont été résolus qu'en lisant le source ; le motif public aidait mais pas la cause.
+- `IMP-2026-10-02-chatgpt-stabilite-catalogue` : non reproduit dans cette session (connecteur cc3 stable, 38 outils répondants).
+- `IMP-2026-10-01-codex-validation-clients` : reste P1 ; incident réel supplémentaire en C2 : `ci` (pull_request, in-repo) jamais déclenché pour 2 commits utiles — incident de livraison d'événements GitHub, `github_run_checks` aurait été le recours documenté ; détection uniquement par vérification explicite des runs au SHA.
+
+Classement personnel : 1. validation-clients — P1 ; 2. stabilite-catalogue — P1 conditionnel à reproduction ; 3. erreurs-actionnables — P2 ; 4. limites-message-commits — P3 ; 5. lecture-octets-exacts — P3.
+
+**IMP-2026-10-07-vibe-limites-message-commits — P3.** Outil/cas : `message` de `github_commit_changes`/`github_append_file`/`github_resolve_conflicts`. Problème/preuve : la doc annonce 200 caractères mais le message complet « avec trace MCP » doit tenir dedans — refus `MESSAGE_TOO_LONG` observé à ~186 caractères, succès seulement en raccourcissant vers ~140. La limite effective dépend du suffixe de trace, inconnu du client. Proposition : énoncer dans l'erreur la limite effective (200 moins la longueur de la trace) ou une marge conseillée ; idéalement relever le plafond. Bénéfice : moins d'allers-retours sur les commits ; effort trivial ; risque aucun. Critère : l'erreur `MESSAGE_TOO_LONG` contient la taille max utilisable pour le message utilisateur.
+
+**IMP-2026-10-07-vibe-lecture-octets-exacts — P3.** Outil/cas : `github_read_file`/`github_read_files` pour reconstruire un fichier à l'octet près (résolution de conflits, égalité de schéma). Problème/preuve : le contenu renvoyé omet le `\n` final du fichier — en C2 j'ai dû deviner et reconstituer `stripped + '\n'` pour reproduire la taille exacte du blob `wrangler.jsonc` lors du commit de merge ; une reconstruction naïve aurait produit un diff parasite. Proposition : renvoyer le contenu exact (y compris l'octet final) ou exposer un indicateur (`size` du blob déjà présent + flag `trailingNewline`). Bénéfice : reconstructions byte-exactes sans heuristique ; effort petit ; risque aucun. Critère : reconstruire un fichier quelconque depuis `github_read_file` produit un blob de SHA identique à l'original.
+
+Merci aux collaborateurs, en particulier Claude pour deux reviews précises et à Grok d'avoir pris le test C2 en relais.
