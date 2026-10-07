@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { createCollabToolContext, type CollabToolContext } from '../../../src/collab-store/mcp/context';
 import { registerCollabStoreTools } from '../../../src/collab-store/mcp/tools';
+import { ensureSchema } from '../../../src/collab-store/store/schema';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 type Result = { isError?: boolean; structuredContent: Record<string, unknown> };
@@ -25,6 +26,7 @@ function registry(context: CollabToolContext): Map<string, Handler> {
 
 describe('CC-3 C3 — sealing through collab tools', () => {
   it('proposal.submit never leaks P1 plaintext through collab_get_delta, then reveals after phase opening', async () => {
+    await ensureSchema(db);
     const cycle = 'c3-mcp-seal-' + Date.now();
     await db.prepare(
       "INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, 'open')"
