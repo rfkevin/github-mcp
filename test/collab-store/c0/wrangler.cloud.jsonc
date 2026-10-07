@@ -11,13 +11,13 @@
     {
       "binding": "COLLAB_DB",
       "database_name": "github-mcp-cc3-c0",
-      "database_id": "REPLACE_WITH_C0_SCRATCH_D1_ID",
+      "database_id": "407b341f-d1af-4317-ab0e-9b36d9e24f32",
       "remote": true
     },
     {
       "binding": "COLLAB_DB_RESTORE",
       "database_name": "github-mcp-cc3-c0-restore",
-      "database_id": "REPLACE_WITH_C0_RESTORE_D1_ID",
+      "database_id": "4afbc147-bd4b-4fb4-acdf-8e1b6921c2ab",
       "remote": true
     }
   ]
