@@ -41,6 +41,31 @@
         "GITHUB_WRITES_ENABLED": "true",
         "GITHUB_AUTOMATION_ENABLED": "false"
       }
+    },
+    "cc3-test": {
+      "name": "github-mcp-cc3-test",
+      "kv_namespaces": [
+        {
+          "binding": "OAUTH_KV",
+          "id": "beacde27f03846ebad15861eebe50c36"
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "COLLAB_DB",
+          "database_name": "github-mcp-cc3-test",
+          "database_id": "c7c75111-a0bd-41a6-9924-5f0e6a75ffd7"
+        }
+      ],
+      "vars": {
+        "PUBLIC_ORIGIN": "https://github-mcp-cc3-test.rfahedkevin.workers.dev",
+        "ALLOWED_GITHUB_USER_IDS": "105856986",
+        "GITHUB_APP_ID": "5122110",
+        "GITHUB_INSTALLATION_ID": "166154980",
+        "GITHUB_OAUTH_CLIENT_ID": "Iv23liaWMkDZAKSVWClX",
+        "GITHUB_WRITES_ENABLED": "true",
+        "GITHUB_AUTOMATION_ENABLED": "false"
+      }
     }
   },
   "previews": {
