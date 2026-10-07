@@ -1,0 +1,62 @@
+name: deploy-cc3-test
+
+on:
+  push:
+    branches:
+    - mcp/105856986/cc3-integration
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cc3-test
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # CC-3 uniquement : aucune exécution depuis master ou une autre branche.
+    if: github.ref == 'refs/heads/mcp/105856986/cc3-integration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: cc3-test
+      url: https://github-mcp-cc3-test.rfahedkevin.workers.dev
+
+    steps:
+      - name: Checkout du candidat CC-3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Installer Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.19.0'
+          cache: npm
+          package-manager-cache: false
+
+      - name: Installer les dépendances
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+
+      - name: Vérifier le candidat avant déploiement
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+        run: npm run check:full
+
+      - name: Déployer uniquement le Worker CC-3 de test
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: npx wrangler deploy --env cc3-test
+
+      - name: Vérifier /ready
+        run: |
+          curl --fail --silent --show-error \
+            https://github-mcp-cc3-test.rfahedkevin.workers.dev/ready
+
+      - name: Vérifier la découverte OAuth
+        run: |
+          curl --fail --silent --show-error \
+            https://github-mcp-cc3-test.rfahedkevin.workers.dev/.well-known/oauth-authorization-server 
