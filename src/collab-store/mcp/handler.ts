@@ -36,6 +36,9 @@ export const collabMcpHandler = {
     try {
       const tools = createCollabToolContext(env as AuthEnv & CollabStoreEnv, userId, ctx.auth.scope);
       return createMcpHandler(() => createCollabServer(tools), {
+        // Le wrapper stateless du SDK agents ne traite que ce chemin exact
+        // (défaut '/mcp') et répond 404 'Not Found' à tout autre pathname.
+        route: '/collab/mcp',
         allowedHostnames: [new URL(publicOrigin(env)).hostname],
         // Le SDK compare seulement les noms d'hôte ; schéma/hôte/port exacts vérifiés ci-dessus.
         allowedOriginHostnames: origin === null ? [] : [new URL(origin).hostname],

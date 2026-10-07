@@ -201,9 +201,12 @@ export class CollabStore {
 
   /** Events applied after revision `sinceRevision` (revision k = k-th event by seq). */
   private async deltaSinceRevision(cycleId: string, sinceRevision: number): Promise<StoredStoreEvent[]> {
+    // Events applied after revision R = events excluding the first R by seq:
+    // the anchor is the R-th event (OFFSET R - 1); R = 0 means the whole journal.
     const { results } = await this.db.prepare([
-      'SELECT * FROM events WHERE cycle_id = ?1 AND seq > COALESCE(',
-      '  (SELECT seq FROM events WHERE cycle_id = ?1 ORDER BY seq LIMIT 1 OFFSET ?2), 0)',
+      'SELECT * FROM events WHERE cycle_id = ?1 AND (',
+      '  ?2 = 0 OR seq > COALESCE(',
+      '    (SELECT seq FROM events WHERE cycle_id = ?1 ORDER BY seq LIMIT 1 OFFSET (?2 - 1)), 0))',
       ' ORDER BY seq',
     ].join(' ')).bind(cycleId, sinceRevision).all<StoredStoreEvent>();
     return results;
