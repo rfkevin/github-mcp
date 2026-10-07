@@ -196,6 +196,10 @@ function diagnosticReason(error: unknown): string {
       return 'consent_transaction_expired_or_used';
     }
     if (error.code === 'invalid_scope') return 'consent_scope_invalid';
+    if (error.code === 'invalid_target') return 'resource_invalid';
+    if (error.description === 'client_id is required') return 'client_id_missing';
+    if (error.description === 'Invalid client_id') return 'client_unknown';
+    if (error.description === 'Invalid redirect URI') return 'redirect_uri_invalid';
     return 'authorization_rejected';
   }
 
@@ -221,10 +225,15 @@ export const authHandler = {
       }
       return htmlErrorPage('Page introuvable', 'Cette adresse ne fait pas partie du flux de connexion GitHub MCP.', 404);
     } catch (error) {
+      const reason = diagnosticReason(error);
       console.warn(JSON.stringify({
         event: 'oauth_flow_failure',
         phase,
-        reason: diagnosticReason(error),
+        reason,
+        // Code OAuth normalisé (liste fermée de la bibliothèque), jamais la description ni la requête.
+        ...(reason === 'authorization_rejected' && error instanceof AuthorizationError && /^[a-z_]{1,40}$/.test(error.code)
+          ? { oauthError: error.code }
+          : {}),
         ...(error instanceof GitHubIdentityError && error.httpStatus !== undefined
           ? { httpStatus: error.httpStatus }
           : {}),

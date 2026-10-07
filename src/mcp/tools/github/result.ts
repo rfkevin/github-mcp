@@ -107,5 +107,8 @@ export function toolFailure(context: ToolContext, action: string, fallback: stri
   }));
 
   const failure = publicFailure(error, fallback);
-  return { isError: true, content: [{ type: 'text', text: failure.message }], structuredContent: { error: failure } };
+  // Certains clients n'affichent que le texte d'une erreur d'outil : quand le message est le
+  // repli générique, le code fermé (ex. GITHUB_API_422, UNEXPECTED_ERROR) y figure aussi.
+  const text = failure.message === fallback ? `${fallback} Code : ${failure.code}.` : failure.message;
+  return { isError: true, content: [{ type: 'text', text }], structuredContent: { error: failure } };
 }
