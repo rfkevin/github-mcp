@@ -49,6 +49,39 @@ export interface ProposeInput {
   author_pid: string;
   supersedes?: string;
   expires_rev?: number;
+  owner_decision_ref?: string;
+  cycle_rev?: number;
+}
+
+/** Token budgets per scope family (plan §4). */
+export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
+  common: 1500,
+  project: 2000,
+  role: 1500,
+  participant: 500,
+  task: 300,
+};
+
+export const PROTECTED_KINDS = new Set(['invariant']);
+export const HYPOTHESIS_EXPIRE_CYCLES = 3;
+export const REFUTE_ALARM_THRESHOLD = 5;
+export const GROWTH_ALARM_PERCENT = 25;
+
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+export function scopeFamily(scope: string): string {
+  if (scope === 'common') return 'common';
+  const i = scope.indexOf(':');
+  return i === -1 ? scope : scope.slice(0, i);
+}
+
+export interface MemoryAlarm {
+  code: 'INVARIANT_TOUCHED' | 'REFUTE_THRESHOLD' | 'GROWTH_THRESHOLD';
+  message: string;
+  scope?: string;
+  details?: Record<string, unknown>;
 }
 
 function newId(): string {
@@ -56,17 +89,44 @@ function newId(): string {
 }
 
 export class MemoryStore {
+  private activationPaused = false;
+  private readonly alarms: MemoryAlarm[] = [];
+  private baselineActiveCount: number | null = null;
+
   constructor(private readonly db: D1Database) {}
+
+  getAlarms(): readonly MemoryAlarm[] {
+    return this.alarms;
+  }
+
+  isActivationPaused(): boolean {
+    return this.activationPaused;
+  }
+
+  clearActivationPause(): void {
+    this.activationPaused = false;
+  }
 
   /** Insert a candidate (status=candidate, version=1 or next). */
   async propose(input: ProposeInput): Promise<StoredMemory> {
     await ensureSchema(this.db);
+    if (PROTECTED_KINDS.has(input.kind) && !input.owner_decision_ref) {
+      throw new MemoryStoreError(
+        'PROTECTED_KIND_OWNER_REQUIRED',
+        `Kind ${input.kind} requires owner_decision_ref`,
+      );
+    }
+    const confidence = input.confidence ?? 'hypothesis';
+    let expiresRev = input.expires_rev ?? null;
+    if (confidence === 'hypothesis' && expiresRev == null && input.cycle_rev != null) {
+      expiresRev = input.cycle_rev + HYPOTHESIS_EXPIRE_CYCLES;
+    }
     const entry: MemoryEntry = validateMemoryEntry({
       scope: input.scope,
       kind: input.kind,
       text: input.text,
       evidence_refs: input.evidence_refs ?? [],
-      confidence: input.confidence ?? 'hypothesis',
+      confidence,
       status: 'candidate',
       author_pid: input.author_pid,
     });
@@ -92,7 +152,7 @@ export class MemoryStore {
         entry.confidence,
         entry.author_pid,
         input.supersedes ?? null,
-        input.expires_rev ?? null,
+        expiresRev,
       )
       .run();
     return (await this.get(id, version))!;
