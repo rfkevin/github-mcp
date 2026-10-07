@@ -62,10 +62,19 @@ export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
   task: 300,
 };
 
-export const PROTECTED_KINDS = new Set(['invariant']);
+/** invariant + decision (authority/safety proxy until dedicated kinds exist). */
+export const PROTECTED_KINDS = new Set(['invariant', 'decision']);
 export const HYPOTHESIS_EXPIRE_CYCLES = 3;
-export const REFUTE_ALARM_THRESHOLD = 5;
+/** Plan: alarm if >5 refutes → trigger on the 6th. */
+export const REFUTE_ALARM_THRESHOLD = 6;
 export const GROWTH_ALARM_PERCENT = 25;
+export const MAX_ACTIVATIONS_PER_CYCLE = 10;
+export const MAX_RETIREMENTS_PER_CYCLE = 10;
+
+const META_PAUSE = 'mem:pause';
+const META_ACT = 'mem:act:';
+const META_RET = 'mem:ret:';
+const META_BASE = 'mem:base:';
 
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -89,31 +98,42 @@ function newId(): string {
 }
 
 export class MemoryStore {
-  private activationPaused = false;
-  private readonly alarms: MemoryAlarm[] = [];
-  private baselineActiveCount: number | null = null;
+  private readonly localAlarms: MemoryAlarm[] = [];
 
   constructor(private readonly db: D1Database) {}
 
   getAlarms(): readonly MemoryAlarm[] {
-    return this.alarms;
+    return this.localAlarms;
   }
 
-  isActivationPaused(): boolean {
-    return this.activationPaused;
+  async isActivationPaused(): Promise<boolean> {
+    await ensureSchema(this.db);
+    const row = await this.db
+      .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
+      .bind(META_PAUSE)
+      .first<{ writes: number }>();
+    return (row?.writes ?? 0) > 0;
   }
 
-  clearActivationPause(): void {
-    this.activationPaused = false;
+  /** Clear pause only when a real owner_decisions row exists (C5). */
+  async clearActivationPause(ownerDecisionRef: string): Promise<void> {
+    await this.requireOwnerDecision(ownerDecisionRef);
+    await this.db
+      .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`)
+      .bind(META_PAUSE)
+      .run();
   }
 
   /** Insert a candidate (status=candidate, version=1 or next). */
   async propose(input: ProposeInput): Promise<StoredMemory> {
     await ensureSchema(this.db);
-    if (PROTECTED_KINDS.has(input.kind) && !input.owner_decision_ref) {
+    if (PROTECTED_KINDS.has(input.kind)) {
+      await this.requireOwnerDecision(input.owner_decision_ref);
+    }
+    if (input.confidence === 'hypothesis' && PROTECTED_KINDS.has(input.kind)) {
       throw new MemoryStoreError(
-        'PROTECTED_KIND_OWNER_REQUIRED',
-        `Kind ${input.kind} requires owner_decision_ref`,
+        'HYPOTHESIS_NOT_RULE',
+        'hypothesis cannot be proposed as invariant/decision (never a rule)',
       );
     }
     const confidence = input.confidence ?? 'hypothesis';
@@ -161,13 +181,16 @@ export class MemoryStore {
   /** Activate candidate → active; reviewer ≠ author; budget enforced (I4 / §4). */
   async activate(id: string, version: number, reviewerPid: string): Promise<StoredMemory> {
     await ensureSchema(this.db);
-    if (this.activationPaused) {
+    if (await this.isActivationPaused()) {
       throw new MemoryStoreError('ACTIVATION_PAUSED', 'Activations paused pending owner.request');
     }
     const row = await this.get(id, version);
     if (!row) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id}@${version} not found`);
     if (row.status !== 'candidate') {
       throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${row.status}`);
+    }
+    if (row.confidence === 'hypothesis' && PROTECTED_KINDS.has(row.kind)) {
+      throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot activate as a rule');
     }
     validateMemoryActivation(row.author_pid, reviewerPid);
     if (row.evidence_refs === '[]' || !row.evidence_refs) {
@@ -177,6 +200,7 @@ export class MemoryStore {
         'evidence_refs',
       );
     }
+    await this.assertCycleCap(META_ACT, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
     await this.assertBudgetAllows(row.scope, row.text);
     const priorActive = await this.db
       .prepare(`SELECT version FROM memory_entries WHERE id = ?1 AND status = 'active' ORDER BY version DESC LIMIT 1`)
@@ -198,11 +222,12 @@ export class MemoryStore {
         .bind(reviewerPid, id, version),
     );
     await this.db.batch(stmts);
+    await this.bumpCycleCap(META_ACT);
     await this.checkGrowthAlarm(row.scope);
     if (PROTECTED_KINDS.has(row.kind)) {
-      this.raiseAlarm({
+      await this.raiseAlarm({
         code: 'INVARIANT_TOUCHED',
-        message: `Invariant memory ${id} activated`,
+        message: `Protected kind ${row.kind} activated on ${id}`,
         scope: row.scope,
         details: { id, version },
       });
@@ -228,12 +253,10 @@ export class MemoryStore {
     if (!active) throw new MemoryStoreError('MEMORY_NO_ACTIVE', `No active version for ${id}`);
     const nextKind = (kind ?? active.kind) as MemoryKind;
     if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
-      if (!ownerDecisionRef) {
-        throw new MemoryStoreError(
-          'PROTECTED_KIND_OWNER_REQUIRED',
-          'Changing or superseding an invariant requires owner_decision_ref',
-        );
-      }
+      await this.requireOwnerDecision(ownerDecisionRef);
+    }
+    if (conf === 'hypothesis' && PROTECTED_KINDS.has(nextKind)) {
+      throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot supersede into a rule kind');
     }
     const conf = confidence ?? (active.confidence as MemoryConfidence);
     const entry = validateMemoryEntry({
