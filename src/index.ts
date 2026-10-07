@@ -79,7 +79,10 @@ async function requestedResource(request: Request, pathname: string): Promise<st
     return new URL(request.url).searchParams.get('resource');
   }
   if (pathname === '/oauth/token' && request.method === 'POST') {
-    try { return (await request.clone().formData()).get('resource'); } catch { return null; }
+    try {
+      const value = (await request.clone().formData()).get('resource');
+      return typeof value === 'string' ? value : null;
+    } catch { return null; }
   }
   return null;
 }
