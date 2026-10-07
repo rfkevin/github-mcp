@@ -101,7 +101,7 @@ describe('CC-3 C2 — S3 rejeu (le journal est la vérité)', () => {
     }
     const tasks = await bindings.COLLAB_DB_C2.prepare('SELECT * FROM tasks WHERE cycle_id = ?1').bind(cycle).all<Record<string, unknown>>();
     expect(tasks.results).toHaveLength(1);
-    expect(tasks.results[0].status).toBe(replayed.c2task.status);
+    expect(tasks.results[0].status).toBe((replayed.c2task as { status: string }).status);
     expect(tasks.results[0].owner_pid).toBe('agent:a');
     expect(tasks.results[0].revision).toBe(2);
     expect(await store.currentRevision(cycle)).toBe(2);
@@ -112,7 +112,7 @@ describe('CC-3 C2 — idempotence, quota, stale', () => {
   it('un op_id rejoué renvoie l\'événement original sans seconde écriture', async () => {
     const store = makeStore();
     const cycle = uniq('dup');
-    const input = { cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' };
+    const input = { cycle_id: cycle, type: 'checkpoint' as const, participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' };
     const first = await store.appendEvent(input);
     expect(first.status).toBe('applied');
     const retry = await store.appendEvent(input);
