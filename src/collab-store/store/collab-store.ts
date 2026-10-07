@@ -216,7 +216,14 @@ export class CollabStore {
     return this.db.prepare('SELECT * FROM events WHERE idempotency_key = ?1').bind(key).first<StoredStoreEvent>();
   }
 
-  /** Materialized task statements, validated BEFORE the batch (fail-closed). */
+  /**
+   * Materialized task statements, validated BEFORE the batch (fail-closed).
+   *
+   * TOCTOU (accepted, review C2) : the existence check for task.status/handoff
+   * reads before the batch runs; a concurrent delete in between makes the UPDATE
+   * a no-op. Deletes are not part of the C2 tool surface (append-only journal),
+   * so the window is not reachable through this API.
+   */
   private async taskStatements(event: StoreEvent, nextRevision: number): Promise<D1PreparedStatement[]> {
     if (event.type !== 'task.claim' && event.type !== 'task.status' && event.type !== 'task.handoff') return [];
     let payload: Record<string, unknown>;
