@@ -302,6 +302,114 @@ export class MemoryStore {
     return (await this.get(id, nextVersion))!;
   }
 
+  /**
+   * Raise confidence with evidence from a participant distinct from author (peer).
+   * Creates next version candidate; does not auto-activate.
+   * hypothesis may never jump to a protected kind (use promoteScope + kind carefully).
+   */
+  async promoteConfidence(
+    id: string,
+    version: number,
+    reviewerPid: string,
+    peerEvidenceRef: string,
+    newConfidence: MemoryConfidence,
+  ): Promise<StoredMemory> {
+    await ensureSchema(this.db);
+    const row = await this.get(id, version);
+    if (!row) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id}@${version} not found`);
+    if (row.status !== 'active' && row.status !== 'candidate') {
+      throw new MemoryStoreError('MEMORY_NOT_PROMOTABLE', `status ${row.status}`);
+    }
+    if (reviewerPid === row.author_pid) {
+      throw new MemoryStoreError('PEER_REQUIRED', 'confidence promotion requires a distinct peer reviewer');
+    }
+    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${row.author_pid}`)) {
+      throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', 'new evidence_ref must come from a distinct participant');
+    }
+    const refs: string[] = JSON.parse(row.evidence_refs || '[]');
+    refs.push(peerEvidenceRef);
+    if (newConfidence === 'hypothesis') {
+      throw new MemoryStoreError('CONFIDENCE_DOWNGRADE', 'cannot promote downward to hypothesis');
+    }
+    // atomic: supersede active → candidate with raised confidence
+    if (row.status === 'active') {
+      return this.supersede(
+        id,
+        row.author_pid,
+        row.text,
+        refs,
+        row.kind as MemoryKind,
+        newConfidence,
+      );
+    }
+    await this.db
+      .prepare(`UPDATE memory_entries SET confidence = ?1, evidence_refs = ?2 WHERE id = ?3 AND version = ?4`)
+      .bind(newConfidence, JSON.stringify(refs), id, version)
+      .run();
+    return (await this.get(id, version))!;
+  }
+
+  /**
+   * Promote scope participant:<id> → role|project|common via peer review.
+   * Marks prior active superseded and inserts candidate on new scope (atomic batch).
+   */
+  async promoteScope(
+    id: string,
+    version: number,
+    reviewerPid: string,
+    newScope: string,
+  ): Promise<StoredMemory> {
+    await ensureSchema(this.db);
+    const row = await this.get(id, version);
+    if (!row) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id}@${version} not found`);
+    if (row.status !== 'active') {
+      throw new MemoryStoreError('MEMORY_NOT_ACTIVE', 'only active memories can be scope-promoted');
+    }
+    if (reviewerPid === row.author_pid) {
+      throw new MemoryStoreError('PEER_REQUIRED', 'scope promotion requires a distinct peer reviewer');
+    }
+    if (!row.scope.startsWith('participant:')) {
+      throw new MemoryStoreError('SCOPE_NOT_PERSONAL', 'only participant scope can be lifted');
+    }
+    const family = scopeFamily(newScope);
+    if (!['role', 'project', 'common', 'task'].includes(family) && newScope !== 'common') {
+      throw new MemoryStoreError('SCOPE_TARGET_INVALID', `invalid promotion target ${newScope}`);
+    }
+    const entry = validateMemoryEntry({
+      scope: newScope,
+      kind: row.kind as MemoryKind,
+      text: row.text,
+      evidence_refs: [...JSON.parse(row.evidence_refs || '[]'), `promote:${reviewerPid}`],
+      confidence: (row.confidence === 'hypothesis' ? 'observation' : row.confidence) as MemoryConfidence,
+      status: 'candidate',
+      author_pid: row.author_pid,
+    });
+    const nextVersion = row.version + 1;
+    await this.db.batch([
+      this.db
+        .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
+        .bind(id, row.version),
+      this.db
+        .prepare(
+          `INSERT INTO memory_entries
+           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL)`,
+        )
+        .bind(
+          id,
+          nextVersion,
+          entry.scope,
+          entry.kind,
+          entry.text,
+          JSON.stringify(entry.evidence_refs),
+          entry.confidence,
+          entry.author_pid,
+          `${id}@${row.version}`,
+        ),
+    ]);
+    return (await this.get(id, nextVersion))!;
+  }
+
   /** Retire (tombstone): status=retired, row kept. */
   async retire(id: string, version?: number): Promise<StoredMemory> {
     await ensureSchema(this.db);

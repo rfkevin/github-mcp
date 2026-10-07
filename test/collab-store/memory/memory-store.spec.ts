@@ -122,7 +122,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
           break;
         }
         if (err instanceof MemoryStoreError && err.code === 'ACTIVATION_PAUSED') {
-          mem.clearActivationPause();
+          await seedOwner('owner:budget-clear');
+          await mem.clearActivationPause('owner:budget-clear');
           i -= 1;
           continue;
         }
@@ -160,6 +161,42 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     for (let i = 0; i < 6; i++) await mem.recordRefute(p.id, 'agent:r' + i);
     expect(mem.getAlarms().some((a) => a.code === 'REFUTE_THRESHOLD')).toBe(true);
     expect(await mem.isActivationPaused()).toBe(true);
+  });
+
+  it('promoteConfidence requires peer evidence from distinct participant', async () => {
+    const mem = store();
+    const p = await mem.propose({
+      scope: 'participant:agent:a',
+      kind: 'observation',
+      text: 'Personal heuristic.',
+      confidence: 'hypothesis',
+      evidence_refs: ['self:a'],
+      author_pid: 'agent:a',
+    });
+    await mem.activate(p.id, 1, 'agent:b');
+    await expect(
+      mem.promoteConfidence(p.id, 1, 'agent:a', 'peer:a', 'observation'),
+    ).rejects.toThrow(/distinct/);
+    const up = await mem.promoteConfidence(p.id, 1, 'agent:b', 'peer:b:reproduced', 'observation');
+    expect(up.confidence).toBe('observation');
+    expect(up.version).toBe(2);
+  });
+
+  it('promoteScope lifts participant → project with peer review', async () => {
+    const mem = store();
+    const p = await mem.propose({
+      scope: 'participant:agent:a',
+      kind: 'lesson',
+      text: 'Reusable lesson from personal scope.',
+      evidence_refs: ['self:a'],
+      author_pid: 'agent:a',
+      confidence: 'observation',
+    });
+    await mem.activate(p.id, 1, 'agent:b');
+    await expect(mem.promoteScope(p.id, 1, 'agent:a', 'project:cc3')).rejects.toThrow(/distinct/);
+    const lifted = await mem.promoteScope(p.id, 1, 'agent:b', 'project:cc3');
+    expect(lifted.scope).toBe('project:cc3');
+    expect(lifted.status).toBe('candidate');
   });
 
   it('retire keeps tombstone', async () => {
