@@ -45,16 +45,19 @@ describe('CC-3 C3 — issue -> cycle -> participant -> task', () => {
   });
 
   it('namespace les issues par dépôt et échoue fermé si #24 est ambigu inter-dépôts', async () => {
-    const a = await setup('rfkevin/project-mcp-collab-a-' + n);
-    const b = await setup('rfkevin/github-mcp-b-' + n);
+    const repoA = 'rfkevin/project-mcp-collab-a-' + n;
+    const a = await setup(repoA);
+    const repoB = 'rfkevin/github-mcp-b-' + n;
+    const b = await setup(repoB);
     await expect(resolveContextTarget(db, { issue: '24', participant_id: 'muse' }))
       .rejects.toMatchObject({ code: 'AMBIGUOUS_ISSUE' });
     const exact = await resolveContextTarget(db, {
       issue: '24',
-      repository: 'rfkevin/project-mcp-collab-a-' + (n - 1),
+      repository: repoA,
       participant_id: 'muse',
     });
-    expect([a, b]).toContain(exact.cycle_id);
+    expect(exact.cycle_id).toBe(a);
+    expect(exact.cycle_id).not.toBe(b);
   });
 
   it('retourne INVALID_ISSUE_REF plutôt qu’une erreur brute', async () => {
