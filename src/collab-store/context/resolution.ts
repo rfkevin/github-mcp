@@ -20,6 +20,7 @@ export interface ResolvedTask {
 export interface ResolveContextInput {
   issue?: string;
   cycle?: string;
+  repository?: string;
   participant_id: string;
   role?: Participation;
   task?: string;
@@ -30,10 +31,31 @@ async function resolveCycleId(db: D1Database, input: ResolveContextInput): Promi
   if (!input.issue) throw new CollabStoreError('CONTEXT_TARGET_REQUIRED', 'Fournissez issue ou cycle.');
   await ensureContextSchema(db);
   const issueRef = normalizeIssueRef(input.issue);
-  const row = await db.prepare('SELECT cycle_id FROM cycle_issue_refs WHERE issue_ref = ?1')
-    .bind(issueRef).first<{ cycle_id: string }>();
-  if (!row) throw new CollabStoreError('UNKNOWN_ISSUE', 'Aucun cycle pour ' + issueRef + '.');
-  return row.cycle_id;
+  const repository = issueRef.repository ?? input.repository;
+  if (repository) {
+    const row = await db.prepare(
+      'SELECT cycle_id FROM cycle_issue_refs_v2 WHERE repository = ?1 AND issue_number = ?2'
+    ).bind(repository, issueRef.issue_number).first<{ cycle_id: string }>();
+    if (!row) {
+      throw new CollabStoreError('UNKNOWN_ISSUE', 'Aucun cycle pour ' + repository + '#' + issueRef.issue_number + '.');
+    }
+    return row.cycle_id;
+  }
+
+  const { results } = await db.prepare(
+    'SELECT repository, cycle_id FROM cycle_issue_refs_v2 WHERE issue_number = ?1 ORDER BY repository'
+  ).bind(issueRef.issue_number).all<{ repository: string; cycle_id: string }>();
+  if (results.length === 0) {
+    throw new CollabStoreError('UNKNOWN_ISSUE', 'Aucun cycle pour issue #' + issueRef.issue_number + '.');
+  }
+  if (results.length > 1) {
+    throw new CollabStoreError(
+      'AMBIGUOUS_ISSUE',
+      'Issue #' + issueRef.issue_number + ' existe dans plusieurs dépôts : ' +
+        results.map(row => row.repository).join(', ') + '. Fournissez repository ou repo#issue.',
+    );
+  }
+  return results[0].cycle_id;
 }
 
 function participationOf(row: Omit<ResolvedTask, 'participation'>, participantId: string): Participation | null {

@@ -3,6 +3,7 @@ import { ensureContextSchema } from './schema';
 import { resolveContextTarget, type ResolveContextInput, type ResolvedTask } from './resolution';
 
 export const DEFAULT_PACKET_BUDGET = 6000;
+export const OPEN_QUESTIONS_BUDGET = 300;
 
 export interface PacketOptions {
   c0BaselineTokens: number;
@@ -65,6 +66,10 @@ export async function buildRolePacket(
   if (!cycle) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + resolved.cycle_id);
 
   const maxTokens = effectiveBudget(options);
+  const openQuestions = [...(options.openQuestions ?? [])];
+  while (estimateTokens(openQuestions) > OPEN_QUESTIONS_BUDGET && openQuestions.length) {
+    openQuestions.pop();
+  }
   const packet: RolePacket = {
     header: {
       ...cycle,
@@ -74,7 +79,7 @@ export async function buildRolePacket(
     task: resolved.task,
     role_card: roleCard(resolved.task),
     memory: [],
-    open_questions: [...(options.openQuestions ?? [])],
+    open_questions: openQuestions,
     refs: { items: [...(options.refs ?? [])], complete: false },
     excluded_memory_ids: [],
     budget: { max_tokens: maxTokens, estimated_tokens: 0 },

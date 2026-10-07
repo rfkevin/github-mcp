@@ -18,12 +18,17 @@ describe('CC-3 C3 — P1 sealing', () => {
     ].join(' ')).bind(cycle).run();
     await sealProposal(db, { id, cycle_id: cycle, phase: 'P1', participant_id: 'sol', content: 'private-plan' });
 
-    expect((await readSealedProposal(db, { id, participant_id: 'sol' })).content).toBe('private-plan');
-    expect((await readSealedProposal(db, { id, participant_id: 'vibe' })).content).toBeNull();
+    const author = await readSealedProposal(db, { id, participant_id: 'sol' });
+    expect(author.content).toBe('private-plan');
+    expect(author.nonce).toBeTruthy();
+    const hidden = await readSealedProposal(db, { id, participant_id: 'vibe' });
+    expect(hidden.content).toBeNull();
+    expect(hidden.nonce).toBeNull();
 
     await advanceByPolicy(db, { cycle_id: cycle, expected_revision: 1, policy_id: 'p1-open', next_phase: 'P2' });
     const peer = await readSealedProposal(db, { id, participant_id: 'vibe' });
     expect(peer.revealed).toBe(true);
     expect(peer.content).toBe('private-plan');
+    expect(peer.nonce).toBeTruthy();
   });
 });

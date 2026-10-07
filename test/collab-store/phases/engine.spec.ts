@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { advanceByPolicy } from '../../../src/collab-store/phases';
+import { advanceByPolicy, inspectPhase } from '../../../src/collab-store/phases';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
@@ -17,9 +17,19 @@ describe('CC-3 C3 — phase policies', () => {
       "VALUES (?1, 'P1', '[]', ?2, '[]', 'policy-p1')",
     ].join(' ')).bind(cycle, JSON.stringify([{ role: 'author', kind: 'proposal.submit', count: 1 }])).run();
     await db.prepare([
+      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
+      "VALUES ('c3', ?1, 'sol', 'muse', 'vibe', 'in_progress', '[]', '', '', 1)",
+    ].join(' ')).bind(cycle).run();
+    await db.prepare([
       'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
-      "VALUES (?1, 1, 'proposal.submit', 'sol', '', 'author', '{}', 0, ?2, '')",
-    ].join(' ')).bind(cycle, 'seed-' + n).run();
+      "VALUES (?1, 1, 'proposal.submit', 'intrus', '', 'author', '{}', 0, ?2, '')",
+    ].join(' ')).bind(cycle, 'seed-intrus-' + n).run();
+    expect((await inspectPhase(db, cycle)).outputsSatisfied).toBe(false);
+    await db.prepare([
+      'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
+      "VALUES (?1, 1, 'proposal.submit', 'sol', '', 'reviewer', '{}', 0, ?2, '')",
+    ].join(' ')).bind(cycle, 'seed-sol-' + n).run();
+    expect((await inspectPhase(db, cycle)).outputsSatisfied).toBe(true);
 
     await expect(advanceByPolicy(db, {
       cycle_id: cycle, expected_revision: 1, policy_id: 'wrong', next_phase: 'P2',

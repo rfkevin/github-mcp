@@ -28,9 +28,18 @@ async function definition(db: D1Database, cycleId: string, phase: string): Promi
 
 async function outputsSatisfied(db: D1Database, def: PhaseDefinition): Promise<boolean> {
   for (const expected of def.expected_outputs) {
-    const count = await db.prepare(
-      'SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND role = ?2 AND type = ?3'
-    ).bind(def.cycle_id, expected.role, expected.kind).first<{ n: number }>();
+    const count = await db.prepare([
+      'SELECT COUNT(DISTINCT e.participant_id) AS n',
+      'FROM events e',
+      'WHERE e.cycle_id = ?1 AND e.type = ?2',
+      'AND EXISTS (',
+      '  SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND (',
+      "    ((?3 = 'author' OR ?3 = 'owner') AND t.owner_pid = e.participant_id)",
+      "    OR (?3 = 'reviewer' AND t.reviewer_pid = e.participant_id)",
+      "    OR (?3 = 'tester' AND t.tester_pid = e.participant_id)",
+      '  )',
+      ')',
+    ].join(' ')).bind(def.cycle_id, expected.kind, expected.role).first<{ n: number }>();
     if ((count?.n ?? 0) < expected.count) return false;
   }
   return true;

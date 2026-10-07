@@ -6,10 +6,12 @@ const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 let n = 0;
 const uniq = (label: string) => 'c3r-' + label + '-' + (++n);
 
-async function setup() {
+async function setup(repository = 'rfkevin/project-mcp-collab') {
   await ensureContextSchema(db);
   const cycle = uniq('cycle');
-  await db.prepare("INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P5', 1, 'open')").bind(cycle).run();
+  await db.prepare(
+    "INSERT INTO cycles (cycle_id, project, phase, revision, status) VALUES (?1, ?2, 'P5', 1, 'open')"
+  ).bind(cycle, repository).run();
   await mapIssueToCycle(db, 'issue 24', cycle);
   await db.prepare([
     'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
@@ -32,13 +34,31 @@ describe('CC-3 C3 — issue -> cycle -> participant -> task', () => {
     expect(vibe.task).toMatchObject({ task_id: 'c3', participation: 'tester' });
   });
 
-  it('échoue fermé sur ambiguïté', async () => {
-    const cycle = await setup();
+  it('échoue fermé sur ambiguïté de tâche', async () => {
+    const cycle = await setup('rfkevin/project-mcp-collab-' + n);
     await db.prepare([
       'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
       "VALUES ('c6', ?1, 'muse', 'claude', 'vibe', 'proposed', '[]', '', '', 1)",
     ].join(' ')).bind(cycle).run();
-    await expect(resolveContextTarget(db, { issue: '24', participant_id: 'vibe' }))
+    await expect(resolveContextTarget(db, { cycle, participant_id: 'vibe' }))
       .rejects.toMatchObject({ code: 'AMBIGUOUS_TASK' });
+  });
+
+  it('namespace les issues par dépôt et échoue fermé si #24 est ambigu inter-dépôts', async () => {
+    const a = await setup('rfkevin/project-mcp-collab-a-' + n);
+    const b = await setup('rfkevin/github-mcp-b-' + n);
+    await expect(resolveContextTarget(db, { issue: '24', participant_id: 'muse' }))
+      .rejects.toMatchObject({ code: 'AMBIGUOUS_ISSUE' });
+    const exact = await resolveContextTarget(db, {
+      issue: '24',
+      repository: 'rfkevin/project-mcp-collab-a-' + (n - 1),
+      participant_id: 'muse',
+    });
+    expect([a, b]).toContain(exact.cycle_id);
+  });
+
+  it('retourne INVALID_ISSUE_REF plutôt qu’une erreur brute', async () => {
+    await expect(resolveContextTarget(db, { issue: 'pas-une-issue', participant_id: 'muse' }))
+      .rejects.toMatchObject({ code: 'INVALID_ISSUE_REF' });
   });
 });

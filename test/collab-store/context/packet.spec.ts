@@ -9,7 +9,7 @@ describe('CC-3 C3 — packet budget', () => {
   it('reste sous min(6000, 25% baseline) en supprimant les refs/questions de queue', async () => {
     await ensureContextSchema(db);
     const cycle = 'c3p-' + (++n);
-    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P5', 1, 'open')").bind(cycle).run();
+    await db.prepare("INSERT INTO cycles (cycle_id, project, phase, revision, status) VALUES (?1, 'rfkevin/project-mcp-collab', 'P5', 1, 'open')").bind(cycle).run();
     await mapIssueToCycle(db, '#124', cycle);
     await db.prepare([
       'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
@@ -27,6 +27,7 @@ describe('CC-3 C3 — packet budget', () => {
     );
     expect(packet.budget.max_tokens).toBe(3000);
     expect(packet.budget.estimated_tokens).toBeLessThanOrEqual(3000);
+    expect(Math.ceil(new TextEncoder().encode(JSON.stringify(packet.open_questions)).byteLength / 4)).toBeLessThanOrEqual(300);
     expect(packet.refs.complete).toBe(false);
     expect(packet.task?.task_id).toBe('c3');
   });
@@ -34,7 +35,7 @@ describe('CC-3 C3 — packet budget', () => {
   it('utilise le budget approuvé C0 si 25% serait inférieur à 2k', async () => {
     const cycle = 'c3p-' + (++n);
     await ensureContextSchema(db);
-    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P5', 1, 'open')").bind(cycle).run();
+    await db.prepare("INSERT INTO cycles (cycle_id, project, phase, revision, status) VALUES (?1, 'rfkevin/project-mcp-collab', 'P5', 1, 'open')").bind(cycle).run();
     await mapIssueToCycle(db, '#25', cycle);
     const packet = await buildRolePacket(db, { issue: 'issue 25', participant_id: 'sol' }, {
       c0BaselineTokens: 6600,
