@@ -252,13 +252,13 @@ export class MemoryStore {
       .first<StoredMemory>();
     if (!active) throw new MemoryStoreError('MEMORY_NO_ACTIVE', `No active version for ${id}`);
     const nextKind = (kind ?? active.kind) as MemoryKind;
+    const conf = confidence ?? (active.confidence as MemoryConfidence);
     if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
       await this.requireOwnerDecision(ownerDecisionRef);
     }
     if (conf === 'hypothesis' && PROTECTED_KINDS.has(nextKind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot supersede into a rule kind');
     }
-    const conf = confidence ?? (active.confidence as MemoryConfidence);
     const entry = validateMemoryEntry({
       scope: active.scope,
       kind: nextKind,
@@ -292,7 +292,7 @@ export class MemoryStore {
         ),
     ]);
     if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
-      this.raiseAlarm({
+      await this.raiseAlarm({
         code: 'INVARIANT_TOUCHED',
         message: `Protected kind supersede on ${id}`,
         scope: active.scope,
@@ -315,10 +315,12 @@ export class MemoryStore {
             .bind(id)
             .first<StoredMemory>();
     if (!target) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id} not found for retire`);
+    await this.assertCycleCap(META_RET, MAX_RETIREMENTS_PER_CYCLE, 'RETIREMENT_CAP');
     await this.db
       .prepare(`UPDATE memory_entries SET status = 'retired' WHERE id = ?1 AND version = ?2`)
       .bind(id, target.version)
       .run();
+    await this.bumpCycleCap(META_RET);
     return (await this.get(id, target.version))!;
   }
 
@@ -372,10 +374,10 @@ export class MemoryStore {
       .bind(JSON.stringify(refs), id, active.version)
       .run();
     const refuteCount = refs.filter((r) => r.startsWith('refute:')).length;
-    if (refuteCount >= REFUTE_ALARM_THRESHOLD) {
-      this.raiseAlarm({
+    if (refuteCount > 5) {
+      await this.raiseAlarm({
         code: 'REFUTE_THRESHOLD',
-        message: `Memory ${id} has ${refuteCount} refutes`,
+        message: `Memory ${id} has ${refuteCount} refutes (>5)`,
         scope: active.scope,
         details: { id, refuteCount },
       });
@@ -404,57 +406,99 @@ export class MemoryStore {
     return n;
   }
 
+  /** Budget is per exact scope string (not whole family). */
   private async assertBudgetAllows(scope: string, text: string): Promise<void> {
     const family = scopeFamily(scope);
     const budget = MEMORY_TOKEN_BUDGETS[family] ?? 500;
-    let used = 0;
-    if (family === 'common') {
-      const common = await this.db
-        .prepare(`SELECT text FROM memory_entries WHERE status = 'active' AND scope = 'common'`)
-        .all<{ text: string }>();
-      used = (common.results ?? []).reduce((s, r) => s + estimateTokens(r.text), 0);
-    } else {
-      const { results } = await this.db
-        .prepare(`SELECT text FROM memory_entries WHERE status = 'active' AND scope LIKE ?1`)
-        .bind(`${family}:%`)
-        .all<{ text: string }>();
-      used = (results ?? []).reduce((s, r) => s + estimateTokens(r.text), 0);
-    }
+    const { results } = await this.db
+      .prepare(`SELECT text FROM memory_entries WHERE status = 'active' AND scope = ?1`)
+      .bind(scope)
+      .all<{ text: string }>();
+    const used = (results ?? []).reduce((s, r) => s + estimateTokens(r.text), 0);
     if (used + estimateTokens(text) > budget) {
       throw new MemoryStoreError(
         'MEMORY_BUDGET_EXCEEDED',
-        `Scope ${family} budget ${budget} tokens exceeded (used ${used}); consolidate/retire first`,
+        `Scope ${scope} budget ${budget} tokens exceeded (used ${used}); consolidate/retire first`,
       );
     }
   }
 
   private async checkGrowthAlarm(scope: string): Promise<void> {
-    const family = scopeFamily(scope);
-    const countRow =
-      family === 'common'
-        ? await this.db
-            .prepare(`SELECT COUNT(*) AS n FROM memory_entries WHERE status = 'active' AND scope = 'common'`)
-            .first<{ n: number }>()
-        : await this.db
-            .prepare(`SELECT COUNT(*) AS n FROM memory_entries WHERE status = 'active' AND scope LIKE ?1`)
-            .bind(`${family}:%`)
-            .first<{ n: number }>();
+    const countRow = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM memory_entries WHERE status = 'active' AND scope = ?1`)
+      .bind(scope)
+      .first<{ n: number }>();
     const n = countRow?.n ?? 0;
-    if (this.baselineActiveCount == null) this.baselineActiveCount = Math.max(1, n - 1);
-    const growth = ((n - this.baselineActiveCount) / this.baselineActiveCount) * 100;
+    const baseKey = META_BASE + scope;
+    let baseRow = await this.db
+      .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
+      .bind(baseKey)
+      .first<{ writes: number }>();
+    if (!baseRow) {
+      const baseline = Math.max(1, n - 1);
+      await this.db
+        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`)
+        .bind(baseKey, baseline)
+        .run();
+      baseRow = { writes: baseline };
+    }
+    const growth = ((n - baseRow.writes) / baseRow.writes) * 100;
     if (growth > GROWTH_ALARM_PERCENT) {
-      this.raiseAlarm({
+      await this.raiseAlarm({
         code: 'GROWTH_THRESHOLD',
-        message: `Net growth ${growth.toFixed(0)}% > ${GROWTH_ALARM_PERCENT}% on ${family}`,
+        message: `Net growth ${growth.toFixed(0)}% > ${GROWTH_ALARM_PERCENT}% on ${scope}`,
         scope,
-        details: { baseline: this.baselineActiveCount, current: n },
+        details: { baseline: baseRow.writes, current: n },
       });
     }
   }
 
-  private raiseAlarm(alarm: MemoryAlarm): void {
-    this.alarms.push(alarm);
-    this.activationPaused = true;
+  private async raiseAlarm(alarm: MemoryAlarm): Promise<void> {
+    this.localAlarms.push(alarm);
+    await this.db
+      .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`)
+      .bind(META_PAUSE)
+      .run();
+  }
+
+  private async requireOwnerDecision(ref: string | undefined): Promise<void> {
+    if (!ref || !ref.trim()) {
+      throw new MemoryStoreError('PROTECTED_KIND_OWNER_REQUIRED', 'owner_decision_ref required');
+    }
+    const row = await this.db
+      .prepare(`SELECT request_id, decision FROM owner_decisions WHERE request_id = ?1`)
+      .bind(ref)
+      .first<{ request_id: string; decision: string }>();
+    if (!row || !/approve|accept|allow/i.test(row.decision)) {
+      throw new MemoryStoreError(
+        'OWNER_DECISION_INVALID',
+        `No approving owner_decisions row for ${ref} (C5 channel)`,
+      );
+    }
+  }
+
+  private async assertCycleCap(prefix: string, max: number, code: string): Promise<void> {
+    const key = prefix + 'cycle';
+    const row = await this.db
+      .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
+      .bind(key)
+      .first<{ writes: number }>();
+    if ((row?.writes ?? 0) >= max) {
+      throw new MemoryStoreError(code, `${prefix} cap ${max} reached this cycle; consolidate review required`);
+    }
+  }
+
+  private async bumpCycleCap(prefix: string): Promise<void> {
+    const key = prefix + 'cycle';
+    const row = await this.db
+      .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
+      .bind(key)
+      .first<{ writes: number }>();
+    const next = (row?.writes ?? 0) + 1;
+    await this.db
+      .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`)
+      .bind(key, next)
+      .run();
   }
 
   private async latestVersion(id: string): Promise<StoredMemory | null> {
