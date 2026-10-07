@@ -254,8 +254,8 @@ export class CollabStore {
         typeof record.next_action === 'string' ? record.next_action : '', nextRevision)];
     }
     const existing = await this.db.prepare(
-      'SELECT owner_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2'
-    ).bind(event.cycle_id, taskId).first<{ owner_pid: string }>();
+      'SELECT owner_pid, reviewer_pid, tester_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2'
+    ).bind(event.cycle_id, taskId).first<{ owner_pid: string; reviewer_pid: string; tester_pid: string }>();
     if (!existing) {
       throw new CollabStoreError('TASK_UNKNOWN', 'Tâche inconnue dans le cycle ' + event.cycle_id + ' : ' + taskId);
     }
@@ -269,11 +269,18 @@ export class CollabStore {
       ).bind(event.cycle_id, status, nextRevision, taskId)];
     }
     // task.handoff: transfer the task to a new owner with a new next action.
+    // D12 stays enforced at write time: the (possibly new) owner must remain
+    // distinct from the reviewer and the tester.
+    const ownerPid = typeof record.owner_pid === 'string' && record.owner_pid ? record.owner_pid : existing.owner_pid;
+    const pids = [ownerPid, existing.reviewer_pid, existing.tester_pid];
+    if (pids.some(pid => !pid) || new Set(pids).size !== pids.length) {
+      throw new CollabStoreError('DUPLICATE_TASK_ROLE', 'D12 : auteur, reviewer et testeur doivent etre distincts.');
+    }
     return [this.db.prepare(
       'UPDATE tasks SET next_action = ?2, owner_pid = ?3, revision = ?4 WHERE cycle_id = ?1 AND task_id = ?5'
     ).bind(event.cycle_id,
       typeof record.next_action === 'string' ? record.next_action : '',
-      typeof record.owner_pid === 'string' ? record.owner_pid : existing.owner_pid,
+      ownerPid,
       nextRevision, taskId)];
   }
 }

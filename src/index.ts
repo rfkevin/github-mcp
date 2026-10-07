@@ -45,11 +45,17 @@ export default {
       resourceMetadata: { resource: `${origin}/mcp`, authorization_servers: [origin] },
       clientIdMetadataDocumentEnabled: true,
     });
-    // CC-3 C2 : second OAuthProvider, même Worker. Endpoints authorize/token/register
-    // partagés (jamais atteints via ce provider, le routage passe par le pathname) ;
-    // le même KV valide les jetons. Un jeton /collab/mcp doit porter 'mcp:read'
-    // (requiredScopes du provider principal) ET le scope dédié 'collab:'.
-    if (collabStoreEnabled((env as CollabStoreEnv).COLLAB_STORE_ENABLED) && new URL(request.url).pathname === '/collab/mcp') {
+    // CC-3 C2 : second OAuthProvider, même Worker, resource RFC 8707 dédiée
+    // (${origin}/collab/mcp). Endpoints authorize/token/register partagés : une
+    // requête dont l'indicateur resource vise le store est routée vers ce
+    // provider (la lib valide resource contre resourceMetadata), sinon vers le
+    // provider GitHub. L'émission de jeton reste permissive : le refus typé sans
+    // le scope 'collab:' est enforced par collabMcpHandler (insufficientScope).
+    const pathname = new URL(request.url).pathname;
+    const collabResource = `${origin}/collab/mcp`;
+    const targetResource = await requestedResource(request, pathname);
+    if (collabStoreEnabled((env as CollabStoreEnv).COLLAB_STORE_ENABLED)
+      && (pathname === '/collab/mcp' || targetResource === collabResource)) {
       if (!(env as CollabStoreEnv).COLLAB_DB) {
         return new Response('Store de collaboration non configuré.',
           { status: 503, headers: { 'Cache-Control': 'no-store' } });
@@ -57,8 +63,8 @@ export default {
       const collabProvider = new OAuthProvider<AuthEnv>({
         apiRoute: '/collab/mcp', apiHandler: collabMcpHandler, defaultHandler: authHandler,
         authorizeEndpoint: '/authorize', tokenEndpoint: '/oauth/token', clientRegistrationEndpoint: '/oauth/register',
-        scopesSupported: ['collab:'], requiredScopes: ['collab:'],
-        resourceMetadata: { resource: `${origin}/collab/mcp`, authorization_servers: [origin] },
+        scopesSupported: ['collab:', 'mcp:read', 'offline_access'], requiredScopes: [],
+        resourceMetadata: { resource: collabResource, authorization_servers: [origin] },
         clientIdMetadataDocumentEnabled: true,
       });
       return collabProvider.fetch(request, env as AuthEnv, ctx);
@@ -66,3 +72,14 @@ export default {
     return provider.fetch(request, env as AuthEnv, ctx);
   },
 } satisfies ExportedHandler<AppEnv>;
+
+/** Indicateur resource (RFC 8707) d'une requête authorize/token, sinon null. */
+async function requestedResource(request: Request, pathname: string): Promise<string | null> {
+  if (pathname === '/authorize' && request.method === 'GET') {
+    return new URL(request.url).searchParams.get('resource');
+  }
+  if (pathname === '/oauth/token' && request.method === 'POST') {
+    try { return (await request.clone().formData()).get('resource'); } catch { return null; }
+  }
+  return null;
+}

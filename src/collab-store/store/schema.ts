@@ -155,8 +155,12 @@ export const STORE_MIGRATION_0002 =
 const ENSURED = new WeakSet<object>();
 
 function runnableStatements(sql: string): string[] {
-  return sql.split(';').map(part => part.trim())
-    .filter(part => part.split('\n').some(line => line.trim() && !line.trim().startsWith('--')));
+  // Comment lines are removed BEFORE splitting: the canonical header contains
+  // a ';' inside a comment (Revisions start at 1 (F3); expected_rev 0 =
+  // creation.), which the previous split-on-';' turned into a bogus statement
+  // (expected_rev 0 = creation.) and made every ensureSchema() throw.
+  const noCommentLines = sql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+  return noCommentLines.split(';').map(part => part.trim()).filter(Boolean);
 }
 
 export async function ensureSchema(db: D1Database): Promise<void> {
@@ -170,7 +174,11 @@ export async function ensureSchema(db: D1Database): Promise<void> {
     // outcome when the migration already ran.
     await db.prepare(STORE_MIGRATION_0002).run();
   } catch (error) {
-    if (!/duplicate column/i.test(String(error))) throw error;
+    // D1/miniflare may wrap the SQLite message; inspect the full error chain.
+    const text = [String(error), (error as { message?: unknown })?.message,
+      (error as { cause?: unknown })?.cause]
+      .map(part => (part === undefined || part === null ? '' : String(part))).join(' ');
+    if (!/duplicate column/i.test(text)) throw error;
   }
   ENSURED.add(db as unknown as object);
 }

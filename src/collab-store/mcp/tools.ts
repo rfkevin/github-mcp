@@ -3,7 +3,7 @@
  * lecture de contexte minimal, reprise par curseur de séquence, append
  * idempotent. Résolution complète de contexte (mémoire, packets par rôle) : C3.
  */
-import type { McpServer } from '@modelcontextprotocol/server';
+import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { CollabToolContext } from './context';
 import { outputSchemas } from './schemas';

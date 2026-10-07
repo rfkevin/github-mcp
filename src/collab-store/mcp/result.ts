@@ -23,6 +23,12 @@ export function collabFailure(
   extra: Record<string, unknown> = {},
 ): ToolErrorResult {
   const known = error instanceof StateContractError || error instanceof CollabStoreError;
+  if (!known) {
+    // Diagnostic serveur : l'erreur inconnue est consignée mais jamais exposée au client.
+    console.warn(JSON.stringify({ service: 'collab-store', outcome: 'unexpected_error',
+      name: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : String(error) }));
+  }
   const code = known ? (error as { code: string }).code : 'UNEXPECTED_ERROR';
   const message = known && error instanceof Error ? error.message : fallback;
   return {

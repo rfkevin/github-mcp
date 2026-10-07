@@ -63,10 +63,11 @@ describe('CC-3 C2 — S2 atomicité du batch', () => {
     const store = makeStore();
     const cycle = uniq('s2');
     await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' });
+    const insert = "INSERT INTO events (cycle_id, at, type, participant_id, payload_json, expected_rev, idempotency_key) VALUES (?1, 1, 'note', 'agent:x', '{}', 1, 'dup-key-s2')";
     await expect(bindings.COLLAB_DB_C2.batch([
       bindings.COLLAB_DB_C2.prepare('INSERT INTO collab_store_guard (ok) SELECT 1'),
-      bindings.COLLAB_DB_C2.prepare('INSERT INTO events (cycle_id, at, type, participant_id, payload_json, expected_rev, idempotency_key) VALUES (?1, 1, 'note', 'agent:x', '{}', 1, 'dup-key-s2')').bind(cycle),
-      bindings.COLLAB_DB_C2.prepare('INSERT INTO events (cycle_id, at, type, participant_id, payload_json, expected_rev, idempotency_key) VALUES (?1, 1, 'note', 'agent:x', '{}', 1, 'dup-key-s2')').bind(cycle),
+      bindings.COLLAB_DB_C2.prepare(insert).bind(cycle),
+      bindings.COLLAB_DB_C2.prepare(insert).bind(cycle),
     ])).rejects.toThrow();
     const events = await bindings.COLLAB_DB_C2.prepare('SELECT COUNT(*) AS n FROM events WHERE idempotency_key = ?1').bind('dup-key-s2').first<{ n: number }>();
     expect(events?.n).toBe(0);
