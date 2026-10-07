@@ -10,7 +10,7 @@ describe('CC-3 C3 — packet budget', () => {
     await ensureContextSchema(db);
     const cycle = 'c3p-' + (++n);
     await db.prepare("INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P5', 1, 'open')").bind(cycle).run();
-    await mapIssueToCycle(db, '#24', cycle);
+    await mapIssueToCycle(db, '#124', cycle);
     await db.prepare([
       'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
       "VALUES ('c3', ?1, 'sol', 'muse', 'vibe', 'in_progress', '[]', 'ref', 'implement', 1)",
@@ -18,7 +18,7 @@ describe('CC-3 C3 — packet budget', () => {
 
     const packet = await buildRolePacket(
       db,
-      { issue: 'issue 24', participant_id: 'sol' },
+      { issue: 'issue 124', participant_id: 'sol' },
       {
         c0BaselineTokens: 12_000,
         refs: Array.from({ length: 100 }, (_, i) => 'https://example.invalid/' + i + '/' + 'x'.repeat(200)),
