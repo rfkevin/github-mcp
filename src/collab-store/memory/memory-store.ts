@@ -158,9 +158,12 @@ export class MemoryStore {
     return (await this.get(id, version))!;
   }
 
-  /** Activate candidate → active; reviewer must differ from author (I4). */
+  /** Activate candidate → active; reviewer ≠ author; budget enforced (I4 / §4). */
   async activate(id: string, version: number, reviewerPid: string): Promise<StoredMemory> {
     await ensureSchema(this.db);
+    if (this.activationPaused) {
+      throw new MemoryStoreError('ACTIVATION_PAUSED', 'Activations paused pending owner.request');
+    }
     const row = await this.get(id, version);
     if (!row) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id}@${version} not found`);
     if (row.status !== 'candidate') {
@@ -174,25 +177,40 @@ export class MemoryStore {
         'evidence_refs',
       );
     }
-    // New version row active; mark previous as superseded if any prior active of same id
+    await this.assertBudgetAllows(row.scope, row.text);
     const priorActive = await this.db
       .prepare(`SELECT version FROM memory_entries WHERE id = ?1 AND status = 'active' ORDER BY version DESC LIMIT 1`)
       .bind(id)
       .first<{ version: number }>();
+    const stmts: D1PreparedStatement[] = [];
     if (priorActive) {
-      await this.db
-        .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2`)
-        .bind(id, priorActive.version)
-        .run();
+      stmts.push(
+        this.db
+          .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2`)
+          .bind(id, priorActive.version),
+      );
     }
-    await this.db
-      .prepare(`UPDATE memory_entries SET status = 'active', reviewer_pid = ?1 WHERE id = ?2 AND version = ?3`)
-      .bind(reviewerPid, id, version)
-      .run();
+    stmts.push(
+      this.db
+        .prepare(
+          `UPDATE memory_entries SET status = 'active', reviewer_pid = ?1 WHERE id = ?2 AND version = ?3 AND status = 'candidate'`,
+        )
+        .bind(reviewerPid, id, version),
+    );
+    await this.db.batch(stmts);
+    await this.checkGrowthAlarm(row.scope);
+    if (PROTECTED_KINDS.has(row.kind)) {
+      this.raiseAlarm({
+        code: 'INVARIANT_TOUCHED',
+        message: `Invariant memory ${id} activated`,
+        scope: row.scope,
+        details: { id, version },
+      });
+    }
     return (await this.get(id, version))!;
   }
 
-  /** Supersede: retire previous active, propose new text as next version candidate. */
+  /** Atomic supersede: batch UPDATE active→superseded + INSERT candidate (fail-closed). */
   async supersede(
     id: string,
     authorPid: string,
@@ -200,6 +218,7 @@ export class MemoryStore {
     evidenceRefs: string[],
     kind?: MemoryKind,
     confidence?: MemoryConfidence,
+    ownerDecisionRef?: string,
   ): Promise<StoredMemory> {
     await ensureSchema(this.db);
     const active = await this.db
@@ -207,20 +226,57 @@ export class MemoryStore {
       .bind(id)
       .first<StoredMemory>();
     if (!active) throw new MemoryStoreError('MEMORY_NO_ACTIVE', `No active version for ${id}`);
-    await this.db
-      .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2`)
-      .bind(id, active.version)
-      .run();
-    return this.propose({
-      id,
+    const nextKind = (kind ?? active.kind) as MemoryKind;
+    if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
+      if (!ownerDecisionRef) {
+        throw new MemoryStoreError(
+          'PROTECTED_KIND_OWNER_REQUIRED',
+          'Changing or superseding an invariant requires owner_decision_ref',
+        );
+      }
+    }
+    const conf = confidence ?? (active.confidence as MemoryConfidence);
+    const entry = validateMemoryEntry({
       scope: active.scope,
-      kind: (kind ?? active.kind) as MemoryKind,
+      kind: nextKind,
       text,
       evidence_refs: evidenceRefs,
-      confidence: confidence ?? (active.confidence as MemoryConfidence),
+      confidence: conf,
+      status: 'candidate',
       author_pid: authorPid,
-      supersedes: `${id}@${active.version}`,
     });
+    const nextVersion = active.version + 1;
+    await this.db.batch([
+      this.db
+        .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
+        .bind(id, active.version),
+      this.db
+        .prepare(
+          `INSERT INTO memory_entries
+           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL)`,
+        )
+        .bind(
+          id,
+          nextVersion,
+          entry.scope,
+          entry.kind,
+          entry.text,
+          JSON.stringify(entry.evidence_refs),
+          entry.confidence,
+          entry.author_pid,
+          `${id}@${active.version}`,
+        ),
+    ]);
+    if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
+      this.raiseAlarm({
+        code: 'INVARIANT_TOUCHED',
+        message: `Protected kind supersede on ${id}`,
+        scope: active.scope,
+        details: { id, ownerDecisionRef },
+      });
+    }
+    return (await this.get(id, nextVersion))!;
   }
 
   /** Retire (tombstone): status=retired, row kept. */
@@ -251,19 +307,131 @@ export class MemoryStore {
       .first<StoredMemory>();
   }
 
-  /** Active entries for scopes, newest version first, hard cap for packet budgets. */
-  async listActive(scopes: string[], limit = 50): Promise<StoredMemory[]> {
+  /**
+   * Active entries visible to callerPid.
+   * participant:<other> is hidden unless caller matches (fail-closed isolation).
+   */
+  async listActiveFor(callerPid: string, scopes: string[], limit = 50): Promise<StoredMemory[]> {
     await ensureSchema(this.db);
     if (scopes.length === 0) return [];
-    const placeholders = scopes.map((_, i) => `?${i + 1}`).join(',');
+    const allowed = scopes.filter((s) => {
+      if (!s.startsWith('participant:')) return true;
+      return s === `participant:${callerPid}`;
+    });
+    if (allowed.length === 0) return [];
+    const placeholders = allowed.map((_, i) => `?${i + 1}`).join(',');
     const { results } = await this.db
       .prepare(
         `SELECT * FROM memory_entries WHERE status = 'active' AND scope IN (${placeholders})
-         ORDER BY version DESC LIMIT ?${scopes.length + 1}`,
+         ORDER BY version DESC LIMIT ?${allowed.length + 1}`,
       )
-      .bind(...scopes, limit)
+      .bind(...allowed, limit)
       .all<StoredMemory>();
     return results ?? [];
+  }
+
+  /** Shared-scope helper (system caller). Prefer listActiveFor. */
+  async listActive(scopes: string[], limit = 50): Promise<StoredMemory[]> {
+    return this.listActiveFor('system', scopes, limit);
+  }
+
+  async recordRefute(id: string, byPid: string): Promise<number> {
+    await ensureSchema(this.db);
+    const active = await this.db
+      .prepare(`SELECT * FROM memory_entries WHERE id = ?1 AND status = 'active' ORDER BY version DESC LIMIT 1`)
+      .bind(id)
+      .first<StoredMemory>();
+    if (!active) throw new MemoryStoreError('MEMORY_NO_ACTIVE', `No active version for ${id}`);
+    const refs: string[] = JSON.parse(active.evidence_refs || '[]');
+    refs.push(`refute:${byPid}:${Date.now()}`);
+    await this.db
+      .prepare(`UPDATE memory_entries SET evidence_refs = ?1, uses = uses + 1 WHERE id = ?2 AND version = ?3`)
+      .bind(JSON.stringify(refs), id, active.version)
+      .run();
+    const refuteCount = refs.filter((r) => r.startsWith('refute:')).length;
+    if (refuteCount >= REFUTE_ALARM_THRESHOLD) {
+      this.raiseAlarm({
+        code: 'REFUTE_THRESHOLD',
+        message: `Memory ${id} has ${refuteCount} refutes`,
+        scope: active.scope,
+        details: { id, refuteCount },
+      });
+    }
+    return refuteCount;
+  }
+
+  async expireHypotheses(currentCycleRev: number): Promise<number> {
+    await ensureSchema(this.db);
+    const { results } = await this.db
+      .prepare(
+        `SELECT id, version FROM memory_entries
+         WHERE confidence = 'hypothesis' AND status IN ('active','candidate')
+           AND expires_rev IS NOT NULL AND expires_rev <= ?1`,
+      )
+      .bind(currentCycleRev)
+      .all<{ id: string; version: number }>();
+    let n = 0;
+    for (const row of results ?? []) {
+      await this.db
+        .prepare(`UPDATE memory_entries SET status = 'retired' WHERE id = ?1 AND version = ?2`)
+        .bind(row.id, row.version)
+        .run();
+      n += 1;
+    }
+    return n;
+  }
+
+  private async assertBudgetAllows(scope: string, text: string): Promise<void> {
+    const family = scopeFamily(scope);
+    const budget = MEMORY_TOKEN_BUDGETS[family] ?? 500;
+    let used = 0;
+    if (family === 'common') {
+      const common = await this.db
+        .prepare(`SELECT text FROM memory_entries WHERE status = 'active' AND scope = 'common'`)
+        .all<{ text: string }>();
+      used = (common.results ?? []).reduce((s, r) => s + estimateTokens(r.text), 0);
+    } else {
+      const { results } = await this.db
+        .prepare(`SELECT text FROM memory_entries WHERE status = 'active' AND scope LIKE ?1`)
+        .bind(`${family}:%`)
+        .all<{ text: string }>();
+      used = (results ?? []).reduce((s, r) => s + estimateTokens(r.text), 0);
+    }
+    if (used + estimateTokens(text) > budget) {
+      throw new MemoryStoreError(
+        'MEMORY_BUDGET_EXCEEDED',
+        `Scope ${family} budget ${budget} tokens exceeded (used ${used}); consolidate/retire first`,
+      );
+    }
+  }
+
+  private async checkGrowthAlarm(scope: string): Promise<void> {
+    const family = scopeFamily(scope);
+    const countRow =
+      family === 'common'
+        ? await this.db
+            .prepare(`SELECT COUNT(*) AS n FROM memory_entries WHERE status = 'active' AND scope = 'common'`)
+            .first<{ n: number }>()
+        : await this.db
+            .prepare(`SELECT COUNT(*) AS n FROM memory_entries WHERE status = 'active' AND scope LIKE ?1`)
+            .bind(`${family}:%`)
+            .first<{ n: number }>();
+    const n = countRow?.n ?? 0;
+    if (this.baselineActiveCount == null) this.baselineActiveCount = Math.max(1, n - 1);
+    const growth = ((n - this.baselineActiveCount) / this.baselineActiveCount) * 100;
+    if (growth > GROWTH_ALARM_PERCENT) {
+      this.raiseAlarm({
+        code: 'GROWTH_THRESHOLD',
+        message: `Net growth ${growth.toFixed(0)}% > ${GROWTH_ALARM_PERCENT}% on ${family}`,
+        scope,
+        details: { baseline: this.baselineActiveCount, current: n },
+      });
+    }
+  }
+
+  private raiseAlarm(alarm: MemoryAlarm): void {
+    this.alarms.push(alarm);
+    this.activationPaused = true;
   }
 
   private async latestVersion(id: string): Promise<StoredMemory | null> {
