@@ -22,34 +22,36 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-const text = readFileSync(resolve(file), 'utf8');
-const contribRe = /^###\s+(\d{4}-\d{2}-\d{2}-[\w.-]+)\s*$/gm;
-const headers = [...text.matchAll(contribRe)];
-const proposals = [];
-
-for (let i = 0; i < headers.length; i++) {
-  const id = headers[i][1];
-  const start = headers[i].index + headers[i][0].length;
-  const end = i + 1 < headers.length ? headers[i + 1].index : text.length;
-  let body = text.slice(start, end).trim();
-  // One fact: first non-empty paragraph, truncated to 600 chars
-  const para = body
-    .split(/\n\s*\n/)
-    .map((p) => p.replace(/\s+/g, ' ').trim())
-    .find((p) => p.length > 0 && !p.startsWith('```'));
-  if (!para) continue;
-  const fact = para.length > 600 ? para.slice(0, 597) + '...' : para;
-  proposals.push({
-    op: 'propose',
-    scope: `participant:${author}`,
-    kind: 'observation',
-    text: fact,
-    evidence_refs: [`agent-memory:${id}`],
-    confidence: 'hypothesis',
-    status: 'candidate',
-    author_pid: author,
-    import_id: id,
-  });
+export function parseAgentMemory(text, author) {
+  const contribRe = /^###\s+(\d{4}-\d{2}-\d{2}-[\w.-]+)\s*$/gm;
+  const headers = [...text.matchAll(contribRe)];
+  const proposals = [];
+  for (let i = 0; i < headers.length; i++) {
+    const id = headers[i][1];
+    const start = headers[i].index + headers[i][0].length;
+    const end = i + 1 < headers.length ? headers[i + 1].index : text.length;
+    const body = text.slice(start, end).trim();
+    const para = body
+      .split(/\n\s*\n/)
+      .map((p) => p.replace(/\s+/g, ' ').trim())
+      .find((p) => p.length > 0 && !p.startsWith('```'));
+    if (!para) continue;
+    const fact = para.length > 600 ? para.slice(0, 597) + '...' : para;
+    proposals.push({
+      op: 'propose',
+      scope: `participant:${author}`,
+      kind: 'observation',
+      text: fact,
+      evidence_refs: [`agent-memory:${id}`],
+      confidence: 'hypothesis',
+      status: 'candidate',
+      author_pid: author,
+      import_id: id,
+    });
+  }
+  return proposals;
 }
 
+const text = readFileSync(resolve(file), 'utf8');
+const proposals = parseAgentMemory(text, author);
 process.stdout.write(JSON.stringify({ source: file, count: proposals.length, proposals }, null, 2) + '\n');

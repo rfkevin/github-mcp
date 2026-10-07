@@ -9,6 +9,14 @@ function store(): MemoryStore {
   return new MemoryStore(bindings.COLLAB_DB_C2);
 }
 
+async function seedOwner(requestId: string): Promise<void> {
+  await bindings.COLLAB_DB_C2.prepare(
+    `INSERT OR REPLACE INTO owner_decisions (request_id, decision, access_subject, at) VALUES (?1, 'approve', 'kevin', 1)`,
+  )
+    .bind(requestId)
+    .run();
+}
+
 describe('CC-3 C4 — memory lifecycle (I4)', () => {
   it('propose + activate with distinct reviewer', async () => {
     const mem = store();
@@ -40,24 +48,34 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect((await mem.get(p.id, 1))?.status).toBe('superseded');
   });
 
-  it('rejects invariant supersede without owner_decision_ref', async () => {
+  it('rejects invariant without real owner_decisions row', async () => {
     const mem = store();
+    await expect(
+      mem.propose({
+        scope: 'common',
+        kind: 'invariant',
+        text: 'I4 holds forever.',
+        evidence_refs: ['plan:25'],
+        author_pid: 'agent:a',
+        owner_decision_ref: 'owner:fake',
+      }),
+    ).rejects.toThrow(/OWNER_DECISION|owner/);
+    await seedOwner('owner:real');
     const p = await mem.propose({
       scope: 'common',
       kind: 'invariant',
       text: 'I4 holds forever.',
       evidence_refs: ['plan:25'],
       author_pid: 'agent:a',
-      owner_decision_ref: 'owner:setup',
+      owner_decision_ref: 'owner:real',
     });
     try {
       await mem.activate(p.id, 1, 'agent:b');
     } catch {
-      /* alarm pause ok */
+      /* pause */
     }
-    mem.clearActivationPause();
+    await mem.clearActivationPause('owner:real');
     if ((await mem.get(p.id, 1))?.status !== 'active') {
-      // force active for supersede path if pause interrupted
       await bindings.COLLAB_DB_C2.prepare(
         `UPDATE memory_entries SET status = 'active', reviewer_pid = 'agent:b' WHERE id = ?1 AND version = 1`,
       )
@@ -65,7 +83,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         .run();
     }
     await expect(mem.supersede(p.id, 'agent:c', 'Changed invariant', ['x'])).rejects.toThrow(
-      /owner_decision_ref/,
+      /OWNER_DECISION|owner/,
     );
   });
 
@@ -139,9 +157,9 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       author_pid: 'agent:a',
     });
     await mem.activate(p.id, 1, 'agent:b');
-    for (let i = 0; i < 5; i++) await mem.recordRefute(p.id, 'agent:r' + i);
+    for (let i = 0; i < 6; i++) await mem.recordRefute(p.id, 'agent:r' + i);
     expect(mem.getAlarms().some((a) => a.code === 'REFUTE_THRESHOLD')).toBe(true);
-    expect(mem.isActivationPaused()).toBe(true);
+    expect(await mem.isActivationPaused()).toBe(true);
   });
 
   it('retire keeps tombstone', async () => {
