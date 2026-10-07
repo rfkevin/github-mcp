@@ -64,7 +64,8 @@
         "GITHUB_INSTALLATION_ID": "166154980",
         "GITHUB_OAUTH_CLIENT_ID": "Iv23liaWMkDZAKSVWClX",
         "GITHUB_WRITES_ENABLED": "true",
-        "GITHUB_AUTOMATION_ENABLED": "false"
+        "GITHUB_AUTOMATION_ENABLED": "false",
+        "COLLAB_STORE_ENABLED": "true"
       }
     }
   },

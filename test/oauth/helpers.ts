@@ -12,9 +12,9 @@ export const READ_TOOLS = ['github_list_repositories', 'github_get_project_guide
 export const WRITE_TOOLS = ['github_comment_commit', 'github_comment_pull_request', 'github_comment_issue', 'github_create_branch',
     'github_commit_changes', 'github_apply_changes', 'github_open_pull_request', 'github_replace_text', 'github_restore_file', 'github_append_file', 'github_create_issue', 'github_resolve_conflicts'];
 // A separate fixture is created by each spec; mocks and bindings stay local.
-export function createOAuthFixture() {
+export function createOAuthFixture(envOverrides: Record<string, unknown> = {}) {
     const ORIGIN = 'https://github-mcp.example';
-    const settings: AppEnv = { ...env, PUBLIC_ORIGIN: ORIGIN, ALLOWED_GITHUB_USER_IDS: '123',
+    const settings: AppEnv = { ...env, ...envOverrides, PUBLIC_ORIGIN: ORIGIN, ALLOWED_GITHUB_USER_IDS: '123',
         GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: '2', GITHUB_PRIVATE_KEY: 'test-only-not-a-key',
         GITHUB_OAUTH_CLIENT_ID: 'test-client', GITHUB_OAUTH_CLIENT_SECRET: 'test-secret' };
     async function send(path: string, init: RequestInit = {}, bindings = settings): Promise<Response> {
@@ -28,7 +28,7 @@ export function createOAuthFixture() {
     function cookie(response: Response): string {
         return response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
     }
-    async function consent(scope = 'mcp:read offline_access', redirectUri = 'http://localhost:4321/callback') {
+    async function consent(scope = 'mcp:read offline_access', redirectUri = 'http://localhost:4321/callback', resource = `${ORIGIN}/mcp`) {
         const registration = await send('/oauth/register', { method: 'POST',
             headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
                 client_name: '<script>untrusted</script>', redirect_uris: [redirectUri],
@@ -41,7 +41,7 @@ export function createOAuthFixture() {
         const verifier = 'test-verifier-'.repeat(5);
         const query = new URLSearchParams({ client_id: client.client_id, redirect_uri: redirectUri,
             response_type: 'code', scope, state: 'client-state',
-            code_challenge: await codeChallenge(verifier), code_challenge_method: 'S256', resource: `${ORIGIN}/mcp` });
+            code_challenge: await codeChallenge(verifier), code_challenge_method: 'S256', resource });
         const page = await send(`/authorize?${query}`);
         expect(page.status).toBe(200);
         const html = await page.text();
@@ -62,10 +62,10 @@ export function createOAuthFixture() {
             throw new Error('Export PKCS#8 attendu.');
         settings.GITHUB_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----\n${btoa(String.fromCharCode(...new Uint8Array(der)))}\n-----END PRIVATE KEY-----`;
     });
-    async function mcpSession(scope = 'mcp:read offline_access', redirectUri = 'http://localhost:4321/callback'): Promise<{
+    async function mcpSession(scope = 'mcp:read offline_access', redirectUri = 'http://localhost:4321/callback', resource = `${ORIGIN}/mcp`): Promise<{
         headers: Record<string, string>;
     }> {
-        const { handle, page, client, verifier } = await consent(scope, redirectUri);
+        const { handle, page, client, verifier } = await consent(scope, redirectUri, resource);
         const approved = await send('/authorize', { method: 'POST', headers: { Cookie: cookie(page) },
             body: new URLSearchParams({ handle, decision: 'approve' }) });
         expect(approved.status).toBe(200);
@@ -85,7 +85,7 @@ export function createOAuthFixture() {
         const tokenResponse = await send('/oauth/token', { method: 'POST', body: new URLSearchParams({
                 grant_type: 'authorization_code', client_id: client.client_id,
                 code: new URL(callback.headers.get('Location')!).searchParams.get('code')!,
-                redirect_uri: redirectUri, code_verifier: verifier, resource: `${ORIGIN}/mcp`,
+                redirect_uri: redirectUri, code_verifier: verifier, resource,
             }) });
         expect(tokenResponse.status).toBe(200);
         const token = await tokenResponse.json() as {
@@ -104,11 +104,11 @@ export function createOAuthFixture() {
         expect(envelope.result).toBeDefined();
         return envelope.result!;
     }
-    async function callTool(headers: Record<string, string>, name: string, args: unknown, id: number): Promise<{
+    async function callTool(headers: Record<string, string>, name: string, args: unknown, id: number, path = '/mcp'): Promise<{
         status: number;
         body: string;
     }> {
-        const response = await send('/mcp', { method: 'POST', headers,
+        const response = await send(path, { method: 'POST', headers,
             body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }) });
         return { status: response.status, body: await response.text() };
     }
