@@ -685,6 +685,37 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     return row?.writes ?? 0;
   }
 
+  /** Race two activations: exactly one must win, exactly one must fail typed. */
+  async function raceTwo(
+    first: Promise<StoredMemory>,
+    second: Promise<StoredMemory>,
+  ): Promise<{ winner: StoredMemory; loserError: MemoryStoreError }> {
+    const outcomes = await Promise.allSettled([first, second]);
+    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+    const rejected = outcomes.filter((o) => o.status === 'rejected');
+    if (fulfilled.length !== 1 || rejected.length !== 1) {
+      throw new Error(
+        'A03 race must yield exactly one success and one failure, got ' +
+          JSON.stringify(outcomes.map((o) => o.status)),
+      );
+    }
+    const loserError = (rejected[0] as PromiseRejectedResult).reason as MemoryStoreError;
+    expect(loserError).toBeInstanceOf(MemoryStoreError);
+    return { winner: (fulfilled[0] as PromiseFulfilledResult<StoredMemory>).value, loserError };
+  }
+
+  /** The winner is active, the loser's candidate is untouched. */
+  async function expectWinnerActiveLoserCandidate(
+    mem: MemoryStore,
+    a: StoredMemory,
+    b: StoredMemory,
+    winner: StoredMemory,
+  ): Promise<void> {
+    expect((await mem.get(winner.id, 1))?.status).toBe('active');
+    const loser = winner.id === a.id ? b : a;
+    expect((await mem.get(loser.id, 1))?.status).toBe('candidate');
+  }
+
   it('A03: two concurrent reviewers on one candidate -> one activation, one reviewer, one counter bump', async () => {
     const mem = store();
     const p = await mem.propose({
@@ -694,18 +725,11 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       evidence_refs: ['plan:4'],
       author_pid: 'agent:a',
     });
-    const outcomes = await Promise.allSettled([
+    const { winner, loserError } = await raceTwo(
       mem.activate(p.id, 1, 'agent:b'),
       mem.activate(p.id, 1, 'agent:c'),
-    ]);
-    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
-    const rejected = outcomes.filter((o) => o.status === 'rejected');
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    const loserError = (rejected[0] as PromiseRejectedResult).reason as MemoryStoreError;
-    expect(loserError).toBeInstanceOf(MemoryStoreError);
+    );
     expect(['ACTIVATION_RACE', 'MEMORY_NOT_CANDIDATE']).toContain(loserError.code);
-    const winner = (fulfilled[0] as PromiseFulfilledResult<StoredMemory>).value;
     const after = (await mem.get(p.id, 1))!;
     expect(after.status).toBe('active');
     // Exactly one reviewer is registered — the winner's, never overwritten.
@@ -744,23 +768,14 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       evidence_refs: ['e-b'],
       author_pid: 'agent:a',
     });
-    const outcomes = await Promise.allSettled([
+    const { winner, loserError } = await raceTwo(
       mem.activate(a.id, 1, 'agent:b', cycle),
       mem.activate(b.id, 1, 'agent:c', cycle),
-    ]);
-    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
-    const rejected = outcomes.filter((o) => o.status === 'rejected');
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    const loserError = (rejected[0] as PromiseRejectedResult).reason as MemoryStoreError;
-    expect(loserError).toBeInstanceOf(MemoryStoreError);
+    );
     expect(loserError.code).toBe('ACTIVATION_CAP');
-    const winnerId = (fulfilled[0] as PromiseFulfilledResult<StoredMemory>).value.id;
-    expect((await mem.get(winnerId, 1))?.status).toBe('active');
-    const loserId = winnerId === a.id ? b.id : a.id;
     // The loser's activation mutated nothing: candidate untouched, and its
     // cap reservation rolled back with the failed transaction.
-    expect((await mem.get(loserId, 1))?.status).toBe('candidate');
+    await expectWinnerActiveLoserCandidate(mem, a, b, winner);
     expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(10);
   });
 
@@ -793,21 +808,12 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       evidence_refs: ['e-budget-b'],
       author_pid: 'agent:aa03',
     });
-    const outcomes = await Promise.allSettled([
+    const { winner, loserError } = await raceTwo(
       mem.activate(a.id, 1, 'agent:bb03', cycle),
       mem.activate(b.id, 1, 'agent:cc03', cycle),
-    ]);
-    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
-    const rejected = outcomes.filter((o) => o.status === 'rejected');
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    const loserError = (rejected[0] as PromiseRejectedResult).reason as MemoryStoreError;
-    expect(loserError).toBeInstanceOf(MemoryStoreError);
+    );
     expect(loserError.code).toBe('MEMORY_BUDGET_EXCEEDED');
-    const winnerId = (fulfilled[0] as PromiseFulfilledResult<StoredMemory>).value.id;
-    expect((await mem.get(winnerId, 1))?.status).toBe('active');
-    const loserId = winnerId === a.id ? b.id : a.id;
-    expect((await mem.get(loserId, 1))?.status).toBe('candidate');
+    await expectWinnerActiveLoserCandidate(mem, a, b, winner);
     // 300 filler tokens + 150 winner tokens = 450 <= 500 budget: the guard
     // refused the second 150-token activation before the budget could slip.
     const { results: activeRows } = await bindings.COLLAB_DB_C2.prepare(

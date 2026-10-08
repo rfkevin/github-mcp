@@ -302,9 +302,7 @@ export class MemoryStore {
     await ensureSchema(this.db);
     const row = await this.get(id, version);
     if (!row) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id}@${version} not found`);
-    if (await this.isActivationPaused(row.scope)) {
-      throw new MemoryStoreError('ACTIVATION_PAUSED', `Activations paused for scope ${row.scope}`);
-    }
+    await this.assertNotPaused(row.scope);
     if (row.status !== 'candidate') {
       throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${row.status}`);
     }
@@ -373,6 +371,9 @@ export class MemoryStore {
     // A03: growth baseline + alarm + pause occurrence in the same transaction
     // (previously post-batch writes that a crash could skip). Integer form:
     // growth % > GROWTH_ALARM_PERCENT  <=>  100 * n > (100 + limit) * baseline.
+    const growthExceeded = `100 * (SELECT COUNT(*) FROM memory_entries WHERE status = 'active' AND scope = ?2) > ${100 + GROWTH_ALARM_PERCENT} * (SELECT writes FROM quota_counters WHERE day = ?3)`;
+    const bumpOccurrence =
+      'INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, COALESCE((SELECT writes FROM quota_counters WHERE day = ?1), 0) + 1';
     statements.push(
       this.db
         .prepare(
@@ -380,25 +381,15 @@ export class MemoryStore {
         )
         .bind(baseKey, row.scope),
       this.db
-        .prepare(
-          `INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, 1 WHERE 100 * (SELECT COUNT(*) FROM memory_entries WHERE status = 'active' AND scope = ?2) > ${100 + GROWTH_ALARM_PERCENT} * (SELECT writes FROM quota_counters WHERE day = ?3)`,
-        )
+        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, 1 WHERE ${growthExceeded}`)
         .bind(pauseKey, row.scope, baseKey),
-      this.db
-        .prepare(
-          `INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, COALESCE((SELECT writes FROM quota_counters WHERE day = ?1), 0) + 1 WHERE 100 * (SELECT COUNT(*) FROM memory_entries WHERE status = 'active' AND scope = ?2) > ${100 + GROWTH_ALARM_PERCENT} * (SELECT writes FROM quota_counters WHERE day = ?3)`,
-        )
-        .bind(occKey, row.scope, baseKey),
+      this.db.prepare(`${bumpOccurrence} WHERE ${growthExceeded}`).bind(occKey, row.scope, baseKey),
     );
     if (protectedKind) {
       // A03: INVARIANT_TOUCHED pause + occurrence, also inside the batch.
       statements.push(
         this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`).bind(pauseKey),
-        this.db
-          .prepare(
-            `INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, COALESCE((SELECT writes FROM quota_counters WHERE day = ?1), 0) + 1`,
-          )
-          .bind(occKey),
+        this.db.prepare(bumpOccurrence).bind(occKey),
       );
     }
     statements.push(this.db.prepare(`DELETE FROM collab_store_guard`));
@@ -418,9 +409,7 @@ export class MemoryStore {
       if (current && current.status !== 'candidate') {
         throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${current.status}`);
       }
-      if (await this.isActivationPaused(row.scope)) {
-        throw new MemoryStoreError('ACTIVATION_PAUSED', `Activations paused for scope ${row.scope}`);
-      }
+      await this.assertNotPaused(row.scope);
       await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
       await this.assertBudgetAllows(row.scope, row.text);
       throw error;
@@ -784,6 +773,13 @@ export class MemoryStore {
         'MEMORY_BUDGET_EXCEEDED',
         `Scope ${scope} budget ${budget} tokens exceeded (used ${used}); consolidate/retire first`,
       );
+    }
+  }
+
+  /** A03: fail with the contract error when a scope's activations are paused. */
+  private async assertNotPaused(scope: string): Promise<void> {
+    if (await this.isActivationPaused(scope)) {
+      throw new MemoryStoreError('ACTIVATION_PAUSED', `Activations paused for scope ${scope}`);
     }
   }
 
