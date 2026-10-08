@@ -49,8 +49,21 @@ export interface StateExport {
   changes: { phase: boolean; tasks: string[]; owner_decisions: number; evidence: number };
   imported: { event_seq: number; state_revision: number; content_sha256: string; target: ExportTarget | null };
   store_revision: number;
+  /**
+   * Safe resume cursor for collab_get_delta (F4/A04): every event of the cycle
+   * with seq <= last_seq is either rendered in the document or part of the
+   * imported base. It stops just before the first event recorded after the
+   * import whose kind the export does not render (proposal, objection,
+   * request, checkpoint, memory, manual log), so a delta read from last_seq
+   * never skips an event absent from the document.
+   */
   last_seq: number;
+  /** Highest event seq of the cycle in the snapshot (may exceed last_seq). */
+  snapshot_seq: number;
 }
+
+/** Event kinds whose effect the CC-STATE-1 export materializes (tasks, phase, owner decisions, evidence). */
+export const RENDERED_EVENT_TYPES = ['task.claim', 'task.status', 'task.handoff', 'evidence.add', 'owner.decision', 'phase.advance'] as const;
 
 interface StoreTaskRow {
   task_id: string;
@@ -107,6 +120,8 @@ interface ExportSnapshot {
   events: StoredStoreEvent[];
   requests: Map<number, StoredStoreEvent>;
   lastSeq: number;
+  /** First event after the import that the export does not render (null: none). */
+  firstUnrendered: number | null;
 }
 
 /**
@@ -127,7 +142,8 @@ async function readExportSnapshot(db: D1Database, cycleId: string): Promise<Expo
     + ' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1)';
   const afterImport = "SELECT * FROM events WHERE cycle_id = ?1 AND seq > COALESCE(" + importSeq + ', 0)'
     + " AND type IN ('owner.decision', 'evidence.add')";
-  const [importRows, participants, cycles, tasks, events, requests, last] = await db.batch<Record<string, unknown>>([
+  const rendered = RENDERED_EVENT_TYPES.map(type => "'" + type + "'").join(', ');
+  const [importRows, participants, cycles, tasks, events, requests, last, unrendered] = await db.batch<Record<string, unknown>>([
     db.prepare(LATEST_IMPORT_SQL).bind(cycleId, importKey),
     db.prepare(ACTIVE_PARTICIPANTS_SQL),
     db.prepare('SELECT phase, revision FROM cycles WHERE cycle_id = ?1').bind(cycleId),
@@ -142,6 +158,8 @@ async function readExportSnapshot(db: D1Database, cycleId: string): Promise<Expo
       "  AND d.seq > COALESCE(" + importSeq + ", 0) AND d.type = 'owner.decision' AND json_valid(d.payload_json))",
     ].join(' ')).bind(cycleId, importKey),
     db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE cycle_id = ?1').bind(cycleId),
+    db.prepare('SELECT MIN(seq) AS seq FROM events WHERE cycle_id = ?1 AND seq > COALESCE(' + importSeq + ', 0)'
+      + ' AND type NOT IN (' + rendered + ')').bind(cycleId, importKey),
   ]);
   const importRow = importRows.results[0] as ImportRow | undefined;
   const imported = importRow ? await importedFromRow(importRow) : null;
@@ -154,6 +172,7 @@ async function readExportSnapshot(db: D1Database, cycleId: string): Promise<Expo
     events: events.results as unknown as StoredStoreEvent[],
     requests: new Map((requests.results as unknown as StoredStoreEvent[]).map(request => [request.seq, request])),
     lastSeq: (last.results[0] as { seq: number } | undefined)?.seq ?? 0,
+    firstUnrendered: (unrendered.results[0] as { seq: number | null } | undefined)?.seq ?? null,
   };
 }
 
@@ -322,7 +341,8 @@ export async function exportCycleState(db: D1Database, cycleId: string): Promise
     imported: { event_seq: imported.event_seq, state_revision: imported.state_revision,
       content_sha256: imported.content_sha256, target: imported.target },
     store_revision: cycle?.revision ?? 0,
-    // Same snapshot as the content: never a cursor covering events the document does not contain.
-    last_seq: snapshot.lastSeq,
+    // Same snapshot as the content, and never a cursor covering an event absent from the document.
+    last_seq: snapshot.firstUnrendered === null ? snapshot.lastSeq : Math.min(snapshot.lastSeq, snapshot.firstUnrendered - 1),
+    snapshot_seq: snapshot.lastSeq,
   };
 }

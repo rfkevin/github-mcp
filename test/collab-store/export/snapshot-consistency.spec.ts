@@ -156,4 +156,28 @@ describe('CC-3 F4 / A04 — export = instantané cohérent', () => {
     const result = await exportCycleState(racing, cycle);
     expectSinglePoint(result, state.atBatch);
   });
+
+  it('last_seq est un curseur de reprise sûr : jamais au-delà d’un événement absent du document (revue Sol)', async () => {
+    const cycle = await preparedCycle('cursor');
+    const store = new CollabStore(db);
+    // Only rendered kinds so far: the cursor is the snapshot point.
+    const clean = await exportCycleState(db, cycle);
+    expect(clean.last_seq).toBe(clean.snapshot_seq);
+
+    // A proposal, a checkpoint and an owner.request are not rendered by CC-STATE-1 export.
+    await append(cycle, 'sol', 'proposal.submit', { content: 'f4 proposal never rendered' });
+    const proposalSeq = (await store.getDelta(cycle, clean.snapshot_seq)).events[0].seq;
+    await append(cycle, 'grok', 'evidence.add', { source: 'f4 after proposal', state: 'rendered' });
+    await append(cycle, 'vibe', 'checkpoint', { note: 'f4 checkpoint' });
+    const result = await exportCycleState(db, cycle);
+    expect(result.content).not.toContain('f4 proposal never rendered');
+    expect(result.content).toContain('f4 after proposal');
+    expect(result.last_seq).toBe(proposalSeq - 1);
+    expect(result.snapshot_seq).toBeGreaterThan(result.last_seq);
+    // Zero loss: resuming the delta from last_seq returns every event absent from the document.
+    const { events } = await store.getDelta(cycle, result.last_seq, 500);
+    const resumed = new Set(events.map(event => event.type));
+    for (const type of ['proposal.submit', 'checkpoint']) expect(resumed.has(type)).toBe(true);
+    expect(events.at(-1)?.seq).toBe(result.snapshot_seq);
+  });
 });
