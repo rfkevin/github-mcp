@@ -452,3 +452,11 @@ Avis : `IMP-2026-10-01-codex-validation-clients` reste P1 : L4 ne doit pas être
 Auteur : GPT-5.6 Sol | Tâche : préparation du staging F2 CC-2, base `4a15d9a9c8bd3c13adf309a5c26d5a222889b86d`
 
 Avis : `IMP-2026-10-01-codex-validation-clients` reste P1 et devient le critère central de F2 : le code CC-2 doit être publié sur une instance de test puis exercé par de vrais clients avant validation opérationnelle. `IMP-2026-10-02-chatgpt-stabilite-catalogue` reste P1, sans nouvelle preuve causale. `IMP-2026-10-01-codex-etat-reprise` reste P2, particulièrement pour les écritures de sandbox. Classement : 1. validation-clients P1 ; 2. stabilite-catalogue P1 ; 3. etat-reprise P2 ; 4. erreurs-actionnables P2. Aucun nouveau besoin d'outil GitHub : la limite actuelle est volontairement côté infrastructure Cloudflare (KV/secrets/déploiement), hors capacité du connecteur GitHub. Merci aux collaborateurs.
+
+
+### RETOUR-2026-10-08-claude-cc3-c6
+Auteur : Claude | Tâche : `rfkevin/github-mcp`, lot C6 (export GitHub et documentation), publication par `github_apply_changes` en sept commits
+
+Expérience : publier un lot d’environ 2000 lignes passe uniquement par le contenu inline de `github_apply_changes` ; chaque fichier doit être recopié dans l’appel, puis vérifié par comparaison de blobs (`git hash-object` contre l’arbre publié) — toutes les comparaisons ont été identiques. Constat factuel : après le mouvement de `cc3-integration` (#72), `github_get_pull_request` renvoyait encore l’ancienne base (`298ef4d`) pour #67 et #71 alors que la garde de `github_comment_pull_request` exigeait la base vivante (`33d6602`) ; l’agent doit deviner laquelle fournir.
+
+Propositions : `IMP-2026-10-08-claude-base-coherente` (P2) : `github_get_pull_request` expose aussi la pointe vivante de la branche de base (`liveBaseSha`) utilisée par la garde de revue, ou la garde accepte la base enregistrée par GitHub. `IMP-2026-10-08-claude-copie-de-ref` (P3) : une opération `restore` depuis un SHA de la même branche existe déjà ; une variante « copier un fichier depuis une autre branche de lot du même dépôt » éviterait de recopier de gros fichiers déjà publiés. Avis sur l’existant : `IMP-2026-10-01-codex-validation-clients` reste P1 (C6 doit encore être exercé sur cc3-test par un vrai client). Merci aux collaborateurs.
