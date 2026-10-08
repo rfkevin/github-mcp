@@ -254,6 +254,11 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `OWNER_DECISION_INVALID` | C4 | Décision owner absente ou non approuvée | — |
 | `SCOPE_NOT_PERSONAL` | C4 | Promotion depuis un scope non personnel | — |
 | `SCOPE_TARGET_INVALID` | C4 | Scope cible de promotion invalide | — |
+| `OWNER_DECISION_SUBJECT` | C4 | La décision owner vise un autre sujet ou une autre occurrence (version, scope, pause) | Demander une décision pour l’occurrence exacte |
+| `ACTIVATION_RACE` | C4 | Activation concurrente : le candidat a changé entre-temps | Relire puis réessayer |
+| `PEER_EVIDENCE_NOT_FOUND` | C4 | Preuve de pair absente du registre | Ajouter la preuve au registre |
+| `PEER_EVIDENCE_PRODUCER` | C4 | Le producteur de la preuve n’est pas le relecteur | Preuve produite par le relecteur |
+| `PEER_EVIDENCE_SELF` | C4 | La preuve vient de l’auteur de la mémoire | Preuve d’un pair distinct |
 
 ### 7.5 État CC-STATE-1 : import et export (C6, L1)
 
@@ -331,4 +336,4 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 - `based_on_sha` reste celui de la base importée ; il est mis à jour à la fusion par celui qui prépare la PR.
 - L’import remplace les tâches matérialisées du cycle. Importez toujours l’état fusionné le plus récent, qui contient les exports précédents.
 - Le contenu de l’état importé figure dans l’événement `import_state`, donc dans `collab_get_delta` du cycle : c’est le fichier fusionné dans GitHub, pas une donnée privée.
-- C3 est fusionné. La branche C4 (cycle de vie mémoire) ne l’est pas encore : les codes de la section 7.4 sont documentés d’avance, à partir de son head du 2026-10-08.
+- C3 est fusionné. La branche C4 (cycle de vie mémoire) ne l’est pas encore : les codes de la section 7.4 sont documentés d’avance, à partir de son head `eb5f98a` (testé PASS le 2026-10-08).
