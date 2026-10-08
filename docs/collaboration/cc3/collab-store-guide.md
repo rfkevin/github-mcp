@@ -39,11 +39,11 @@ Pour demander quelque chose au propriétaire (faire avancer une phase, enregistr
 ## 3. Outils de `/collab/mcp`
 
 ### `collab_get_context`
-- **Entrée** : `cycle` ; `participant_id` optionnel (par défaut le vôtre).
-- **Sortie** : phase, statut et révision du cycle, tâches où le participant est auteur, reviewer ou testeur, et `caller`.
+- **Entrée** : `cycle` (ou `issue` / `repository` / `task`) ; identité toujours dérivée du jeton serveur (jamais un `participant_id` client).
+- **Sortie** : phase, statut et révision du cycle, tâches, `caller`, `resolved`, `packet` (rôle, mémoire I6, budget) et `delta` optionnel.
+- **Mémoire (I6)** : le packet n’inclut que `common`, `participant:<caller>`, `role:<rôle courant>`, `task:<tâche courante>` et `project:<projet courant>` quand applicables. Les scopes `task:other` / `role:other` / `project:other` ne fuitent pas.
 - **Annotations** : lecture seule.
-- **Erreurs** : `UNKNOWN_CYCLE`, `STORE_UNAVAILABLE`.
-- **Services C3 (fusionnés, branchement de l’outil à venir)** : packet complet par rôle et résolution `issue → cycle → tâche` (`AMBIGUOUS_TASK`, `AMBIGUOUS_ISSUE`, `UNKNOWN_ISSUE`, `INVALID_ISSUE_REF`, `CONTEXT_TARGET_REQUIRED`, `PACKET_BUDGET_TOO_SMALL`). Les issues d’un cycle sont indexées par l’import d’état (section 4).
+- **Erreurs** : `UNKNOWN_CYCLE`, `STORE_UNAVAILABLE`, `CONTEXT_TARGET_REQUIRED`, `AMBIGUOUS_TASK`, `AMBIGUOUS_ISSUE`, `UNKNOWN_ISSUE`, `INVALID_ISSUE_REF`, `PACKET_BUDGET_TOO_SMALL`.
 
 ### `collab_get_delta`
 - **Entrée** : `cycle`, `since_seq` (0 = depuis le début), `limit` (1 à 1000, 200 par défaut).
@@ -76,9 +76,9 @@ Pour demander quelque chose au propriétaire (faire avancer une phase, enregistr
 - **Erreurs** : `NO_STATE_SNAPSHOT` (aucun état importé), `EXPORT_INVALID`, `STATE_SNAPSHOT_CORRUPT`, `STORE_UNAVAILABLE`.
 
 ### `collab_phase_advance`
-- **Entrée** : `cycle`, `expected_rev`, `policy_id`, `next_phase` (`P1`–`P6`).
+- **Entrée** : `cycle`, `expected_rev`, `next_phase` (`P1`–`P6`). **Pas de `policy_id` côté agent** : la policy est dérivée côté serveur de `auto_advance` de la phase courante (`none` → `POLICY_NOT_AUTHORIZED`).
 - **Sortie** : `applied` ou `duplicate`, avec `revision` et `event_seq`.
-- **Règle** : transition autorisée (P1→P2→P3→P4→P5→P6, plus un retour d’un cran), définition et conditions d’entrée de la cible, rejeu de la même policy avant `STALE`.
+- **Règle** : transition autorisée (P1→P2→P3→P4→P5→P6, plus un retour d’un cran), définition et conditions d’entrée de la cible, rejeu de la même intention détecté **avant** `STALE`.
 - **Erreurs** : `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
 
 ### `collab_memory` (lot C4, à venir)
@@ -236,112 +236,19 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVALID_MEMORY_STATUS` | C1 | Statut de mémoire inconnu | — |
 | `INVALID_MEMORY_AUTHOR` | C1 | Auteur sans identifiant serveur | — |
 | `INVALID_MEMORY_EVIDENCE` | C1 | Références de preuve invalides | — |
-| `MEMORY_EVIDENCE_REQUIRED` | C1/C4 | Preuve requise hors candidat | — |
-| `MEMORY_SELF_ACTIVATION` | C1 | Le reviewer doit différer de l’auteur | — |
-| `INVALID_LEDGER_SUBJECT` | C1 | Sujet du registre invalide | — |
-| `INVALID_LEDGER_PRODUCER` | C1 | Producteur du registre invalide | — |
-| `INVALID_LEDGER_PAYLOAD` | C1 | Contenu du registre invalide | — |
-| `LEDGER_SELF_WRITE` | C1 | Un participant ne peut pas écrire de preuve sur lui-même (I11) | — |
-| `LEDGER_APPEND_FAILED` | C4 | Ajout au registre refusé | — |
-| `MEMORY_NOT_FOUND` | C4 | Entrée inconnue | — |
-| `MEMORY_NOT_CANDIDATE` | C4 | L’entrée n’est pas candidate | — |
-| `MEMORY_NOT_ACTIVE` | C4 | L’entrée n’est pas active | — |
-| `MEMORY_NO_ACTIVE` | C4 | Aucune version active à remplacer | — |
-| `MEMORY_ACTIVE_EXISTS` | C4 | Une version active existe déjà | `supersede` |
-| `MEMORY_NOT_PROMOTABLE` | C4 | Promotion impossible | — |
-| `MEMORY_BUDGET_EXCEEDED` | C4 | Budget du scope dépassé | Consolider ou retirer avant d’activer |
-| `ACTIVATION_PAUSED` | C4 | Activations en pause après une alarme | Décision owner |
-| `INVARIANT_TOUCHED` | C4 | Alarme : invariant touché | — |
-| `REFUTE_THRESHOLD` | C4 | Alarme : plus de 5 réfutations | — |
-| `GROWTH_THRESHOLD` | C4 | Alarme : croissance nette au-dessus du seuil | — |
-| `HYPOTHESIS_NOT_RULE` | C4 | Une hypothèse ne devient jamais une règle | — |
-| `CONFIDENCE_DOWNGRADE` | C4 | Promotion de confiance vers le bas refusée | — |
-| `PEER_REQUIRED` | C4 | Revue par un pair distinct requise | — |
-| `PEER_EVIDENCE_REQUIRED` | C4 | Preuve d’un pair distinct requise | — |
-| `PROTECTED_KIND_OWNER_REQUIRED` | C4 | Type protégé : décision owner requise | `owner.request` |
-| `OWNER_DECISION_INVALID` | C4 | Décision owner absente ou non approuvée | — |
-| `SCOPE_NOT_PERSONAL` | C4 | Promotion depuis un scope non personnel | — |
-| `SCOPE_TARGET_INVALID` | C4 | Scope cible de promotion invalide | — |
-| `OWNER_DECISION_SUBJECT` | C4 | La décision owner vise un autre sujet ou une autre occurrence (version, scope, pause) | Demander une décision pour l’occurrence exacte |
-| `ACTIVATION_RACE` | C4 | Activation concurrente : le candidat a changé entre-temps | Relire puis réessayer |
-| `PEER_EVIDENCE_NOT_FOUND` | C4 | Preuve de pair absente du registre | Ajouter la preuve au registre |
-| `PEER_EVIDENCE_PRODUCER` | C4 | Le producteur de la preuve n’est pas le relecteur | Preuve produite par le relecteur |
-| `PEER_EVIDENCE_SELF` | C4 | La preuve vient de l’auteur de la mémoire | Preuve d’un pair distinct |
+| `MEMORY_EVIDENCE_REQUIRED` | C1/C4 | Preuve requise hors candidat | Fournir des preuves |
+| `MEMORY_PROTECTED` | C4 | Entrée protégée non modifiable hors owner | — |
+| `MEMORY_UNKNOWN` | C4 | Entrée de mémoire inconnue | — |
+| `MEMORY_SUPERSEDED` | C4 | Version déjà remplacée | — |
+| `NO_STATE_SNAPSHOT` | C6 | Aucun état importé pour ce cycle | Importer via `/owner` |
+| `EXPORT_INVALID` | C6 | Export non conforme au parser L1 | Signaler |
+| `STATE_SNAPSHOT_CORRUPT` | C6 | Instantané stocké illisible | Réimporter |
 
-### 7.5 État CC-STATE-1 : import et export (C6, L1)
+## 8. Annotations MCP et limites
 
-| Code | Lot | Signification | Que faire |
-| --- | --- | --- | --- |
-| `NO_STATE_SNAPSHOT` | C6 | Aucun état importé pour ce cycle | K-import |
-| `EXPORT_INVALID` | C6 | L’export serait refusé par le parser L1 : rien n’est rendu | Signaler (incident) |
-| `STATE_SNAPSHOT_CORRUPT` | C6 | Import enregistré illisible ou empreinte incohérente | Réimporter l’état fusionné |
-| `STATE_REQUIRED` | C6 | Contenu d’import vide | — |
-| `STATE_TOO_LARGE` | C6 | Fichier d’état de plus de 256 Kio | — |
-| `IMPORT_UNKNOWN_PARTICIPANT` | C6 | Libellé de tâche sans participant enregistré | Enregistrer le participant (K6) |
-| `IMPORT_AMBIGUOUS_LABEL` | C6 | Libellé porté par plusieurs participants actifs, ou par un participant et le propriétaire | Rendre les libellés uniques sur `/owner` |
-| `IMPORT_DUPLICATE_ROLE` | C6 | D12 : deux rôles présents d’une tâche désignent le même participant (`none` reste permis) | Corriger l’attribution dans l’état |
-| `IMPORT_INVALID_TASK` | C6 | Identifiant de tâche non importable | Corriger l’état |
-| `IMPORT_TOO_MANY_TASKS` | C6 | Plus de 200 tâches | — |
-| `INVALID_EXPORT_TARGET` | C6 | Cible d’export invalide (dépôt `owner/repo`, chemin relatif) | — |
-| `UNSUPPORTED_SCHEMA` | L1 | Pas de `schema_version: CC-STATE-1` | — |
-| `MISSING_CONTROL_KEY` | L1 | Clé de contrôle obligatoire absente | — |
-| `DUPLICATE_CONTROL_KEY` | L1 | Clé de contrôle répétée | — |
-| `INVALID_REVISION_ORDER` | L1 | `base_revision` doit être inférieure à `revision` | — |
-| `INVALID_PHASE` | L1 | Phase hors P1 à P6 | — |
-| `INVALID_SHA` | L1 | `based_on_sha` n’est pas un SHA Git | — |
-| `MISSING_SECTION` | L1 | Section « Owner decisions » absente | — |
-| `INVALID_SECTION` | L1 | Titre de section vide | — |
-| `DUPLICATE_SECTION` | L1 | Section répétée | — |
-| `MISSING_TABLE` | L1 | Tableau Roles ou Tasks absent | — |
-| `INVALID_TABLE` | L1 | En-tête de tableau vide | — |
-| `RAGGED_TABLE` | L1 | Ligne de tableau de mauvaise largeur | Vérifier les retours à la ligne |
-| `TABLE_TRUNCATED` | L1 | Tableau tronqué ou mal séparé | — |
-| `INVALID_ROLE_ROW` | L1 | Cellule vide dans Roles | — |
-| `INVALID_TASK_ROW` | L1 | Cellule vide dans Tasks | `none` plutôt qu’une cellule vide |
-| `DUPLICATE_ACTOR` | L1 | Acteur présent deux fois dans Roles | — |
-| `DUPLICATE_TASK_ID` | L1 | Tâche présente deux fois | — |
-| `STALE_REVISION` | L1 | Une décision owner plus récente existe | Relire l’état |
-| `STALE_SHA` | L1 | Le head observé diffère de `based_on_sha` | Relire l’état |
+Les outils de lecture portent `readOnlyHint: true`. Les écritures sont idempotentes. Aucun outil du store n’écrit dans GitHub.
 
-## 8. Dépannage
+## 9. Mémoire (aperçu C4)
 
-| Symptôme | Cause probable | Action |
-| --- | --- | --- |
-| `collab_*` absents du catalogue | Connecteur consenti sans `collab:`, ou connecteur pointant sur `/mcp` | Recréer le connecteur sur `/collab/mcp`, nouvelle conversation |
-| HTTP 401/403 avec `insufficient_scope` | Jeton sans `collab:` | Reconsentir avec `collab:` |
-| HTTP 403 « Origine MCP refusée » | En-tête Origin non autorisé pour ce client | Utiliser le client enregistré |
-| HTTP 503 « Métadonnées du client indisponibles » | Métadonnées OAuth du client momentanément illisibles | Réessayer après `Retry-After` |
-| HTTP 503 `STORE_UNAVAILABLE` | `COLLAB_DB` absent ou en panne | Section 5 |
-| `/owner` répond 404 | Canal owner non configuré (fail-closed) | K4 |
-| `/owner` répond 403 | Preuve absente ou fausse, ou formulaire d’une autre origine | Ressaisir le secret sur la page elle-même |
-| `STALE` en boucle | Cycle très actif | Rejouer le delta reçu avant chaque nouvel essai, sans boucle aveugle |
-| L’export n’a pas changé après une action | L’action n’est pas exportée (proposition, objection, checkpoint) ou concerne un autre cycle | Voir section 4 |
-| `IMPORT_UNKNOWN_PARTICIPANT` | Libellé de l’état différent du libellé enregistré | Aligner le libellé sur `/owner` |
-
-## 9. Gouvernance de la mémoire (plan §4)
-
-| Élément | Règle |
-| --- | --- |
-| Scopes | common · project · role:\<r\> · participant:\<id\> · task:\<t\> (éphémère) |
-| Types | fact · lesson · procedure · decision · invariant · observation · open_question |
-| Confiance | hypothesis → observed → verified → owner_validated ; monter exige une nouvelle preuve d’un participant distinct |
-| Cycle de vie | candidate → active (reviewer ≠ auteur) → superseded/retired (pierre tombale, jamais d’effacement) |
-| Protégés | invariant, autorité, sécurité : changement uniquement par décision owner |
-| Budgets (tokens) | common ≤ 1500 · project ≤ 2000 · role ≤ 1500 · participant ≤ 500 · questions ouvertes ≤ 300 par packet |
-| Dépassement | consolider ou retirer avant toute nouvelle activation |
-| Plafonds courts | par cycle et scope : ≤ 10 activations et ≤ 10 retraits sans revue de consolidation |
-| Curiosités | observation/open_question au niveau hypothesis, jamais une règle ; expirent après 3 cycles sans nouvelle preuve |
-| Mémoire personnelle vs registre | le scope participant porte stratégies et préférences ; les faits *sur* un participant (résultats, incidents, évaluations, mesures) vivent seulement dans `evidence_ledger`, référencés par identifiant (I11) |
-| Promotion | participant → role/project/common par revue d’un pair |
-| Alarme | invariant touché, plus de 5 réfutations ou croissance nette au-dessus du seuil → `owner.request` ; activations en pause dans ce scope |
-| Export | `collab_export` en `memory-md` : scopes partagés + scope de l’appelant |
-
-État d’implémentation : le schéma et les contrats (C1) sont fusionnés ; le cycle de vie, le registre, les budgets et les alarmes arrivent avec C4 (github-mcp#67).
-
-## 10. Limites connues
-
-- L’export reprend `next_action`, Roles et la prose de la base importée. Seules les données gérées par le store sont superposées. Un changement de prose passe par la PR de l’export.
-- `based_on_sha` reste celui de la base importée ; il est mis à jour à la fusion par celui qui prépare la PR.
-- L’import remplace les tâches matérialisées du cycle. Importez toujours l’état fusionné le plus récent, qui contient les exports précédents.
-- Le contenu de l’état importé figure dans l’événement `import_state`, donc dans `collab_get_delta` du cycle : c’est le fichier fusionné dans GitHub, pas une donnée privée.
-- C3 est fusionné. La branche C4 (cycle de vie mémoire) ne l’est pas encore : les codes de la section 7.4 sont documentés d’avance, à partir de son head `eb5f98a` (testé PASS le 2026-10-08).
+Scopes : `common`, `project:<id>`, `role:<role>`, `participant:<pid>`, `task:<task_id>`.
+Le packet (I6) et l’export `memory-md` appliquent la projection visible décrite en section 3.

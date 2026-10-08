@@ -65,19 +65,53 @@ function effectiveBudget(options: PacketOptions): number {
   return Math.min(DEFAULT_PACKET_BUDGET, quarter, options.approvedBudgetTokens ?? Number.MAX_SAFE_INTEGER);
 }
 
-/** Shared scopes + caller's own participant scope only (C5 R5 / C6 export isolation). */
-function memoryVisible(scope: string, participantId: string): boolean {
-  if (scope.startsWith('participant:')) return scope === 'participant:' + participantId;
-  return true;
+/**
+ * I6 — projection mémoire stricte pour le packet.
+ * Visible uniquement : common, participant:<caller>, role:<role courant>,
+ * task:<task courante>, project:<projet courant> quand applicables.
+ * Tout autre scope (task:other, role:other, project:other, …) est exclu.
+ */
+export function memoryVisible(
+  scope: string,
+  ctx: {
+    participantId: string;
+    role?: string | null;
+    taskId?: string | null;
+    project?: string | null;
+  },
+): boolean {
+  if (scope === 'common') return true;
+  if (scope.startsWith('participant:')) {
+    return scope === 'participant:' + ctx.participantId;
+  }
+  if (scope.startsWith('role:')) {
+    return ctx.role != null && ctx.role.length > 0 && scope === 'role:' + ctx.role;
+  }
+  if (scope.startsWith('task:')) {
+    return ctx.taskId != null && ctx.taskId.length > 0 && scope === 'task:' + ctx.taskId;
+  }
+  if (scope.startsWith('project:')) {
+    return ctx.project != null && ctx.project.length > 0 && scope === 'project:' + ctx.project;
+  }
+  // Scopes inconnus : fail-closed.
+  return false;
 }
 
-async function loadVisibleActiveMemory(db: D1Database, participantId: string): Promise<PacketMemory[]> {
+async function loadVisibleActiveMemory(
+  db: D1Database,
+  ctx: {
+    participantId: string;
+    role?: string | null;
+    taskId?: string | null;
+    project?: string | null;
+  },
+): Promise<PacketMemory[]> {
   await ensureSchema(db);
   const { results } = await db.prepare([
     'SELECT id, version, scope, kind, text, confidence',
     "FROM memory_entries WHERE status = 'active' ORDER BY scope, id, version",
   ].join(' ')).all<PacketMemory>();
-  return results.filter(row => memoryVisible(row.scope, participantId));
+  return results.filter(row => memoryVisible(row.scope, ctx));
 }
 
 export async function buildRolePacket(
@@ -88,8 +122,10 @@ export async function buildRolePacket(
   await ensureContextSchema(db);
   const resolved = await resolveContextTarget(db, input);
   const cycle = await db.prepare(
-    'SELECT cycle_id, phase, revision, status FROM cycles WHERE cycle_id = ?1'
-  ).bind(resolved.cycle_id).first<{ cycle_id: string; phase: string; revision: number; status: string }>();
+    'SELECT cycle_id, phase, revision, status, project FROM cycles WHERE cycle_id = ?1'
+  ).bind(resolved.cycle_id).first<{
+    cycle_id: string; phase: string; revision: number; status: string; project: string | null;
+  }>();
   if (!cycle) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + resolved.cycle_id);
 
   const maxTokens = effectiveBudget(options);
@@ -98,13 +134,22 @@ export async function buildRolePacket(
     openQuestions.pop();
   }
 
-  const allMemory = options.memoryOverride ?? await loadVisibleActiveMemory(db, input.participant_id);
+  const visibilityCtx = {
+    participantId: input.participant_id,
+    role: resolved.task?.participation ?? null,
+    taskId: resolved.task?.task_id ?? null,
+    project: cycle.project ?? null,
+  };
+  const allMemory = options.memoryOverride ?? await loadVisibleActiveMemory(db, visibilityCtx);
   const memory: PacketMemory[] = [];
   const excluded: string[] = [];
 
   const packet: RolePacket = {
     header: {
-      ...cycle,
+      cycle_id: cycle.cycle_id,
+      phase: cycle.phase,
+      revision: cycle.revision,
+      status: cycle.status,
       participant_id: input.participant_id,
       last_seen_seq: options.lastSeenSeq ?? 0,
     },
