@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { createCollabToolContext, type CollabToolContext } from '../../../src/collab-store/mcp/context';
 import { registerCollabStoreTools } from '../../../src/collab-store/mcp/tools';
 import { mapClient, registerParticipant } from '../../../src/collab-store/owner/decisions';
+import { ensureSchema } from '../../../src/collab-store/store/schema';
 
 // Registre local cloné de test/mcp/tool-registry.ts, typé pour le contexte C2.
 const bindings = env as unknown as { COLLAB_DB_C2: D1Database };
@@ -58,6 +59,24 @@ function appendInput(cycleId: string, expectedRev: number, op: string, payload =
     cycle: cycleId, expected_rev: expectedRev, op_id: 't:' + cycleId + ':' + op,
     type: 'checkpoint', participant_id: 'agent:a', payload_json: payload,
   };
+}
+
+/** Seed cycle P1 + phase defs for collab_phase_advance (F5/A07). */
+async function seedPhaseCycle(label: string, autoAdvance = 'policy-p1'): Promise<string> {
+  await ensureSchema(bindings.COLLAB_DB_C2);
+  const cycleId = cycle(label);
+  await bindings.COLLAB_DB_C2.prepare(
+    "INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, 'open')",
+  ).bind(cycleId).run();
+  await bindings.COLLAB_DB_C2.prepare([
+    'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
+    "VALUES (?1, 'P1', '[]', '[]', '[]', ?2)",
+  ].join(' ')).bind(cycleId, autoAdvance).run();
+  await bindings.COLLAB_DB_C2.prepare([
+    'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
+    "VALUES (?1, 'P2', '[]', '[]', '[]', 'none')",
+  ].join(' ')).bind(cycleId).run();
+  return cycleId;
 }
 
 describe('CC-3 C2 — outils collab_* (registre local)', () => {
@@ -134,5 +153,46 @@ describe('CC-3 C2 — outils collab_* (registre local)', () => {
     const delta = await handlers.get('collab_get_delta')!({ cycle: cycleId, since_seq: 0, limit: 10 });
     expect((delta.structuredContent.events as unknown[])).toHaveLength(2);
     expect(delta.structuredContent.hasMore).toBe(false);
+  });
+});
+
+describe('F5 A07 — collab_phase_advance (outil MCP réel)', () => {
+  it('applique P1→P2 puis rejeu → duplicate (même event_seq)', async () => {
+    const handlers = registry(makeContext());
+    const cycleId = await seedPhaseCycle('phase-ok');
+    const first = await handlers.get('collab_phase_advance')!({
+      cycle: cycleId, expected_rev: 1, next_phase: 'P2',
+    });
+    expect(first.isError).toBeFalsy();
+    expect(first.structuredContent.status).toBe('applied');
+    expect(first.structuredContent.revision).toBe(2);
+    expect(typeof first.structuredContent.event_seq).toBe('number');
+
+    const retry = await handlers.get('collab_phase_advance')!({
+      cycle: cycleId, expected_rev: 1, next_phase: 'P2',
+    });
+    expect(retry.isError).toBeFalsy();
+    expect(retry.structuredContent.status).toBe('duplicate');
+    expect(retry.structuredContent.event_seq).toBe(first.structuredContent.event_seq);
+  });
+
+  it('refuse policy forgeable : auto_advance none → POLICY_NOT_AUTHORIZED', async () => {
+    const handlers = registry(makeContext());
+    const cycleId = await seedPhaseCycle('phase-none', 'none');
+    const result = await handlers.get('collab_phase_advance')!({
+      cycle: cycleId, expected_rev: 1, next_phase: 'P2',
+    });
+    expect(result.isError).toBe(true);
+    expect((result.structuredContent.error as { code: string }).code).toBe('POLICY_NOT_AUTHORIZED');
+  });
+
+  it('refuse transition interdite P1→P6 → PHASE_TRANSITION_FORBIDDEN', async () => {
+    const handlers = registry(makeContext());
+    const cycleId = await seedPhaseCycle('phase-forbid');
+    const result = await handlers.get('collab_phase_advance')!({
+      cycle: cycleId, expected_rev: 1, next_phase: 'P6',
+    });
+    expect(result.isError).toBe(true);
+    expect((result.structuredContent.error as { code: string }).code).toBe('PHASE_TRANSITION_FORBIDDEN');
   });
 });
