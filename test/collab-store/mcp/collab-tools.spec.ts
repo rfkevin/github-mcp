@@ -7,7 +7,6 @@ import { registerCollabStoreTools } from '../../../src/collab-store/mcp/tools';
 import { mapClient, registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
-// Registre local cloné de test/mcp/tool-registry.ts, typé pour le contexte C2.
 const bindings = env as unknown as { COLLAB_DB_C2: D1Database };
 type Result = { isError?: boolean; structuredContent: Record<string, unknown> };
 type Handler = (args: Record<string, unknown>) => Promise<Result>;
@@ -211,7 +210,10 @@ describe('F5 A09 — collab_get_context packet + mémoire', () => {
     await seedActiveMemory('mem-own-a09', 'participant:agent:a', 'private own');
     await seedActiveMemory('mem-other-a09', 'participant:agent:other', 'private other — must not leak');
 
-    await handlers.get('collab_append_event')!(appendInput(cycleId, 0, 'cp:a09'));
+    // seedPhaseCycle pose revision=1 → append à expected_rev 1
+    const appended = await handlers.get('collab_append_event')!(appendInput(cycleId, 1, 'cp:a09'));
+    expect(appended.isError).toBeFalsy();
+    expect(appended.structuredContent.status).toBe('applied');
 
     const result = await handlers.get('collab_get_context')!({
       cycle: cycleId,
