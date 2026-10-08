@@ -1,5 +1,5 @@
 import { GitHubApiError, GitHubRateLimitError } from './types';
-import { readJson } from './response';
+import { readJson, readText } from './response';
 
 const GITHUB_API = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
@@ -97,6 +97,63 @@ export class GitHubHttp {
 
       throw await this.toApiError(response, path);
     }
+  }
+
+  /**
+   * Télécharge un contenu exposé par GitHub via une redirection temporaire.
+   * L'appel API porte le jeton d'installation ; la destination signée est ensuite
+   * récupérée SANS Authorization pour ne jamais transmettre le jeton hors de
+   * api.github.com. Seules les destinations HTTPS sans userinfo sont acceptées.
+   */
+  async downloadRedirectedText(path: string, maxBytes: number): Promise<string> {
+    const token = await this.options.getInstallationToken(false);
+    const headers = new Headers();
+    headers.set('Accept', 'application/vnd.github+json');
+    headers.set('Authorization', `Bearer ${token}`);
+    headers.set('X-GitHub-Api-Version', this.options.apiVersion ?? GITHUB_API_VERSION);
+    headers.set('User-Agent', this.options.userAgent);
+
+    let redirect: Response;
+    try {
+      redirect = await this.options.fetcher(`${GITHUB_API}${path}`, {
+        headers,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(this.options.timeoutMs),
+      });
+    } catch (error) {
+      throw new GitHubApiError(0, path, networkFailureMessage(error));
+    }
+
+    if (redirect.ok) return readText(redirect, maxBytes);
+    if (redirect.status < 300 || redirect.status >= 400) throw await this.toApiError(redirect, path);
+
+    const location = redirect.headers.get('Location');
+    await redirect.body?.cancel();
+    if (!location) throw new GitHubApiError(redirect.status, path, 'Redirection GitHub sans destination.');
+
+    let target: URL;
+    try { target = new URL(location); }
+    catch { throw new GitHubApiError(redirect.status, path, 'Destination de téléchargement invalide.'); }
+    if (target.protocol !== 'https:' || target.username || target.password) {
+      throw new GitHubApiError(redirect.status, path, 'Destination de téléchargement non sûre.');
+    }
+
+    let download: Response;
+    try {
+      download = await this.options.fetcher(target.toString(), {
+        method: 'GET',
+        headers: { 'User-Agent': this.options.userAgent },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(this.options.timeoutMs),
+      });
+    } catch (error) {
+      throw new GitHubApiError(0, path, networkFailureMessage(error));
+    }
+    if (!download.ok) {
+      await download.body?.cancel();
+      throw new GitHubApiError(download.status, path, 'Téléchargement des logs refusé.');
+    }
+    return readText(download, maxBytes);
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {

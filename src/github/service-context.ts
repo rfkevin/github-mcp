@@ -3,6 +3,7 @@ import type { SecurityPolicy } from '../security/policy';
 export type GitHubServiceContext = {
   request: <T>(path: string, init?: RequestInit) => Promise<T>;
   send: (path: string, init?: RequestInit) => Promise<Response>;
+  downloadRedirectedText: (path: string, maxBytes: number) => Promise<string>;
   repoPath: (repository: string, suffix?: string) => string;
   paginate: <TPayload, TItem>(
     path: string,

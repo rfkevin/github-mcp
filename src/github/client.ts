@@ -209,6 +209,7 @@ export class GitHubClient {
     const context: GitHubServiceContext = {
       request: <T>(path: string, init?: RequestInit) => this.http.request<T>(path, init),
       send: (path, init) => this.http.send(path, init),
+      downloadRedirectedText: (path, maxBytes) => this.http.downloadRedirectedText(path, maxBytes),
       repoPath: (repository, suffix) => this.repoPath(repository, suffix),
       paginate: <TPayload, TItem>(path: string, extract: (payload: TPayload) => TItem[], limit?: number) =>
         this.http.paginate(path, extract, limit),
