@@ -75,6 +75,12 @@ Pour demander quelque chose au propriétaire (faire avancer une phase, enregistr
 - **Lecture seule** : l’outil n’écrit **jamais** dans GitHub.
 - **Erreurs** : `NO_STATE_SNAPSHOT` (aucun état importé), `EXPORT_INVALID`, `STATE_SNAPSHOT_CORRUPT`, `STORE_UNAVAILABLE`.
 
+### `collab_phase_advance`
+- **Entrée** : `cycle`, `expected_rev`, `policy_id`, `next_phase` (`P1`–`P6`).
+- **Sortie** : `applied` ou `duplicate`, avec `revision` et `event_seq`.
+- **Règle** : transition autorisée (P1→P2→P3→P4→P5→P6, plus un retour d’un cran), définition et conditions d’entrée de la cible, rejeu de la même policy avant `STALE`.
+- **Erreurs** : `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
+
 ### `collab_memory` (lot C4, à venir)
 Cycle de vie de la mémoire : proposer, revoir, consolider, retirer. Voir la section 9. Tant que C4 n’est pas fusionné, cet outil n’existe pas dans le catalogue.
 
@@ -209,6 +215,8 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `PHASE_OUTPUTS_INCOMPLETE` | C3 | Sorties attendues non produites par des participants distincts | Compléter |
 | `PHASE_EXIT_CONDITIONS_UNMET` | C3 | Conditions de sortie non remplies | — |
 | `POLICY_NOT_AUTHORIZED` | C3 | Politique d’avance non autorisée pour cette phase | `phase.request` |
+| `PHASE_TRANSITION_FORBIDDEN` | F5 | Transition hors matrice P1–P6 | Choisir une phase voisine autorisée |
+| `PHASE_ENTRY_CONDITIONS_UNMET` | F5 | Conditions d’entrée de la cible non remplies | Compléter puis réessayer |
 | `CONTEXT_TARGET_REQUIRED` | C3 | Ni issue ni cycle fourni | — |
 | `UNKNOWN_ISSUE` | C3 | Aucun cycle pour cette issue | — |
 | `AMBIGUOUS_ISSUE` | C3 | Même numéro d’issue dans plusieurs dépôts | Préciser `repository` ou `repo#n` |

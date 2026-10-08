@@ -10,14 +10,12 @@ import { CollabStoreError } from '../store/collab-store';
 import { advanceByPolicy, inspectPhase } from './engine';
 
 const ALLOWED: Record<string, readonly string[]> = {
-  framing: ['proposals', 'closed'],
-  proposals: ['objections', 'vote', 'closed'],
-  objections: ['vote', 'proposals', 'closed'],
-  vote: ['implementation', 'closed'],
-  implementation: ['review', 'closed'],
-  review: ['done', 'implementation', 'closed'],
-  done: ['closed'],
-  closed: [],
+  P1: ['P2'],
+  P2: ['P3', 'P1'],
+  P3: ['P4', 'P2'],
+  P4: ['P5', 'P3'],
+  P5: ['P6', 'P4'],
+  P6: [],
 };
 
 export function allowedNextPhases(from: string): readonly string[] {
