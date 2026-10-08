@@ -53,15 +53,16 @@ Pour demander quelque chose au propriétaire (faire avancer une phase, enregistr
 - **Contenu scellé** : avec C3, le contenu des propositions P1 non révélées est masqué (`sealed_id` et `content_hash` seulement).
 
 ### `collab_append_event`
-- **Entrée** : `cycle`, `expected_rev` (0 = création), `op_id` au format `{client}:{cycle}:{op}:{n}` (n numérique), `type`, `participant_id`, `payload_json`, et en option `session_id`, `role`, `evidence_ref`.
+- **Entrée** : `cycle`, `expected_rev` (0 = création), `op_id` au format `{client}:{cycle}:{op}:{n}` (n numérique), `type`, `participant_id`, `payload_json`, et en option `session_id`, `role`, `evidence_ref`. Le segment `{cycle}` de l’`op_id` doit désigner le cycle visé (`INVALID_OP_ID` sinon).
 - **Types acceptés** : `task.claim`, `task.status`, `task.handoff`, `checkpoint`, `evidence.add`, `objection.open`, `objection.resolve`, `proposal.submit`, `phase.request`, `owner.request`, `memory.propose`, `memory.review`, `memory.consolidate`, `memory.retire`, `manual_op.log`. `owner.decision` est refusé (`OWNER_DECISION_FORBIDDEN`).
-- **Tâches** :
-  - `task.claim` attend `{ "task": { task_id, owner_pid, reviewer_pid, tester_pid, owned_paths[], next_action } }`. Les trois rôles doivent être distincts (D12, `DUPLICATE_TASK_ROLE`).
-  - `task.status` attend `{ "task": { task_id, status } }`.
-  - `task.handoff` attend `{ "task": { task_id, owner_pid?, next_action } }`.
+- **Tâches (permissions F1)** :
+  - `task.claim` attend `{ "task": { task_id, owner_pid, reviewer_pid, tester_pid, owned_paths[], next_action } }`. Les trois rôles doivent être distincts (D12, `DUPLICATE_TASK_ROLE`) et enregistrés actifs (K6, `UNREGISTERED_PARTICIPANT`) ; la première affectation est faite par l’`owner_pid` lui-même, une réaffectation par l’owner courant uniquement (`TASK_FORBIDDEN`).
+  - `task.status` attend `{ "task": { task_id, status } }`, émis par l’owner, le reviewer ou le testeur de la tâche (`TASK_FORBIDDEN`).
+  - `task.handoff` attend `{ "task": { task_id, owner_pid?, next_action } }`, émis par l’owner courant ; le nouvel owner doit être enregistré actif (`UNREGISTERED_PARTICIPANT`).
 - **Sortie** :
   - `applied`, avec la nouvelle révision et l’événement ;
   - `duplicate`, avec l’événement original ;
+  - `IDEMPOTENCY_CONFLICT` quand l’`op_id` rejoué porte une autre intention (type, auteur, contenu) : incrémentez le compteur `n` ;
   - `STALE`, avec `currentRevision` et `delta` à rejouer avant de réessayer ;
   - `QUOTA_EXHAUSTED` quand le quota quotidien est atteint (5000 par défaut, `COLLAB_DAILY_WRITE_LIMIT`).
 
@@ -178,7 +179,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVALID_PARTICIPANT_ID` | C1/C5 | Identifiant de participant invalide ou réservé (`owner`, `system`, `unregistered:*`) | — |
 | `INVALID_EXPECTED_REV` | C1 | `expected_rev` négatif ou non entier | — |
 | `INVALID_IDEMPOTENCY_KEY` | C1 | Clé d’idempotence dérivée invalide | Respecter le format d’`op_id` |
-| `INVALID_OP_ID` | C1 | `op_id` hors format `{client}:{cycle}:{op}:{n}` | — |
+| `INVALID_OP_ID` | C1/F1 | `op_id` hors format `{client}:{cycle}:{op}:{n}`, ou segment cycle ≠ cycle visé | Corriger le segment cycle |
 | `INVALID_EVENT_FIELD` | C1 | Champ obligatoire vide | — |
 | `EVENT_FIELD_TOO_LONG` | C1 | Champ trop long (`payload_json` ≤ 64 Kio) | — |
 | `INVALID_PAYLOAD_JSON` | C1 | `payload_json` n’est pas du JSON | — |
@@ -191,6 +192,9 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `DUPLICATE_TASK_ROLE` | C1/C2 | D12 : auteur, reviewer et testeur doivent être distincts | Changer d’attribution |
 | `DUPLICATE_ROLE` | L1 | Rôle attribué deux fois | — |
 | `TASK_UNKNOWN` | C2 | Tâche inconnue dans le cycle | `task.claim` d’abord |
+| `TASK_FORBIDDEN` | F1 | Événement tâche émis hors des rôles autorisés (claim initial ≠ owner, réaffectation/handoff ≠ owner courant, status hors des trois rôles) | Voir la matrice en section 3 |
+| `UNREGISTERED_PARTICIPANT` | F1 | Rôle de tâche sans participant enregistré actif sur `/owner` (K6) | Enregistrer le participant |
+| `IDEMPOTENCY_CONFLICT` | F1 | `op_id` rejoué avec une intention différente | Incrémenter le compteur `n` de l’op_id |
 | `UNKNOWN_CYCLE` | C2 | Cycle inconnu | Vérifier l’identifiant |
 
 ### 7.3 Phases, contexte et scellement (C3)
