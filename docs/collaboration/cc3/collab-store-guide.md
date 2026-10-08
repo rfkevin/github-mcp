@@ -36,6 +36,8 @@ Règles transverses :
 
 Pour demander quelque chose au propriétaire (faire avancer une phase, enregistrer un client, fusionner), écrivez un `owner.request` avec `{ "request_id": "<id>", "summary": "<texte>" }`. Kevin le tranche sur `/owner`.
 
+Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le store. Un identifiant ne reçoit qu’une décision, attachée à la demande exacte que Kevin a lue, c’est-à-dire à son numéro d’événement `seq`. Une autre demande qui réutilise le même identifiant, dans le même cycle ou dans un autre, reste affichée sur `/owner` comme « déjà tranché ». Elle ne peut plus être décidée : redéposez-la sous un nouvel identifiant.
+
 ## 3. Outils de `/collab/mcp`
 
 ### `collab_get_context`
@@ -140,7 +142,7 @@ Toute erreur non typée du store (D1 indisponible, binding absent) répond `STOR
 | K8 | Promouvoir vers `master` et la production | Fin | à faire |
 | K-import | Importer l’état CC-STATE-1 fusionné du cycle sur `/owner` (section 4), puis réimporter après chaque fusion d’export | Avant C7, puis à chaque fusion | à faire |
 | K-fallback | Facultatif : définir `COLLAB_FALLBACK_STATE` sur l’environnement (non secret) | Avec K4 | facultatif |
-| K-decide | Trancher les `owner.request` et `phase.request` sur `/owner` (approuver ou refuser) | En continu | — |
+| K-decide | Trancher les `owner.request` et `phase.request` sur `/owner` (approuver ou refuser). Chaque bouton vise la demande affichée (cycle et `seq`). Toutes les demandes non tranchées sont listées, des plus récentes aux plus anciennes, avec leur total et le bouton « Demandes plus anciennes ». Aucune n’est masquée, y compris celles qui sont non décidables (identifiant invalide ou déjà tranché) | En continu | — |
 | K-rotate | Changer le secret owner au moindre soupçon d’exposition : l’ancien secret est refusé immédiatement | Au besoin | — |
 
 Merges vers `main`/`master`, dérogations, promotion et production restent humains (I9). Aucune politique ne peut les automatiser.
@@ -156,8 +158,10 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `PARTICIPANT_MISMATCH` | C5 | `participant_id` différent de l’identité dérivée du jeton | Utiliser `caller.participant_id` |
 | `UNREGISTERED_CLIENT` | C5 | Client non associé : seul `owner.request` est permis | Demander l’association (K6) |
 | `OWNER_DECISION_FORBIDDEN` | C1 | Un agent ne peut pas écrire `owner.decision` | Écrire un `owner.request` |
-| `ALREADY_DECIDED` | C5 | Demande déjà tranchée | Aucune action |
+| `ALREADY_DECIDED` | C5 | Demande déjà tranchée, ou identifiant déjà tranché pour une autre demande (`seq`) | Aucune action ; l’agent redépose sous un nouvel identifiant |
 | `UNKNOWN_REQUEST` | C5 | Aucune demande en attente avec cet identifiant | Vérifier `request_id` |
+| `REQUEST_MISMATCH` | C5 | La demande `seq` du formulaire ne porte plus l’identifiant ou le cycle affichés : rien n’est décidé | Relire `/owner` |
+| `AMBIGUOUS_REQUEST` | C5 | Décision sans `seq` alors que plusieurs demandes non tranchées portent ce `request_id` | Décider depuis `/owner`, qui envoie la `seq` |
 | `INVALID_REQUEST_ID` | C5 | Identifiant de demande invalide | `[a-z0-9][a-z0-9_-]{0,63}` |
 | `INVALID_DECISION` | C5 | Décision autre que `approve` ou `deny` | — |
 | `INVALID_LABEL` | C5 | Libellé vide ou trop long | 1 à 80 caractères |
@@ -255,7 +259,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `SCOPE_NOT_PERSONAL` | C4 | Promotion depuis un scope non personnel | — |
 | `SCOPE_TARGET_INVALID` | C4 | Scope cible de promotion invalide | — |
 | `OWNER_DECISION_SUBJECT` | C4 | La décision owner vise un autre sujet ou une autre occurrence (version, scope, pause) | Demander une décision pour l’occurrence exacte |
-| `ACTIVATION_RACE` | C4 | Activation concurrente : la transaction d’activation est annulée intégralement (A03) | Relire puis réessayer |
+| `ACTIVATION_RACE` | C4 | Activation concurrente : le candidat a changé entre-temps, la transaction d’activation est annulée intégralement (A03) | Relire puis réessayer |
 | `PEER_EVIDENCE_NOT_FOUND` | C4 | Preuve de pair absente du registre | Ajouter la preuve au registre |
 | `PEER_EVIDENCE_PRODUCER` | C4 | Le producteur de la preuve n’est pas le relecteur | Preuve produite par le relecteur |
 | `PEER_EVIDENCE_SELF` | C4 | La preuve vient de l’auteur de la mémoire | Preuve d’un pair distinct |
