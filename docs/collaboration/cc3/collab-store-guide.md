@@ -61,7 +61,7 @@ Pour demander quelque chose au propriétaire (faire avancer une phase, enregistr
   - `task.handoff` attend `{ "task": { task_id, owner_pid?, next_action } }`, émis par l’owner courant ; le nouvel owner doit être enregistré actif (`UNREGISTERED_PARTICIPANT`).
 - **Sortie** :
   - `applied`, avec la nouvelle révision et l’événement ;
-  - `duplicate`, avec l’événement original ;
+  - `duplicate`, avec l’événement original ; — le rejeu doit porter la même requête octet par octet : l'ordre des clés JSON compte, une intention réordonnée donne `IDEMPOTENCY_CONFLICT` ;
   - `IDEMPOTENCY_CONFLICT` quand l’`op_id` rejoué porte une autre intention (type, auteur, contenu) : incrémentez le compteur `n` ;
   - `STALE`, avec `currentRevision` et `delta` à rejouer avant de réessayer ;
   - `QUOTA_EXHAUSTED` quand le quota quotidien est atteint (5000 par défaut, `COLLAB_DAILY_WRITE_LIMIT`).

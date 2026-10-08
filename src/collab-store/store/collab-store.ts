@@ -124,6 +124,14 @@ export class CollabStore {
     // the payload, so a replay compares the raw intent to the stored one.
     const intentFingerprint = await this.intentFingerprint(event);
 
+    // A05 (F1, review Claude): judge an existing key BEFORE the P1 sealing
+    // and the task permission statements. Otherwise a lost-response replay
+    // of task.handoff or of a task.claim reassignment would be judged on the
+    // state its own first write produced (TASK_FORBIDDEN) instead of
+    // returning duplicate with the original event.
+    const replayed = await this.replayOutcome(key, intentFingerprint);
+    if (replayed) return replayed;
+
     let sealedInsert: D1PreparedStatement | null = null;
     if (event.type === 'proposal.submit') {
       const cycle = await this.db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1')
@@ -197,20 +205,8 @@ export class CollabStore {
     } catch (error) {
       // Fail-closed: diagnose from the durable state, never guess. F1: a
       // duplicate idempotency key wins over STALE.
-      const existing = await this.eventByKey(key);
-      if (existing) {
-        // A05 (F1): a reused op_id is only idempotent for the same intent;
-        // a different intent under the same key is a conflict, never a
-        // silent overwrite of the stored event.
-        const storedFingerprint = await this.intentFingerprint(existing);
-        if (storedFingerprint !== intentFingerprint) {
-          throw new CollabStoreError(
-            'IDEMPOTENCY_CONFLICT',
-            'op_id déjà utilisé pour une intention différente : événement stocké seq ' + existing.seq + ' (type ' + existing.type + ') vs requête entrante (type ' + event.type + '). Incrémentez le compteur n de l\'op_id.',
-          );
-        }
-        return { status: 'duplicate', event: existing };
-      }
+      const replay = await this.replayOutcome(key, intentFingerprint);
+      if (replay) return replay;
       const quota = await this.db.prepare('SELECT writes FROM quota_counters WHERE day = ?1')
         .bind(day).first<{ writes: number }>();
       if ((quota?.writes ?? 0) >= this.dailyWriteLimit) {
@@ -302,6 +298,26 @@ export class CollabStore {
 
   private async eventByKey(key: string): Promise<StoredStoreEvent | null> {
     return this.db.prepare('SELECT * FROM events WHERE idempotency_key = ?1').bind(key).first<StoredStoreEvent>();
+  }
+
+  /**
+   * A05 (F1): a reused op_id is only idempotent for the same intent; a
+   * different intent under the same key is a conflict, never a silent
+   * overwrite of the stored event. Returns null for a new key, the duplicate
+   * outcome otherwise (IDEMPOTENCY_CONFLICT on intent mismatch). The message
+   * stays neutral: it never echoes the stored seq/type.
+   */
+  private async replayOutcome(key: string, intentFingerprint: string): Promise<AppendOutcome | null> {
+    const existing = await this.eventByKey(key);
+    if (!existing) return null;
+    const storedFingerprint = await this.intentFingerprint(existing);
+    if (storedFingerprint !== intentFingerprint) {
+      throw new CollabStoreError(
+        'IDEMPOTENCY_CONFLICT',
+        'op_id déjà utilisé pour une intention différente. Incrémentez le compteur n de l\'op_id.',
+      );
+    }
+    return { status: 'duplicate', event: existing };
   }
 
   /**

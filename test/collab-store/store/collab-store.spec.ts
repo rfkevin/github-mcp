@@ -421,3 +421,51 @@ describe('CC-3 F1 — A08 permissions des tâches', () => {
     expect(task?.owner_pid).toBe('agent:a');
   });
 });
+
+describe('CC-3 F1 — rejeux après réponse perdue (review Claude)', () => {
+  it('rejeu de task.handoff par le précédent owner : duplicate, aucune seconde écriture', async () => {
+    const store = makeStore();
+    const cycle = uniq('a08j');
+    await seedParticipants('agent:a', 'agent:b', 'agent:c', 'agent:e');
+    await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
+      payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
+      op_id: 't:' + cycle + ':claim:1' });
+    const handoff = await store.appendEvent({ cycle_id: cycle, type: 'task.handoff', participant_id: 'agent:a', expected_rev: 1,
+      payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:e', next_action: 'suite' } }),
+      op_id: 't:' + cycle + ':handoff:1' });
+    expect(handoff.status).toBe('applied');
+    // Réponse perdue : le client rejoue la même requête alors que l'owner a changé.
+    const replay = await store.appendEvent({ cycle_id: cycle, type: 'task.handoff', participant_id: 'agent:a', expected_rev: 1,
+      payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:e', next_action: 'suite' } }),
+      op_id: 't:' + cycle + ':handoff:1' });
+    expect(replay.status).toBe('duplicate');
+    expect(replay.event?.seq).toBe(handoff.event?.seq);
+    const events = await bindings.COLLAB_DB_C2.prepare('SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1').bind(cycle).first<{ n: number }>();
+    expect(events?.n).toBe(2);
+    const task = await bindings.COLLAB_DB_C2.prepare('SELECT owner_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2').bind(cycle, 't1').first<{ owner_pid: string }>();
+    expect(task?.owner_pid).toBe('agent:e');
+  });
+
+  it('rejeu de réaffectation task.claim par le précédent owner : duplicate, aucune seconde écriture', async () => {
+    const store = makeStore();
+    const cycle = uniq('a08k');
+    await seedParticipants('agent:a', 'agent:b', 'agent:c', 'agent:e');
+    await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
+      payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
+      op_id: 't:' + cycle + ':claim:1' });
+    const reassign = await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 1,
+      payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:e', reviewer_pid: 'agent:b', tester_pid: 'agent:c', next_action: 'reprise' } }),
+      op_id: 't:' + cycle + ':claim:2' });
+    expect(reassign.status).toBe('applied');
+    // Réponse perdue : agent:a n'est plus owner, le rejeu doit renvoyer duplicate.
+    const replay = await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 1,
+      payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:e', reviewer_pid: 'agent:b', tester_pid: 'agent:c', next_action: 'reprise' } }),
+      op_id: 't:' + cycle + ':claim:2' });
+    expect(replay.status).toBe('duplicate');
+    expect(replay.event?.seq).toBe(reassign.event?.seq);
+    const events = await bindings.COLLAB_DB_C2.prepare('SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1').bind(cycle).first<{ n: number }>();
+    expect(events?.n).toBe(2);
+    const task = await bindings.COLLAB_DB_C2.prepare('SELECT owner_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2').bind(cycle, 't1').first<{ owner_pid: string }>();
+    expect(task?.owner_pid).toBe('agent:e');
+  });
+});
