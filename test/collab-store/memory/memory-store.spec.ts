@@ -4,7 +4,11 @@ import {
   MemoryStore,
   MemoryStoreError,
   pauseRequestPrefix,
+  promoteConfidenceRequestId,
+  promoteScopeRequestId,
   proposeRequestId,
+  retireRequestId,
+  supersedeRequestId,
 } from '../../../src/collab-store/memory/memory-store';
 import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
@@ -22,6 +26,32 @@ async function seedOwner(requestId: string): Promise<void> {
   )
     .bind(requestId)
     .run();
+}
+
+/** Real C5 channel: owner.request via CollabStore + recordOwnerDecision (no direct INSERT). */
+async function approveViaC5(requestId: string, summary: string, op: string): Promise<void> {
+  const db = bindings.COLLAB_DB_C2;
+  const cs = new CollabStore(db);
+  const cycle = 'c4-owner-approvals';
+  const outcome = await cs.appendEvent({
+    cycle_id: cycle,
+    type: 'owner.request',
+    participant_id: 'agent:a',
+    expected_rev: await cs.currentRevision(cycle),
+    payload_json: JSON.stringify({ request_id: requestId, summary }),
+    op_id: 'agent-a:' + cycle + ':' + op + ':1',
+  });
+  if (outcome.status !== 'applied' && outcome.status !== 'duplicate') {
+    throw new Error('owner.request append failed: ' + outcome.status);
+  }
+  const decision = await recordOwnerDecision(db, {
+    request_id: requestId,
+    decision: 'approve',
+    proof: { kind: 'secret' as const, subject: 'owner-secret' },
+  });
+  if (decision.status !== 'applied' && decision.status !== 'duplicate') {
+    throw new Error('owner decision failed: ' + decision.status);
+  }
 }
 
 describe('CC-3 C4 — memory lifecycle (I4)', () => {
@@ -398,5 +428,173 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       await mem.activate(p.id, 1, 'agent:b');
     }
     expect((await mem.get(p.id, 1))?.status).toBe('active');
+  });
+
+  it('retire of a protected kind requires an owner decision bound to the version', async () => {
+    const mem = store();
+    await approveViaC5(proposeRequestId('mem-prot-retire'), 'Approve invariant mem-prot-retire.', 'ret-prop');
+    const p = await mem.propose({
+      id: 'mem-prot-retire',
+      scope: 'common',
+      kind: 'invariant',
+      text: 'Invariant that will be retired.',
+      evidence_refs: ['plan:4'],
+      confidence: 'verified',
+      author_pid: 'agent:a',
+      owner_decision_ref: proposeRequestId('mem-prot-retire'),
+    });
+    try {
+      await mem.activate(p.id, 1, 'agent:b');
+    } catch {
+      /* protected activation pauses the scope */
+    }
+    if ((await mem.get(p.id, 1))?.status !== 'active') {
+      const ref = (await pauseRequestPrefix('common')) + 'retire';
+      await approveViaC5(ref, 'Clear common pause (retire test).', 'ret-pause');
+      await mem.clearActivationPause(ref, 'common');
+      await mem.activate(p.id, 1, 'agent:b');
+    }
+    await expect(mem.retire(p.id, 1)).rejects.toThrow(/PROTECTED_KIND_OWNER_REQUIRED|required/);
+    const wrongRef = retireRequestId(p.id, 2);
+    await approveViaC5(wrongRef, 'Decision bound to another version (must not leak).', 'ret-wrong');
+    await expect(mem.retire(p.id, 1, 'default', wrongRef)).rejects.toThrow(/does not target subject/);
+    const goodRef = retireRequestId(p.id, 1);
+    await approveViaC5(goodRef, 'Approve retiring mem-prot-retire v1.', 'ret-ok');
+    expect((await mem.retire(p.id, 1, 'default', goodRef)).status).toBe('retired');
+  });
+
+  it('a supersede approval never authorizes the next supersede of the same id', async () => {
+    const mem = store();
+    await approveViaC5(proposeRequestId('mem-prot-sup'), 'Approve invariant mem-prot-sup.', 'sup-prop');
+    const p = await mem.propose({
+      id: 'mem-prot-sup',
+      scope: 'common',
+      kind: 'invariant',
+      text: 'Invariant superseded twice.',
+      evidence_refs: ['plan:4'],
+      confidence: 'verified',
+      author_pid: 'agent:a',
+      owner_decision_ref: proposeRequestId('mem-prot-sup'),
+    });
+    try {
+      await mem.activate(p.id, 1, 'agent:b');
+    } catch {
+      /* protected activation pauses the scope */
+    }
+    if ((await mem.get(p.id, 1))?.status !== 'active') {
+      const ref = (await pauseRequestPrefix('common')) + 'sup1';
+      await approveViaC5(ref, 'Clear common pause (supersede test).', 'sup-pause1');
+      await mem.clearActivationPause(ref, 'common');
+      await mem.activate(p.id, 1, 'agent:b');
+    }
+    const v2ref = supersedeRequestId(p.id, 2);
+    await approveViaC5(v2ref, 'Approve supersede mem-prot-sup to v2.', 'sup-v2');
+    const next = await mem.supersede(p.id, 'agent:c', 'Wording clarified.', ['plan:4'], undefined, undefined, v2ref);
+    expect(next.version).toBe(2);
+    try {
+      await mem.activate(p.id, 2, 'agent:b');
+    } catch {
+      /* protected activation pauses the scope */
+    }
+    if ((await mem.get(p.id, 2))?.status !== 'active') {
+      const ref = (await pauseRequestPrefix('common')) + 'sup2';
+      await approveViaC5(ref, 'Clear common pause (supersede v2 activation).', 'sup-pause2');
+      await mem.clearActivationPause(ref, 'common');
+      await mem.activate(p.id, 2, 'agent:b');
+    }
+    await expect(
+      mem.supersede(p.id, 'agent:c', 'Unauthorized v3.', ['plan:4'], undefined, undefined, v2ref),
+    ).rejects.toThrow(/does not target subject/);
+    const v3ref = supersedeRequestId(p.id, 3);
+    await approveViaC5(v3ref, 'Approve supersede mem-prot-sup to v3.', 'sup-v3');
+    expect(
+      (await mem.supersede(p.id, 'agent:c', 'Third wording.', ['plan:4'], undefined, undefined, v3ref)).version,
+    ).toBe(3);
+  });
+
+  it('promoteScope of a protected kind requires an owner decision bound to the occurrence', async () => {
+    const mem = store();
+    await approveViaC5(proposeRequestId('mem-prot-scope'), 'Approve invariant mem-prot-scope.', 'scope-prop');
+    const p = await mem.propose({
+      id: 'mem-prot-scope',
+      scope: 'participant:agent:a',
+      kind: 'invariant',
+      text: 'Personal invariant lifted to project scope.',
+      evidence_refs: ['plan:4'],
+      confidence: 'verified',
+      author_pid: 'agent:a',
+      owner_decision_ref: proposeRequestId('mem-prot-scope'),
+    });
+    try {
+      await mem.activate(p.id, 1, 'agent:b');
+    } catch {
+      /* protected activation pauses the scope */
+    }
+    if ((await mem.get(p.id, 1))?.status !== 'active') {
+      const ref = (await pauseRequestPrefix('participant:agent:a')) + 'scope';
+      await approveViaC5(ref, 'Clear participant pause (scope test).', 'scope-pause');
+      await mem.clearActivationPause(ref, 'participant:agent:a');
+      await mem.activate(p.id, 1, 'agent:b');
+    }
+    await expect(mem.promoteScope(p.id, 1, 'agent:b', 'project:cc4')).rejects.toThrow(
+      /PROTECTED_KIND_OWNER_REQUIRED|required/,
+    );
+    const wrongRef = await promoteScopeRequestId(p.id, 2, 'project:other');
+    await approveViaC5(wrongRef, 'Decision for another target scope (must not leak).', 'scope-wrong');
+    await expect(mem.promoteScope(p.id, 1, 'agent:b', 'project:cc4', wrongRef)).rejects.toThrow(
+      /does not target subject/,
+    );
+    const goodRef = await promoteScopeRequestId(p.id, 2, 'project:cc4');
+    await approveViaC5(goodRef, 'Approve lifting mem-prot-scope to project:cc4.', 'scope-ok');
+    const lifted = await mem.promoteScope(p.id, 1, 'agent:b', 'project:cc4', goodRef);
+    expect(lifted.scope).toBe('project:cc4');
+    expect(lifted.version).toBe(2);
+    expect(lifted.status).toBe('candidate');
+  });
+
+  it('promoteConfidence of a protected kind requires an owner decision (candidate and active)', async () => {
+    const mem = store();
+    await approveViaC5(proposeRequestId('mem-prot-conf'), 'Approve invariant mem-prot-conf.', 'conf-prop');
+    const p = await mem.propose({
+      id: 'mem-prot-conf',
+      scope: 'participant:agent:a',
+      kind: 'invariant',
+      text: 'Invariant whose confidence will be raised.',
+      evidence_refs: ['plan:4'],
+      confidence: 'observed',
+      author_pid: 'agent:a',
+      owner_decision_ref: proposeRequestId('mem-prot-conf'),
+    });
+    // candidate path: no decision -> rejected; occurrence-bound decision -> allowed
+    await seedLedger('agent:b', 'ev-prot-conf-1');
+    await expect(mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-prot-conf-1', 'verified')).rejects.toThrow(
+      /PROTECTED_KIND_OWNER_REQUIRED|required/,
+    );
+    const candRef = await promoteConfidenceRequestId(p.id, 1, 'verified');
+    await approveViaC5(candRef, 'Approve confidence verified for mem-prot-conf v1.', 'conf-cand');
+    const upCand = await mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-prot-conf-1', 'verified', candRef);
+    expect(upCand.confidence).toBe('verified');
+    expect(upCand.status).toBe('candidate');
+    // active path: supersede-bound decision; the candidate-bound one must not leak
+    try {
+      await mem.activate(p.id, 1, 'agent:b');
+    } catch {
+      /* protected activation pauses the scope */
+    }
+    if ((await mem.get(p.id, 1))?.status !== 'active') {
+      const ref = (await pauseRequestPrefix('participant:agent:a')) + 'conf';
+      await approveViaC5(ref, 'Clear participant pause (confidence test).', 'conf-pause');
+      await mem.clearActivationPause(ref, 'participant:agent:a');
+      await mem.activate(p.id, 1, 'agent:b');
+    }
+    await seedLedger('agent:b', 'ev-prot-conf-2');
+    await expect(
+      mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-prot-conf-2', 'owner_validated', candRef),
+    ).rejects.toThrow(/does not target subject/);
+    const supRef = supersedeRequestId(p.id, 2);
+    await approveViaC5(supRef, 'Approve supersede mem-prot-conf to v2 (confidence).', 'conf-sup');
+    const upActive = await mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-prot-conf-2', 'owner_validated', supRef);
+    expect(upActive.version).toBe(2);
+    expect(upActive.confidence).toBe('owner_validated');
   });
 });

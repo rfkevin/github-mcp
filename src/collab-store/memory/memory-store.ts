@@ -74,14 +74,21 @@ export const MAX_RETIREMENTS_PER_CYCLE = 10;
 /**
  * C5-compatible owner_decision request_ids. C5 (owner/decisions.ts
  * REQUEST_ID_RE) forbids ':' in request_id, so each protected operation
- * encodes the exact subject it authorizes:
- *   propose   -> mem-propose-<id>   (exact match, explicit id required)
- *   supersede -> mem-supersede-<id> (exact match)
- *   pause     -> mem-pause-<sha256(scope)[0:20]>-<occurrence> (prefix match)
- * A decision recorded for any other subject never authorizes these paths.
+ * encodes the exact subject it authorizes, bound to the mutation occurrence:
+ *   propose    -> mem-propose-<id> (exact match, explicit id required)
+ *   supersede  -> mem-supersede-<id>-v<nextVersion> (exact match)
+ *   retire     -> mem-retire-<id>-v<version> (exact match)
+ *   scope      -> mem-scope-<sha256(id:nextVersion:newScope)[0:20]> (exact)
+ *   confidence -> mem-conf-<sha256(id:version:confidence)[0:20]> (exact)
+ *   pause      -> mem-pause-<sha256(scope)[0:20]>-<occurrence> (prefix match)
+ * A decision recorded for any other subject — or for another occurrence of
+ * the same subject — never authorizes these paths (plan §4 Protected).
  */
 export const PROPOSE_REQUEST_PREFIX = 'mem-propose-';
 export const SUPERSEDE_REQUEST_PREFIX = 'mem-supersede-';
+export const RETIRE_REQUEST_PREFIX = 'mem-retire-';
+export const SCOPE_REQUEST_PREFIX = 'mem-scope-';
+export const CONFIDENCE_REQUEST_PREFIX = 'mem-conf-';
 export const PAUSE_REQUEST_PREFIX = 'mem-pause-';
 /** Protected memory ids stay short so request_id never exceeds 64 chars. */
 const MEMORY_ID_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
@@ -90,8 +97,14 @@ export function proposeRequestId(id: string): string {
   return PROPOSE_REQUEST_PREFIX + id;
 }
 
-export function supersedeRequestId(id: string): string {
-  return SUPERSEDE_REQUEST_PREFIX + id;
+/** Supersede approvals are bound to the resulting version, never reusable. */
+export function supersedeRequestId(id: string, nextVersion: number): string {
+  return `${SUPERSEDE_REQUEST_PREFIX}${id}-v${nextVersion}`;
+}
+
+/** Retire approvals are bound to the exact version being retired. */
+export function retireRequestId(id: string, version: number): string {
+  return `${RETIRE_REQUEST_PREFIX}${id}-v${version}`;
 }
 
 async function sha256Hex(text: string): Promise<string> {
@@ -102,6 +115,24 @@ async function sha256Hex(text: string): Promise<string> {
 /** Pause-clearing request_ids for one scope share this prefix. */
 export async function pauseRequestPrefix(scope?: string): Promise<string> {
   return PAUSE_REQUEST_PREFIX + (await sha256Hex(scope ?? '')).slice(0, 20) + '-';
+}
+
+/** Scope-promotion approvals bind id + resulting version + target scope. */
+export async function promoteScopeRequestId(
+  id: string,
+  nextVersion: number,
+  newScope: string,
+): Promise<string> {
+  return SCOPE_REQUEST_PREFIX + (await sha256Hex(`${id}:${nextVersion}:${newScope}`)).slice(0, 20);
+}
+
+/** Confidence-promotion approvals bind id + version + target confidence. */
+export async function promoteConfidenceRequestId(
+  id: string,
+  version: number,
+  confidence: string,
+): Promise<string> {
+  return CONFIDENCE_REQUEST_PREFIX + (await sha256Hex(`${id}:${version}:${confidence}`)).slice(0, 20);
 }
 
 const META_PAUSE = 'mem:pause';
@@ -324,8 +355,12 @@ export class MemoryStore {
     if (!active) throw new MemoryStoreError('MEMORY_NO_ACTIVE', `No active version for ${id}`);
     const nextKind = (kind ?? active.kind) as MemoryKind;
     const conf = confidence ?? (active.confidence as MemoryConfidence);
+    const nextVersion = active.version + 1;
     if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
-      await this.requireOwnerDecision(ownerDecisionRef, { exact: supersedeRequestId(id) });
+      // Bound to the resulting version: an approval for v2 never authorizes v3.
+      await this.requireOwnerDecision(ownerDecisionRef, {
+        exact: supersedeRequestId(id, nextVersion),
+      });
     }
     if (conf === 'hypothesis' && PROTECTED_KINDS.has(nextKind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot supersede into a rule kind');
@@ -339,7 +374,6 @@ export class MemoryStore {
       status: 'candidate',
       author_pid: authorPid,
     });
-    const nextVersion = active.version + 1;
     await this.db.batch([
       this.db
         .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
@@ -377,6 +411,9 @@ export class MemoryStore {
    * Raise confidence with ledger-backed evidence from a distinct peer.
    * Rank: hypothesis < observed < verified < owner_validated (no downgrade).
    * peerEvidenceRef must resolve to evidence_ledger row produced by reviewerPid.
+   * Protected kinds additionally require an owner decision (plan §4):
+   * active rows via the supersede version-bound ref, candidates via
+   * promoteConfidenceRequestId(id, version, newConfidence).
    */
   async promoteConfidence(
     id: string,
@@ -384,6 +421,7 @@ export class MemoryStore {
     reviewerPid: string,
     peerEvidenceRef: string,
     newConfidence: MemoryConfidence,
+    ownerDecisionRef?: string,
   ): Promise<StoredMemory> {
     await ensureSchema(this.db);
     const row = await this.get(id, version);
@@ -404,6 +442,24 @@ export class MemoryStore {
     const ledgerRef = await this.requirePeerLedgerEvidence(peerEvidenceRef, reviewerPid, row.author_pid);
     const refs: string[] = JSON.parse(row.evidence_refs || '[]');
     refs.push(ledgerRef);
+    if (PROTECTED_KINDS.has(row.kind) && row.status === 'active') {
+      // supersede() enforces its own version-bound owner decision here.
+      return this.supersede(
+        id,
+        row.author_pid,
+        row.text,
+        refs,
+        row.kind as MemoryKind,
+        newConfidence,
+        ownerDecisionRef,
+      );
+    }
+    if (PROTECTED_KINDS.has(row.kind)) {
+      // Candidate: the decision is bound to this confidence occurrence.
+      await this.requireOwnerDecision(ownerDecisionRef, {
+        exact: await promoteConfidenceRequestId(id, version, newConfidence),
+      });
+    }
     if (row.status === 'active') {
       return this.supersede(id, row.author_pid, row.text, refs, row.kind as MemoryKind, newConfidence);
     }
@@ -417,12 +473,15 @@ export class MemoryStore {
   /**
    * Promote scope participant:<id> → role|project|common via peer review (not task).
    * Marks prior active superseded and inserts candidate on new scope (atomic batch).
+   * Protected kinds additionally require an owner decision bound to
+   * promoteScopeRequestId(id, resulting version, newScope) (plan §4).
    */
   async promoteScope(
     id: string,
     version: number,
     reviewerPid: string,
     newScope: string,
+    ownerDecisionRef?: string,
   ): Promise<StoredMemory> {
     await ensureSchema(this.db);
     const row = await this.get(id, version);
@@ -442,6 +501,12 @@ export class MemoryStore {
         'SCOPE_TARGET_INVALID',
         `promotion target must be role|project|common, got ${newScope}`,
       );
+    }
+    if (PROTECTED_KINDS.has(row.kind)) {
+      // Plan §4 Protected: bound to id + resulting version + target scope.
+      await this.requireOwnerDecision(ownerDecisionRef, {
+        exact: await promoteScopeRequestId(id, row.version + 1, newScope),
+      });
     }
     const nextConf: MemoryConfidence =
       row.confidence === 'hypothesis' ? 'observed' : (row.confidence as MemoryConfidence);
@@ -480,8 +545,17 @@ export class MemoryStore {
     return (await this.get(id, nextVersion))!;
   }
 
-  /** Retire (tombstone): status=retired, row kept. Cap ≤10 per cycle+scope. */
-  async retire(id: string, version?: number, cycleId = 'default'): Promise<StoredMemory> {
+  /**
+   * Retire (tombstone): status=retired, row kept. Cap ≤10 per cycle+scope.
+   * Protected kinds require an owner decision bound to the retired version
+   * (retireRequestId(id, version)) — plan §4 Protected.
+   */
+  async retire(
+    id: string,
+    version?: number,
+    cycleId = 'default',
+    ownerDecisionRef?: string,
+  ): Promise<StoredMemory> {
     await ensureSchema(this.db);
     const target =
       version != null
@@ -493,6 +567,9 @@ export class MemoryStore {
             .bind(id)
             .first<StoredMemory>();
     if (!target) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id} not found for retire`);
+    if (PROTECTED_KINDS.has(target.kind)) {
+      await this.requireOwnerDecision(ownerDecisionRef, { exact: retireRequestId(id, target.version) });
+    }
     const retKey = `${META_RET}${cycleId}:${target.scope}`;
     await this.assertCycleCap(retKey, MAX_RETIREMENTS_PER_CYCLE, 'RETIREMENT_CAP');
     await this.db
