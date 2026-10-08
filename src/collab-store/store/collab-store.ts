@@ -11,6 +11,7 @@
  * last-write-wins: a stale writer changes nothing.
  */
 import { opIdToIdempotencyKey, validateAgentEvent, validateTaskAssignment, type StoreEvent, type StoreEventType } from '../contracts';
+import { createSealedEnvelope, parseSealedEnvelope } from '../phases/sealed-envelope';
 import { ensureSchema } from './schema';
 import { DEFAULT_DAILY_WRITE_LIMIT } from './config';
 
@@ -108,6 +109,39 @@ export class CollabStore {
     };
     validateAgentEvent(event);
     await ensureSchema(this.db);
+
+    let sealedInsert: D1PreparedStatement | null = null;
+    if (event.type === 'proposal.submit') {
+      const cycle = await this.db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1')
+        .bind(event.cycle_id).first<{ phase: string }>();
+      const phase = cycle?.phase ?? (event.expected_rev === 0 ? 'P1' : '');
+      if (phase === 'P1') {
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+        } catch {
+          throw new CollabStoreError('INVALID_PROPOSAL_PAYLOAD', 'proposal.submit payload_json must be an object.');
+        }
+        if (typeof payload.content !== 'string' || !payload.content) {
+          throw new CollabStoreError('INVALID_PROPOSAL_PAYLOAD', 'proposal.submit requires payload_json.content in P1.');
+        }
+        const sealedId = 'sealed-' + key.slice(0, 48);
+        const envelope = await createSealedEnvelope(payload.content);
+        event.payload_json = JSON.stringify({ sealed_id: sealedId, content_hash: envelope.content_hash });
+        sealedInsert = this.db.prepare([
+          'INSERT INTO sealed_items (id, cycle_id, phase, participant_id, content_hash, content, revealed_at)',
+          'VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)',
+        ].join(' ')).bind(
+          sealedId,
+          event.cycle_id,
+          phase,
+          event.participant_id,
+          envelope.content_hash,
+          envelope.serialized,
+        );
+      }
+    }
+
     const now = this.now();
     const at = Math.floor(now.getTime() / 1000);
     const day = now.toISOString().slice(0, 10);
@@ -129,6 +163,7 @@ export class CollabStore {
       this.db.prepare(
         'INSERT INTO cycles (cycle_id) VALUES (?1) ON CONFLICT(cycle_id) DO NOTHING'
       ).bind(event.cycle_id),
+      ...(sealedInsert ? [sealedInsert] : []),
       this.db.prepare([
         'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json,',
         '                   expected_rev, idempotency_key, evidence_ref)',
@@ -168,8 +203,33 @@ export class CollabStore {
     const { results } = await this.db.prepare(
       'SELECT * FROM events WHERE cycle_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3'
     ).bind(cycleId, sinceSeq, limit + 1).all<StoredStoreEvent>();
-    const events = results.slice(0, limit);
+    const events = await Promise.all(results.slice(0, limit).map(event => this.revealProposalPayload(event)));
     return { events, hasMore: results.length > limit };
+  }
+
+  private async revealProposalPayload(event: StoredStoreEvent): Promise<StoredStoreEvent> {
+    if (event.type !== 'proposal.submit') return event;
+    let metadata: Record<string, unknown>;
+    try {
+      metadata = JSON.parse(event.payload_json) as Record<string, unknown>;
+    } catch {
+      return event;
+    }
+    if (typeof metadata.sealed_id !== 'string') return event;
+    const row = await this.db.prepare(
+      'SELECT content, revealed_at FROM sealed_items WHERE id = ?1 AND cycle_id = ?2'
+    ).bind(metadata.sealed_id, event.cycle_id).first<{ content: string; revealed_at: number | null }>();
+    if (!row || row.revealed_at === null) return event;
+    const envelope = parseSealedEnvelope(row.content);
+    return {
+      ...event,
+      payload_json: JSON.stringify({
+        ...metadata,
+        content: envelope.content,
+        nonce: envelope.nonce,
+        revealed: true,
+      }),
+    };
   }
 
   async getContext(cycleId: string, participantId?: string): Promise<{
