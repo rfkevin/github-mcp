@@ -1,10 +1,11 @@
 /**
  * CC-3 C2 — helpers de résultat locaux (jamais importés depuis src/mcp/**).
  * Leçon F2-BUG-01 : une erreur connue garde son propre code typé ;
- * UNEXPECTED_ERROR est réservé aux échecs réellement inattendus.
+ * une erreur non typée devient STORE_UNAVAILABLE avec son repli (C6, R4).
  */
 import { StateContractError } from '../../collab/contracts';
 import { CollabStoreError } from '../store/collab-store';
+import { storeFallback, type StoreFallback } from '../export/fallback';
 
 export type ToolPayload = { content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown> };
 export type ToolErrorResult = { isError: true; content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown> };
@@ -14,23 +15,33 @@ export function collabSuccess(value: Record<string, unknown>): ToolPayload {
 }
 
 /**
- * Tous les échecs du store sont déterministes (même entrée, même résultat) :
- * retryable reste false, sauf information contraire explicite.
+ * Les échecs typés du store sont déterministes (même entrée, même résultat) :
+ * retryable reste false. Toute autre erreur vient du stockage (D1 indisponible,
+ * binding absent) ou d'un défaut imprévu : CC-3 C6 la rend explicite —
+ * STORE_UNAVAILABLE, retryable, avec le repli en lecture seule (R4) et jamais
+ * une écriture GitHub de substitution.
  */
 export function collabFailure(
   error: unknown,
   fallback: string,
   extra: Record<string, unknown> = {},
+  storeDown: StoreFallback = storeFallback(null),
 ): ToolErrorResult {
   const known = error instanceof StateContractError || error instanceof CollabStoreError;
   if (!known) {
     // Diagnostic serveur : l'erreur inconnue est consignée mais jamais exposée au client.
-    console.warn(JSON.stringify({ service: 'collab-store', outcome: 'unexpected_error',
+    console.warn(JSON.stringify({ service: 'collab-store', outcome: 'store_unavailable',
       name: error instanceof Error ? error.name : typeof error,
       message: error instanceof Error ? error.message : String(error) }));
+    const message = fallback + ' Store indisponible : ' + storeDown.instruction;
+    return {
+      isError: true,
+      content: [{ type: 'text', text: message }],
+      structuredContent: { error: { code: 'STORE_UNAVAILABLE', message, retryable: true }, fallback: storeDown, ...extra },
+    };
   }
-  const code = known ? (error as { code: string }).code : 'UNEXPECTED_ERROR';
-  const message = known && error instanceof Error ? error.message : fallback;
+  const code = (error as { code: string }).code;
+  const message = error instanceof Error ? error.message : fallback;
   return {
     isError: true,
     content: [{ type: 'text', text: message }],

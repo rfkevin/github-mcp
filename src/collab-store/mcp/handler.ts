@@ -11,6 +11,7 @@ import { createCollabToolContext } from './context';
 import { createCollabServer } from './tools';
 import { acceptsCollabOrigin } from './origin';
 import type { CollabStoreEnv } from '../store/config';
+import { parseFallbackState, storeFallback } from '../export/fallback';
 
 // Appelé uniquement par OAuthProvider après validation du jeton.
 export const collabMcpHandler = {
@@ -44,9 +45,10 @@ export const collabMcpHandler = {
         allowedOriginHostnames: origin === null ? [] : [new URL(origin).hostname],
       })(request, env, ctx);
     } catch {
-      // Fail-closed : COLLAB_DB absent ou indisponible.
-      return new Response('Store de collaboration non configuré.', { status: 503,
-        headers: { 'Cache-Control': 'no-store', 'Retry-After': '15' } });
+      // Fail-closed : COLLAB_DB absent ou indisponible. CC-3 C6 (R4) : repli explicite, lecture seule.
+      const fallback = storeFallback(parseFallbackState((env as AuthEnv & CollabStoreEnv).COLLAB_FALLBACK_STATE));
+      return new Response('Store de collaboration non configuré (STORE_UNAVAILABLE). ' + fallback.instruction, { status: 503,
+        headers: { 'Cache-Control': 'no-store', 'Retry-After': '15', 'Content-Type': 'text/plain; charset=utf-8' } });
     }
   },
 };

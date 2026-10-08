@@ -50,4 +50,27 @@ export const outputSchemas = {
     revision: z.number().optional(),
     event: z.object(storedEvent).optional(),
   },
+  // CC-3 C6 : instantané pour une PR GitHub (lecture seule).
+  collab_export: {
+    cycle_id: z.string(),
+    format: z.enum(['cc-state-1', 'memory-md']),
+    content: z.string(),
+    content_sha256: z.string(),
+    state: z.object({
+      revision: z.number(),
+      base_revision: z.number(),
+      changed: z.boolean(),
+      changes: z.object({ phase: z.boolean(), tasks: z.array(z.string()), owner_decisions: z.number(), evidence: z.number() }),
+      imported: z.object({
+        event_seq: z.number(),
+        state_revision: z.number(),
+        content_sha256: z.string(),
+        target: z.object({ repository: z.string(), path: z.string(), ref: z.string() }).nullable(),
+      }),
+      store_revision: z.number(),
+      last_seq: z.number(),
+    }).optional(),
+    memory: z.object({ entries: z.number(), scopes: z.array(z.string()) }).optional(),
+    publish: z.string(),
+  },
 };

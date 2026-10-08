@@ -10,6 +10,8 @@ export interface CollabStoreEnv {
   COLLAB_STORE_ENABLED?: string;
   /** Optional daily write quota override (default DEFAULT_DAILY_WRITE_LIMIT). */
   COLLAB_DAILY_WRITE_LIMIT?: string;
+  /** CC-3 C6: optional read-only fallback named on STORE_UNAVAILABLE, "owner/repo:path@ref" (non-secret). */
+  COLLAB_FALLBACK_STATE?: string;
 }
 
 export const DEFAULT_DAILY_WRITE_LIMIT = 5000;

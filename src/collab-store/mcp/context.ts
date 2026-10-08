@@ -5,6 +5,7 @@
 import { CollabStore, CollabStoreError, type StoreOptions } from '../store/collab-store';
 import { collabDailyWriteLimit, type CollabStoreEnv } from '../store/config';
 import { resolveParticipant, type ParticipantIdentity } from '../identity';
+import { parseFallbackState, storeFallback, type StoreFallback } from '../export/fallback';
 
 export interface CollabToolContext {
   actor: string;
@@ -12,6 +13,9 @@ export interface CollabToolContext {
   scopes: readonly string[];
   /** CC-3 C5 : identité dérivée du client OAuth du jeton (I8), résolue une fois par requête. */
   identity: () => Promise<ParticipantIdentity>;
+  /** CC-3 C6 : repli explicite en lecture seule renvoyé avec STORE_UNAVAILABLE (R4). */
+  fallback: StoreFallback;
+  db: D1Database;
 }
 
 export function createCollabToolContext(
@@ -30,5 +34,6 @@ export function createCollabToolContext(
   });
   const db = env.COLLAB_DB;
   let resolved: Promise<ParticipantIdentity> | undefined;
-  return { actor, store, scopes, identity: () => (resolved ??= resolveParticipant(db, clientId)) };
+  return { actor, store, scopes, db, fallback: storeFallback(parseFallbackState(env.COLLAB_FALLBACK_STATE)),
+    identity: () => (resolved ??= resolveParticipant(db, clientId)) };
 }

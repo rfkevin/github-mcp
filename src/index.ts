@@ -7,6 +7,7 @@ import { writesEnabled } from './writes/config';
 import { automationEnabled } from './automation/config';
 import { collabStoreEnabled, type CollabStoreEnv } from './collab-store/store/config';
 import { collabMcpHandler } from './collab-store/mcp/handler';
+import { parseFallbackState, storeFallback } from './collab-store/export/fallback';
 import { OWNER_PATH, handleOwnerRequest, type OwnerRouteEnv } from './collab-store/owner/handler';
 
 export default {
@@ -73,8 +74,10 @@ export default {
     if (collabStoreEnabled((env as CollabStoreEnv).COLLAB_STORE_ENABLED)
       && (pathname === '/collab/mcp' || targetResource === collabResource)) {
       if (!(env as CollabStoreEnv).COLLAB_DB) {
-        return new Response('Store de collaboration non configuré.',
-          { status: 503, headers: { 'Cache-Control': 'no-store' } });
+        // CC-3 C6 (R4) : repli explicite en lecture seule, jamais d'écriture GitHub de substitution.
+        const fallback = storeFallback(parseFallbackState((env as CollabStoreEnv).COLLAB_FALLBACK_STATE));
+        return new Response('Store de collaboration non configuré (STORE_UNAVAILABLE). ' + fallback.instruction,
+          { status: 503, headers: { 'Cache-Control': 'no-store', 'Retry-After': '15', 'Content-Type': 'text/plain; charset=utf-8' } });
       }
       const collabProvider = new OAuthProvider<AuthEnv>({
         apiRoute: '/collab/mcp', apiHandler: collabMcpHandler, defaultHandler: authHandler,
