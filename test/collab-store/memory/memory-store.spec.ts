@@ -621,7 +621,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       /* protected activation pauses the scope */
     }
     const second = await proposeProtectedInvariant(mem, 'mem-t4-b', scope);
-    await expect(mem.activate(second.id, 1, 'agent:b')).rejects.toThrow(/ACTIVATION_PAUSED/);
+    await expect(mem.activate(second.id, 1, 'agent:b')).rejects.toThrow(/Activations paused for scope/);
     const firstRef = await mem.pauseClearRequestId(scope);
     await approveViaC5(firstRef, 'Approve clearing the pause occurrence of mem-t4.', 't4-one');
     await mem.clearActivationPause(firstRef, scope);
