@@ -148,7 +148,8 @@ export class MemoryStore {
   async propose(input: ProposeInput): Promise<StoredMemory> {
     await ensureSchema(this.db);
     if (PROTECTED_KINDS.has(input.kind)) {
-      await this.requireOwnerDecision(input.owner_decision_ref);
+      // request_id must target memory:* (C5 subject), not a random approve
+      await this.requireOwnerDecision(input.owner_decision_ref, 'memory:');
     }
     if (input.confidence === 'hypothesis' && PROTECTED_KINDS.has(input.kind)) {
       throw new MemoryStoreError(
@@ -251,7 +252,7 @@ export class MemoryStore {
     if (!activated || activated.status !== 'active') {
       throw new MemoryStoreError('ACTIVATION_RACE', `Candidate ${id}@${version} was not activated (concurrent change)`);
     }
-    await this.bumpCycleCap(`${META_ACT}default:${row.scope}`);
+    await this.bumpCycleCap(`${META_ACT}${cycleId}:${row.scope}`);
     await this.checkGrowthAlarm(row.scope);
     if (PROTECTED_KINDS.has(row.kind)) {
       await this.raiseAlarm({
@@ -283,7 +284,7 @@ export class MemoryStore {
     const nextKind = (kind ?? active.kind) as MemoryKind;
     const conf = confidence ?? (active.confidence as MemoryConfidence);
     if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
-      await this.requireOwnerDecision(ownerDecisionRef);
+      await this.requireOwnerDecision(ownerDecisionRef, `memory:${id}`);
     }
     if (conf === 'hypothesis' && PROTECTED_KINDS.has(nextKind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot supersede into a rule kind');
@@ -438,8 +439,8 @@ export class MemoryStore {
     return (await this.get(id, nextVersion))!;
   }
 
-  /** Retire (tombstone): status=retired, row kept. */
-  async retire(id: string, version?: number): Promise<StoredMemory> {
+  /** Retire (tombstone): status=retired, row kept. Cap ≤10 per cycle+scope. */
+  async retire(id: string, version?: number, cycleId = 'default'): Promise<StoredMemory> {
     await ensureSchema(this.db);
     const target =
       version != null
@@ -451,12 +452,13 @@ export class MemoryStore {
             .bind(id)
             .first<StoredMemory>();
     if (!target) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id} not found for retire`);
-    await this.assertCycleCap(META_RET, MAX_RETIREMENTS_PER_CYCLE, 'RETIREMENT_CAP');
+    const retKey = `${META_RET}${cycleId}:${target.scope}`;
+    await this.assertCycleCap(retKey, MAX_RETIREMENTS_PER_CYCLE, 'RETIREMENT_CAP');
     await this.db
       .prepare(`UPDATE memory_entries SET status = 'retired' WHERE id = ?1 AND version = ?2`)
       .bind(id, target.version)
       .run();
-    await this.bumpCycleCap(META_RET);
+    await this.bumpCycleCap(retKey);
     return (await this.get(id, target.version))!;
   }
 

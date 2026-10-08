@@ -152,7 +152,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
   it('refute threshold raises alarm', async () => {
     const mem = store();
     const p = await mem.propose({
-      scope: 'project:cc3',
+      scope: 'project:refute-only',
       kind: 'fact',
       text: 'Claim under review.',
       evidence_refs: ['e0'],
@@ -161,7 +161,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     await mem.activate(p.id, 1, 'agent:b');
     for (let i = 0; i < 6; i++) await mem.recordRefute(p.id, 'agent:r' + i);
     expect(mem.getAlarms().some((a) => a.code === 'REFUTE_THRESHOLD')).toBe(true);
-    expect(await mem.isActivationPaused()).toBe(true);
+    expect(await mem.isActivationPaused('project:refute-only')).toBe(true);
   });
 
   async function seedLedger(producer: string, evidenceRef: string): Promise<void> {
@@ -199,7 +199,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
   it('promoteConfidence rejects downgrade verified → observed', async () => {
     const mem = store();
     const p = await mem.propose({
-      scope: 'project:cc3',
+      scope: 'project:rank-only',
       kind: 'fact',
       text: 'Already verified fact.',
       confidence: 'verified',
@@ -211,6 +211,45 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     await expect(
       mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-peer-b-2', 'observed'),
     ).rejects.toThrow(/CONFIDENCE_DOWNGRADE|rank/);
+  });
+
+  it('activation caps are independent per cycleId', async () => {
+    const mem = store();
+    for (const cycle of ['cya', 'cyb']) {
+      for (let i = 0; i < 10; i++) {
+        const p = await mem.propose({
+          scope: `task:cap-${cycle}`,
+          kind: 'observation',
+          text: `cap item ${cycle} ${i}`,
+          evidence_refs: [`e-${cycle}-${i}`],
+          author_pid: 'agent:a',
+        });
+        await mem.activate(p.id, 1, 'agent:b', cycle);
+      }
+    }
+    const extra = await mem.propose({
+      scope: 'task:cap-cya',
+      kind: 'observation',
+      text: 'one too many on cya',
+      evidence_refs: ['e-over'],
+      author_pid: 'agent:a',
+    });
+    await expect(mem.activate(extra.id, 1, 'agent:b', 'cya')).rejects.toThrow(/ACTIVATION_CAP/);
+  });
+
+  it('owner decision for wrong subject is rejected', async () => {
+    const mem = store();
+    await seedOwner('memory:other-id');
+    await expect(
+      mem.propose({
+        scope: 'common',
+        kind: 'invariant',
+        text: 'Needs matching subject.',
+        evidence_refs: ['plan:x'],
+        author_pid: 'agent:a',
+        owner_decision_ref: 'memory:other-id',
+      }),
+    ).rejects.toThrow(/OWNER_DECISION|owner|subject/);
   });
 
   it('promoteScope lifts participant → project; rejects task', async () => {
