@@ -12,6 +12,9 @@ import { CollabStoreError, type AppendOutcome } from '../store/collab-store';
 import type { StoreEventType } from '../contracts';
 import { authorizeAppend } from '../identity';
 import { exportCycleState, exportMemoryMarkdown } from '../export';
+import { resolveContextTarget } from '../context';
+import { advanceGuarded } from '../phases/gate';
+import type { Phase } from '../../collab/contracts';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -30,19 +33,55 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
     title: 'Contexte de cycle (store CC-3)',
     description: 'En-tête du cycle (phase, statut, révision) et tâches impliquant le participant (auteur, reviewer ou testeur ; par défaut le vôtre, dérivé du jeton). Renvoie aussi caller : votre participant_id et votre statut (registered/unregistered). Lecture seule. La résolution complète (mémoire, packets par rôle) arrive en C3.',
     inputSchema: {
-      cycle: z.string().min(1).max(64),
+      cycle: z.string().min(1).max(64).optional(),
+      issue: z.string().min(1).max(128).optional(),
+      repository: z.string().min(1).max(200).optional(),
+      task: z.string().min(1).max(64).optional(),
       participant_id: z.string().min(1).max(128).optional(),
     },
     outputSchema: outputSchemas.collab_get_context,
     annotations: READ_ONLY,
-  }, async ({ cycle, participant_id }) => {
+  }, async ({ cycle, issue, repository, task, participant_id }) => {
     try {
       const identity = await context.identity();
-      const value = await context.store.getContext(cycle, participant_id ?? identity.participant_id);
-      return collabSuccess({ ...value, participant_id: participant_id ?? identity.participant_id,
-        caller: { participant_id: identity.participant_id, status: identity.status } });
+      const participantId = participant_id ?? identity.participant_id;
+      const resolved = await resolveContextTarget(context.db, {
+        cycle, issue, repository, task, participant_id: participantId,
+      });
+      const value = await context.store.getContext(resolved.cycle_id, participantId);
+      return collabSuccess({
+        ...value,
+        participant_id: participantId,
+        caller: { participant_id: identity.participant_id, status: identity.status },
+        resolved: { cycle_id: resolved.cycle_id, task: resolved.task },
+      });
     } catch (error) {
       return collabFailure(error, 'Contexte de cycle indisponible.');
+    }
+  });
+
+  server.registerTool('collab_phase_advance', {
+    title: 'Avance de phase (store CC-3)',
+    description: 'Avance policy avec transitions autorisées et conditions d\'entrée de la cible (A07). Rejeu de la même policy détecté avant STALE. N\'est pas un canal owner.',
+    inputSchema: {
+      cycle: z.string().min(1).max(64),
+      expected_rev: z.number().int().min(0),
+      policy_id: z.string().min(1).max(64),
+      next_phase: z.string().min(1).max(32),
+    },
+    outputSchema: outputSchemas.collab_phase_advance,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ cycle, expected_rev, policy_id, next_phase }) => {
+    try {
+      const outcome = await advanceGuarded(context.db, {
+        cycle_id: cycle,
+        expected_revision: expected_rev,
+        policy_id,
+        next_phase: next_phase as Phase,
+      });
+      return collabSuccess(outcome);
+    } catch (error) {
+      return collabFailure(error, 'Avance de phase impossible.');
     }
   });
 
