@@ -4,14 +4,18 @@
  * owner proof; without it the answer is 403 and nothing is read or written.
  */
 import { CollabStoreError } from '../store/collab-store';
+import { StateContractError } from '../../collab/contracts';
 import { ownerChannelConfig, type OwnerChannelEnv } from './config';
 import { defaultJwksResolver, verifyOwnerProof, type JwksResolver } from './proof';
 import { listPendingRequests, listRegistry, mapClient, recordOwnerDecision, registerParticipant, unmapClient } from './decisions';
 import { OWNER_PAGE_CSP, dashboardPage, loginPage } from './page';
 import { unregisteredParticipantId } from '../identity';
+import { importStateSnapshot, listImportedStates } from './state-import';
+import { parseExportTarget } from '../export/state-import-plan';
 
 export const OWNER_PATH = '/owner';
-const MAX_FORM_BYTES = 16_384;
+// CC-3 C6 : un import d'état CC-STATE-1 (≤ 256 Kio) passe par ce formulaire ; marge pour l'encodage.
+const MAX_FORM_BYTES = 786_432;
 
 export interface OwnerRouteEnv extends OwnerChannelEnv {
   COLLAB_DB?: D1Database;
@@ -37,7 +41,7 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap'] as const;
+const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state'] as const;
 
 /** null when the channel is not configured: the caller lets the request fall through (404). */
 export async function handleOwnerRequest(
@@ -56,7 +60,7 @@ export async function handleOwnerRequest(
     const proof = await verifyOwnerProof(request, config, null, jwks);
     if (!proof) return denied('proof_invalid');
     audit('view', 'ok');
-    return html(dashboardPage(config, { pending: await listPendingRequests(db), ...await listRegistry(db) }));
+    return html(dashboardPage(config, { pending: await listPendingRequests(db), ...await listRegistry(db), imports: await listImportedStates(db) }));
   }
   if (request.method !== 'POST') {
     return new Response('Méthode non autorisée.', { status: 405, headers: { Allow: 'GET, POST', 'Cache-Control': 'no-store' } });
@@ -101,17 +105,30 @@ export async function handleOwnerRequest(
     } else if (action === 'unmap') {
       const result = await unmapClient(db, { oauth_client_id: await resolveClientReference(field('oauth_client_id'), listClientIds), proof, op });
       message = { text: 'Association retirée (seq ' + result.event.seq + ').', error: false };
+    } else if (action === 'import_state') {
+      const result = await importStateSnapshot(db, {
+        cycle_id: field('cycle_id').trim(),
+        markdown: field('state'),
+        owner_label: field('owner_label'),
+        target: parseExportTarget(field('target_repository'), field('target_path'), field('target_ref')),
+        proof,
+      });
+      message = { text: (result.status === 'duplicate' ? 'Déjà importé' : 'État importé') + ' : révision ' + result.state_revision
+        + ', ' + result.tasks + ' tâches, sha256 ' + result.content_sha256.slice(0, 12) + ' (seq ' + result.event.seq + ')'
+        + (result.issue_refs.length ? ', issues indexées : ' + result.issue_refs.join(', ') : '')
+        + (result.reassigned_issues.length ? '. Issues reprises à un autre cycle : ' + result.reassigned_issues.join(', ') : '')
+        + (result.dropped_tasks.length ? '. Tâches retirées du store : ' + result.dropped_tasks.join(', ') : '') + '.', error: false };
     }
     audit(action, 'ok');
   } catch (error) {
-    if (!(error instanceof CollabStoreError)) {
+    if (!(error instanceof CollabStoreError || error instanceof StateContractError)) {
       audit(action, 'error', 'unexpected_error');
       throw error;
     }
     audit(action, 'refused', error.code.toLowerCase());
     message = { text: error.code + ' : ' + error.message, error: true };
   }
-  return html(dashboardPage(config, { pending: await listPendingRequests(db), ...await listRegistry(db), message }),
+  return html(dashboardPage(config, { pending: await listPendingRequests(db), ...await listRegistry(db), imports: await listImportedStates(db), message }),
     message?.error ? 409 : 200);
 }
 

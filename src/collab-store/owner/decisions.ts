@@ -80,8 +80,9 @@ async function eventByKey(db: D1Database, key: string): Promise<StoredStoreEvent
 /**
  * Append one owner.decision event plus its side statements in a single CAS
  * batch. `extraGuard` is an SQL boolean expression evaluated inside the guard.
+ * Exported for the other owner-only writers of this directory (C6 state import).
  */
-async function ownerAppend(db: D1Database, input: {
+export async function ownerAppend(db: D1Database, input: {
   cycleId: string;
   key: string;
   payload: Record<string, unknown>;

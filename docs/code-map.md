@@ -100,3 +100,10 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `src/collab-store/owner/` : `config.ts` (modes `access`/`secret`, fail-closed), `proof.ts` (JWT Access, secret à temps constant), `decisions.ts` (seul écrivain de `owner.decision`, `owner_decisions` et du registre), `handler.ts` + `page.ts` (route `/owner`, hors OAuth).
 - Branchement : `src/index.ts` (route `/owner`), `src/collab-store/mcp/{context,tools,handler,schemas}.ts` (identité appliquée aux outils `collab_*`).
 - Tests : `test/collab-store/owner/` (`identity`, `decisions`, `channel`, `tool-binding`, `no-agent-path`). Guide : `docs/collaboration/cc3/owner-setup.md`.
+
+## CC-3 C6 — export GitHub et documentation
+
+- `src/collab-store/export/` : `document.ts` (modèle CC-STATE-1 canonique, validé par `src/collab/state.ts`), `labels.ts` (libellés ↔ identifiants serveur), `state-import-plan.ts` (validation d’un import, fail-closed), `state-export.ts` (`collab_export` cc-state-1 : base importée + écritures du store, révision N+1 sur base N), `memory-export.ts` (memory-md, scopes partagés + scope de l’appelant), `fallback.ts` (`STORE_UNAVAILABLE` : repli `github_collab_context` en lecture seule).
+- `src/collab-store/owner/state-import.ts` : import d’un état fusionné, décision owner `import_state` (seul `owner/` écrit `owner.decision`).
+- Branchement : `src/collab-store/mcp/{tools,schemas,result,context,handler}.ts` (outil `collab_export`, repli explicite), `src/collab-store/owner/{handler,page,decisions}.ts` (formulaire d’import), `src/index.ts` (503 avec repli).
+- Tests : `test/collab-store/export/` (`document`, `roundtrip`, `tool`, `docs-coverage`). Guide : `docs/collaboration/cc3/collab-store-guide.md`.

@@ -7,22 +7,25 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { CollabToolContext } from './context';
 import { outputSchemas } from './schemas';
-import { collabFailure, collabSuccess } from './result';
+import { collabFailure as failure, collabSuccess } from './result';
 import { CollabStoreError, type AppendOutcome } from '../store/collab-store';
 import type { StoreEventType } from '../contracts';
 import { authorizeAppend } from '../identity';
+import { exportCycleState, exportMemoryMarkdown } from '../export';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
 export function createCollabServer(context: CollabToolContext): McpServer {
   const server = new McpServer({ name: 'collab-store', version: '0.1.0' }, {
-    instructions: 'Store dynamique CC-3 : journal append-only par cycle, CAS fail-closed par expected_rev. Le scope collab: est requis ; les scopes GitHub n\'ouvrent aucun outil ici. Append idempotent par op_id ({client}:{cycle}:{op}:{n}) ; duplicate = l\'événement original est renvoyé sans seconde écriture ; STALE = rejouez le delta puis réessayez à currentRevision.',
+    instructions: 'Store dynamique CC-3 : journal append-only par cycle, CAS fail-closed par expected_rev. Le scope collab: est requis ; les scopes GitHub n\'ouvrent aucun outil ici. Append idempotent par op_id ({client}:{cycle}:{op}:{n}) ; duplicate = l\'événement original est renvoyé sans seconde écriture ; STALE = rejouez le delta puis réessayez à currentRevision. collab_export produit l\'instantané CC-STATE-1 à proposer par PR (il n\'écrit jamais dans GitHub). STORE_UNAVAILABLE = repli en lecture seule via github_collab_context (champ fallback), aucune écriture de substitution dans GitHub. Guide : docs/collaboration/cc3/collab-store-guide.md.',
   });
   registerCollabStoreTools(server, context);
   return server;
 }
 
 export function registerCollabStoreTools(server: McpServer, context: CollabToolContext): void {
+  const collabFailure = (error: unknown, fallback: string, extra: Record<string, unknown> = {}) =>
+    failure(error, fallback, extra, context.fallback);
   server.registerTool('collab_get_context', {
     title: 'Contexte de cycle (store CC-3)',
     description: 'En-tête du cycle (phase, statut, révision) et tâches impliquant le participant (auteur, reviewer ou testeur ; par défaut le vôtre, dérivé du jeton). Renvoie aussi caller : votre participant_id et votre statut (registered/unregistered). Lecture seule. La résolution complète (mémoire, packets par rôle) arrive en C3.',
@@ -114,5 +117,41 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       new CollabStoreError('QUOTA_EXHAUSTED', 'Quota quotidien épuisé (jour ' + outcome.day + ', limite ' + outcome.limit + ').'),
       'Quota épuisé.',
     );
+  });
+
+  server.registerTool('collab_export', {
+    title: 'Instantané GitHub (store CC-3)',
+    description: 'Lecture seule. format cc-state-1 : l\'état CC-STATE-1 du cycle = dernier état importé par le propriétaire (/owner) + ce que le store a enregistré depuis (tâches, phase, décisions owner authentifiées, preuves evidence.add). Sans changement : identique à l\'état importé ; avec changements : proposition de révision N+1 sur la base N, validée par le parser L1. Ne contient ni proposition ni contenu scellé. format memory-md : mémoire active des scopes partagés + votre scope participant uniquement. N\'écrit jamais dans GitHub : pour publier, committez content sur une branche (outils GitHub) et ouvrez une PR ; fusion = Kevin, puis import sur /owner. NO_STATE_SNAPSHOT si aucun état n\'a été importé.',
+    inputSchema: {
+      cycle: z.string().min(1).max(64),
+      format: z.enum(['cc-state-1', 'memory-md']).default('cc-state-1'),
+    },
+    outputSchema: outputSchemas.collab_export,
+    annotations: READ_ONLY,
+  }, async ({ cycle, format }) => {
+    try {
+      if (format === 'memory-md') {
+        const identity = await context.identity();
+        const memory = await exportMemoryMarkdown(context.db, identity.status === 'registered' ? identity.participant_id : null);
+        return collabSuccess({ cycle_id: cycle, format, content: memory.content, content_sha256: memory.content_sha256,
+          memory: { entries: memory.entries, scopes: memory.scopes },
+          publish: 'Lecture seule : aucun fichier GitHub n\'est écrit par cet outil.' });
+      }
+      const state = await exportCycleState(context.db, cycle);
+      const target = state.imported.target;
+      return collabSuccess({
+        cycle_id: cycle, format, content: state.content, content_sha256: state.content_sha256,
+        state: {
+          revision: state.state_revision, base_revision: state.base_revision, changed: state.changed, changes: state.changes,
+          imported: state.imported, store_revision: state.store_revision, last_seq: state.last_seq,
+        },
+        publish: state.changed
+          ? 'Proposez content tel quel' + (target ? ' dans ' + target.repository + ':' + target.path + ' (base ' + target.ref + ')' : '')
+            + ' via une branche et une PR (outils GitHub) ; fusion = Kevin, puis import de l\'état fusionné sur /owner.'
+          : 'Aucun changement depuis l\'import : rien à publier.',
+      });
+    } catch (error) {
+      return collabFailure(error, 'Export indisponible.');
+    }
   });
 }
