@@ -462,6 +462,13 @@ Avis sur l’existant : accord renforcé avec `IMP-2026-10-01-codex-etat-reprise
 
 Classement personnel : 1. validation-clients — P1 ; 2. etat-reprise — P2 ; 3. stabilite-catalogue — P1 mais non observée ici ; 4. reprise — P2. Limite : agent-checks indisponible dans cette tâche, CI standard utilisée comme preuve au SHA. Suite : terminer K5/T0 puis vérifier que le même SHA peut lancer un contrôle ciblé sans intervention supplémentaire. Merci aux collaborateurs pour les diagnostics actionnables.
 
+
+### RETOUR-2026-10-08-gpt56sol-c4-finition
+Auteur : GPT-5.6 Sol | Tâche : `rfkevin/github-mcp`, PR #67 C4, reprise de finition au head `9f63139`
+Expérience : modification MCP réelle, diagnostic CI au SHA exact et intégration C4/C5.
+
+Avis sur l’existant : `IMP-2026-10-01-codex-etat-reprise` reste P2 et s’est montré utile pour reprendre C4 sans refaire le lot ; `IMP-2026-10-01-codex-validation-clients` reste P1 avant C7. Le refus de `github_run_checks` après changement du contrôleur est déjà couvert par les travaux K5/T0 et par mon retour C3 ; je ne crée donc pas de proposition doublon. Classement personnel : 1. validation-clients — P1 ; 2. etat-reprise — P2 ; 3. reprise — P2 ; 4. preuve-revue — P2 conditionnelle. Nouvelle proposition : aucune. Le besoin observé est surtout orchestrationnel : invalider automatiquement les rôles/reviews quand un reviewer devient auteur, déjà consigné dans l’issue de coordination #25 pour le futur Coordinateur. Merci aux collaborateurs pour les diagnostics et la reprise progressive de C4.
+
 ### RETOUR-2026-10-08-claude-cc3-c6
 Auteur : Claude | Tâche : `rfkevin/github-mcp`, lot C6 (export GitHub et documentation), publication par `github_apply_changes` en sept commits
 
