@@ -148,7 +148,7 @@ describe('CC-3 C6 — export CC-STATE-1', () => {
     const cycle = uniq('restore');
     await importState(db, cycle, stateR6);
     const store = new CollabStore(db, { dailyWriteLimit: 100_000, now: () => new Date('2026-10-08T09:00:00Z') });
-    await append(store, cycle, 'vibe', 'task.status', { task: { task_id: 'C4', status: 'review' } }, 'c4');
+    await append(store, cycle, 'grok', 'task.status', { task: { task_id: 'C4', status: 'review' } }, 'c4');
     const first = await exportCycleState(db, cycle);
     expect(first.changed).toBe(true);
 
