@@ -303,9 +303,9 @@ export class MemoryStore {
   }
 
   /**
-   * Raise confidence with evidence from a participant distinct from author (peer).
-   * Creates next version candidate; does not auto-activate.
-   * hypothesis may never jump to a protected kind (use promoteScope + kind carefully).
+   * Raise confidence with ledger-backed evidence from a distinct peer.
+   * Rank: hypothesis < observed < verified < owner_validated (no downgrade).
+   * peerEvidenceRef must resolve to evidence_ledger row produced by reviewerPid.
    */
   async promoteConfidence(
     id: string,
@@ -323,24 +323,18 @@ export class MemoryStore {
     if (reviewerPid === row.author_pid) {
       throw new MemoryStoreError('PEER_REQUIRED', 'confidence promotion requires a distinct peer reviewer');
     }
-    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${row.author_pid}`)) {
-      throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', 'new evidence_ref must come from a distinct participant');
-    }
-    const refs: string[] = JSON.parse(row.evidence_refs || '[]');
-    refs.push(peerEvidenceRef);
-    if (newConfidence === 'hypothesis') {
-      throw new MemoryStoreError('CONFIDENCE_DOWNGRADE', 'cannot promote downward to hypothesis');
-    }
-    // atomic: supersede active → candidate with raised confidence
-    if (row.status === 'active') {
-      return this.supersede(
-        id,
-        row.author_pid,
-        row.text,
-        refs,
-        row.kind as MemoryKind,
-        newConfidence,
+    const current = row.confidence as MemoryConfidence;
+    if (confidenceRank(newConfidence) <= confidenceRank(current)) {
+      throw new MemoryStoreError(
+        'CONFIDENCE_DOWNGRADE',
+        `cannot promote ${current} → ${newConfidence} (rank must increase)`,
       );
+    }
+    const ledgerRef = await this.requirePeerLedgerEvidence(peerEvidenceRef, reviewerPid, row.author_pid);
+    const refs: string[] = JSON.parse(row.evidence_refs || '[]');
+    refs.push(ledgerRef);
+    if (row.status === 'active') {
+      return this.supersede(id, row.author_pid, row.text, refs, row.kind as MemoryKind, newConfidence);
     }
     await this.db
       .prepare(`UPDATE memory_entries SET confidence = ?1, evidence_refs = ?2 WHERE id = ?3 AND version = ?4`)
@@ -350,7 +344,7 @@ export class MemoryStore {
   }
 
   /**
-   * Promote scope participant:<id> → role|project|common via peer review.
+   * Promote scope participant:<id> → role|project|common via peer review (not task).
    * Marks prior active superseded and inserts candidate on new scope (atomic batch).
    */
   async promoteScope(
@@ -372,15 +366,20 @@ export class MemoryStore {
       throw new MemoryStoreError('SCOPE_NOT_PERSONAL', 'only participant scope can be lifted');
     }
     const family = scopeFamily(newScope);
-    if (!['role', 'project', 'common', 'task'].includes(family) && newScope !== 'common') {
-      throw new MemoryStoreError('SCOPE_TARGET_INVALID', `invalid promotion target ${newScope}`);
+    if (!['role', 'project', 'common'].includes(family) && newScope !== 'common') {
+      throw new MemoryStoreError(
+        'SCOPE_TARGET_INVALID',
+        `promotion target must be role|project|common, got ${newScope}`,
+      );
     }
+    const nextConf: MemoryConfidence =
+      row.confidence === 'hypothesis' ? 'observed' : (row.confidence as MemoryConfidence);
     const entry = validateMemoryEntry({
       scope: newScope,
       kind: row.kind as MemoryKind,
       text: row.text,
       evidence_refs: [...JSON.parse(row.evidence_refs || '[]'), `promote:${reviewerPid}`],
-      confidence: (row.confidence === 'hypothesis' ? 'observation' : row.confidence) as MemoryConfidence,
+      confidence: nextConf,
       status: 'candidate',
       author_pid: row.author_pid,
     });
@@ -609,10 +608,64 @@ export class MemoryStore {
       .run();
   }
 
+  /**
+   * peerEvidenceRef must match evidence_ledger.evidence_ref or ledger:<seq>,
+   * with producer === reviewerPid and producer ≠ authorPid.
+   */
+  private async requirePeerLedgerEvidence(
+    peerEvidenceRef: string,
+    reviewerPid: string,
+    authorPid: string,
+  ): Promise<string> {
+    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
+      throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', 'evidence_ref must be a ledger entry from peer');
+    }
+    const seqMatch = /^ledger:(\d+)$/.exec(peerEvidenceRef);
+    let row: { seq: number; producer: string; evidence_ref: string } | null = null;
+    if (seqMatch) {
+      row = await this.db
+        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE seq = ?1`)
+        .bind(Number(seqMatch[1]))
+        .first();
+    } else {
+      row = await this.db
+        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE evidence_ref = ?1 LIMIT 1`)
+        .bind(peerEvidenceRef)
+        .first();
+    }
+    if (!row) {
+      throw new MemoryStoreError(
+        'PEER_EVIDENCE_NOT_FOUND',
+        `No evidence_ledger row for ${peerEvidenceRef}`,
+      );
+    }
+    if (row.producer !== reviewerPid) {
+      throw new MemoryStoreError(
+        'PEER_EVIDENCE_PRODUCER',
+        `ledger producer ${row.producer} must equal reviewer ${reviewerPid}`,
+      );
+    }
+    if (row.producer === authorPid) {
+      throw new MemoryStoreError('PEER_EVIDENCE_SELF', 'ledger producer cannot be the memory author');
+    }
+    return row.evidence_ref || `ledger:${row.seq}`;
+  }
+
   private async latestVersion(id: string): Promise<StoredMemory | null> {
     return this.db
       .prepare(`SELECT * FROM memory_entries WHERE id = ?1 ORDER BY version DESC LIMIT 1`)
       .bind(id)
       .first<StoredMemory>();
   }
+}
+
+const CONFIDENCE_RANK: Record<MemoryConfidence, number> = {
+  hypothesis: 0,
+  observed: 1,
+  verified: 2,
+  owner_validated: 3,
+};
+
+function confidenceRank(c: MemoryConfidence): number {
+  return CONFIDENCE_RANK[c] ?? -1;
 }

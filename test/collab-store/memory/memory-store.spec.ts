@@ -163,7 +163,16 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(await mem.isActivationPaused()).toBe(true);
   });
 
-  it('promoteConfidence requires peer evidence from distinct participant', async () => {
+  async function seedLedger(producer: string, evidenceRef: string): Promise<void> {
+    await bindings.COLLAB_DB_C2.prepare(
+      `INSERT INTO evidence_ledger (subject_pid, producer, kind, payload_json, evidence_ref, at)
+       VALUES (?1, ?2, 'evaluation', '{}', ?3, 1)`,
+    )
+      .bind('agent:a', producer, evidenceRef)
+      .run();
+  }
+
+  it('promoteConfidence requires ledger peer evidence and rank increase', async () => {
     const mem = store();
     const p = await mem.propose({
       scope: 'participant:agent:a',
@@ -175,14 +184,35 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     });
     await mem.activate(p.id, 1, 'agent:b');
     await expect(
-      mem.promoteConfidence(p.id, 1, 'agent:a', 'peer:a', 'observation'),
-    ).rejects.toThrow(/distinct/);
-    const up = await mem.promoteConfidence(p.id, 1, 'agent:b', 'peer:b:reproduced', 'observation');
-    expect(up.confidence).toBe('observation');
+      mem.promoteConfidence(p.id, 1, 'agent:a', 'peer:fake', 'observed'),
+    ).rejects.toThrow(/distinct|PEER/);
+    await expect(
+      mem.promoteConfidence(p.id, 1, 'agent:b', 'peer:fake', 'observed'),
+    ).rejects.toThrow(/PEER_EVIDENCE|ledger/);
+    await seedLedger('agent:b', 'ev-peer-b-1');
+    const up = await mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-peer-b-1', 'observed');
+    expect(up.confidence).toBe('observed');
     expect(up.version).toBe(2);
   });
 
-  it('promoteScope lifts participant → project with peer review', async () => {
+  it('promoteConfidence rejects downgrade verified → observed', async () => {
+    const mem = store();
+    const p = await mem.propose({
+      scope: 'project:cc3',
+      kind: 'fact',
+      text: 'Already verified fact.',
+      confidence: 'verified',
+      evidence_refs: ['e0'],
+      author_pid: 'agent:a',
+    });
+    await mem.activate(p.id, 1, 'agent:b');
+    await seedLedger('agent:b', 'ev-peer-b-2');
+    await expect(
+      mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-peer-b-2', 'observed'),
+    ).rejects.toThrow(/CONFIDENCE_DOWNGRADE|rank/);
+  });
+
+  it('promoteScope lifts participant → project; rejects task', async () => {
     const mem = store();
     const p = await mem.propose({
       scope: 'participant:agent:a',
@@ -190,10 +220,11 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       text: 'Reusable lesson from personal scope.',
       evidence_refs: ['self:a'],
       author_pid: 'agent:a',
-      confidence: 'observation',
+      confidence: 'observed',
     });
     await mem.activate(p.id, 1, 'agent:b');
     await expect(mem.promoteScope(p.id, 1, 'agent:a', 'project:cc3')).rejects.toThrow(/distinct/);
+    await expect(mem.promoteScope(p.id, 1, 'agent:b', 'task:t1')).rejects.toThrow(/SCOPE_TARGET|role|project|common/);
     const lifted = await mem.promoteScope(p.id, 1, 'agent:b', 'project:cc3');
     expect(lifted.scope).toBe('project:cc3');
     expect(lifted.status).toBe('candidate');
