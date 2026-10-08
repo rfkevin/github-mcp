@@ -103,7 +103,7 @@ describe('CC-3 F4 / A04 — export = instantané cohérent', () => {
   it('append de tâche et evidence.add injectés entre chaque lecture : un seul point du store, last_seq exact', async () => {
     const cycle = await preparedCycle('append');
     const writes = [
-      () => append(cycle, 'vibe', 'task.status', { task: { task_id: 'C4', status: 'review' } }),
+      () => append(cycle, 'grok', 'task.status', { task: { task_id: 'C4', status: 'review' } }), // Grok owns C4 (F1/A08 roles)
       () => append(cycle, 'grok', 'evidence.add', { source: 'f4 injected 1', state: 'between reads' }),
       () => append(cycle, 'vibe', 'evidence.add', { source: 'f4 injected 2', state: 'between reads' }),
       () => append(cycle, 'sol', 'task.status', { task: { task_id: 'C3', status: 'accepted' } }),
@@ -146,7 +146,7 @@ describe('CC-3 F4 / A04 — export = instantané cohérent', () => {
 
   it('changement du registre pendant l’export : libellés et contenu du même instant', async () => {
     const cycle = await preparedCycle('registry');
-    await append(cycle, 'sol', 'task.claim', { task: { task_id: 'F4X', owner_pid: 'claude', reviewer_pid: 'sol', tester_pid: 'grok',
+    await append(cycle, 'claude', 'task.claim', { task: { task_id: 'F4X', owner_pid: 'claude', reviewer_pid: 'sol', tester_pid: 'grok',
       status: 'in_progress', owned_paths: ['src/collab-store/export/'], next_action: 'snapshot' } });
     const writes = [
       async () => { await registerParticipant(db, { participant_id: 'grok', display_label: 'Grok F4', proof: PROOF, op: uniq('relabel') }); },
