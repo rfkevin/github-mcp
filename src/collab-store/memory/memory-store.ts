@@ -611,14 +611,11 @@ export class MemoryStore {
     if (!ref || !ref.trim()) {
       throw new MemoryStoreError('PROTECTED_KIND_OWNER_REQUIRED', 'owner_decision_ref required');
     }
-    if (subjectPrefix && !ref.startsWith(subjectPrefix) && ref !== subjectPrefix) {
-      // allow exact match or prefix: request_id encodes subject
-      if (!ref.includes(subjectPrefix.replace(/:$/, ''))) {
-        throw new MemoryStoreError(
-          'OWNER_DECISION_SUBJECT',
-          `owner_decision_ref ${ref} does not target ${subjectPrefix}`,
-        );
-      }
+    if (subjectPrefix && !ref.startsWith(subjectPrefix)) {
+      throw new MemoryStoreError(
+        'OWNER_DECISION_SUBJECT',
+        `owner_decision_ref ${ref} does not target ${subjectPrefix}`,
+      );
     }
     const row = await this.db
       .prepare(`SELECT request_id, decision FROM owner_decisions WHERE request_id = ?1`)

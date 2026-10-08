@@ -239,7 +239,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
 
   it('owner decision for wrong subject is rejected', async () => {
     const mem = store();
-    await seedOwner('memory:other-id');
+    // pause approval must not authorize invariant propose (requires memory: prefix)
+    await seedOwner('memory-pause:common');
     await expect(
       mem.propose({
         scope: 'common',
@@ -247,9 +248,9 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         text: 'Needs matching subject.',
         evidence_refs: ['plan:x'],
         author_pid: 'agent:a',
-        owner_decision_ref: 'memory:other-id',
+        owner_decision_ref: 'memory-pause:common',
       }),
-    ).rejects.toThrow(/OWNER_DECISION|owner|subject/);
+    ).rejects.toThrow(/OWNER_DECISION_SUBJECT|subject/);
   });
 
   it('promoteScope lifts participant → project; rejects task', async () => {
