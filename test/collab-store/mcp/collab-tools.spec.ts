@@ -6,6 +6,7 @@ import { createCollabToolContext, type CollabToolContext } from '../../../src/co
 import { registerCollabStoreTools } from '../../../src/collab-store/mcp/tools';
 import { mapClient, registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
+import { mapIssueToCycle } from '../../../src/collab-store/context';
 
 const bindings = env as unknown as { COLLAB_DB_C2: D1Database };
 type Result = { isError?: boolean; structuredContent: Record<string, unknown> };
@@ -252,5 +253,123 @@ describe('F5 A09 — collab_get_context packet + mémoire', () => {
 
     const delta = result.structuredContent.delta as { events: unknown[]; hasMore: boolean };
     expect(delta.events.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('I6 : task:other / role:other / project:other ne fuitent pas', async () => {
+    const handlers = registry(makeContext());
+    await ensureSchema(bindings.COLLAB_DB_C2);
+    const suffix = Date.now().toString(36) + String(counter);
+    const cycleId = ('c2m-i6-' + suffix).slice(0, 64);
+    const project = 'rfkevin/project-mcp-collab';
+
+    await bindings.COLLAB_DB_C2.prepare(
+      "INSERT INTO cycles (cycle_id, project, phase, revision, status) VALUES (?1, ?2, 'P1', 1, 'open')",
+    ).bind(cycleId, project).run();
+    await bindings.COLLAB_DB_C2.prepare([
+      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
+      "VALUES ('f5', ?1, 'agent:a', 'agent:b', 'agent:c', 'in_progress', '[]', 'ref', 'implement', 1)",
+    ].join(' ')).bind(cycleId).run();
+
+    const okCommon = ('i6c-' + suffix).slice(0, 40);
+    const okOwn = ('i6o-' + suffix).slice(0, 40);
+    const okRole = ('i6r-' + suffix).slice(0, 40);
+    const okTask = ('i6t-' + suffix).slice(0, 40);
+    const okProj = ('i6p-' + suffix).slice(0, 40);
+    const leakTask = ('i6lt-' + suffix).slice(0, 40);
+    const leakRole = ('i6lr-' + suffix).slice(0, 40);
+    const leakProj = ('i6lp-' + suffix).slice(0, 40);
+
+    await seedActiveMemory(okCommon, 'common', 'visible common');
+    await seedActiveMemory(okOwn, 'participant:agent:a', 'visible own');
+    await seedActiveMemory(okRole, 'role:owner', 'visible role owner');
+    await seedActiveMemory(okTask, 'task:f5', 'visible task f5');
+    await seedActiveMemory(okProj, 'project:' + project, 'visible project');
+    await seedActiveMemory(leakTask, 'task:other', 'LEAK task other');
+    await seedActiveMemory(leakRole, 'role:reviewer', 'LEAK role other');
+    await seedActiveMemory(leakProj, 'project:other/repo', 'LEAK project other');
+
+    const result = await handlers.get('collab_get_context')!({ cycle: cycleId, task: 'f5' });
+    if (result.isError) {
+      throw new Error('I6 get_context failed: ' + JSON.stringify(result.structuredContent));
+    }
+    const packet = result.structuredContent.packet as { memory: Array<{ id: string; scope: string }> };
+    const ids = packet.memory.map(m => m.id);
+    expect(ids).toContain(okCommon);
+    expect(ids).toContain(okOwn);
+    expect(ids).toContain(okRole);
+    expect(ids).toContain(okTask);
+    expect(ids).toContain(okProj);
+    expect(ids).not.toContain(leakTask);
+    expect(ids).not.toContain(leakRole);
+    expect(ids).not.toContain(leakProj);
+  });
+
+  it('A09 E2E : issue → context → contribution → phase → mémoire → export', async () => {
+    const handlers = registry(makeContext());
+    await ensureSchema(bindings.COLLAB_DB_C2);
+    const suffix = Date.now().toString(36) + String(counter);
+    const cycleId = ('c2m-e2e-' + suffix).slice(0, 64);
+    const project = 'rfkevin/project-mcp-collab';
+    const issueNum = 900000 + (counter % 10000);
+
+    await bindings.COLLAB_DB_C2.prepare(
+      "INSERT INTO cycles (cycle_id, project, phase, revision, status) VALUES (?1, ?2, 'P1', 1, 'open')",
+    ).bind(cycleId, project).run();
+    await bindings.COLLAB_DB_C2.prepare([
+      'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
+      "VALUES (?1, 'P1', '[]', '[]', '[]', 'policy-p1')",
+    ].join(' ')).bind(cycleId).run();
+    await bindings.COLLAB_DB_C2.prepare([
+      'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
+      "VALUES (?1, 'P2', '[]', '[]', '[]', 'none')",
+    ].join(' ')).bind(cycleId).run();
+    await bindings.COLLAB_DB_C2.prepare([
+      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
+      "VALUES ('e2e', ?1, 'agent:a', 'agent:b', 'agent:c', 'in_progress', '[]', 'ref', 'implement', 1)",
+    ].join(' ')).bind(cycleId).run();
+    await mapIssueToCycle(bindings.COLLAB_DB_C2, '#' + issueNum, cycleId, project);
+
+    const memId = ('e2em-' + suffix).slice(0, 40);
+    await seedActiveMemory(memId, 'common', 'e2e memory');
+
+    // 1. issue → collab_get_context
+    const ctx1 = await handlers.get('collab_get_context')!({
+      issue: String(issueNum),
+      repository: project,
+      task: 'e2e',
+      include_delta: true,
+      last_seen_seq: 0,
+    });
+    if (ctx1.isError) throw new Error('E2E ctx1: ' + JSON.stringify(ctx1.structuredContent));
+    expect((ctx1.structuredContent.resolved as { cycle_id: string }).cycle_id).toBe(cycleId);
+    expect((ctx1.structuredContent.packet as { header: { phase: string } }).header.phase).toBe('P1');
+
+    // 2. contribution / delta
+    const contrib = await handlers.get('collab_append_event')!(appendInput(cycleId, 1, 'cp:e2e'));
+    expect(contrib.isError).toBeFalsy();
+    expect(contrib.structuredContent.status).toBe('applied');
+    const delta = await handlers.get('collab_get_delta')!({ cycle: cycleId, since_seq: 0, limit: 20 });
+    expect((delta.structuredContent.events as unknown[]).length).toBeGreaterThanOrEqual(1);
+
+    // 3. collab_phase_advance P1→P2
+    const adv = await handlers.get('collab_phase_advance')!({
+      cycle: cycleId, expected_rev: 2, next_phase: 'P2',
+    });
+    if (adv.isError) throw new Error('E2E advance: ' + JSON.stringify(adv.structuredContent));
+    expect(adv.structuredContent.status).toBe('applied');
+
+    // 4. relecture contexte / mémoire
+    const ctx2 = await handlers.get('collab_get_context')!({ cycle: cycleId, task: 'e2e' });
+    if (ctx2.isError) throw new Error('E2E ctx2: ' + JSON.stringify(ctx2.structuredContent));
+    expect((ctx2.structuredContent.packet as { header: { phase: string } }).header.phase).toBe('P2');
+    const memIds = ((ctx2.structuredContent.packet as { memory: Array<{ id: string }> }).memory).map(m => m.id);
+    expect(memIds).toContain(memId);
+
+    // 5. collab_export (memory-md : pas besoin d'import d'état)
+    const exp = await handlers.get('collab_export')!({ cycle: cycleId, format: 'memory-md' });
+    if (exp.isError) throw new Error('E2E export: ' + JSON.stringify(exp.structuredContent));
+    expect(exp.structuredContent.format).toBe('memory-md');
+    expect(typeof exp.structuredContent.content).toBe('string');
+    expect((exp.structuredContent.content as string).length).toBeGreaterThan(0);
   });
 });
