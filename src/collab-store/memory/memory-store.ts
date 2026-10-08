@@ -5,6 +5,7 @@
  * Budgets, alarms, participant isolation, protected kinds, hypothesis expiry.
  */
 import {
+  estimateTokens,
   validateMemoryActivation,
   validateMemoryEntry,
   type MemoryConfidence,
@@ -13,6 +14,10 @@ import {
   type MemoryStatus,
 } from '../contracts/memory';
 import { StateContractError } from '../../collab/contracts';
+
+// estimateTokens now lives in contracts/memory.ts (single canonical metric,
+// shared with the schema backfill); re-exported here for API compatibility.
+export { estimateTokens };
 import { ensureSchema } from '../store/schema';
 
 export class MemoryStoreError extends Error {
@@ -141,10 +146,6 @@ const META_OCC = 'mem:occ:';
 const META_ACT = 'mem:act:';
 const META_RET = 'mem:ret:';
 const META_BASE = 'mem:base:';
-
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
 
 export function scopeFamily(scope: string): string {
   if (scope === 'common') return 'common';

@@ -11,7 +11,8 @@ import {
   StoredMemory,
   supersedeRequestId,
 } from '../../../src/collab-store/memory/memory-store';
-import type { MemoryConfidence } from '../../../src/collab-store/contracts/memory';
+import { estimateTokens, type MemoryConfidence } from '../../../src/collab-store/contracts/memory';
+import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
 import { StateContractError } from '../../../src/collab/contracts';
@@ -911,5 +912,45 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect((await mem.get(id, 1))?.status).toBe('superseded');
     // Each applied activation bumps the cap counter exactly once.
     expect(await capWrites('mem:act:default:' + scope)).toBe(3);
+  });
+
+  it('A03: pre-migration rows are backfilled with the exact canonical cost', async () => {
+    // Write two rows as if they predated migration 0003: token_cost is
+    // NULL, not the SQLite code-point approximation.
+    const emoji = '🚀'.repeat(120); // 120 code points but 240 UTF-16 units
+    const ascii = 'a'.repeat(200);
+    for (const [id, text] of [
+      ['mem-backfill-emoji', emoji],
+      ['mem-backfill-ascii', ascii],
+    ] as const) {
+      await bindings.COLLAB_DB_C2
+        .prepare(
+          `INSERT INTO memory_entries
+             (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses)
+           VALUES (?1, 1, 'project:a03-backfill', 'lesson', ?2, '[]', 'hypothesis', 'candidate', 'agent:pre', '', NULL, 0)`,
+        )
+        .bind(id, text)
+        .run();
+    }
+    const readCosts = async (): Promise<number[]> => {
+      const { results } = await bindings.COLLAB_DB_C2
+        .prepare(
+          `SELECT COALESCE(token_cost, -1) AS token_cost FROM memory_entries
+             WHERE id IN ('mem-backfill-emoji', 'mem-backfill-ascii')`,
+        )
+        .all<{ token_cost: number }>();
+      return (results ?? []).map((r) => r.token_cost).sort((x, y) => x - y);
+    };
+    // Before the backfill: both costs are NULL (COALESCE -> -1).
+    expect(await readCosts()).toEqual([-1, -1]);
+    // Re-running the schema bootstrap backfills NULL costs from JS with the
+    // exact canonical metric, UTF-16 units included: the emoji row gets 60
+    // tokens, never the code-point approximation (120 + 3) / 4 = 30.
+    await ensureSchema(bindings.COLLAB_DB_C2, true);
+    expect(await readCosts()).toEqual([50, 60]);
+    expect(estimateTokens(emoji)).toBe(60);
+    // Idempotent: a second bootstrap changes nothing.
+    await ensureSchema(bindings.COLLAB_DB_C2, true);
+    expect(await readCosts()).toEqual([50, 60]);
   });
 });

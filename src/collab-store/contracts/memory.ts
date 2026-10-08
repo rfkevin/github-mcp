@@ -25,6 +25,15 @@ export type MemoryConfidence = (typeof MEMORY_CONFIDENCE)[number];
 export const MEMORY_STATUS = ['candidate', 'active', 'superseded', 'retired'] as const;
 export type MemoryStatus = (typeof MEMORY_STATUS)[number];
 
+/**
+ * Canonical token metric for memory budgets: UTF-16 units / 4, rounded up.
+ * One shared definition for INSERT-time costs, the transactional guard and
+ * the schema backfill, so every measure is exact, non-BMP included.
+ */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
 /** Scoped id: `common`, `project:<p>`, `role:<r>`, `participant:<id>`, `task:<t>`. */
 const SCOPE_RE = /^(common|project:[A-Za-z0-9_-]{1,64}|role:[A-Za-z0-9_-]{1,64}|participant:[A-Za-z0-9:_-]{1,128}|task:[A-Za-z0-9_-]{1,64})$/;
 

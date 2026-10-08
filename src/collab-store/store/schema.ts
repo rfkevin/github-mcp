@@ -10,6 +10,8 @@
  * consumed here (C1 review reco #3).
  */
 
+import { estimateTokens } from '../contracts/memory';
+
 export const CANONICAL_SCHEMA_SQL = [
   '-- CC-3 C1 — 0001_init.sql : portable standard SQL (D1 + stock SQLite).',
   '-- No engine-specific options. Revisions start at 1 (F3); expected_rev 0 = creation.',
@@ -159,12 +161,11 @@ export const STORE_MIGRATION_0002 =
  * under-counted non-BMP text (emoji) and could let two concurrent
  * activations exceed a scope budget. Every row now persists its exact
  * estimateTokens cost at INSERT; the in-batch guard sums token_cost.
- * Pre-0003 rows are backfilled with the code-point approximation.
+ * Pre-0003 rows are backfilled from JS with the exact canonical cost
+ * (same estimateTokens function, non-BMP included; review Sol, F3).
  */
 export const STORE_MIGRATION_0003_ALTER =
   'ALTER TABLE memory_entries ADD COLUMN token_cost INTEGER';
-export const STORE_MIGRATION_0003_BACKFILL =
-  'UPDATE memory_entries SET token_cost = (length(text) + 3) / 4 WHERE token_cost IS NULL';
 
 const ENSURED = new WeakSet<object>();
 
@@ -194,10 +195,20 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
   }
   const memColumns = await db.prepare('PRAGMA table_info(memory_entries)').all<{ name: string }>();
   if (!memColumns.results.some(column => column.name === 'token_cost')) {
-    await db.batch([
-      db.prepare(STORE_MIGRATION_0003_ALTER),
-      db.prepare(STORE_MIGRATION_0003_BACKFILL),
-    ]);
+    await db.batch([db.prepare(STORE_MIGRATION_0003_ALTER)]);
+  }
+  // Exact backfill for pre-0003 rows (review Sol, F3): idempotent, runs on
+  // every schema bootstrap and only touches NULL costs. The JS metric counts
+  // UTF-16 units, so non-BMP rows get the canonical estimateTokens cost,
+  // never the SQLite code-point approximation.
+  const staleCosts = await db
+    .prepare('SELECT id, version, text FROM memory_entries WHERE token_cost IS NULL')
+    .all<{ id: string; version: number; text: string }>();
+  for (const row of staleCosts.results ?? []) {
+    await db
+      .prepare('UPDATE memory_entries SET token_cost = ?1 WHERE id = ?2 AND version = ?3 AND token_cost IS NULL')
+      .bind(estimateTokens(row.text), row.id, row.version)
+      .run();
   }
   ENSURED.add(db as unknown as object);
 }
