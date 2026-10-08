@@ -18,7 +18,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     expect(names).toContain('github_collab_context');
   });
 
-  it('le scope collab: expose exactement les 3 outils du store', async () => {
+  it('le scope collab: expose exactement les 4 outils du store (C6 : collab_export)', async () => {
     const fixture = createOAuthFixture({ COLLAB_DB: bindings.COLLAB_DB_C2, COLLAB_STORE_ENABLED: 'true' });
     const session = await fixture.mcpSession('mcp:read collab: offline_access', 'http://localhost:4321/callback',
       fixture.ORIGIN + '/collab/mcp');
@@ -26,7 +26,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
     const result = fixture.rpcResult(await response.text()) as { tools: Array<{ name: string }> };
     expect(result.tools.map(tool => tool.name).sort())
-      .toEqual(['collab_append_event', 'collab_get_context', 'collab_get_delta']);
+      .toEqual(['collab_append_event', 'collab_export', 'collab_get_context', 'collab_get_delta']);
   });
 
   it('sans le scope collab:, /collab/mcp refuse l\'accès', async () => {
