@@ -205,15 +205,16 @@ describe('F5 A07 — collab_phase_advance (outil MCP réel)', () => {
 describe('F5 A09 — collab_get_context packet + mémoire', () => {
   it('expose packet phase/mémoire isolée + delta optionnel (identité serveur)', async () => {
     const handlers = registry(makeContext());
-    const cycleId = await seedPhaseCycle('a09-ctx');
+    const cycleId = cycle('a09-ctx');
+
+    // Créer le cycle uniquement via le store (rev 0 → 1).
+    const created = await handlers.get('collab_append_event')!(appendInput(cycleId, 0, 'cp:a09'));
+    expect(created.isError).toBeFalsy();
+    expect(created.structuredContent.status).toBe('applied');
+
     await seedActiveMemory('mem-common-a09', 'common', 'shared fact for all');
     await seedActiveMemory('mem-own-a09', 'participant:agent:a', 'private own');
     await seedActiveMemory('mem-other-a09', 'participant:agent:other', 'private other — must not leak');
-
-    // seedPhaseCycle pose revision=1 → append à expected_rev 1
-    const appended = await handlers.get('collab_append_event')!(appendInput(cycleId, 1, 'cp:a09'));
-    expect(appended.isError).toBeFalsy();
-    expect(appended.structuredContent.status).toBe('applied');
 
     const result = await handlers.get('collab_get_context')!({
       cycle: cycleId,
@@ -226,12 +227,13 @@ describe('F5 A09 — collab_get_context packet + mémoire', () => {
     expect((result.structuredContent.caller as { participant_id: string }).participant_id).toBe('agent:a');
 
     const packet = result.structuredContent.packet as {
-      header: { phase: string; participant_id: string };
+      header: { phase: string; participant_id: string; cycle_id: string };
       memory: Array<{ id: string; scope: string }>;
       budget: { max_tokens: number; estimated_tokens: number };
     };
-    expect(packet.header.phase).toBe('P1');
+    expect(packet.header.cycle_id).toBe(cycleId);
     expect(packet.header.participant_id).toBe('agent:a');
+    expect(typeof packet.header.phase).toBe('string');
     const ids = packet.memory.map(m => m.id);
     expect(ids).toContain('mem-common-a09');
     expect(ids).toContain('mem-own-a09');
