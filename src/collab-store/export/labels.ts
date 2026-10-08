@@ -17,6 +17,8 @@ export interface LabelDirectory {
   ownerLabel: string;
   byLabel: Map<string, string>;
   byPid: Map<string, string>;
+  /** Labels carried by several active participants (or by a participant and the owner): never resolved (I8). */
+  ambiguous: Set<string>;
 }
 
 export async function loadLabelDirectory(db: D1Database, ownerLabel = DEFAULT_OWNER_LABEL): Promise<LabelDirectory> {
@@ -26,11 +28,14 @@ export async function loadLabelDirectory(db: D1Database, ownerLabel = DEFAULT_OW
   ).all<{ participant_id: string; display_label: string }>();
   const byLabel = new Map<string, string>();
   const byPid = new Map<string, string>();
+  const ambiguous = new Set<string>();
   for (const row of results) {
     byPid.set(row.participant_id, row.display_label);
-    if (!byLabel.has(row.display_label)) byLabel.set(row.display_label, row.participant_id);
+    if (byLabel.has(row.display_label) || row.display_label === ownerLabel) ambiguous.add(row.display_label);
+    else byLabel.set(row.display_label, row.participant_id);
   }
-  return { ownerLabel, byLabel, byPid };
+  for (const label of ambiguous) byLabel.delete(label);
+  return { ownerLabel, byLabel, byPid, ambiguous };
 }
 
 /** Leading label of a cell, without a trailing parenthesised annotation. */
@@ -43,10 +48,11 @@ export function leadingLabel(cell: string): string {
   return value;
 }
 
-/** '' = no participant; null = label unknown to the registry. */
+/** '' = no participant; null = label unknown to the registry or ambiguous. */
 export function resolveCell(directory: LabelDirectory, cell: string): string | null {
   const label = leadingLabel(cell);
   if (!label || NONE.test(label)) return '';
+  if (directory.ambiguous.has(label)) return null;
   if (label === directory.ownerLabel) return OWNER_PID;
   if (directory.byLabel.has(label)) return directory.byLabel.get(label)!;
   if (directory.byPid.has(label)) return label;

@@ -115,6 +115,8 @@ export async function handleOwnerRequest(
       });
       message = { text: (result.status === 'duplicate' ? 'Déjà importé' : 'État importé') + ' : révision ' + result.state_revision
         + ', ' + result.tasks + ' tâches, sha256 ' + result.content_sha256.slice(0, 12) + ' (seq ' + result.event.seq + ')'
+        + (result.issue_refs.length ? ', issues indexées : ' + result.issue_refs.join(', ') : '')
+        + (result.reassigned_issues.length ? '. Issues reprises à un autre cycle : ' + result.reassigned_issues.join(', ') : '')
         + (result.dropped_tasks.length ? '. Tâches retirées du store : ' + result.dropped_tasks.join(', ') : '') + '.', error: false };
     }
     audit(action, 'ok');
