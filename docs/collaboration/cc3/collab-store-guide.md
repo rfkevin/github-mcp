@@ -71,6 +71,7 @@ Pour demander quelque chose au propriétaire (faire avancer une phase, enregistr
   - Sans changement depuis le dernier import : le fichier importé, octet pour octet.
   - Avec changements : la proposition de révision N+1 sur la base N.
   - La sortie donne `content`, `content_sha256`, `state` (`revision`, `base_revision`, `changed`, `changes`, `imported`, `store_revision`, `last_seq`) et `publish`, la consigne de publication.
+  - L’export est un **instantané cohérent** du store. L’import de base, les participants, la phase, les tâches, les événements et `last_seq` sont lus dans une seule transaction D1. Une écriture concurrente (tâche, `evidence.add`, import owner, registre) est donc entièrement incluse ou entièrement absente. `last_seq` ne couvre jamais un événement absent du document, et l’on peut reprendre par `collab_get_delta` à partir de lui.
 - **`memory-md`** : entrées de mémoire actives des scopes partagés (common, project, role, task) et de **votre** scope participant seulement (format `CC-MEMORY-MD-1`). La mémoire personnelle d’un autre participant n’est jamais exportée.
 - **Lecture seule** : l’outil n’écrit **jamais** dans GitHub.
 - **Erreurs** : `NO_STATE_SNAPSHOT` (aucun état importé), `EXPORT_INVALID`, `STATE_SNAPSHOT_CORRUPT`, `STORE_UNAVAILABLE`.

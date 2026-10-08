@@ -23,7 +23,7 @@ import {
   appendListItems, cloneDocument, findTable, getHeader, inlineCell, parseStateDocument,
   renderStateDocument, setHeader, sha256Hex, type TableBlock,
 } from './document';
-import { labelOf, loadLabelDirectory, pathsOf, resolveCell, sameList, type LabelDirectory } from './labels';
+import { ACTIVE_PARTICIPANTS_SQL, buildLabelDirectory, labelOf, pathsOf, resolveCell, sameList, type LabelDirectory } from './labels';
 import { TASK_COLUMNS, type ExportTarget } from './state-import-plan';
 
 export const STATE_IMPORT_KEY_PREFIX = 'owner-state-import:';
@@ -63,14 +63,15 @@ interface StoreTaskRow {
   revision: number;
 }
 
-export async function loadImportedState(db: D1Database, cycleId: string): Promise<ImportedState | null> {
-  await ensureSchema(db);
-  const row = await db.prepare([
-    "SELECT seq, expected_rev, payload_json FROM events WHERE cycle_id = ?1 AND type = 'owner.decision'",
-    "AND participant_id = 'owner' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1",
-  ].join(' ')).bind(cycleId, STATE_IMPORT_KEY_PREFIX + cycleId + ':%')
-    .first<{ seq: number; expected_rev: number; payload_json: string }>();
-  if (!row) return null;
+type ImportRow = { seq: number; expected_rev: number; payload_json: string };
+
+/** Latest owner import of the cycle (?1 = cycle, ?2 = idempotency key prefix). */
+const LATEST_IMPORT_SQL = [
+  "SELECT seq, expected_rev, payload_json FROM events WHERE cycle_id = ?1 AND type = 'owner.decision'",
+  "AND participant_id = 'owner' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1",
+].join(' ');
+
+async function importedFromRow(row: ImportRow): Promise<ImportedState> {
   const payload = JSON.parse(row.payload_json) as {
     content?: string; content_sha256?: string; state_revision?: number; owner_label?: string; target?: ExportTarget | null;
   };
@@ -88,6 +89,71 @@ export async function loadImportedState(db: D1Database, cycleId: string): Promis
     content_sha256: payload.content_sha256,
     owner_label: payload.owner_label ?? 'Kevin',
     target: payload.target ?? null,
+  };
+}
+
+export async function loadImportedState(db: D1Database, cycleId: string): Promise<ImportedState | null> {
+  await ensureSchema(db);
+  const row = await db.prepare(LATEST_IMPORT_SQL).bind(cycleId, STATE_IMPORT_KEY_PREFIX + cycleId + ':%').first<ImportRow>();
+  return row ? importedFromRow(row) : null;
+}
+
+/** Everything one export reads, taken at a single point of the store (F4/A04). */
+interface ExportSnapshot {
+  imported: ImportedState | null;
+  directory: LabelDirectory;
+  cycle: { phase: string; revision: number } | null;
+  tasks: StoreTaskRow[];
+  events: StoredStoreEvent[];
+  requests: Map<number, StoredStoreEvent>;
+  lastSeq: number;
+}
+
+/**
+ * F4/A04 — the export reads base import, participant directory, cycle,
+ * tasks, events, referenced requests and MAX(seq) in ONE D1 batch. A batch is
+ * a single SQL transaction executed without interleaving, so every value comes
+ * from the same point of the store: an append, an evidence.add, a registry
+ * change or an owner import lands entirely before or entirely after the
+ * snapshot, never between two of its reads. The statements that depend on the
+ * import read its bounds through the same subquery instead of a prior call.
+ */
+async function readExportSnapshot(db: D1Database, cycleId: string): Promise<ExportSnapshot> {
+  await ensureSchema(db);
+  const importKey = STATE_IMPORT_KEY_PREFIX + cycleId + ':%';
+  const importSeq = "(SELECT seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND participant_id = 'owner'"
+    + ' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1)';
+  const importRev = "(SELECT expected_rev + 1 FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND participant_id = 'owner'"
+    + ' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1)';
+  const afterImport = "SELECT * FROM events WHERE cycle_id = ?1 AND seq > COALESCE(" + importSeq + ', 0)'
+    + " AND type IN ('owner.decision', 'evidence.add')";
+  const [importRows, participants, cycles, tasks, events, requests, last] = await db.batch<Record<string, unknown>>([
+    db.prepare(LATEST_IMPORT_SQL).bind(cycleId, importKey),
+    db.prepare(ACTIVE_PARTICIPANTS_SQL),
+    db.prepare('SELECT phase, revision FROM cycles WHERE cycle_id = ?1').bind(cycleId),
+    db.prepare([
+      'SELECT task_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, next_action, revision',
+      'FROM tasks WHERE cycle_id = ?1 AND revision > COALESCE(' + importRev + ', 0) ORDER BY task_id',
+    ].join(' ')).bind(cycleId, importKey),
+    db.prepare(afterImport + ' ORDER BY seq').bind(cycleId, importKey),
+    db.prepare([
+      'SELECT r.* FROM events r WHERE r.cycle_id = ?1 AND r.seq IN (',
+      "  SELECT json_extract(d.payload_json, '$.request_seq') FROM events d WHERE d.cycle_id = ?1",
+      "  AND d.seq > COALESCE(" + importSeq + ", 0) AND d.type = 'owner.decision' AND json_valid(d.payload_json))",
+    ].join(' ')).bind(cycleId, importKey),
+    db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE cycle_id = ?1').bind(cycleId),
+  ]);
+  const importRow = importRows.results[0] as ImportRow | undefined;
+  const imported = importRow ? await importedFromRow(importRow) : null;
+  return {
+    imported,
+    directory: buildLabelDirectory(participants.results as Array<{ participant_id: string; display_label: string }>,
+      imported?.owner_label),
+    cycle: (cycles.results[0] as { phase: string; revision: number } | undefined) ?? null,
+    tasks: tasks.results as unknown as StoreTaskRow[],
+    events: events.results as unknown as StoredStoreEvent[],
+    requests: new Map((requests.results as unknown as StoredStoreEvent[]).map(request => [request.seq, request])),
+    lastSeq: (last.results[0] as { seq: number } | undefined)?.seq ?? 0,
   };
 }
 
@@ -182,16 +248,14 @@ function evidenceRow(table: TableBlock, event: StoredStoreEvent, directory: Labe
 }
 
 export async function exportCycleState(db: D1Database, cycleId: string): Promise<StateExport> {
-  const imported = await loadImportedState(db, cycleId);
+  const snapshot = await readExportSnapshot(db, cycleId);
+  const { imported, directory, cycle } = snapshot;
   if (!imported) {
     throw new CollabStoreError('NO_STATE_SNAPSHOT',
       'Aucun état CC-STATE-1 importé pour ce cycle : le propriétaire importe d’abord l’état fusionné sur /owner.');
   }
   const base = parseStateDocument(imported.content);
   const document = cloneDocument(base);
-  const directory = await loadLabelDirectory(db, imported.owner_label);
-  const cycle = await db.prepare('SELECT phase, revision FROM cycles WHERE cycle_id = ?1')
-    .bind(cycleId).first<{ phase: string; revision: number }>();
   const changes = { phase: false, tasks: [] as string[], owner_decisions: 0, evidence: 0 };
 
   // Phase (store-managed: C3 policy advances).
@@ -207,10 +271,7 @@ export async function exportCycleState(db: D1Database, cycleId: string): Promise
 
   // Tasks changed or created after the import.
   const table = findTable(document, 'Tasks', TASK_COLUMNS)!;
-  const tasks = (await db.prepare([
-    'SELECT task_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, next_action, revision',
-    'FROM tasks WHERE cycle_id = ?1 AND revision > ?2 ORDER BY task_id',
-  ].join(' ')).bind(cycleId, imported.store_revision).all<StoreTaskRow>()).results;
+  const tasks = snapshot.tasks;
   const idIndex = table.headers.indexOf('id');
   for (const task of tasks) {
     const row = table.rows.find(candidate => candidate[idIndex] === task.task_id);
@@ -223,22 +284,7 @@ export async function exportCycleState(db: D1Database, cycleId: string): Promise
   }
 
   // Owner decisions and evidence recorded after the import.
-  const { results: events } = await db.prepare([
-    'SELECT * FROM events WHERE cycle_id = ?1 AND seq > ?2',
-    "AND type IN ('owner.decision', 'evidence.add') ORDER BY seq",
-  ].join(' ')).bind(cycleId, imported.event_seq).all<StoredStoreEvent>();
-  const requestSeqs = events.filter(event => event.type === 'owner.decision').map(event => {
-    try {
-      return (JSON.parse(event.payload_json) as { request_seq?: unknown }).request_seq;
-    } catch {
-      return undefined;
-    }
-  }).filter((seq): seq is number => typeof seq === 'number');
-  const requests = new Map<number, StoredStoreEvent>();
-  for (const seq of [...new Set(requestSeqs)]) {
-    const request = await db.prepare('SELECT * FROM events WHERE seq = ?1 AND cycle_id = ?2').bind(seq, cycleId).first<StoredStoreEvent>();
-    if (request) requests.set(seq, request);
-  }
+  const { events, requests } = snapshot;
   const decisionLines = events.filter(event => event.type === 'owner.decision' && event.participant_id === 'owner')
     .map(event => decisionLine(event, imported.owner_label, requests)).filter((line): line is string => line !== null);
   appendListItems(document, 'Owner decisions', decisionLines);
@@ -265,8 +311,6 @@ export async function exportCycleState(db: D1Database, cycleId: string): Promise
     const code = error instanceof StateContractError ? error.code : 'UNKNOWN';
     throw new CollabStoreError('EXPORT_INVALID', 'Export refusé par le parser CC-STATE-1 (' + code + ').');
   }
-  const last = await db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE cycle_id = ?1')
-    .bind(cycleId).first<{ seq: number }>();
   return {
     cycle_id: cycleId,
     content,
@@ -278,6 +322,7 @@ export async function exportCycleState(db: D1Database, cycleId: string): Promise
     imported: { event_seq: imported.event_seq, state_revision: imported.state_revision,
       content_sha256: imported.content_sha256, target: imported.target },
     store_revision: cycle?.revision ?? 0,
-    last_seq: last?.seq ?? 0,
+    // Same snapshot as the content: never a cursor covering events the document does not contain.
+    last_seq: snapshot.lastSeq,
   };
 }
