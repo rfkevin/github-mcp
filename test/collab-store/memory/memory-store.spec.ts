@@ -22,7 +22,7 @@ async function approveOwnerSubject(subject: string): Promise<string> {
     type: 'owner.request',
     participant_id: 'agent:c4',
     expected_rev: 0,
-    op_id: crypto.randomUUID(),
+    op_id: `c4:${cycleId}:owner-request:${n}`,
     payload_json: JSON.stringify({ request_id: requestId, subject, summary: `C4 owner approval for ${subject}` }),
   });
   expect(filed.status).toBe('applied');
