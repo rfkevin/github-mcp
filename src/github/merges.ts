@@ -1,6 +1,6 @@
 import type { GitHubServiceContext } from './service-context';
 import { GitHubConflictError, InputValidationError, type GitHubTreeEntry } from './types';
-import { APPEND_ONLY_PATHS, assertMemoryAppend, rejectMemoryRewrite } from '../agent-memory';
+import { APPEND_ONLY_PATHS, assertMergedJournal, rejectMemoryRewrite, type JournalBlob } from '../agent-memory';
 import { MAX_FILE_BYTES, decodeTextBlob } from './files';
 import { mergeTree, planMerge, sameEntry, assertMergeEntrySize, type MergeEntry } from '../merges/plan';
 
@@ -105,11 +105,10 @@ export class GitHubMerges {
         const blob = await request<{ encoding: string; content: string; size: number }>(repoPath(repository, `/git/blobs/${sha(selectedSha!)}`));
         content = decodeTextBlob(blob);
       }
-      for (const previous of [snapshot.ours.files.get(path), snapshot.theirs.files.get(path)]) {
-        if (!previous) continue;
-        const blob = await request<{ encoding: string; content: string; size: number }>(repoPath(repository, `/git/blobs/${previous.sha}`));
-        assertMemoryAppend(blob, content, path);
-      }
+      const ancestorEntry = snapshot.plan.rows.find(row => row.path === path)?.ancestor;
+      const [ancestor, ours, theirs] = await Promise.all([ancestorEntry, snapshot.ours.files.get(path), snapshot.theirs.files.get(path)]
+        .map(entry => entry ? request<JournalBlob>(repoPath(repository, `/git/blobs/${sha(entry.sha)}`)) : Promise.resolve(undefined)));
+      assertMergedJournal(path, content, { ancestor, ours, theirs });
     }
   }
 }
