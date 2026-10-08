@@ -11,7 +11,8 @@ import {
   StoredMemory,
   supersedeRequestId,
 } from '../../../src/collab-store/memory/memory-store';
-import type { MemoryConfidence } from '../../../src/collab-store/contracts/memory';
+import { estimateTokens, type MemoryConfidence } from '../../../src/collab-store/contracts/memory';
+import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
 import { StateContractError } from '../../../src/collab/contracts';
@@ -664,5 +665,323 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     });
     expect(back.version).toBe(2);
     expect(back.kind).toBe('fact');
+  });
+
+  // -- A03 (post-audit F3): atomic activation --------------------------------
+
+  /** Seed the growth baseline so the growth alarm stays out of a race test's way. */
+  async function seedBaseline(scope: string, writes: number): Promise<void> {
+    await bindings.COLLAB_DB_C2.prepare(
+      `INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`,
+    )
+      .bind('mem:base:' + scope, writes)
+      .run();
+  }
+
+  async function capWrites(day: string): Promise<number> {
+    const row = await bindings.COLLAB_DB_C2
+      .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
+      .bind(day)
+      .first<{ writes: number }>();
+    return row?.writes ?? 0;
+  }
+
+  /** Race two activations: exactly one must win, exactly one must fail typed. */
+  async function raceTwo(
+    first: Promise<StoredMemory>,
+    second: Promise<StoredMemory>,
+  ): Promise<{ winner: StoredMemory; loserError: MemoryStoreError }> {
+    const outcomes = await Promise.allSettled([first, second]);
+    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+    const rejected = outcomes.filter((o) => o.status === 'rejected');
+    if (fulfilled.length !== 1 || rejected.length !== 1) {
+      throw new Error(
+        'A03 race must yield exactly one success and one failure, got ' +
+          JSON.stringify(outcomes.map((o) => o.status)),
+      );
+    }
+    const loserError = (rejected[0] as PromiseRejectedResult).reason as MemoryStoreError;
+    expect(loserError).toBeInstanceOf(MemoryStoreError);
+    return { winner: (fulfilled[0] as PromiseFulfilledResult<StoredMemory>).value, loserError };
+  }
+
+  /** The winner is active, the loser's candidate is untouched. */
+  async function expectWinnerActiveLoserCandidate(
+    mem: MemoryStore,
+    a: StoredMemory,
+    b: StoredMemory,
+    winner: StoredMemory,
+  ): Promise<void> {
+    expect((await mem.get(winner.id, 1))?.status).toBe('active');
+    const loser = winner.id === a.id ? b : a;
+    expect((await mem.get(loser.id, 1))?.status).toBe('candidate');
+  }
+
+  it('A03: two concurrent reviewers on one candidate -> one activation, one reviewer, one counter bump', async () => {
+    const mem = store();
+    const p = await mem.propose({
+      scope: 'project:a03-two-reviewers',
+      kind: 'fact',
+      text: 'Two reviewers race for this candidate.',
+      evidence_refs: ['plan:4'],
+      author_pid: 'agent:a',
+    });
+    const { winner, loserError } = await raceTwo(
+      mem.activate(p.id, 1, 'agent:b'),
+      mem.activate(p.id, 1, 'agent:c'),
+    );
+    expect(['ACTIVATION_RACE', 'MEMORY_NOT_CANDIDATE']).toContain(loserError.code);
+    const after = (await mem.get(p.id, 1))!;
+    expect(after.status).toBe('active');
+    // Exactly one reviewer is registered — the winner's, never overwritten.
+    expect(after.reviewer_pid).toBe(winner.reviewer_pid);
+    expect(['agent:b', 'agent:c']).toContain(after.reviewer_pid);
+    // Exactly one counter increment for the single applied activation.
+    expect(await capWrites('mem:act:default:project:a03-two-reviewers')).toBe(1);
+  });
+
+  it('A03: two candidates for the last cycle-cap slot -> exactly one activation, no overflow', async () => {
+    const mem = store();
+    const scope = 'task:a03-last-slot';
+    const cycle = 'cy-a03';
+    await seedBaseline(scope, 10); // keep the growth alarm out of this race
+    for (let i = 0; i < 9; i++) {
+      const p = await mem.propose({
+        scope,
+        kind: 'observation',
+        text: `cap filler ${i}`,
+        evidence_refs: [`e-cap-${i}`],
+        author_pid: 'agent:a',
+      });
+      await mem.activate(p.id, 1, 'agent:b', cycle);
+    }
+    const a = await mem.propose({
+      scope,
+      kind: 'observation',
+      text: 'candidate A for the last slot',
+      evidence_refs: ['e-a'],
+      author_pid: 'agent:a',
+    });
+    const b = await mem.propose({
+      scope,
+      kind: 'observation',
+      text: 'candidate B for the last slot',
+      evidence_refs: ['e-b'],
+      author_pid: 'agent:a',
+    });
+    const { winner, loserError } = await raceTwo(
+      mem.activate(a.id, 1, 'agent:b', cycle),
+      mem.activate(b.id, 1, 'agent:c', cycle),
+    );
+    expect(loserError.code).toBe('ACTIVATION_CAP');
+    // The loser's activation mutated nothing: candidate untouched, and its
+    // cap reservation rolled back with the failed transaction.
+    await expectWinnerActiveLoserCandidate(mem, a, b, winner);
+    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(10);
+  });
+
+  it('A03: two candidates for the last budget tokens -> exactly one activation, budget never exceeded', async () => {
+    const mem = store();
+    const scope = 'participant:agent:aa03';
+    const cycle = 'cy-a03-budget';
+    await seedBaseline(scope, 10); // keep the growth alarm out of this race
+    for (let i = 0; i < 2; i++) {
+      const p = await mem.propose({
+        scope,
+        kind: 'lesson',
+        text: ('budget filler ' + i + ' ').repeat(60).slice(0, 600),
+        evidence_refs: [`e-budget-${i}`],
+        author_pid: 'agent:aa03',
+      });
+      await mem.activate(p.id, 1, 'agent:bb03', cycle);
+    }
+    const a = await mem.propose({
+      scope,
+      kind: 'lesson',
+      text: 'a'.repeat(600),
+      evidence_refs: ['e-budget-a'],
+      author_pid: 'agent:aa03',
+    });
+    const b = await mem.propose({
+      scope,
+      kind: 'lesson',
+      text: 'b'.repeat(600),
+      evidence_refs: ['e-budget-b'],
+      author_pid: 'agent:aa03',
+    });
+    const { winner, loserError } = await raceTwo(
+      mem.activate(a.id, 1, 'agent:bb03', cycle),
+      mem.activate(b.id, 1, 'agent:cc03', cycle),
+    );
+    expect(loserError.code).toBe('MEMORY_BUDGET_EXCEEDED');
+    await expectWinnerActiveLoserCandidate(mem, a, b, winner);
+    // 300 filler tokens + 150 winner tokens = 450 <= 500 budget: the guard
+    // refused the second 150-token activation before the budget could slip.
+    const { results: activeRows } = await bindings.COLLAB_DB_C2.prepare(
+      `SELECT text FROM memory_entries WHERE status = 'active' AND scope = ?1`,
+    )
+      .bind(scope)
+      .all<{ text: string }>();
+    const used = (activeRows ?? []).reduce((sum, r) => sum + Math.ceil(r.text.length / 4), 0);
+    expect(used).toBe(450);
+    // The loser's cap reservation rolled back with its failed transaction.
+    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(3);
+  });
+
+  it('A03: non-BMP budget race -> the guard sums the persisted exact token cost', async () => {
+    const mem = store();
+    const scope = 'participant:agent:uni03';
+    const cycle = 'cy-a03-unicode';
+    await seedBaseline(scope, 100); // keep the growth alarm out of this race
+    // Emoji fillers: one rocket is 2 UTF-16 units in JS but a single code
+    // point for SQLite length(), so the old in-batch guard under-counted
+    // non-BMP text. Used after activation: 150 + 150 + 120 = 420 tokens
+    // (budget 500 for a participant scope).
+    for (const [i, units] of [600, 600, 480].entries()) {
+      const p = await mem.propose({
+        scope,
+        kind: 'lesson',
+        text: '🚀'.repeat(units / 2),
+        evidence_refs: [`e-uni-${i}`],
+        author_pid: 'agent:uni03',
+      });
+      await mem.activate(p.id, 1, 'agent:rev03', cycle);
+    }
+    // Two 60-token candidates (120 emoji = 240 UTF-16 units): each passes the
+    // JS pre-check alone (420 + 60 <= 500), together they exceed the budget
+    // (540 > 500). The transactional guard must refuse the second one using
+    // the persisted exact costs, not the under-counting SQL approximation.
+    const a = await mem.propose({
+      scope,
+      kind: 'lesson',
+      text: '🚀'.repeat(120),
+      evidence_refs: ['e-uni-a'],
+      author_pid: 'agent:uni03',
+    });
+    const b = await mem.propose({
+      scope,
+      kind: 'lesson',
+      text: '🚀'.repeat(120),
+      evidence_refs: ['e-uni-b'],
+      author_pid: 'agent:uni03',
+    });
+    const { winner, loserError } = await raceTwo(
+      mem.activate(a.id, 1, 'agent:rev03', cycle),
+      mem.activate(b.id, 1, 'agent:rev04', cycle),
+    );
+    expect(loserError.code).toBe('MEMORY_BUDGET_EXCEEDED');
+    await expectWinnerActiveLoserCandidate(mem, a, b, winner);
+    const { results: activeCosts } = await bindings.COLLAB_DB_C2.prepare(
+      `SELECT COALESCE(token_cost, -1) AS token_cost FROM memory_entries WHERE status = 'active' AND scope = ?1`,
+    )
+      .bind(scope)
+      .all<{ token_cost: number }>();
+    // Exact persisted costs (UTF-16 based), never the code-point approximation.
+    expect((activeCosts ?? []).map((r) => r.token_cost).sort((x, y) => x - y)).toEqual([60, 120, 150, 150]);
+    // 420 + 60 = 480 <= 500: the scope budget holds at the JS contract level.
+    expect((activeCosts ?? []).reduce((sum, r) => sum + r.token_cost, 0)).toBe(480);
+    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(4);
+  });
+
+  it('A03/I4: two candidate versions of one id activated in parallel -> exactly one active version', async () => {
+    const mem = store();
+    const id = 'mem-i4-race';
+    const scope = 'project:a03-i4';
+    await seedBaseline(scope, 100); // keep the growth alarm out of this race
+    await mem.propose({ id, scope, kind: 'fact', text: 'v1 original.', evidence_refs: ['plan:4'], author_pid: 'agent:a' });
+    await mem.activate(id, 1, 'agent:b');
+    await mem.supersede(id, 'agent:a', 'v2 candidate replacing v1.', ['plan:4']);
+    const v3 = await mem.propose({ id, scope, kind: 'fact', text: 'v3 parallel candidate.', evidence_refs: ['plan:4'], author_pid: 'agent:a' });
+    expect(v3.version).toBe(3);
+    // Both versions are candidates: parallel activation must converge to the
+    // sequential outcome — exactly one active version of the id (I4).
+    const [a2, a3] = await Promise.all([mem.activate(id, 2, 'agent:c'), mem.activate(id, 3, 'agent:d')]);
+    // Both activations applied; the loser may already have been superseded
+    // by the winner between its own commit and its durable re-read (I4
+    // convergence), so each returned row is active or superseded, never a
+    // candidate anymore.
+    expect(['active', 'superseded']).toContain(a2.status);
+    expect(['active', 'superseded']).toContain(a3.status);
+    const s2 = (await mem.get(id, 2))?.status;
+    const s3 = (await mem.get(id, 3))?.status;
+    expect([s2, s3].filter((st) => st === 'active')).toHaveLength(1);
+    expect([s2, s3]).toContain('superseded');
+    const winnerVersion = s2 === 'active' ? 2 : 3;
+    const activeRow = (await mem.get(id, winnerVersion))!;
+    expect(activeRow.reviewer_pid).toBe(winnerVersion === 2 ? 'agent:c' : 'agent:d');
+    expect((await mem.get(id, 1))?.status).toBe('superseded');
+    // Each applied activation bumps the cap counter exactly once.
+    expect(await capWrites('mem:act:default:' + scope)).toBe(3);
+  });
+
+  /** Insert a row as if it predated migration 0003: token_cost stays NULL. */
+  async function insertPreMigrationRow(id: string, scope: string, text: string): Promise<void> {
+    await bindings.COLLAB_DB_C2
+      .prepare(
+        `INSERT INTO memory_entries
+           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses)
+         VALUES (?1, 1, ?2, 'lesson', ?3, '[]', 'hypothesis', 'candidate', 'agent:pre', '', NULL, 0)`,
+      )
+      .bind(id, scope, text)
+      .run();
+  }
+
+  /** Costs of two rows, NULL rendered as -1, sorted ascending. */
+  const readCosts = async (idA: string, idB: string): Promise<number[]> => {
+    const { results } = await bindings.COLLAB_DB_C2
+      .prepare(
+        `SELECT COALESCE(token_cost, -1) AS token_cost FROM memory_entries WHERE id IN (?1, ?2)`,
+      )
+      .bind(idA, idB)
+      .all<{ token_cost: number }>();
+    return (results ?? []).map((r) => r.token_cost).sort((x, y) => x - y);
+  };
+
+  it('A03: pre-migration rows are backfilled with the exact canonical cost', async () => {
+    // Write two rows as if they predated migration 0003: token_cost is
+    // NULL, not the SQLite code-point approximation.
+    const emoji = '🚀'.repeat(120); // 120 code points but 240 UTF-16 units
+    const ascii = 'a'.repeat(200);
+    await insertPreMigrationRow('mem-backfill-emoji', 'project:a03-backfill', emoji);
+    await insertPreMigrationRow('mem-backfill-ascii', 'project:a03-backfill', ascii);
+    // Before the backfill: both costs are NULL (COALESCE -> -1).
+    expect(await readCosts('mem-backfill-emoji', 'mem-backfill-ascii')).toEqual([-1, -1]);
+    // Re-running the schema bootstrap backfills NULL costs from JS with the
+    // exact canonical metric, UTF-16 units included: the emoji row gets 60
+    // tokens, never the code-point approximation (120 + 3) / 4 = 30.
+    await ensureSchema(bindings.COLLAB_DB_C2, true);
+    expect(await readCosts('mem-backfill-emoji', 'mem-backfill-ascii')).toEqual([50, 60]);
+    expect(estimateTokens(emoji)).toBe(60);
+    // Idempotent: a second bootstrap changes nothing.
+    await ensureSchema(bindings.COLLAB_DB_C2, true);
+    expect(await readCosts('mem-backfill-emoji', 'mem-backfill-ascii')).toEqual([50, 60]);
+  });
+
+  it('A03: crash between the 0003 ALTER and its backfill -> a plain cold bootstrap repairs the NULL costs', async () => {
+    // Rows as a crashed migration 0003 left them: the ALTER was applied (the
+    // column exists) but the process died before the backfill, so pre-0003
+    // rows keep token_cost NULL.
+    await ensureSchema(bindings.COLLAB_DB_C2, true);
+    const emoji = '🚀'.repeat(90); // 90 code points but 180 UTF-16 units -> 45 tokens
+    const ascii = 'z'.repeat(100); // 25 tokens
+    await insertPreMigrationRow('mem-crash-emoji', 'project:a03-crash', emoji);
+    await insertPreMigrationRow('mem-crash-ascii', 'project:a03-crash', ascii);
+    expect(await readCosts('mem-crash-emoji', 'mem-crash-ascii')).toEqual([-1, -1]);
+    // A new isolate runs a plain ensureSchema, without `force`: a fresh
+    // binding object is not in the process-local ENSURED cache, exactly like
+    // a restarted Worker seeing the same durable D1. The NULL costs must be
+    // repaired, or the crash would permanently defeat the exact-metric
+    // budget guard (review Sol, F3).
+    const coldStart = (): D1Database =>
+      ({
+        prepare: (sql: string) => bindings.COLLAB_DB_C2.prepare(sql),
+        batch: (statements: D1PreparedStatement[]) => bindings.COLLAB_DB_C2.batch(statements),
+      }) as unknown as D1Database;
+    await ensureSchema(coldStart());
+    expect(await readCosts('mem-crash-emoji', 'mem-crash-ascii')).toEqual([25, 45]);
+    expect(estimateTokens(emoji)).toBe(45);
+    // Idempotent: another cold bootstrap changes nothing.
+    await ensureSchema(coldStart());
+    expect(await readCosts('mem-crash-emoji', 'mem-crash-ascii')).toEqual([25, 45]);
   });
 });
