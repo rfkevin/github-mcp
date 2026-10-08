@@ -255,7 +255,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `SCOPE_NOT_PERSONAL` | C4 | Promotion depuis un scope non personnel | — |
 | `SCOPE_TARGET_INVALID` | C4 | Scope cible de promotion invalide | — |
 | `OWNER_DECISION_SUBJECT` | C4 | La décision owner vise un autre sujet ou une autre occurrence (version, scope, pause) | Demander une décision pour l’occurrence exacte |
-| `ACTIVATION_RACE` | C4 | Activation concurrente : le candidat a changé entre-temps | Relire puis réessayer |
+| `ACTIVATION_RACE` | C4 | Activation concurrente : la transaction d’activation est annulée intégralement (A03) | Relire puis réessayer |
 | `PEER_EVIDENCE_NOT_FOUND` | C4 | Preuve de pair absente du registre | Ajouter la preuve au registre |
 | `PEER_EVIDENCE_PRODUCER` | C4 | Le producteur de la preuve n’est pas le relecteur | Preuve produite par le relecteur |
 | `PEER_EVIDENCE_SELF` | C4 | La preuve vient de l’auteur de la mémoire | Preuve d’un pair distinct |
@@ -322,6 +322,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | Budgets (tokens) | common ≤ 1500 · project ≤ 2000 · role ≤ 1500 · participant ≤ 500 · questions ouvertes ≤ 300 par packet |
 | Dépassement | consolider ou retirer avant toute nouvelle activation |
 | Plafonds courts | par cycle et scope : ≤ 10 activations et ≤ 10 retraits sans revue de consolidation |
+| Activation atomique | une seule transaction : garde CAS (candidat toujours candidate), réservation de plafond, budget, baseline et alarme de croissance, pause des kinds protégés — tout est appliqué ou rien ; un seul reviewer enregistré et un seul incrément de compteur par activation réellement appliquée (A03) |
 | Curiosités | observation/open_question au niveau hypothesis, jamais une règle ; expirent après 3 cycles sans nouvelle preuve |
 | Mémoire personnelle vs registre | le scope participant porte stratégies et préférences ; les faits *sur* un participant (résultats, incidents, évaluations, mesures) vivent seulement dans `evidence_ledger`, référencés par identifiant (I11) |
 | Promotion | participant → role/project/common par revue d’un pair |

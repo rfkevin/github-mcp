@@ -665,4 +665,159 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(back.version).toBe(2);
     expect(back.kind).toBe('fact');
   });
+
+  // -- A03 (post-audit F3): atomic activation --------------------------------
+
+  /** Seed the growth baseline so the growth alarm stays out of a race test's way. */
+  async function seedBaseline(scope: string, writes: number): Promise<void> {
+    await bindings.COLLAB_DB_C2.prepare(
+      `INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`,
+    )
+      .bind('mem:base:' + scope, writes)
+      .run();
+  }
+
+  async function capWrites(day: string): Promise<number> {
+    const row = await bindings.COLLAB_DB_C2
+      .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
+      .bind(day)
+      .first<{ writes: number }>();
+    return row?.writes ?? 0;
+  }
+
+  it('A03: two concurrent reviewers on one candidate -> one activation, one reviewer, one counter bump', async () => {
+    const mem = store();
+    const p = await mem.propose({
+      scope: 'project:a03-two-reviewers',
+      kind: 'fact',
+      text: 'Two reviewers race for this candidate.',
+      evidence_refs: ['plan:4'],
+      author_pid: 'agent:a',
+    });
+    const outcomes = await Promise.allSettled([
+      mem.activate(p.id, 1, 'agent:b'),
+      mem.activate(p.id, 1, 'agent:c'),
+    ]);
+    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+    const rejected = outcomes.filter((o) => o.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const loserError = (rejected[0] as PromiseRejectedResult).reason as MemoryStoreError;
+    expect(loserError).toBeInstanceOf(MemoryStoreError);
+    expect(['ACTIVATION_RACE', 'MEMORY_NOT_CANDIDATE']).toContain(loserError.code);
+    const winner = (fulfilled[0] as PromiseFulfilledResult<StoredMemory>).value;
+    const after = (await mem.get(p.id, 1))!;
+    expect(after.status).toBe('active');
+    // Exactly one reviewer is registered — the winner's, never overwritten.
+    expect(after.reviewer_pid).toBe(winner.reviewer_pid);
+    expect(['agent:b', 'agent:c']).toContain(after.reviewer_pid);
+    // Exactly one counter increment for the single applied activation.
+    expect(await capWrites('mem:act:default:project:a03-two-reviewers')).toBe(1);
+  });
+
+  it('A03: two candidates for the last cycle-cap slot -> exactly one activation, no overflow', async () => {
+    const mem = store();
+    const scope = 'task:a03-last-slot';
+    const cycle = 'cy-a03';
+    await seedBaseline(scope, 10); // keep the growth alarm out of this race
+    for (let i = 0; i < 9; i++) {
+      const p = await mem.propose({
+        scope,
+        kind: 'observation',
+        text: `cap filler ${i}`,
+        evidence_refs: [`e-cap-${i}`],
+        author_pid: 'agent:a',
+      });
+      await mem.activate(p.id, 1, 'agent:b', cycle);
+    }
+    const a = await mem.propose({
+      scope,
+      kind: 'observation',
+      text: 'candidate A for the last slot',
+      evidence_refs: ['e-a'],
+      author_pid: 'agent:a',
+    });
+    const b = await mem.propose({
+      scope,
+      kind: 'observation',
+      text: 'candidate B for the last slot',
+      evidence_refs: ['e-b'],
+      author_pid: 'agent:a',
+    });
+    const outcomes = await Promise.allSettled([
+      mem.activate(a.id, 1, 'agent:b', cycle),
+      mem.activate(b.id, 1, 'agent:c', cycle),
+    ]);
+    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+    const rejected = outcomes.filter((o) => o.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const loserError = (rejected[0] as PromiseRejectedResult).reason as MemoryStoreError;
+    expect(loserError).toBeInstanceOf(MemoryStoreError);
+    expect(loserError.code).toBe('ACTIVATION_CAP');
+    const winnerId = (fulfilled[0] as PromiseFulfilledResult<StoredMemory>).value.id;
+    expect((await mem.get(winnerId, 1))?.status).toBe('active');
+    const loserId = winnerId === a.id ? b.id : a.id;
+    // The loser's activation mutated nothing: candidate untouched, and its
+    // cap reservation rolled back with the failed transaction.
+    expect((await mem.get(loserId, 1))?.status).toBe('candidate');
+    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(10);
+  });
+
+  it('A03: two candidates for the last budget tokens -> exactly one activation, budget never exceeded', async () => {
+    const mem = store();
+    const scope = 'participant:agent:aa03';
+    const cycle = 'cy-a03-budget';
+    await seedBaseline(scope, 10); // keep the growth alarm out of this race
+    for (let i = 0; i < 2; i++) {
+      const p = await mem.propose({
+        scope,
+        kind: 'lesson',
+        text: ('budget filler ' + i + ' ').repeat(60).slice(0, 600),
+        evidence_refs: [`e-budget-${i}`],
+        author_pid: 'agent:aa03',
+      });
+      await mem.activate(p.id, 1, 'agent:bb03', cycle);
+    }
+    const a = await mem.propose({
+      scope,
+      kind: 'lesson',
+      text: 'a'.repeat(600),
+      evidence_refs: ['e-budget-a'],
+      author_pid: 'agent:aa03',
+    });
+    const b = await mem.propose({
+      scope,
+      kind: 'lesson',
+      text: 'b'.repeat(600),
+      evidence_refs: ['e-budget-b'],
+      author_pid: 'agent:aa03',
+    });
+    const outcomes = await Promise.allSettled([
+      mem.activate(a.id, 1, 'agent:bb03', cycle),
+      mem.activate(b.id, 1, 'agent:cc03', cycle),
+    ]);
+    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+    const rejected = outcomes.filter((o) => o.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const loserError = (rejected[0] as PromiseRejectedResult).reason as MemoryStoreError;
+    expect(loserError).toBeInstanceOf(MemoryStoreError);
+    expect(loserError.code).toBe('MEMORY_BUDGET_EXCEEDED');
+    const winnerId = (fulfilled[0] as PromiseFulfilledResult<StoredMemory>).value.id;
+    expect((await mem.get(winnerId, 1))?.status).toBe('active');
+    const loserId = winnerId === a.id ? b.id : a.id;
+    expect((await mem.get(loserId, 1))?.status).toBe('candidate');
+    // 300 filler tokens + 150 winner tokens = 450 <= 500 budget: the guard
+    // refused the second 150-token activation before the budget could slip.
+    const { results: activeRows } = await bindings.COLLAB_DB_C2.prepare(
+      `SELECT text FROM memory_entries WHERE status = 'active' AND scope = ?1`,
+    )
+      .bind(scope)
+      .all<{ text: string }>();
+    const used = (activeRows ?? []).reduce((sum, r) => sum + Math.ceil(r.text.length / 4), 0);
+    expect(used).toBe(450);
+    // The loser's cap reservation rolled back with its failed transaction.
+    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(3);
+  });
 });
