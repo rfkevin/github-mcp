@@ -60,21 +60,22 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         owner_decision_ref: 'owner:fake',
       }),
     ).rejects.toThrow(/OWNER_DECISION|owner/);
-    await seedOwner('owner:real');
+    await seedOwner('memory:invariant-setup');
     const p = await mem.propose({
       scope: 'common',
       kind: 'invariant',
       text: 'I4 holds forever.',
       evidence_refs: ['plan:25'],
       author_pid: 'agent:a',
-      owner_decision_ref: 'owner:real',
+      owner_decision_ref: 'memory:invariant-setup',
     });
     try {
       await mem.activate(p.id, 1, 'agent:b');
     } catch {
-      /* pause */
+      /* pause on common */
     }
-    await mem.clearActivationPause('owner:real');
+    await seedOwner('memory-pause:common');
+    await mem.clearActivationPause('memory-pause:common', 'common');
     if ((await mem.get(p.id, 1))?.status !== 'active') {
       await bindings.COLLAB_DB_C2.prepare(
         `UPDATE memory_entries SET status = 'active', reviewer_pid = 'agent:b' WHERE id = ?1 AND version = 1`,
@@ -122,8 +123,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
           break;
         }
         if (err instanceof MemoryStoreError && err.code === 'ACTIVATION_PAUSED') {
-          await seedOwner('owner:budget-clear');
-          await mem.clearActivationPause('owner:budget-clear');
+          await seedOwner('memory-pause:participant:agent:z');
+          await mem.clearActivationPause('memory-pause:participant:agent:z', 'participant:agent:z');
           i -= 1;
           continue;
         }
