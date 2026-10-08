@@ -30,7 +30,7 @@ const sleep = (milliseconds: number): Promise<void> =>
 export class GitHubHttp {
   constructor(private readonly options: GitHubHttpOptions) {}
 
-  async send(path: string, init: RequestInit = {}): Promise<Response> {
+  async send(path: string, init: RequestInit = {}, allowRedirect = false): Promise<Response> {
     const method = (init.method ?? 'GET').toUpperCase();
     this.options.assertRequestAllowed?.(method);
     const idempotent = method === 'GET' || method === 'HEAD';
@@ -76,6 +76,7 @@ export class GitHubHttp {
       }
 
       if (response.status >= 300 && response.status < 400) {
+        if (allowRedirect) return response;
         await response.body?.cancel();
         throw new GitHubApiError(response.status, path, 'Redirection GitHub refusée.');
       }
@@ -106,24 +107,9 @@ export class GitHubHttp {
    * api.github.com. Seules les destinations HTTPS sans userinfo sont acceptées.
    */
   async downloadRedirectedText(path: string, maxBytes: number): Promise<string> {
-    const token = await this.options.getInstallationToken(false);
-    const headers = new Headers();
-    headers.set('Accept', 'application/vnd.github+json');
-    headers.set('Authorization', `Bearer ${token}`);
-    headers.set('X-GitHub-Api-Version', this.options.apiVersion ?? GITHUB_API_VERSION);
-    headers.set('User-Agent', this.options.userAgent);
-
-    let redirect: Response;
-    try {
-      redirect = await this.options.fetcher(`${GITHUB_API}${path}`, {
-        headers,
-        redirect: 'manual',
-        signal: AbortSignal.timeout(this.options.timeoutMs),
-      });
-    } catch (error) {
-      throw new GitHubApiError(0, path, networkFailureMessage(error));
-    }
-
+    // Réutilise send() pour conserver refresh 401, retry GET et politique de lecture,
+    // mais autorise ici uniquement la première redirection GitHub attendue.
+    const redirect = await this.send(path, {}, true);
     if (redirect.ok) return readText(redirect, maxBytes);
     if (redirect.status < 300 || redirect.status >= 400) throw await this.toApiError(redirect, path);
 
