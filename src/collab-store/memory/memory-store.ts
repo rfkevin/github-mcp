@@ -106,22 +106,42 @@ export class MemoryStore {
     return this.localAlarms;
   }
 
-  async isActivationPaused(): Promise<boolean> {
+  /** Pause is per-scope (plan: activations in that scope pause). */
+  async isActivationPaused(scope?: string): Promise<boolean> {
     await ensureSchema(this.db);
-    const row = await this.db
-      .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-      .bind(META_PAUSE)
-      .first<{ writes: number }>();
-    return (row?.writes ?? 0) > 0;
+    if (scope) {
+      const row = await this.db
+        .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
+        .bind(`${META_PAUSE}:${scope}`)
+        .first<{ writes: number }>();
+      return (row?.writes ?? 0) > 0;
+    }
+    // Any paused scope (for tests / diagnostics)
+    const { results } = await this.db
+      .prepare(`SELECT writes FROM quota_counters WHERE day LIKE ?1 AND writes > 0 LIMIT 1`)
+      .bind(`${META_PAUSE}:%`)
+      .all<{ writes: number }>();
+    return (results?.length ?? 0) > 0;
   }
 
-  /** Clear pause only when a real owner_decisions row exists (C5). */
-  async clearActivationPause(ownerDecisionRef: string): Promise<void> {
-    await this.requireOwnerDecision(ownerDecisionRef);
-    await this.db
-      .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`)
-      .bind(META_PAUSE)
-      .run();
+  /** Clear pause for a scope; owner_decision_ref must be memory-pause:<scope> approve. */
+  async clearActivationPause(ownerDecisionRef: string, scope?: string): Promise<void> {
+    await this.requireOwnerDecision(ownerDecisionRef, scope ? `memory-pause:${scope}` : 'memory-pause:');
+    if (scope) {
+      await this.db
+        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`)
+        .bind(`${META_PAUSE}:${scope}`)
+        .run();
+      return;
+    }
+    // Clear all pause keys (test helper)
+    const { results } = await this.db
+      .prepare(`SELECT day FROM quota_counters WHERE day LIKE ?1`)
+      .bind(`${META_PAUSE}:%`)
+      .all<{ day: string }>();
+    for (const r of results ?? []) {
+      await this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`).bind(r.day).run();
+    }
   }
 
   /** Insert a candidate (status=candidate, version=1 or next). */
@@ -179,13 +199,18 @@ export class MemoryStore {
   }
 
   /** Activate candidate → active; reviewer ≠ author; budget enforced (I4 / §4). */
-  async activate(id: string, version: number, reviewerPid: string): Promise<StoredMemory> {
+  async activate(
+    id: string,
+    version: number,
+    reviewerPid: string,
+    cycleId = 'default',
+  ): Promise<StoredMemory> {
     await ensureSchema(this.db);
-    if (await this.isActivationPaused()) {
-      throw new MemoryStoreError('ACTIVATION_PAUSED', 'Activations paused pending owner.request');
-    }
     const row = await this.get(id, version);
     if (!row) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id}@${version} not found`);
+    if (await this.isActivationPaused(row.scope)) {
+      throw new MemoryStoreError('ACTIVATION_PAUSED', `Activations paused for scope ${row.scope}`);
+    }
     if (row.status !== 'candidate') {
       throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${row.status}`);
     }
@@ -200,7 +225,7 @@ export class MemoryStore {
         'evidence_refs',
       );
     }
-    await this.assertCycleCap(META_ACT, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
+    await this.assertCycleCap(`${META_ACT}${cycleId}:${row.scope}`, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
     await this.assertBudgetAllows(row.scope, row.text);
     const priorActive = await this.db
       .prepare(`SELECT version FROM memory_entries WHERE id = ?1 AND status = 'active' ORDER BY version DESC LIMIT 1`)
@@ -222,7 +247,11 @@ export class MemoryStore {
         .bind(reviewerPid, id, version),
     );
     await this.db.batch(stmts);
-    await this.bumpCycleCap(META_ACT);
+    const activated = await this.get(id, version);
+    if (!activated || activated.status !== 'active') {
+      throw new MemoryStoreError('ACTIVATION_RACE', `Candidate ${id}@${version} was not activated (concurrent change)`);
+    }
+    await this.bumpCycleCap(`${META_ACT}default:${row.scope}`);
     await this.checkGrowthAlarm(row.scope);
     if (PROTECTED_KINDS.has(row.kind)) {
       await this.raiseAlarm({
@@ -562,41 +591,56 @@ export class MemoryStore {
 
   private async raiseAlarm(alarm: MemoryAlarm): Promise<void> {
     this.localAlarms.push(alarm);
+    const key = alarm.scope ? `${META_PAUSE}:${alarm.scope}` : META_PAUSE;
     await this.db
       .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`)
-      .bind(META_PAUSE)
+      .bind(key)
       .run();
   }
 
-  private async requireOwnerDecision(ref: string | undefined): Promise<void> {
+  /**
+   * C5 owner_decisions: decision must be exactly 'approve'.
+   * subjectPrefix e.g. memory-pause:scope or memory:id — request_id must start with it.
+   */
+  private async requireOwnerDecision(
+    ref: string | undefined,
+    subjectPrefix?: string,
+  ): Promise<void> {
     if (!ref || !ref.trim()) {
       throw new MemoryStoreError('PROTECTED_KIND_OWNER_REQUIRED', 'owner_decision_ref required');
+    }
+    if (subjectPrefix && !ref.startsWith(subjectPrefix) && ref !== subjectPrefix) {
+      // allow exact match or prefix: request_id encodes subject
+      if (!ref.includes(subjectPrefix.replace(/:$/, ''))) {
+        throw new MemoryStoreError(
+          'OWNER_DECISION_SUBJECT',
+          `owner_decision_ref ${ref} does not target ${subjectPrefix}`,
+        );
+      }
     }
     const row = await this.db
       .prepare(`SELECT request_id, decision FROM owner_decisions WHERE request_id = ?1`)
       .bind(ref)
       .first<{ request_id: string; decision: string }>();
-    if (!row || !/approve|accept|allow/i.test(row.decision)) {
+    if (!row || row.decision !== 'approve') {
       throw new MemoryStoreError(
         'OWNER_DECISION_INVALID',
-        `No approving owner_decisions row for ${ref} (C5 channel)`,
+        `No approve owner_decisions row for ${ref} (C5 channel)`,
       );
     }
   }
 
-  private async assertCycleCap(prefix: string, max: number, code: string): Promise<void> {
-    const key = prefix + 'cycle';
+  private async assertCycleCap(key: string, max: number, code: string): Promise<void> {
     const row = await this.db
       .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
       .bind(key)
       .first<{ writes: number }>();
     if ((row?.writes ?? 0) >= max) {
-      throw new MemoryStoreError(code, `${prefix} cap ${max} reached this cycle; consolidate review required`);
+      throw new MemoryStoreError(code, `${key} cap ${max} reached; consolidate review required`);
     }
   }
 
-  private async bumpCycleCap(prefix: string): Promise<void> {
-    const key = prefix + 'cycle';
+  private async bumpCycleCap(key: string): Promise<void> {
     const row = await this.db
       .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
       .bind(key)

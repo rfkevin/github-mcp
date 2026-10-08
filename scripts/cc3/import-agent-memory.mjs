@@ -10,17 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-
-const args = process.argv.slice(2);
-let author = 'agent:import';
-let file = 'AGENT_MEMORY.md';
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--author' && args[i + 1]) {
-    author = args[++i];
-  } else if (!args[i].startsWith('-')) {
-    file = args[i];
-  }
-}
+import { pathToFileURL } from 'node:url';
 
 export function parseAgentMemory(text, author) {
   const contribRe = /^###\s+(\d{4}-\d{2}-\d{2}-[\w.-]+)\s*$/gm;
@@ -52,6 +42,24 @@ export function parseAgentMemory(text, author) {
   return proposals;
 }
 
-const text = readFileSync(resolve(file), 'utf8');
-const proposals = parseAgentMemory(text, author);
-process.stdout.write(JSON.stringify({ source: file, count: proposals.length, proposals }, null, 2) + '\n');
+// CLI only when executed directly — not on import from tests.
+const isMain =
+  typeof process !== 'undefined' &&
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (isMain) {
+  const args = process.argv.slice(2);
+  let author = 'agent:import';
+  let file = 'AGENT_MEMORY.md';
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--author' && args[i + 1]) {
+      author = args[++i];
+    } else if (!args[i].startsWith('-')) {
+      file = args[i];
+    }
+  }
+  const text = readFileSync(resolve(file), 'utf8');
+  const proposals = parseAgentMemory(text, author);
+  process.stdout.write(JSON.stringify({ source: file, count: proposals.length, proposals }, null, 2) + '\n');
+}
