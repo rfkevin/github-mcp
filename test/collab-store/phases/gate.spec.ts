@@ -7,10 +7,6 @@ import { ensureSchema } from '../../../src/collab-store/store/schema';
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 let n = 0;
 
-function codeOf(error: unknown): string {
-  return (error as { code: string }).code;
-}
-
 /** Cycle at P1/rev with optional target defs and auto_advance on P1. */
 async function seedCycle(opts: {
   autoAdvance?: string;
@@ -55,7 +51,7 @@ describe('F5 A07 phase gate — matrice', () => {
 });
 
 describe('F5 A07 advanceGuarded — D1 réel (G1–G4)', () => {
-  it('G1 — succès puis rejeu (réponse perdue) → duplicate même seq ; autre intention → STALE', async () => {
+  it('G1 — succès puis rejeu (réponse perdue) → duplicate même seq ; autre intention refusée', async () => {
     const cycle = await seedCycle({});
     const first = await advanceGuarded(db, {
       cycle_id: cycle, expected_revision: 1, next_phase: 'P2',
@@ -70,13 +66,11 @@ describe('F5 A07 advanceGuarded — D1 réel (G1–G4)', () => {
     expect(replay.status).toBe('duplicate');
     expect(replay.event_seq).toBe(first.event_seq);
 
-    // Même rev, intention différente (P3) : pas de replay, puis STALE côté engine.
+    // Même expected_rev, intention différente (P3) : pas de findReplay.
+    // Après succès, phase = P2 (auto_advance none) → POLICY_NOT_AUTHORIZED avant STALE.
     await expect(advanceGuarded(db, {
       cycle_id: cycle, expected_revision: 1, next_phase: 'P3' as never,
-    })).rejects.toSatisfy((error: unknown) => {
-      const code = codeOf(error);
-      return code === 'PHASE_TRANSITION_FORBIDDEN' || code === 'STALE';
-    });
+    })).rejects.toMatchObject({ code: 'POLICY_NOT_AUTHORIZED' });
   });
 
   it('G2 — auto_advance none : POLICY_NOT_AUTHORIZED (policy client ignorée)', async () => {
