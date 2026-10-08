@@ -29,6 +29,10 @@ async function append(cycle: string, participant: string, type: string, payload:
   expect(outcome.status, JSON.stringify(outcome)).toBe('applied');
 }
 
+/** Sustained concurrent write: keeps the interleaving queue from running dry (F4, review Sol). */
+const evidenceTail = (cycle: string): (() => Promise<void>) =>
+  () => append(cycle, 'grok', 'evidence.add', { source: 'f4 tail ' + (++n), state: 'tail write' });
+
 /**
  * D1 proxy that runs one concurrent write at EVERY database call made by the
  * code under test (each first/all/run/raw and before and after each batch).
@@ -112,8 +116,7 @@ describe('CC-3 F4 / A04 — export = instantané cohérent', () => {
       () => append(cycle, 'grok', 'evidence.add', { source: 'f4 injected 3', state: 'between reads' }),
       () => append(cycle, 'grok', 'evidence.add', { source: 'f4 injected 4', state: 'between reads' }),
     ];
-    const { db: racing, state } = interleaving(db, writes, () =>
-      append(cycle, 'grok', 'evidence.add', { source: 'f4 tail ' + (++n), state: 'tail write' }));
+    const { db: racing, state } = interleaving(db, writes, evidenceTail(cycle));
     const result = await exportCycleState(racing, cycle);
     expectSinglePoint(result, state.atBatch);
     // The test is not vacuous: writes really landed around the export, and the store moved on.
@@ -137,8 +140,7 @@ describe('CC-3 F4 / A04 — export = instantané cohérent', () => {
       async () => { await importState(db, cycle, next); },
       () => append(cycle, 'grok', 'evidence.add', { source: 'f4 after import', state: 'y' }),
     ];
-    const { db: racing, state } = interleaving(db, writes, () =>
-      append(cycle, 'grok', 'evidence.add', { source: 'f4 tail ' + (++n), state: 'tail write' }));
+    const { db: racing, state } = interleaving(db, writes, evidenceTail(cycle));
     const result = await exportCycleState(racing, cycle);
     expectSinglePoint(result, state.atBatch);
     // Base, overlay and cursor belong to the same import.

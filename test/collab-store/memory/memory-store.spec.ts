@@ -914,44 +914,47 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(await capWrites('mem:act:default:' + scope)).toBe(3);
   });
 
+  /** Insert a row as if it predated migration 0003: token_cost stays NULL. */
+  async function insertPreMigrationRow(id: string, scope: string, text: string): Promise<void> {
+    await bindings.COLLAB_DB_C2
+      .prepare(
+        `INSERT INTO memory_entries
+           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses)
+         VALUES (?1, 1, ?2, 'lesson', ?3, '[]', 'hypothesis', 'candidate', 'agent:pre', '', NULL, 0)`,
+      )
+      .bind(id, scope, text)
+      .run();
+  }
+
+  /** Costs of two rows, NULL rendered as -1, sorted ascending. */
+  const readCosts = async (idA: string, idB: string): Promise<number[]> => {
+    const { results } = await bindings.COLLAB_DB_C2
+      .prepare(
+        `SELECT COALESCE(token_cost, -1) AS token_cost FROM memory_entries WHERE id IN (?1, ?2)`,
+      )
+      .bind(idA, idB)
+      .all<{ token_cost: number }>();
+    return (results ?? []).map((r) => r.token_cost).sort((x, y) => x - y);
+  };
+
   it('A03: pre-migration rows are backfilled with the exact canonical cost', async () => {
     // Write two rows as if they predated migration 0003: token_cost is
     // NULL, not the SQLite code-point approximation.
     const emoji = '🚀'.repeat(120); // 120 code points but 240 UTF-16 units
     const ascii = 'a'.repeat(200);
-    for (const [id, text] of [
-      ['mem-backfill-emoji', emoji],
-      ['mem-backfill-ascii', ascii],
-    ] as const) {
-      await bindings.COLLAB_DB_C2
-        .prepare(
-          `INSERT INTO memory_entries
-             (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses)
-           VALUES (?1, 1, 'project:a03-backfill', 'lesson', ?2, '[]', 'hypothesis', 'candidate', 'agent:pre', '', NULL, 0)`,
-        )
-        .bind(id, text)
-        .run();
-    }
-    const readCosts = async (): Promise<number[]> => {
-      const { results } = await bindings.COLLAB_DB_C2
-        .prepare(
-          `SELECT COALESCE(token_cost, -1) AS token_cost FROM memory_entries
-             WHERE id IN ('mem-backfill-emoji', 'mem-backfill-ascii')`,
-        )
-        .all<{ token_cost: number }>();
-      return (results ?? []).map((r) => r.token_cost).sort((x, y) => x - y);
-    };
+    await insertPreMigrationRow('mem-backfill-emoji', 'project:a03-backfill', emoji);
+    await insertPreMigrationRow('mem-backfill-ascii', 'project:a03-backfill', ascii);
     // Before the backfill: both costs are NULL (COALESCE -> -1).
-    expect(await readCosts()).toEqual([-1, -1]);
+    expect(await readCosts('mem-backfill-emoji', 'mem-backfill-ascii')).toEqual([-1, -1]);
     // Re-running the schema bootstrap backfills NULL costs from JS with the
     // exact canonical metric, UTF-16 units included: the emoji row gets 60
     // tokens, never the code-point approximation (120 + 3) / 4 = 30.
     await ensureSchema(bindings.COLLAB_DB_C2, true);
-    expect(await readCosts()).toEqual([50, 60]);
+    expect(await readCosts('mem-backfill-emoji', 'mem-backfill-ascii')).toEqual([50, 60]);
     expect(estimateTokens(emoji)).toBe(60);
     // Idempotent: a second bootstrap changes nothing.
     await ensureSchema(bindings.COLLAB_DB_C2, true);
-    expect(await readCosts()).toEqual([50, 60]);
+    expect(await readCosts('mem-backfill-emoji', 'mem-backfill-ascii')).toEqual([50, 60]);
   });
 
   it('A03: crash between the 0003 ALTER and its backfill -> a plain cold bootstrap repairs the NULL costs', async () => {
@@ -961,29 +964,9 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     await ensureSchema(bindings.COLLAB_DB_C2, true);
     const emoji = '🚀'.repeat(90); // 90 code points but 180 UTF-16 units -> 45 tokens
     const ascii = 'z'.repeat(100); // 25 tokens
-    for (const [id, text] of [
-      ['mem-crash-emoji', emoji],
-      ['mem-crash-ascii', ascii],
-    ] as const) {
-      await bindings.COLLAB_DB_C2
-        .prepare(
-          `INSERT INTO memory_entries
-             (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses)
-           VALUES (?1, 1, 'project:a03-crash', 'lesson', ?2, '[]', 'hypothesis', 'candidate', 'agent:pre', '', NULL, 0)`,
-        )
-        .bind(id, text)
-        .run();
-    }
-    const readCosts = async (): Promise<number[]> => {
-      const { results } = await bindings.COLLAB_DB_C2
-        .prepare(
-          `SELECT COALESCE(token_cost, -1) AS token_cost FROM memory_entries
-             WHERE id IN ('mem-crash-emoji', 'mem-crash-ascii')`,
-        )
-        .all<{ token_cost: number }>();
-      return (results ?? []).map((r) => r.token_cost).sort((x, y) => x - y);
-    };
-    expect(await readCosts()).toEqual([-1, -1]);
+    await insertPreMigrationRow('mem-crash-emoji', 'project:a03-crash', emoji);
+    await insertPreMigrationRow('mem-crash-ascii', 'project:a03-crash', ascii);
+    expect(await readCosts('mem-crash-emoji', 'mem-crash-ascii')).toEqual([-1, -1]);
     // A new isolate runs a plain ensureSchema, without `force`: a fresh
     // binding object is not in the process-local ENSURED cache, exactly like
     // a restarted Worker seeing the same durable D1. The NULL costs must be
@@ -995,10 +978,10 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         batch: (statements: D1PreparedStatement[]) => bindings.COLLAB_DB_C2.batch(statements),
       }) as unknown as D1Database;
     await ensureSchema(coldStart());
-    expect(await readCosts()).toEqual([25, 45]);
+    expect(await readCosts('mem-crash-emoji', 'mem-crash-ascii')).toEqual([25, 45]);
     expect(estimateTokens(emoji)).toBe(45);
     // Idempotent: another cold bootstrap changes nothing.
     await ensureSchema(coldStart());
-    expect(await readCosts()).toEqual([25, 45]);
+    expect(await readCosts('mem-crash-emoji', 'mem-crash-ascii')).toEqual([25, 45]);
   });
 });
