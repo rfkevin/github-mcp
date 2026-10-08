@@ -41,8 +41,6 @@ function makeContext(dailyWriteLimit = 100_000): CollabToolContext {
     'agent:vibe', ['collab:'], { now: () => new Date(stamp) }, CLIENT_ID);
 }
 
-// CC-3 C5 : l'identité est dérivée du client OAuth ; ces tests C2 écrivent au nom
-// de 'agent:a', enregistré et associé à leur client par le canal owner.
 const CLIENT_ID = 'client-c2-tools';
 beforeAll(async () => {
   const proof = { kind: 'secret' as const, subject: 'owner-secret' };
@@ -61,7 +59,6 @@ function appendInput(cycleId: string, expectedRev: number, op: string, payload =
   };
 }
 
-/** Seed cycle P1 + phase defs for collab_phase_advance (F5/A07). */
 async function seedPhaseCycle(label: string, autoAdvance = 'policy-p1'): Promise<string> {
   await ensureSchema(bindings.COLLAB_DB_C2);
   const cycleId = cycle(label);
@@ -77,6 +74,15 @@ async function seedPhaseCycle(label: string, autoAdvance = 'policy-p1'): Promise
     "VALUES (?1, 'P2', '[]', '[]', '[]', 'none')",
   ].join(' ')).bind(cycleId).run();
   return cycleId;
+}
+
+async function seedActiveMemory(id: string, scope: string, text: string): Promise<void> {
+  await ensureSchema(bindings.COLLAB_DB_C2);
+  await bindings.COLLAB_DB_C2.prepare([
+    'INSERT INTO memory_entries',
+    '(id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev)',
+    "VALUES (?1, 1, ?2, 'fact', ?3, '[\"e1\"]', 'observed', 'active', 'agent:a', 'agent:b', NULL, 0, NULL, NULL)",
+  ].join(' ')).bind(id, scope, text).run();
 }
 
 describe('CC-3 C2 — outils collab_* (registre local)', () => {
@@ -194,5 +200,43 @@ describe('F5 A07 — collab_phase_advance (outil MCP réel)', () => {
     });
     expect(result.isError).toBe(true);
     expect((result.structuredContent.error as { code: string }).code).toBe('PHASE_TRANSITION_FORBIDDEN');
+  });
+});
+
+describe('F5 A09 — collab_get_context packet + mémoire', () => {
+  it('expose packet phase/mémoire isolée + delta optionnel (identité serveur)', async () => {
+    const handlers = registry(makeContext());
+    const cycleId = await seedPhaseCycle('a09-ctx');
+    await seedActiveMemory('mem-common-a09', 'common', 'shared fact for all');
+    await seedActiveMemory('mem-own-a09', 'participant:agent:a', 'private own');
+    await seedActiveMemory('mem-other-a09', 'participant:agent:other', 'private other — must not leak');
+
+    await handlers.get('collab_append_event')!(appendInput(cycleId, 0, 'cp:a09'));
+
+    const result = await handlers.get('collab_get_context')!({
+      cycle: cycleId,
+      include_delta: true,
+      last_seen_seq: 0,
+      delta_limit: 10,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent.participant_id).toBe('agent:a');
+    expect((result.structuredContent.caller as { participant_id: string }).participant_id).toBe('agent:a');
+
+    const packet = result.structuredContent.packet as {
+      header: { phase: string; participant_id: string };
+      memory: Array<{ id: string; scope: string }>;
+      budget: { max_tokens: number; estimated_tokens: number };
+    };
+    expect(packet.header.phase).toBe('P1');
+    expect(packet.header.participant_id).toBe('agent:a');
+    const ids = packet.memory.map(m => m.id);
+    expect(ids).toContain('mem-common-a09');
+    expect(ids).toContain('mem-own-a09');
+    expect(ids).not.toContain('mem-other-a09');
+    expect(packet.budget.estimated_tokens).toBeLessThanOrEqual(packet.budget.max_tokens);
+
+    const delta = result.structuredContent.delta as { events: unknown[]; hasMore: boolean };
+    expect(delta.events.length).toBeGreaterThanOrEqual(1);
   });
 });
