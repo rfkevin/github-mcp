@@ -614,7 +614,7 @@ export class MemoryStore {
     if (subjectPrefix && !ref.startsWith(subjectPrefix)) {
       throw new MemoryStoreError(
         'OWNER_DECISION_SUBJECT',
-        `owner_decision_ref ${ref} does not target ${subjectPrefix}`,
+        `owner_decision_ref ${ref} does not target subject ${subjectPrefix}`,
       );
     }
     const row = await this.db
@@ -635,7 +635,7 @@ export class MemoryStore {
       .bind(key)
       .first<{ writes: number }>();
     if ((row?.writes ?? 0) >= max) {
-      throw new MemoryStoreError(code, `${key} cap ${max} reached; consolidate review required`);
+      throw new MemoryStoreError(code, `${code}: ${key} cap ${max} reached; consolidate review required`);
     }
   }
 

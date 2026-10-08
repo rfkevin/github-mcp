@@ -224,6 +224,13 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
           evidence_refs: [`e-${cycle}-${i}`],
           author_pid: 'agent:a',
         });
+        // The growth alarm legitimately pauses a fresh scope after the
+        // first activations (baseline = 1). Clear the pause with a real
+        // owner decision fixture instead of bypassing product logic.
+        if (await mem.isActivationPaused(`task:cap-${cycle}`)) {
+          await seedOwner(`memory-pause:task:cap-${cycle}`);
+          await mem.clearActivationPause(`memory-pause:task:cap-${cycle}`, `task:cap-${cycle}`);
+        }
         await mem.activate(p.id, 1, 'agent:b', cycle);
       }
     }
@@ -234,6 +241,10 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       evidence_refs: ['e-over'],
       author_pid: 'agent:a',
     });
+    if (await mem.isActivationPaused('task:cap-cya')) {
+      await seedOwner('memory-pause:task:cap-cya');
+      await mem.clearActivationPause('memory-pause:task:cap-cya', 'task:cap-cya');
+    }
     await expect(mem.activate(extra.id, 1, 'agent:b', 'cya')).rejects.toThrow(/ACTIVATION_CAP/);
   });
 
