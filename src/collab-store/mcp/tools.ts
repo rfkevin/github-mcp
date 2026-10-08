@@ -143,7 +143,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
         cycle_id: cycle, format, content: state.content, content_sha256: state.content_sha256,
         state: {
           revision: state.state_revision, base_revision: state.base_revision, changed: state.changed, changes: state.changes,
-          imported: state.imported, store_revision: state.store_revision, last_seq: state.last_seq,
+          imported: state.imported, store_revision: state.store_revision, last_seq: state.last_seq, snapshot_seq: state.snapshot_seq,
         },
         publish: state.changed
           ? 'Proposez content tel quel' + (target ? ' dans ' + target.repository + ':' + target.path + ' (base ' + target.ref + ')' : '')

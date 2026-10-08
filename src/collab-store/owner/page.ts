@@ -3,7 +3,7 @@
  * every password field is rendered empty.
  */
 import type { OwnerChannelConfig } from './config';
-import type { PendingRequest } from './decisions';
+import type { PendingPage, PendingRequest } from './decisions';
 import type { ImportedStateSummary } from './state-import';
 
 export const OWNER_PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
@@ -49,7 +49,8 @@ export function loginPage(config: OwnerChannelConfig, message = ''): string {
 }
 
 export interface DashboardData {
-  pending: PendingRequest[];
+  /** F2/A06 : une page de demandes non tranchées, filtrées avant pagination. */
+  pending: PendingPage;
   participants: Array<{ participant_id: string; display_label: string; status: string }>;
   clients: Array<{ oauth_client_id: string; participant_id: string; approved_event_seq: number | null }>;
   /** CC-3 C6 : dernier état CC-STATE-1 importé par cycle. */
@@ -59,13 +60,10 @@ export interface DashboardData {
 
 export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): string {
   const secret = secretField(config);
-  const rows = data.pending.map(item => '<tr><td><code>' + escapeHtml(item.request_id) + '</code><br>'
+  const rows = data.pending.items.map(item => '<tr><td><code>' + escapeHtml(item.request_id || '—') + '</code><br>'
     + escapeHtml(item.type) + ' · ' + escapeHtml(item.cycle_id) + ' · seq ' + item.seq + '</td>'
     + '<td>' + escapeHtml(item.participant_id) + '</td><td>' + escapeHtml(item.summary) + '</td><td>'
-    + '<form method="post" action="/owner"><input type="hidden" name="action" value="decide">'
-    + '<input type="hidden" name="request_id" value="' + escapeHtml(item.request_id) + '">' + secret
-    + '<button name="decision" value="approve">Approuver</button> <button name="decision" value="deny">Refuser</button></form>'
-    + '</td></tr>').join('');
+    + decisionCell(item, secret) + '</td></tr>').join('');
   const participants = data.participants.map(item => '<tr><td><code>' + escapeHtml(item.participant_id) + '</code></td><td>'
     + escapeHtml(item.display_label) + '</td><td>' + escapeHtml(item.status) + '</td></tr>').join('');
   const clients = data.clients.map(item => '<tr><td><code>' + escapeHtml(item.oauth_client_id) + '</code></td><td>'
@@ -74,9 +72,14 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + '<p class="note">Chaque action est enregistrée comme événement owner.decision avec sa preuve (' + config.mode + ').'
     + (config.mode === 'secret' ? ' Le secret est redemandé à chaque action et n’est jamais conservé.' : '') + '</p>'
     + (data.message ? '<p class="msg' + (data.message.error ? ' err' : '') + '">' + escapeHtml(data.message.text) + '</p>' : '')
-    + '<h2>Demandes en attente (' + data.pending.length + ')</h2>'
+    + '<h2>Demandes en attente (' + data.pending.total + ')</h2>'
     + (rows ? '<table><tr><th>Demande</th><th>Participant</th><th>Résumé</th><th>Décision</th></tr>' + rows + '</table>'
       : '<p class="note">Aucune demande en attente.</p>')
+    + (data.pending.next_before !== null
+      ? '<form method="post" action="/owner"><input type="hidden" name="action" value="view">'
+        + '<input type="hidden" name="before" value="' + data.pending.next_before + '">' + secret
+        + '<p><button type="submit">Demandes plus anciennes</button></p></form>'
+      : '')
     + '<h2>Participants</h2>'
     + (participants ? '<table><tr><th>Identifiant</th><th>Libellé (affichage)</th><th>Statut</th></tr>' + participants + '</table>' : '<p class="note">Aucun participant.</p>')
     + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="register">'
@@ -93,6 +96,24 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + '<label>Client OAuth <input type="text" name="oauth_client_id" required maxlength="512"></label>' + secret
     + '<p><button type="submit">Retirer l’association</button></p></form></fieldset>'
     + importSection(data.imports ?? [], secret));
+}
+
+/**
+ * F2/A02 : le formulaire porte la seq immuable de la demande affichée (et son
+ * cycle) ; le serveur refuse si elle ne correspond plus. Une demande bloquée
+ * (identifiant déjà tranché pour une autre seq) ou invalide n'a pas de bouton.
+ */
+function decisionCell(item: PendingRequest, secret: string): string {
+  if (item.state === 'invalid') return '<em>Identifiant de demande invalide : non décidable.</em>';
+  if (item.state === 'blocked') {
+    return '<em>Identifiant déjà tranché' + (item.decided_seq ? ' pour la seq ' + item.decided_seq : '')
+      + ' : l’agent doit redéposer sous un nouvel identifiant.</em>';
+  }
+  return '<form method="post" action="/owner"><input type="hidden" name="action" value="decide">'
+    + '<input type="hidden" name="request_id" value="' + escapeHtml(item.request_id) + '">'
+    + '<input type="hidden" name="request_seq" value="' + item.seq + '">'
+    + '<input type="hidden" name="cycle_id" value="' + escapeHtml(item.cycle_id) + '">' + secret
+    + '<button name="decision" value="approve">Approuver</button> <button name="decision" value="deny">Refuser</button></form>';
 }
 
 function importSection(imports: ImportedStateSummary[], secret: string): string {
