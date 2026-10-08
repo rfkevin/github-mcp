@@ -75,12 +75,12 @@ export const MAX_RETIREMENTS_PER_CYCLE = 10;
  * C5-compatible owner_decision request_ids. C5 (owner/decisions.ts
  * REQUEST_ID_RE) forbids ':' in request_id, so each protected operation
  * encodes the exact subject it authorizes, bound to the mutation occurrence:
- *   propose    -> mem-propose-<id> (exact match, explicit id required)
+ *   propose    -> mem-propose-<id>-v<version> (exact, bound to the resulting version)
  *   supersede  -> mem-supersede-<id>-v<nextVersion> (exact match)
  *   retire     -> mem-retire-<id>-v<version> (exact match)
  *   scope      -> mem-scope-<sha256(id:nextVersion:newScope)[0:20]> (exact)
  *   confidence -> mem-conf-<sha256(id:version:confidence)[0:20]> (exact)
- *   pause      -> mem-pause-<sha256(scope)[0:20]>-<occurrence> (prefix match)
+ *   pause      -> mem-pause-<sha256(scope)[0:20]>-<occurrence> (exact, current occurrence)
  * A decision recorded for any other subject — or for another occurrence of
  * the same subject — never authorizes these paths (plan §4 Protected).
  */
@@ -93,8 +93,9 @@ export const PAUSE_REQUEST_PREFIX = 'mem-pause-';
 /** Protected memory ids stay short so request_id never exceeds 64 chars. */
 const MEMORY_ID_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
 
-export function proposeRequestId(id: string): string {
-  return PROPOSE_REQUEST_PREFIX + id;
+/** Propose approvals are bound to the resulting version, never reusable. */
+export function proposeRequestId(id: string, version: number): string {
+  return `${PROPOSE_REQUEST_PREFIX}${id}-v${version}`;
 }
 
 /** Supersede approvals are bound to the resulting version, never reusable. */
@@ -112,9 +113,9 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Pause-clearing request_ids for one scope share this prefix. */
-export async function pauseRequestPrefix(scope?: string): Promise<string> {
-  return PAUSE_REQUEST_PREFIX + (await sha256Hex(scope ?? '')).slice(0, 20) + '-';
+/** Pause-clearing approvals are bound to the scope's current pause occurrence. */
+export async function pauseRequestId(scope: string, occurrence: number): Promise<string> {
+  return PAUSE_REQUEST_PREFIX + (await sha256Hex(scope)).slice(0, 20) + '-' + occurrence;
 }
 
 /** Scope-promotion approvals bind id + resulting version + target scope. */
@@ -136,6 +137,7 @@ export async function promoteConfidenceRequestId(
 }
 
 const META_PAUSE = 'mem:pause';
+const META_OCC = 'mem:occ:';
 const META_ACT = 'mem:act:';
 const META_RET = 'mem:ret:';
 const META_BASE = 'mem:base:';
@@ -188,41 +190,35 @@ export class MemoryStore {
     return (results?.length ?? 0) > 0;
   }
 
-  /** Clear pause for a scope; owner_decision_ref must be mem-pause-<hash(scope)>-<occurrence> approve. */
-  async clearActivationPause(ownerDecisionRef: string, scope?: string): Promise<void> {
-    await this.requireOwnerDecision(ownerDecisionRef, { prefix: await pauseRequestPrefix(scope) });
-    if (scope) {
-      await this.db
-        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`)
-        .bind(`${META_PAUSE}:${scope}`)
-        .run();
-      return;
-    }
-    // Clear all pause keys (test helper)
-    const { results } = await this.db
-      .prepare(`SELECT day FROM quota_counters WHERE day LIKE ?1`)
-      .bind(`${META_PAUSE}:%`)
-      .all<{ day: string }>();
-    for (const r of results ?? []) {
-      await this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`).bind(r.day).run();
-    }
+  /**
+   * Current pause-clearing request_id for a scope: the approval must target
+   * the live pause occurrence exactly (plan §4 Protected, tests T3/T4).
+   */
+  async pauseClearRequestId(scope: string): Promise<string> {
+    await ensureSchema(this.db);
+    const row = await this.db
+      .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
+      .bind(`${META_OCC}${scope}`)
+      .first<{ writes: number }>();
+    return pauseRequestId(scope, row?.writes ?? 0);
+  }
+
+  /**
+   * Clear the pause of exactly one scope. owner_decision_ref must equal
+   * pauseRequestId(scope, current occurrence) with an approve row: approvals
+   * are occurrence-bound, never reusable, and no global clear exists.
+   */
+  async clearActivationPause(ownerDecisionRef: string, scope: string): Promise<void> {
+    await this.requireOwnerDecision(ownerDecisionRef, { exact: await this.pauseClearRequestId(scope) });
+    await this.db
+      .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`)
+      .bind(`${META_PAUSE}:${scope}`)
+      .run();
   }
 
   /** Insert a candidate (status=candidate, version=1 or next). */
   async propose(input: ProposeInput): Promise<StoredMemory> {
     await ensureSchema(this.db);
-    if (PROTECTED_KINDS.has(input.kind)) {
-      // C5-compatible: the request_id must be exactly mem-propose-<id>; a
-      // decision recorded for any other subject is rejected (fail-closed).
-      const protectedId = input.id?.trim() ?? '';
-      if (!MEMORY_ID_RE.test(protectedId)) {
-        throw new MemoryStoreError(
-          'PROTECTED_KIND_OWNER_REQUIRED',
-          'protected kinds require an explicit id matching [a-z0-9][a-z0-9_-]{0,39}',
-        );
-      }
-      await this.requireOwnerDecision(input.owner_decision_ref, { exact: proposeRequestId(protectedId) });
-    }
     if (input.confidence === 'hypothesis' && PROTECTED_KINDS.has(input.kind)) {
       throw new MemoryStoreError(
         'HYPOTHESIS_NOT_RULE',
@@ -249,6 +245,21 @@ export class MemoryStore {
       throw new MemoryStoreError('MEMORY_ACTIVE_EXISTS', `Memory ${id} is already active; use supersede.`);
     }
     const version = latest ? latest.version + 1 : 1;
+    // Plan §4 Protected: the approval is bound to the resulting version (like
+    // supersede), and a protected id stays protected across retire — no
+    // resurrection under another kind without a new owner decision.
+    if (PROTECTED_KINDS.has(input.kind) || (latest != null && PROTECTED_KINDS.has(latest.kind))) {
+      const protectedId = input.id?.trim() ?? '';
+      if (!MEMORY_ID_RE.test(protectedId)) {
+        throw new MemoryStoreError(
+          'PROTECTED_KIND_OWNER_REQUIRED',
+          'protected kinds require an explicit id matching [a-z0-9][a-z0-9_-]{0,39}',
+        );
+      }
+      await this.requireOwnerDecision(input.owner_decision_ref, {
+        exact: proposeRequestId(protectedId, version),
+      });
+    }
     await this.db
       .prepare(
         `INSERT INTO memory_entries
@@ -716,31 +727,37 @@ export class MemoryStore {
       .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`)
       .bind(key)
       .run();
+    if (alarm.scope) {
+      // Each pause event is a new occurrence; clearing must target it exactly.
+      const occKey = `${META_OCC}${alarm.scope}`;
+      const occRow = await this.db
+        .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
+        .bind(occKey)
+        .first<{ writes: number }>();
+      await this.db
+        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`)
+        .bind(occKey, (occRow?.writes ?? 0) + 1)
+        .run();
+    }
   }
 
   /**
    * C5 owner_decisions: decision must be exactly 'approve'.
-   * subject is the request_id the decision must target: { exact } for
-   * propose/supersede, { prefix } for pause clearing. The C5 channel
-   * request_id itself encodes the subject (':' is not allowed there).
+   * subject is the exact request_id the decision must target — every
+   * protected mutation is occurrence-bound, pause clearing included. The C5
+   * channel request_id itself encodes the subject (':' is not allowed there).
    */
   private async requireOwnerDecision(
     ref: string | undefined,
-    subject: { exact: string } | { prefix: string },
+    subject: { exact: string },
   ): Promise<void> {
     if (!ref || !ref.trim()) {
       throw new MemoryStoreError('PROTECTED_KIND_OWNER_REQUIRED', 'owner_decision_ref required');
     }
-    if ('exact' in subject && ref !== subject.exact) {
+    if (ref !== subject.exact) {
       throw new MemoryStoreError(
         'OWNER_DECISION_SUBJECT',
         `owner_decision_ref ${ref} does not target subject ${subject.exact}`,
-      );
-    }
-    if ('prefix' in subject && !ref.startsWith(subject.prefix)) {
-      throw new MemoryStoreError(
-        'OWNER_DECISION_SUBJECT',
-        `owner_decision_ref ${ref} does not target subject ${subject.prefix}`,
       );
     }
     const row = await this.db
