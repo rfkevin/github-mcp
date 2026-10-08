@@ -162,7 +162,9 @@ export const STORE_MIGRATION_0002 =
  * activations exceed a scope budget. Every row now persists its exact
  * estimateTokens cost at INSERT; the in-batch guard sums token_cost.
  * Pre-0003 rows are backfilled from JS with the exact canonical cost
- * (same estimateTokens function, non-BMP included; review Sol, F3).
+ * (same estimateTokens function, non-BMP included); the backfill is
+ * replayed at every cold bootstrap, so a crash between the ALTER and the
+ * backfill is repaired on the next start (review Sol, F3).
  */
 export const STORE_MIGRATION_0003_ALTER =
   'ALTER TABLE memory_entries ADD COLUMN token_cost INTEGER';
@@ -194,28 +196,27 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     await db.prepare(STORE_MIGRATION_0002).run();
   }
   const memColumns = await db.prepare('PRAGMA table_info(memory_entries)').all<{ name: string }>();
-  let migratedTokenCost = false;
   if (!memColumns.results.some(column => column.name === 'token_cost')) {
     await db.batch([db.prepare(STORE_MIGRATION_0003_ALTER)]);
-    migratedTokenCost = true;
   }
-  // Exact backfill for pre-0003 rows (review Sol, F3): idempotent, only NULL
-  // costs are touched. It runs when migration 0003 just applied (pre-0003
-  // rows exist exactly then) and on forced fixture bootstraps; a plain
-  // bootstrap adds no extra database call, keeping the D1-call profile of
-  // export/interleaving code stable. The JS metric counts UTF-16 units, so
-  // non-BMP rows get the canonical estimateTokens cost, never the SQLite
-  // code-point approximation.
-  if (migratedTokenCost || force) {
-    const staleCosts = await db
-      .prepare('SELECT id, version, text FROM memory_entries WHERE token_cost IS NULL')
-      .all<{ id: string; version: number; text: string }>();
-    for (const row of staleCosts.results ?? []) {
-      await db
-        .prepare('UPDATE memory_entries SET token_cost = ?1 WHERE id = ?2 AND version = ?3 AND token_cost IS NULL')
-        .bind(estimateTokens(row.text), row.id, row.version)
-        .run();
-    }
+  // Exact backfill for pre-0003 rows (review Sol, F3): idempotent, only
+  // NULL costs are touched. It is replayed at EVERY cold bootstrap, not
+  // only when migration 0003 just applied: a process can die between the
+  // ALTER and the backfill, and the next start sees the column but must
+  // still repair the NULL rows, or those rows would keep falling back to
+  // the SQLite code-point approximation forever. The cost is one probe
+  // SELECT per cold bootstrap; once ENSURED caches the binding, normal
+  // operations add no further database call. The JS metric counts UTF-16
+  // units, so non-BMP rows get the canonical estimateTokens cost, never
+  // the code-point approximation.
+  const staleCosts = await db
+    .prepare('SELECT id, version, text FROM memory_entries WHERE token_cost IS NULL')
+    .all<{ id: string; version: number; text: string }>();
+  for (const row of staleCosts.results ?? []) {
+    await db
+      .prepare('UPDATE memory_entries SET token_cost = ?1 WHERE id = ?2 AND version = ?3 AND token_cost IS NULL')
+      .bind(estimateTokens(row.text), row.id, row.version)
+      .run();
   }
   ENSURED.add(db as unknown as object);
 }

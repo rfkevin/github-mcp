@@ -953,4 +953,52 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     await ensureSchema(bindings.COLLAB_DB_C2, true);
     expect(await readCosts()).toEqual([50, 60]);
   });
+
+  it('A03: crash between the 0003 ALTER and its backfill -> a plain cold bootstrap repairs the NULL costs', async () => {
+    // Rows as a crashed migration 0003 left them: the ALTER was applied (the
+    // column exists) but the process died before the backfill, so pre-0003
+    // rows keep token_cost NULL.
+    await ensureSchema(bindings.COLLAB_DB_C2, true);
+    const emoji = '🚀'.repeat(90); // 90 code points but 180 UTF-16 units -> 45 tokens
+    const ascii = 'z'.repeat(100); // 25 tokens
+    for (const [id, text] of [
+      ['mem-crash-emoji', emoji],
+      ['mem-crash-ascii', ascii],
+    ] as const) {
+      await bindings.COLLAB_DB_C2
+        .prepare(
+          `INSERT INTO memory_entries
+             (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses)
+           VALUES (?1, 1, 'project:a03-crash', 'lesson', ?2, '[]', 'hypothesis', 'candidate', 'agent:pre', '', NULL, 0)`,
+        )
+        .bind(id, text)
+        .run();
+    }
+    const readCosts = async (): Promise<number[]> => {
+      const { results } = await bindings.COLLAB_DB_C2
+        .prepare(
+          `SELECT COALESCE(token_cost, -1) AS token_cost FROM memory_entries
+             WHERE id IN ('mem-crash-emoji', 'mem-crash-ascii')`,
+        )
+        .all<{ token_cost: number }>();
+      return (results ?? []).map((r) => r.token_cost).sort((x, y) => x - y);
+    };
+    expect(await readCosts()).toEqual([-1, -1]);
+    // A new isolate runs a plain ensureSchema, without `force`: a fresh
+    // binding object is not in the process-local ENSURED cache, exactly like
+    // a restarted Worker seeing the same durable D1. The NULL costs must be
+    // repaired, or the crash would permanently defeat the exact-metric
+    // budget guard (review Sol, F3).
+    const coldStart = (): D1Database =>
+      ({
+        prepare: (sql: string) => bindings.COLLAB_DB_C2.prepare(sql),
+        batch: (statements: D1PreparedStatement[]) => bindings.COLLAB_DB_C2.batch(statements),
+      }) as unknown as D1Database;
+    await ensureSchema(coldStart());
+    expect(await readCosts()).toEqual([25, 45]);
+    expect(estimateTokens(emoji)).toBe(45);
+    // Idempotent: another cold bootstrap changes nothing.
+    await ensureSchema(coldStart());
+    expect(await readCosts()).toEqual([25, 45]);
+  });
 });

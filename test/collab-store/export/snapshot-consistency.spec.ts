@@ -30,20 +30,22 @@ async function append(cycle: string, participant: string, type: string, payload:
 }
 
 /**
- * D1 proxy that runs one queued concurrent write at EVERY database call made by
- * the code under test (each first/all/run/raw and before and after each batch).
+ * D1 proxy that runs one concurrent write at EVERY database call made by the
+ * code under test (each first/all/run/raw and before and after each batch).
+ * The queued `writes` run first; once the queue is dry, `tail()` keeps
+ * producing fresh concurrent writes, so the interleaving never depends on how
+ * many database calls ensureSchema makes at bootstrap (schema batches, PRAGMA
+ * probes and the crash-safe backfill probe included; F3, review Sol).
  * At the start of a batch it also records, on the real database, the export a
  * reader would get at that exact point: the snapshot the batch must reflect.
  */
-function interleaving(real: D1Database, writes: Array<() => Promise<void>>) {
+function interleaving(real: D1Database, writes: Array<() => Promise<void>>, tail: () => Promise<void>) {
   const state = { calls: 0, injected: 0, atBatch: [] as StateExport[] };
   const hook = async () => {
     state.calls += 1;
-    const write = writes.shift();
-    if (write) {
-      await write();
-      state.injected += 1;
-    }
+    const write = writes.shift() ?? tail;
+    await write();
+    state.injected += 1;
   };
   const unwrap = (stmt: D1PreparedStatement) => (stmt as unknown as { real?: D1PreparedStatement }).real ?? stmt;
   const wrap = (stmt: D1PreparedStatement): D1PreparedStatement => new Proxy(stmt, {
@@ -110,7 +112,8 @@ describe('CC-3 F4 / A04 — export = instantané cohérent', () => {
       () => append(cycle, 'grok', 'evidence.add', { source: 'f4 injected 3', state: 'between reads' }),
       () => append(cycle, 'grok', 'evidence.add', { source: 'f4 injected 4', state: 'between reads' }),
     ];
-    const { db: racing, state } = interleaving(db, writes);
+    const { db: racing, state } = interleaving(db, writes, () =>
+      append(cycle, 'grok', 'evidence.add', { source: 'f4 tail ' + (++n), state: 'tail write' }));
     const result = await exportCycleState(racing, cycle);
     expectSinglePoint(result, state.atBatch);
     // The test is not vacuous: writes really landed around the export, and the store moved on.
@@ -134,7 +137,8 @@ describe('CC-3 F4 / A04 — export = instantané cohérent', () => {
       async () => { await importState(db, cycle, next); },
       () => append(cycle, 'grok', 'evidence.add', { source: 'f4 after import', state: 'y' }),
     ];
-    const { db: racing, state } = interleaving(db, writes);
+    const { db: racing, state } = interleaving(db, writes, () =>
+      append(cycle, 'grok', 'evidence.add', { source: 'f4 tail ' + (++n), state: 'tail write' }));
     const result = await exportCycleState(racing, cycle);
     expectSinglePoint(result, state.atBatch);
     // Base, overlay and cursor belong to the same import.
@@ -152,7 +156,13 @@ describe('CC-3 F4 / A04 — export = instantané cohérent', () => {
       async () => { await registerParticipant(db, { participant_id: 'grok', display_label: 'Grok F4', proof: PROOF, op: uniq('relabel') }); },
       async () => { await registerParticipant(db, { participant_id: 'grok', display_label: 'Grok', proof: PROOF, op: uniq('restore') }); },
     ];
-    const { db: racing, state } = interleaving(db, writes);
+    let flip = false;
+    const { db: racing, state } = interleaving(db, writes, async () => {
+      flip = !flip;
+      await registerParticipant(db, {
+        participant_id: 'grok', display_label: flip ? 'Grok F4' : 'Grok', proof: PROOF, op: uniq('tail'),
+      });
+    });
     const result = await exportCycleState(racing, cycle);
     expectSinglePoint(result, state.atBatch);
   });
