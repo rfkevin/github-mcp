@@ -205,16 +205,24 @@ describe('F5 A07 — collab_phase_advance (outil MCP réel)', () => {
 describe('F5 A09 — collab_get_context packet + mémoire', () => {
   it('expose packet phase/mémoire isolée + delta optionnel (identité serveur)', async () => {
     const handlers = registry(makeContext());
-    const cycleId = cycle('a09-ctx');
+    await ensureSchema(bindings.COLLAB_DB_C2);
+    const suffix = Date.now().toString(36) + String(counter);
+    const cycleId = ('c2m-a09-' + suffix).slice(0, 64);
+    const memCommon = ('memc-' + suffix).slice(0, 40);
+    const memOwn = ('memo-' + suffix).slice(0, 40);
+    const memOther = ('memx-' + suffix).slice(0, 40);
 
-    // Créer le cycle uniquement via le store (rev 0 → 1).
-    const created = await handlers.get('collab_append_event')!(appendInput(cycleId, 0, 'cp:a09'));
-    expect(created.isError).toBeFalsy();
-    expect(created.structuredContent.status).toBe('applied');
+    await bindings.COLLAB_DB_C2.prepare(
+      "INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, 'open')",
+    ).bind(cycleId).run();
+    await bindings.COLLAB_DB_C2.prepare([
+      'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
+      "VALUES (?1, 1, 'checkpoint', 'agent:a', '', '', '{\"n\":1}', 0, ?2, '')",
+    ].join(' ')).bind(cycleId, 'seed-a09-' + suffix).run();
 
-    await seedActiveMemory('mem-common-a09', 'common', 'shared fact for all');
-    await seedActiveMemory('mem-own-a09', 'participant:agent:a', 'private own');
-    await seedActiveMemory('mem-other-a09', 'participant:agent:other', 'private other — must not leak');
+    await seedActiveMemory(memCommon, 'common', 'shared fact for all');
+    await seedActiveMemory(memOwn, 'participant:agent:a', 'private own');
+    await seedActiveMemory(memOther, 'participant:agent:other', 'private other must not leak');
 
     const result = await handlers.get('collab_get_context')!({
       cycle: cycleId,
@@ -222,7 +230,9 @@ describe('F5 A09 — collab_get_context packet + mémoire', () => {
       last_seen_seq: 0,
       delta_limit: 10,
     });
-    expect(result.isError).toBeFalsy();
+    if (result.isError) {
+      throw new Error('collab_get_context failed: ' + JSON.stringify(result.structuredContent));
+    }
     expect(result.structuredContent.participant_id).toBe('agent:a');
     expect((result.structuredContent.caller as { participant_id: string }).participant_id).toBe('agent:a');
 
@@ -232,12 +242,12 @@ describe('F5 A09 — collab_get_context packet + mémoire', () => {
       budget: { max_tokens: number; estimated_tokens: number };
     };
     expect(packet.header.cycle_id).toBe(cycleId);
+    expect(packet.header.phase).toBe('P1');
     expect(packet.header.participant_id).toBe('agent:a');
-    expect(typeof packet.header.phase).toBe('string');
     const ids = packet.memory.map(m => m.id);
-    expect(ids).toContain('mem-common-a09');
-    expect(ids).toContain('mem-own-a09');
-    expect(ids).not.toContain('mem-other-a09');
+    expect(ids).toContain(memCommon);
+    expect(ids).toContain(memOwn);
+    expect(ids).not.toContain(memOther);
     expect(packet.budget.estimated_tokens).toBeLessThanOrEqual(packet.budget.max_tokens);
 
     const delta = result.structuredContent.delta as { events: unknown[]; hasMore: boolean };
