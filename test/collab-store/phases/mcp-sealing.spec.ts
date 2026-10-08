@@ -46,7 +46,7 @@ describe('CC-3 C3 — sealing through collab tools', () => {
       role: 'author',
       payload_json: JSON.stringify({ content: 'agree' }),
     });
-    expect(append.isError).toBeFalsy();
+    expect(append.isError, JSON.stringify(append.structuredContent)).toBeFalsy();
 
     const hidden = await handlers.get('collab_get_delta')!({ cycle, since_seq: 0, limit: 10 });
     const hiddenText = JSON.stringify(hidden.structuredContent);
