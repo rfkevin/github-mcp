@@ -8,8 +8,10 @@ import {
   promoteScopeRequestId,
   proposeRequestId,
   retireRequestId,
+  StoredMemory,
   supersedeRequestId,
 } from '../../../src/collab-store/memory/memory-store';
+import type { MemoryConfidence } from '../../../src/collab-store/contracts/memory';
 import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
 import { StateContractError } from '../../../src/collab/contracts';
@@ -28,11 +30,9 @@ async function seedOwner(requestId: string): Promise<void> {
     .run();
 }
 
-/** Real C5 channel: owner.request via CollabStore + recordOwnerDecision (no direct INSERT). */
-async function approveViaC5(requestId: string, summary: string, op: string): Promise<void> {
-  const db = bindings.COLLAB_DB_C2;
-  const cs = new CollabStore(db);
-  const cycle = 'c4-owner-approvals';
+/** Append an owner.request through the real C1/C2 channel (no direct INSERT). */
+async function fileOwnerRequest(cycle: string, requestId: string, summary: string, op: string): Promise<void> {
+  const cs = new CollabStore(bindings.COLLAB_DB_C2);
   const outcome = await cs.appendEvent({
     cycle_id: cycle,
     type: 'owner.request',
@@ -44,13 +44,59 @@ async function approveViaC5(requestId: string, summary: string, op: string): Pro
   if (outcome.status !== 'applied' && outcome.status !== 'duplicate') {
     throw new Error('owner.request append failed: ' + outcome.status);
   }
-  const decision = await recordOwnerDecision(db, {
+}
+
+/** Real C5 channel: file the owner.request then record the approval (no direct INSERT). */
+async function approveViaC5(requestId: string, summary: string, op: string): Promise<void> {
+  await fileOwnerRequest('c4-owner-approvals', requestId, summary, op);
+  const decision = await recordOwnerDecision(bindings.COLLAB_DB_C2, {
     request_id: requestId,
     decision: 'approve',
     proof: { kind: 'secret' as const, subject: 'owner-secret' },
   });
   if (decision.status !== 'applied' && decision.status !== 'duplicate') {
     throw new Error('owner decision failed: ' + decision.status);
+  }
+}
+
+/** Propose a protected invariant approved through the real C5 channel. */
+async function proposeProtectedInvariant(
+  mem: MemoryStore,
+  id: string,
+  scope: string,
+  confidence: MemoryConfidence = 'verified',
+): Promise<StoredMemory> {
+  await approveViaC5(proposeRequestId(id), `Approve invariant ${id} (C4 §4 mutation tests).`, 'prop-' + id);
+  return mem.propose({
+    id,
+    scope,
+    kind: 'invariant',
+    text: `Protected invariant ${id} for §4 mutation tests.`,
+    evidence_refs: ['plan:4'],
+    confidence,
+    author_pid: 'agent:a',
+    owner_decision_ref: proposeRequestId(id),
+  });
+}
+
+/** Make a proposed version active, clearing any pause through the real C5 channel. */
+async function ensureActive(
+  mem: MemoryStore,
+  id: string,
+  version: number,
+  scope: string,
+  tag: string,
+): Promise<void> {
+  try {
+    await mem.activate(id, version, 'agent:b');
+  } catch {
+    /* protected activation pauses the scope */
+  }
+  if ((await mem.get(id, version))?.status !== 'active') {
+    const ref = (await pauseRequestPrefix(scope)) + tag;
+    await approveViaC5(ref, `Clear ${scope} pause (${tag}).`, 'pause-' + tag);
+    await mem.clearActivationPause(ref, scope);
+    await mem.activate(id, version, 'agent:b');
   }
 }
 
@@ -359,23 +405,10 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
   it('E2E: the real C5 channel produces the decision C4 consumes (no direct INSERT)', async () => {
     const db = bindings.COLLAB_DB_C2;
     const mem = new MemoryStore(db);
-    const cs = new CollabStore(db);
     const cycle = 'e2e-owner-decision';
     const proof = { kind: 'secret' as const, subject: 'owner-secret' };
-
-    async function fileRequest(requestId: string, summary: string, op: string): Promise<void> {
-      const outcome = await cs.appendEvent({
-        cycle_id: cycle,
-        type: 'owner.request',
-        participant_id: 'agent:a',
-        expected_rev: await cs.currentRevision(cycle),
-        payload_json: JSON.stringify({ request_id: requestId, summary }),
-        op_id: 'agent-a:' + cycle + ':' + op + ':1',
-      });
-      if (outcome.status !== 'applied' && outcome.status !== 'duplicate') {
-        throw new Error('owner.request append failed: ' + outcome.status);
-      }
-    }
+    const fileRequest = (requestId: string, summary: string, op: string): Promise<void> =>
+      fileOwnerRequest(cycle, requestId, summary, op);
 
     // 1. agent files the request through the real store (C1/C2 channel)
     const requestId = proposeRequestId('mem-inv-e2e');
@@ -432,28 +465,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
 
   it('retire of a protected kind requires an owner decision bound to the version', async () => {
     const mem = store();
-    await approveViaC5(proposeRequestId('mem-prot-retire'), 'Approve invariant mem-prot-retire.', 'ret-prop');
-    const p = await mem.propose({
-      id: 'mem-prot-retire',
-      scope: 'common',
-      kind: 'invariant',
-      text: 'Invariant that will be retired.',
-      evidence_refs: ['plan:4'],
-      confidence: 'verified',
-      author_pid: 'agent:a',
-      owner_decision_ref: proposeRequestId('mem-prot-retire'),
-    });
-    try {
-      await mem.activate(p.id, 1, 'agent:b');
-    } catch {
-      /* protected activation pauses the scope */
-    }
-    if ((await mem.get(p.id, 1))?.status !== 'active') {
-      const ref = (await pauseRequestPrefix('common')) + 'retire';
-      await approveViaC5(ref, 'Clear common pause (retire test).', 'ret-pause');
-      await mem.clearActivationPause(ref, 'common');
-      await mem.activate(p.id, 1, 'agent:b');
-    }
+    const p = await proposeProtectedInvariant(mem, 'mem-prot-retire', 'common');
+    await ensureActive(mem, p.id, 1, 'common', 'retire');
     await expect(mem.retire(p.id, 1)).rejects.toThrow(/PROTECTED_KIND_OWNER_REQUIRED|required/);
     const wrongRef = retireRequestId(p.id, 2);
     await approveViaC5(wrongRef, 'Decision bound to another version (must not leak).', 'ret-wrong');
@@ -465,43 +478,13 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
 
   it('a supersede approval never authorizes the next supersede of the same id', async () => {
     const mem = store();
-    await approveViaC5(proposeRequestId('mem-prot-sup'), 'Approve invariant mem-prot-sup.', 'sup-prop');
-    const p = await mem.propose({
-      id: 'mem-prot-sup',
-      scope: 'common',
-      kind: 'invariant',
-      text: 'Invariant superseded twice.',
-      evidence_refs: ['plan:4'],
-      confidence: 'verified',
-      author_pid: 'agent:a',
-      owner_decision_ref: proposeRequestId('mem-prot-sup'),
-    });
-    try {
-      await mem.activate(p.id, 1, 'agent:b');
-    } catch {
-      /* protected activation pauses the scope */
-    }
-    if ((await mem.get(p.id, 1))?.status !== 'active') {
-      const ref = (await pauseRequestPrefix('common')) + 'sup1';
-      await approveViaC5(ref, 'Clear common pause (supersede test).', 'sup-pause1');
-      await mem.clearActivationPause(ref, 'common');
-      await mem.activate(p.id, 1, 'agent:b');
-    }
+    const p = await proposeProtectedInvariant(mem, 'mem-prot-sup', 'common');
+    await ensureActive(mem, p.id, 1, 'common', 'sup1');
     const v2ref = supersedeRequestId(p.id, 2);
     await approveViaC5(v2ref, 'Approve supersede mem-prot-sup to v2.', 'sup-v2');
     const next = await mem.supersede(p.id, 'agent:c', 'Wording clarified.', ['plan:4'], undefined, undefined, v2ref);
     expect(next.version).toBe(2);
-    try {
-      await mem.activate(p.id, 2, 'agent:b');
-    } catch {
-      /* protected activation pauses the scope */
-    }
-    if ((await mem.get(p.id, 2))?.status !== 'active') {
-      const ref = (await pauseRequestPrefix('common')) + 'sup2';
-      await approveViaC5(ref, 'Clear common pause (supersede v2 activation).', 'sup-pause2');
-      await mem.clearActivationPause(ref, 'common');
-      await mem.activate(p.id, 2, 'agent:b');
-    }
+    await ensureActive(mem, p.id, 2, 'common', 'sup2');
     await expect(
       mem.supersede(p.id, 'agent:c', 'Unauthorized v3.', ['plan:4'], undefined, undefined, v2ref),
     ).rejects.toThrow(/does not target subject/);
@@ -514,28 +497,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
 
   it('promoteScope of a protected kind requires an owner decision bound to the occurrence', async () => {
     const mem = store();
-    await approveViaC5(proposeRequestId('mem-prot-scope'), 'Approve invariant mem-prot-scope.', 'scope-prop');
-    const p = await mem.propose({
-      id: 'mem-prot-scope',
-      scope: 'participant:agent:a',
-      kind: 'invariant',
-      text: 'Personal invariant lifted to project scope.',
-      evidence_refs: ['plan:4'],
-      confidence: 'verified',
-      author_pid: 'agent:a',
-      owner_decision_ref: proposeRequestId('mem-prot-scope'),
-    });
-    try {
-      await mem.activate(p.id, 1, 'agent:b');
-    } catch {
-      /* protected activation pauses the scope */
-    }
-    if ((await mem.get(p.id, 1))?.status !== 'active') {
-      const ref = (await pauseRequestPrefix('participant:agent:a')) + 'scope';
-      await approveViaC5(ref, 'Clear participant pause (scope test).', 'scope-pause');
-      await mem.clearActivationPause(ref, 'participant:agent:a');
-      await mem.activate(p.id, 1, 'agent:b');
-    }
+    const p = await proposeProtectedInvariant(mem, 'mem-prot-scope', 'participant:agent:a');
+    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'scope');
     await expect(mem.promoteScope(p.id, 1, 'agent:b', 'project:cc4')).rejects.toThrow(
       /PROTECTED_KIND_OWNER_REQUIRED|required/,
     );
@@ -554,17 +517,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
 
   it('promoteConfidence of a protected kind requires an owner decision (candidate and active)', async () => {
     const mem = store();
-    await approveViaC5(proposeRequestId('mem-prot-conf'), 'Approve invariant mem-prot-conf.', 'conf-prop');
-    const p = await mem.propose({
-      id: 'mem-prot-conf',
-      scope: 'participant:agent:a',
-      kind: 'invariant',
-      text: 'Invariant whose confidence will be raised.',
-      evidence_refs: ['plan:4'],
-      confidence: 'observed',
-      author_pid: 'agent:a',
-      owner_decision_ref: proposeRequestId('mem-prot-conf'),
-    });
+    const p = await proposeProtectedInvariant(mem, 'mem-prot-conf', 'participant:agent:a', 'observed');
     // candidate path: no decision -> rejected; occurrence-bound decision -> allowed
     await seedLedger('agent:b', 'ev-prot-conf-1');
     await expect(mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-prot-conf-1', 'verified')).rejects.toThrow(
@@ -576,17 +529,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(upCand.confidence).toBe('verified');
     expect(upCand.status).toBe('candidate');
     // active path: supersede-bound decision; the candidate-bound one must not leak
-    try {
-      await mem.activate(p.id, 1, 'agent:b');
-    } catch {
-      /* protected activation pauses the scope */
-    }
-    if ((await mem.get(p.id, 1))?.status !== 'active') {
-      const ref = (await pauseRequestPrefix('participant:agent:a')) + 'conf';
-      await approveViaC5(ref, 'Clear participant pause (confidence test).', 'conf-pause');
-      await mem.clearActivationPause(ref, 'participant:agent:a');
-      await mem.activate(p.id, 1, 'agent:b');
-    }
+    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'conf');
     await seedLedger('agent:b', 'ev-prot-conf-2');
     await expect(
       mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-prot-conf-2', 'owner_validated', candRef),
