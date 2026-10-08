@@ -362,6 +362,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       kind: 'invariant',
       text: 'E2E invariant with a real owner decision.',
       evidence_refs: ['plan:25'],
+      confidence: 'verified',
       author_pid: 'agent:a',
       owner_decision_ref: requestId,
     });
