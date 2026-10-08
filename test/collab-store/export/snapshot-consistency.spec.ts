@@ -167,6 +167,11 @@ describe('CC-3 F4 / A04 — export = instantané cohérent', () => {
     });
     const result = await exportCycleState(racing, cycle);
     expectSinglePoint(result, state.atBatch);
+    // The sustained tail leaves the label wherever the last injected write
+    // put it: restore the registry label the next test imports (K6 lookup).
+    await registerParticipant(db, {
+      participant_id: 'grok', display_label: 'Grok', proof: PROOF, op: uniq('tail-restore'),
+    });
   });
 
   it('last_seq est un curseur de reprise sûr : jamais au-delà d’un événement absent du document (revue Sol)', async () => {
