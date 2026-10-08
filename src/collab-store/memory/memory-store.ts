@@ -71,6 +71,39 @@ export const GROWTH_ALARM_PERCENT = 25;
 export const MAX_ACTIVATIONS_PER_CYCLE = 10;
 export const MAX_RETIREMENTS_PER_CYCLE = 10;
 
+/**
+ * C5-compatible owner_decision request_ids. C5 (owner/decisions.ts
+ * REQUEST_ID_RE) forbids ':' in request_id, so each protected operation
+ * encodes the exact subject it authorizes:
+ *   propose   -> mem-propose-<id>   (exact match, explicit id required)
+ *   supersede -> mem-supersede-<id> (exact match)
+ *   pause     -> mem-pause-<sha256(scope)[0:20]>-<occurrence> (prefix match)
+ * A decision recorded for any other subject never authorizes these paths.
+ */
+export const PROPOSE_REQUEST_PREFIX = 'mem-propose-';
+export const SUPERSEDE_REQUEST_PREFIX = 'mem-supersede-';
+export const PAUSE_REQUEST_PREFIX = 'mem-pause-';
+/** Protected memory ids stay short so request_id never exceeds 64 chars. */
+const MEMORY_ID_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
+
+export function proposeRequestId(id: string): string {
+  return PROPOSE_REQUEST_PREFIX + id;
+}
+
+export function supersedeRequestId(id: string): string {
+  return SUPERSEDE_REQUEST_PREFIX + id;
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Pause-clearing request_ids for one scope share this prefix. */
+export async function pauseRequestPrefix(scope?: string): Promise<string> {
+  return PAUSE_REQUEST_PREFIX + (await sha256Hex(scope ?? '')).slice(0, 20) + '-';
+}
+
 const META_PAUSE = 'mem:pause';
 const META_ACT = 'mem:act:';
 const META_RET = 'mem:ret:';
@@ -124,9 +157,9 @@ export class MemoryStore {
     return (results?.length ?? 0) > 0;
   }
 
-  /** Clear pause for a scope; owner_decision_ref must be memory-pause:<scope> approve. */
+  /** Clear pause for a scope; owner_decision_ref must be mem-pause-<hash(scope)>-<occurrence> approve. */
   async clearActivationPause(ownerDecisionRef: string, scope?: string): Promise<void> {
-    await this.requireOwnerDecision(ownerDecisionRef, scope ? `memory-pause:${scope}` : 'memory-pause:');
+    await this.requireOwnerDecision(ownerDecisionRef, { prefix: await pauseRequestPrefix(scope) });
     if (scope) {
       await this.db
         .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`)
@@ -148,8 +181,16 @@ export class MemoryStore {
   async propose(input: ProposeInput): Promise<StoredMemory> {
     await ensureSchema(this.db);
     if (PROTECTED_KINDS.has(input.kind)) {
-      // request_id must target memory:* (C5 subject), not a random approve
-      await this.requireOwnerDecision(input.owner_decision_ref, 'memory:');
+      // C5-compatible: the request_id must be exactly mem-propose-<id>; a
+      // decision recorded for any other subject is rejected (fail-closed).
+      const protectedId = input.id?.trim() ?? '';
+      if (!MEMORY_ID_RE.test(protectedId)) {
+        throw new MemoryStoreError(
+          'PROTECTED_KIND_OWNER_REQUIRED',
+          'protected kinds require an explicit id matching [a-z0-9][a-z0-9_-]{0,39}',
+        );
+      }
+      await this.requireOwnerDecision(input.owner_decision_ref, { exact: proposeRequestId(protectedId) });
     }
     if (input.confidence === 'hypothesis' && PROTECTED_KINDS.has(input.kind)) {
       throw new MemoryStoreError(
@@ -284,7 +325,7 @@ export class MemoryStore {
     const nextKind = (kind ?? active.kind) as MemoryKind;
     const conf = confidence ?? (active.confidence as MemoryConfidence);
     if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
-      await this.requireOwnerDecision(ownerDecisionRef, `memory:${id}`);
+      await this.requireOwnerDecision(ownerDecisionRef, { exact: supersedeRequestId(id) });
     }
     if (conf === 'hypothesis' && PROTECTED_KINDS.has(nextKind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot supersede into a rule kind');
@@ -602,19 +643,27 @@ export class MemoryStore {
 
   /**
    * C5 owner_decisions: decision must be exactly 'approve'.
-   * subjectPrefix e.g. memory-pause:scope or memory:id — request_id must start with it.
+   * subject is the request_id the decision must target: { exact } for
+   * propose/supersede, { prefix } for pause clearing. The C5 channel
+   * request_id itself encodes the subject (':' is not allowed there).
    */
   private async requireOwnerDecision(
     ref: string | undefined,
-    subjectPrefix?: string,
+    subject: { exact: string } | { prefix: string },
   ): Promise<void> {
     if (!ref || !ref.trim()) {
       throw new MemoryStoreError('PROTECTED_KIND_OWNER_REQUIRED', 'owner_decision_ref required');
     }
-    if (subjectPrefix && !ref.startsWith(subjectPrefix)) {
+    if ('exact' in subject && ref !== subject.exact) {
       throw new MemoryStoreError(
         'OWNER_DECISION_SUBJECT',
-        `owner_decision_ref ${ref} does not target subject ${subjectPrefix}`,
+        `owner_decision_ref ${ref} does not target subject ${subject.exact}`,
+      );
+    }
+    if ('prefix' in subject && !ref.startsWith(subject.prefix)) {
+      throw new MemoryStoreError(
+        'OWNER_DECISION_SUBJECT',
+        `owner_decision_ref ${ref} does not target subject ${subject.prefix}`,
       );
     }
     const row = await this.db
