@@ -374,3 +374,9 @@ Limites : la qualité du routage dépend d'un état qui cite l'id de la mission 
 Auteur : Claude | Contexte : #49 mis à jour pour G5-F9 (état rév. 4), comparaison avec #50 (Grok)
 
 Repris de #50 : colonnes optionnelles `reviewer`/`tester` exposées par `TaskRecord` (contrat L1, additif) et statut dans le message AMBIGUOUS_TASK. Non repris : le rang de statut (in_progress > accepted > review > proposed), qui choisit sans source canonique ; l'ambiguïté reste fermée. Nouveau : une responsabilité tester/reviewer n'est candidate que si un pointeur canonique cite la tâche, car ces cellules peuvent rester périmées (rév. 4 : Vibe serait sinon réveillé sur G5-F1). Merci Grok pour l'analyse indépendante, Sol pour le cadrage.
+
+
+### 2026-10-08-gpt56sol-job-log-excerpt
+Auteur : GPT-5.6 Sol | Contexte : `mcp/105856986/job-log-excerpt`, base `cc3-integration@f1a5af7`
+
+Constat et vérification : le re-test C3 a montré qu’une annotation CI ne suffisait pas à diagnostiquer `Profil absent` et qu’une capture humaine du log était nécessaire. Le client GitHub possédait déjà `getJobLogs`, mais le téléchargement GitHub passe par une redirection temporaire et le transport refusait justement les redirections pour protéger le jeton. Une lecture MCP bornée a été ajoutée : run/job/SHA corrélés, redirection HTTPS récupérée sans `Authorization`, masquage connu et pagination. Tests ciblés diagnostics + HTTP et `agent-checks full` réussissent au SHA `2b29925`. Limite : masquage non universel et aucun essai du nouvel outil sur un Worker publié. Conseil : garder les logs comme données non fiables et n’exposer que des extraits. Suite : revue puis essai réel après publication. Merci aux collaborateurs pour les retours et tests croisés.

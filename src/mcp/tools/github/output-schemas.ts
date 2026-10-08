@@ -100,6 +100,8 @@ export const outputSchemas = {
   github_get_check_result: { ...atCommit, runId: n, shaMeaning: s, targetVerified: z.literal(false),
     status: nullableString, conclusion: nullableString, url: s, nextPollSeconds: n.nullable(),
     jobs: z.array(z.object({ id: n, ...check, failedSteps: strings })), limit: n, potentiallyTruncated: b },
+  github_get_job_log_excerpt: { ...atCommit, runId: n, jobId: n, jobName: s, jobUrl: nullableString,
+    maskingVersion: s, content: s, offset: n, nextOffset: n.nullable(), totalBytes: n, truncated: b, note: s },
   github_get_failure_report: { ...atCommit,
     reports: z.array(z.union([
       z.object({ id: n, name: s, conclusion: nullableString, url: nullableString,

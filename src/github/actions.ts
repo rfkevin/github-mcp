@@ -10,7 +10,6 @@ import type {
 const MAX_LOG_BYTES = 200_000;
 import type { GitHubServiceContext } from './service-context';
 import { InputValidationError } from './types';
-import { readText } from './response';
 
 export class GitHubActions {
   constructor(private readonly dependencies: GitHubServiceContext) {}
@@ -69,10 +68,9 @@ export class GitHubActions {
   }
 
   async getJobLogs(repository: string, jobId: number): Promise<string> {
-    const { assertPositiveInteger, repoPath, send } = this.dependencies;
+    const { assertPositiveInteger, repoPath, downloadRedirectedText } = this.dependencies;
     assertPositiveInteger(jobId, 'Identifiant de job');
-    const response = await send(repoPath(repository, `/actions/jobs/${jobId}/logs`));
-    return readText(response, MAX_LOG_BYTES);
+    return downloadRedirectedText(repoPath(repository, `/actions/jobs/${jobId}/logs`), MAX_LOG_BYTES);
   }
 
   async rerunWorkflow(repository: string, runId: number, failedJobsOnly = false): Promise<void> {

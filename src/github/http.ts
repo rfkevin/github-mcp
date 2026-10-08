@@ -1,5 +1,5 @@
 import { GitHubApiError, GitHubRateLimitError } from './types';
-import { readJson } from './response';
+import { readJson, readText } from './response';
 
 const GITHUB_API = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
@@ -30,7 +30,7 @@ const sleep = (milliseconds: number): Promise<void> =>
 export class GitHubHttp {
   constructor(private readonly options: GitHubHttpOptions) {}
 
-  async send(path: string, init: RequestInit = {}): Promise<Response> {
+  async send(path: string, init: RequestInit = {}, allowRedirect = false): Promise<Response> {
     const method = (init.method ?? 'GET').toUpperCase();
     this.options.assertRequestAllowed?.(method);
     const idempotent = method === 'GET' || method === 'HEAD';
@@ -76,6 +76,7 @@ export class GitHubHttp {
       }
 
       if (response.status >= 300 && response.status < 400) {
+        if (allowRedirect) return response;
         await response.body?.cancel();
         throw new GitHubApiError(response.status, path, 'Redirection GitHub refusée.');
       }
@@ -97,6 +98,48 @@ export class GitHubHttp {
 
       throw await this.toApiError(response, path);
     }
+  }
+
+  /**
+   * Télécharge un contenu exposé par GitHub via une redirection temporaire.
+   * L'appel API porte le jeton d'installation ; la destination signée est ensuite
+   * récupérée SANS Authorization pour ne jamais transmettre le jeton hors de
+   * api.github.com. Seules les destinations HTTPS sans userinfo sont acceptées.
+   */
+  async downloadRedirectedText(path: string, maxBytes: number): Promise<string> {
+    // Réutilise send() pour conserver refresh 401, retry GET et politique de lecture,
+    // mais autorise ici uniquement la première redirection GitHub attendue.
+    const redirect = await this.send(path, {}, true);
+    if (redirect.ok) return readText(redirect, maxBytes);
+    if (redirect.status < 300 || redirect.status >= 400) throw await this.toApiError(redirect, path);
+
+    const location = redirect.headers.get('Location');
+    await redirect.body?.cancel();
+    if (!location) throw new GitHubApiError(redirect.status, path, 'Redirection GitHub sans destination.');
+
+    let target: URL;
+    try { target = new URL(location); }
+    catch { throw new GitHubApiError(redirect.status, path, 'Destination de téléchargement invalide.'); }
+    if (target.protocol !== 'https:' || target.username || target.password) {
+      throw new GitHubApiError(redirect.status, path, 'Destination de téléchargement non sûre.');
+    }
+
+    let download: Response;
+    try {
+      download = await this.options.fetcher(target.toString(), {
+        method: 'GET',
+        headers: { 'User-Agent': this.options.userAgent },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(this.options.timeoutMs),
+      });
+    } catch (error) {
+      throw new GitHubApiError(0, path, networkFailureMessage(error));
+    }
+    if (!download.ok) {
+      await download.body?.cancel();
+      throw new GitHubApiError(download.status, path, 'Téléchargement des logs refusé.');
+    }
+    return readText(download, maxBytes);
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {

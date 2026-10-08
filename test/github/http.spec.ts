@@ -45,6 +45,42 @@ describe('GitHubClient : http', () => {
         expect(tokenRequests).toBe(2);
         expect(fileRequests).toBe(2);
     });
+    it('télécharge un log redirigé sans transmettre Authorization à la destination', async () => {
+        let externalAuthorization: string | null | undefined;
+        const fetcher: typeof fetch = async (input, init) => {
+            const url = requestUrl(input);
+            if (url.endsWith('/access_tokens'))
+                return jsonResponse({ token: INSTALLATION_TOKEN });
+            if (url.endsWith('/repos/owner/project/actions/jobs/42/logs')) {
+                expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${INSTALLATION_TOKEN}`);
+                expect(init?.redirect).toBe('manual');
+                return new Response(null, { status: 302, headers: { Location: 'https://logs.example.invalid/job.txt?sig=CANARY' } });
+            }
+            if (url.startsWith('https://logs.example.invalid/')) {
+                externalAuthorization = new Headers(init?.headers).get('Authorization');
+                return new Response('job log');
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        const client = new GitHubClient({ appId: '123', privateKey, installationId: '456', fetcher });
+        await expect(client.actions.getJobLogs(REPOSITORY, 42)).resolves.toBe('job log');
+        expect(externalAuthorization).toBeNull();
+    });
+    it('refuse une destination de log non HTTPS sans la contacter', async () => {
+        let externalCalls = 0;
+        const fetcher: typeof fetch = async (input) => {
+            const url = requestUrl(input);
+            if (url.endsWith('/access_tokens'))
+                return jsonResponse({ token: INSTALLATION_TOKEN });
+            if (url.endsWith('/repos/owner/project/actions/jobs/42/logs'))
+                return new Response(null, { status: 302, headers: { Location: 'http://logs.example.invalid/job.txt' } });
+            externalCalls += 1;
+            return new Response('unexpected');
+        };
+        const client = new GitHubClient({ appId: '123', privateKey, installationId: '456', fetcher });
+        await expect(client.actions.getJobLogs(REPOSITORY, 42)).rejects.toThrow();
+        expect(externalCalls).toBe(0);
+    });
     it('filtre les dépôts de l’installation avec la liste autorisée', async () => {
         const fetcher: typeof fetch = async (input) => {
             const url = requestUrl(input);

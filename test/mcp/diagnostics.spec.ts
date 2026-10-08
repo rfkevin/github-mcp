@@ -3,12 +3,12 @@ import { GitHubApiError } from '../../src/github/client';
 import { GitHubHttp } from '../../src/github/http';
 import { InputValidationError } from '../../src/github/types';
 import type { ToolContext } from '../../src/mcp/context';
-import { safeDiagnostic } from '../../src/mcp/tools/github/reports';
+import { maskedLogExcerpt, registerReportTools, safeDiagnostic } from '../../src/mcp/tools/github/reports';
 import { collectCiStatus } from '../../src/mcp/tools/github/ci';
 import { failureMessage, publicFailure, textPayload, toolFailure } from '../../src/mcp/tools/github/result';
 import { mapLimit } from '../../src/mcp/tools/github/batch';
 import { readJson } from '../../src/github/response';
-import { SHA, OTHER, context } from './helpers';
+import { SHA, OTHER, context, registry } from './helpers';
 describe('foundation: diagnostics et cohérence', () => {
     it('borne les réponses GitHub même sans Content-Length', async () => {
         await expect(readJson(new Response('x'.repeat(100)), 20)).rejects.toMatchObject({ code: 'RESPONSE_TOO_LARGE' });
@@ -111,6 +111,29 @@ describe('foundation: diagnostics et cohérence', () => {
         const result = safeDiagnostic('Bearer abc123 ghp_CANARY https://example/?token=CANARY&code=CANARY');
         expect(result).not.toContain('CANARY');
         expect(result).not.toContain('abc123');
+    });
+    it('borne et masque les extraits de logs par octets', () => {
+        const excerpt = maskedLogExcerpt('début Bearer abc123 ghp_CANARY fin', 0, 24);
+        expect(excerpt.content).not.toContain('abc123');
+        expect(excerpt.content).not.toContain('CANARY');
+        expect(excerpt.truncated).toBe(true);
+        expect(excerpt.nextOffset).toBe(24);
+    });
+    it('lie un extrait de logs au run, au job et au SHA', async () => {
+        const ctx = context();
+        ctx.workflows.getWorkflowRun.mockResolvedValue({ head_sha: SHA, status: 'completed', conclusion: 'failure',
+            html_url: 'https://example.invalid/run/7' } as never);
+        ctx.workflows.listWorkflowRunJobs.mockResolvedValue([{ id: 42, name: 'checks', status: 'completed', conclusion: 'failure',
+            html_url: 'https://example.invalid/job/42', steps: [] }] as never);
+        ctx.workflows.getJobLogs.mockResolvedValue('line 1\nBearer secret-value\nghp_CANARY\nline 4');
+        const call = registry(registerReportTools, ctx as unknown as ToolContext);
+        const result = await call('github_get_job_log_excerpt', { repository: 'o/r', runId: 7, jobId: 42,
+            expectedSha: SHA, offset: 0, maxBytes: 1000 });
+        expect(result.isError).toBeFalsy();
+        expect(result.structuredContent).toMatchObject({ repository: 'o/r', sha: SHA, runId: 7, jobId: 42,
+            jobName: 'checks', maskingVersion: 'known-secrets-v1', truncated: false });
+        expect(JSON.stringify(result.structuredContent)).not.toContain('secret-value');
+        expect(JSON.stringify(result.structuredContent)).not.toContain('CANARY');
     });
     it('borne la concurrence et conserve l’ordre', async () => {
         let active = 0;

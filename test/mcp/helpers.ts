@@ -36,7 +36,7 @@ export function context() {
         },
         checks: { listCheckRuns: vi.fn(async () => []), listCheckAnnotations: vi.fn(async () => []) },
         statuses: { getCombinedStatus: vi.fn(async () => ({ state: 'pending', total_count: 0, statuses: [] })) },
-        workflows: { listWorkflowRuns: vi.fn(async () => []), getWorkflowRun: vi.fn(), listWorkflowRunJobs: vi.fn(async () => []) },
+        workflows: { listWorkflowRuns: vi.fn(async () => []), getWorkflowRun: vi.fn(), listWorkflowRunJobs: vi.fn(async () => []), getJobLogs: vi.fn() },
     };
 }
 it.each(['.github', '.github/workflows/ci.yml', '.github/actions/setup/action.yml', '.github/CODEOWNERS', 'scripts', 'scripts/ci/run-checks.mjs'])('le MCP ne peut pas modifier le contrôleur : %s', path => {
