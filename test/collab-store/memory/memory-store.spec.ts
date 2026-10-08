@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MemoryStore,
   MemoryStoreError,
-  pauseRequestPrefix,
+  pauseRequestId,
   promoteConfidenceRequestId,
   promoteScopeRequestId,
   proposeRequestId,
@@ -66,7 +66,8 @@ async function proposeProtectedInvariant(
   scope: string,
   confidence: MemoryConfidence = 'verified',
 ): Promise<StoredMemory> {
-  await approveViaC5(proposeRequestId(id), `Approve invariant ${id} (C4 §4 mutation tests).`, 'prop-' + id);
+  const ref = proposeRequestId(id, 1);
+  await approveViaC5(ref, `Approve invariant ${id} (C4 §4 mutation tests).`, 'prop-' + id);
   return mem.propose({
     id,
     scope,
@@ -75,7 +76,7 @@ async function proposeProtectedInvariant(
     evidence_refs: ['plan:4'],
     confidence,
     author_pid: 'agent:a',
-    owner_decision_ref: proposeRequestId(id),
+    owner_decision_ref: ref,
   });
 }
 
@@ -93,7 +94,7 @@ async function ensureActive(
     /* protected activation pauses the scope */
   }
   if ((await mem.get(id, version))?.status !== 'active') {
-    const ref = (await pauseRequestPrefix(scope)) + tag;
+    const ref = await mem.pauseClearRequestId(scope);
     await approveViaC5(ref, `Clear ${scope} pause (${tag}).`, 'pause-' + tag);
     await mem.clearActivationPause(ref, scope);
     await mem.activate(id, version, 'agent:b');
@@ -144,7 +145,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         owner_decision_ref: 'owner:fake',
       }),
     ).rejects.toThrow(/OWNER_DECISION|owner/);
-    await seedOwner(proposeRequestId('mem-inv-setup'));
+    await seedOwner(proposeRequestId('mem-inv-setup', 1));
     const p = await mem.propose({
       id: 'mem-inv-setup',
       scope: 'common',
@@ -152,14 +153,14 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       text: 'I4 holds forever.',
       evidence_refs: ['plan:25'],
       author_pid: 'agent:a',
-      owner_decision_ref: proposeRequestId('mem-inv-setup'),
+      owner_decision_ref: proposeRequestId('mem-inv-setup', 1),
     });
     try {
       await mem.activate(p.id, 1, 'agent:b');
     } catch {
       /* pause on common */
     }
-    const setupPauseRef = (await pauseRequestPrefix('common')) + 'setup';
+    const setupPauseRef = await mem.pauseClearRequestId('common');
     await seedOwner(setupPauseRef);
     await mem.clearActivationPause(setupPauseRef, 'common');
     if ((await mem.get(p.id, 1))?.status !== 'active') {
@@ -209,7 +210,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
           break;
         }
         if (err instanceof MemoryStoreError && err.code === 'ACTIVATION_PAUSED') {
-          const budgetPauseRef = (await pauseRequestPrefix('participant:agent:z')) + 'retry' + i;
+          const budgetPauseRef = await mem.pauseClearRequestId('participant:agent:z');
           await seedOwner(budgetPauseRef);
           await mem.clearActivationPause(budgetPauseRef, 'participant:agent:z');
           i -= 1;
@@ -315,7 +316,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         // first activations (baseline = 1). Clear the pause with a real
         // owner decision fixture instead of bypassing product logic.
         if (await mem.isActivationPaused(`task:cap-${cycle}`)) {
-          const capPauseRef = (await pauseRequestPrefix(`task:cap-${cycle}`)) + 'act' + i;
+          const capPauseRef = await mem.pauseClearRequestId(`task:cap-${cycle}`);
           await seedOwner(capPauseRef);
           await mem.clearActivationPause(capPauseRef, `task:cap-${cycle}`);
         }
@@ -330,7 +331,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       author_pid: 'agent:a',
     });
     if (await mem.isActivationPaused('task:cap-cya')) {
-      const extraPauseRef = (await pauseRequestPrefix('task:cap-cya')) + 'extra';
+      const extraPauseRef = await mem.pauseClearRequestId('task:cap-cya');
       await seedOwner(extraPauseRef);
       await mem.clearActivationPause(extraPauseRef, 'task:cap-cya');
     }
@@ -340,7 +341,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
   it('owner decision for wrong subject is rejected', async () => {
     const mem = store();
     // a real approve for another memory id must not authorize this one
-    const otherRef = proposeRequestId('mem-inv-other');
+    const otherRef = proposeRequestId('mem-inv-other', 1);
     await seedOwner(otherRef);
     await expect(
       mem.propose({
@@ -411,7 +412,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       fileOwnerRequest(cycle, requestId, summary, op);
 
     // 1. agent files the request through the real store (C1/C2 channel)
-    const requestId = proposeRequestId('mem-inv-e2e');
+    const requestId = proposeRequestId('mem-inv-e2e', 1);
     await fileRequest(requestId, 'Approve invariant mem-inv-e2e (C4 x C5 E2E).', 'owner-request');
 
     // 2. owner approves through the real C5 decision path
@@ -431,7 +432,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     });
 
     // 4. an approved decision for another id never authorizes this one
-    const otherRef = proposeRequestId('mem-inv-e2e-other');
+    const otherRef = proposeRequestId('mem-inv-e2e-other', 1);
     await fileRequest(otherRef, 'Approve a different memory id (must not leak).', 'owner-request-2');
     await recordOwnerDecision(db, { request_id: otherRef, decision: 'approve', proof });
     await expect(
@@ -454,7 +455,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     }
     if ((await mem.get(p.id, 1))?.status !== 'active') {
       expect(await mem.isActivationPaused('common')).toBe(true);
-      const e2ePauseRef = (await pauseRequestPrefix('common')) + 'e2e';
+      const e2ePauseRef = await mem.pauseClearRequestId('common');
       await fileRequest(e2ePauseRef, 'Approve clearing the common activation pause (C4 x C5 E2E).', 'owner-request-3');
       await recordOwnerDecision(db, { request_id: e2ePauseRef, decision: 'approve', proof });
       await mem.clearActivationPause(e2ePauseRef, 'common');
@@ -539,5 +540,129 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     const upActive = await mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-prot-conf-2', 'owner_validated', supRef);
     expect(upActive.version).toBe(2);
     expect(upActive.confidence).toBe('owner_validated');
+  });
+
+  it('T1: a propose approval is never reusable after a protected retire (replay refused)', async () => {
+    const mem = store();
+    const p = await proposeProtectedInvariant(mem, 'mem-t1-inv', 'common');
+    await ensureActive(mem, p.id, 1, 'common', 't1');
+    const retireRef = retireRequestId(p.id, 1);
+    await approveViaC5(retireRef, 'Approve retiring mem-t1-inv v1.', 't1-ret');
+    expect((await mem.retire(p.id, 1, 'default', retireRef)).status).toBe('retired');
+    // A different author replays the SAME v1 approval: the retired invariant
+    // must not come back without a new owner decision (bound to v2).
+    await expect(
+      mem.propose({
+        id: 'mem-t1-inv',
+        scope: 'common',
+        kind: 'invariant',
+        text: 'Resurrected invariant without a new decision.',
+        evidence_refs: ['plan:4'],
+        confidence: 'verified',
+        author_pid: 'agent:c',
+        owner_decision_ref: proposeRequestId('mem-t1-inv', 1),
+      }),
+    ).rejects.toThrow(/does not target subject/);
+  });
+
+  it('T2: one propose approval never authorizes a second proposal of the same id', async () => {
+    const mem = store();
+    const ref = proposeRequestId('mem-t2-inv', 1);
+    await approveViaC5(ref, 'Approve invariant mem-t2-inv v1 only.', 't2-v1');
+    const first = await mem.propose({
+      id: 'mem-t2-inv',
+      scope: 'common',
+      kind: 'invariant',
+      text: 'First text.',
+      evidence_refs: ['plan:4'],
+      confidence: 'verified',
+      author_pid: 'agent:a',
+      owner_decision_ref: ref,
+    });
+    expect(first.version).toBe(1);
+    await expect(
+      mem.propose({
+        id: 'mem-t2-inv',
+        scope: 'common',
+        kind: 'invariant',
+        text: 'Second text with the same approval.',
+        evidence_refs: ['plan:4'],
+        confidence: 'verified',
+        author_pid: 'agent:a',
+        owner_decision_ref: ref,
+      }),
+    ).rejects.toThrow(/does not target subject/);
+  });
+
+  it('T3: a pause decision for another scope never clears this scope (no global clear)', async () => {
+    const mem = store();
+    const p = await proposeProtectedInvariant(mem, 'mem-t3-inv', 'project:pause-t3');
+    try {
+      await mem.activate(p.id, 1, 'agent:b');
+    } catch {
+      /* INVARIANT_TOUCHED pauses the scope */
+    }
+    expect(await mem.isActivationPaused('project:pause-t3')).toBe(true);
+    const wrongRef = await pauseRequestId('', 1);
+    await approveViaC5(wrongRef, 'Approve clearing an unrelated pause subject.', 't3-wrong');
+    await expect(mem.clearActivationPause(wrongRef, 'project:pause-t3')).rejects.toThrow(
+      /does not target subject/,
+    );
+    expect(await mem.isActivationPaused('project:pause-t3')).toBe(true);
+  });
+
+  it('T4: a used pause approval cannot be replayed for the next pause occurrence', async () => {
+    const mem = store();
+    const scope = 'project:pause-t4';
+    const first = await proposeProtectedInvariant(mem, 'mem-t4-a', scope);
+    try {
+      await mem.activate(first.id, 1, 'agent:b');
+    } catch {
+      /* protected activation pauses the scope */
+    }
+    const second = await proposeProtectedInvariant(mem, 'mem-t4-b', scope);
+    await expect(mem.activate(second.id, 1, 'agent:b')).rejects.toThrow(/ACTIVATION_PAUSED/);
+    const firstRef = await mem.pauseClearRequestId(scope);
+    await approveViaC5(firstRef, 'Approve clearing the pause occurrence of mem-t4.', 't4-one');
+    await mem.clearActivationPause(firstRef, scope);
+    await mem.activate(second.id, 1, 'agent:b');
+    expect((await mem.get(second.id, 1))?.status).toBe('active');
+    // The protected activation re-paused the scope (new occurrence): the
+    // already-used occurrence-1 approval must not clear it again.
+    expect(await mem.isActivationPaused(scope)).toBe(true);
+    await expect(mem.clearActivationPause(firstRef, scope)).rejects.toThrow(/does not target subject/);
+    expect(await mem.isActivationPaused(scope)).toBe(true);
+  });
+
+  it('T5: a retired protected id cannot be resurrected under another kind without a decision', async () => {
+    const mem = store();
+    const p = await proposeProtectedInvariant(mem, 'mem-t5-inv', 'common');
+    await ensureActive(mem, p.id, 1, 'common', 't5');
+    const retireRef = retireRequestId(p.id, 1);
+    await approveViaC5(retireRef, 'Approve retiring mem-t5-inv v1.', 't5-ret');
+    await mem.retire(p.id, 1, 'default', retireRef);
+    await expect(
+      mem.propose({
+        id: 'mem-t5-inv',
+        scope: 'common',
+        kind: 'fact',
+        text: 'Resurrected as a plain fact without a decision.',
+        evidence_refs: ['plan:4'],
+        author_pid: 'agent:a',
+      }),
+    ).rejects.toThrow(/PROTECTED_KIND_OWNER_REQUIRED|required/);
+    const ref = proposeRequestId('mem-t5-inv', 2);
+    await approveViaC5(ref, 'Approve mem-t5-inv v2 (explicit resurrection).', 't5-ok');
+    const back = await mem.propose({
+      id: 'mem-t5-inv',
+      scope: 'common',
+      kind: 'fact',
+      text: 'Resurrected as a plain fact with an explicit decision.',
+      evidence_refs: ['plan:4'],
+      author_pid: 'agent:a',
+      owner_decision_ref: ref,
+    });
+    expect(back.version).toBe(2);
+    expect(back.kind).toBe('fact');
   });
 });
