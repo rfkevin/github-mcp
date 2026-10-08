@@ -1,7 +1,7 @@
 /**
- * CC-3 C2 — les 3 outils collab_* du store (plan CC-PLAN-3/v1.1 §5) :
- * lecture de contexte minimal, reprise par curseur de séquence, append
- * idempotent. Résolution complète de contexte (mémoire, packets par rôle) : C3.
+ * CC-3 C2/C3/F5 — outils collab_* du store.
+ * A09 : collab_get_context résout issue/cycle, identité serveur, packet rôle/tâche,
+ * phase, mémoire C4 visible, contribution/delta optionnelle.
  */
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
@@ -12,11 +12,14 @@ import { CollabStoreError, type AppendOutcome } from '../store/collab-store';
 import type { StoreEventType } from '../contracts';
 import { authorizeAppend } from '../identity';
 import { exportCycleState, exportMemoryMarkdown } from '../export';
-import { resolveContextTarget } from '../context';
+import { resolveContextTarget, buildRolePacket } from '../context';
 import { advanceGuarded } from '../phases/gate';
 import type { Phase } from '../../collab/contracts';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+
+/** Default C0 baseline for packet budget when the caller does not pass one. */
+const DEFAULT_C0_BASELINE = 12_000;
 
 export function createCollabServer(context: CollabToolContext): McpServer {
   const server = new McpServer({ name: 'collab-store', version: '0.1.0' }, {
@@ -31,29 +34,65 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
     failure(error, fallback, extra, context.fallback);
   server.registerTool('collab_get_context', {
     title: 'Contexte de cycle (store CC-3)',
-    description: 'En-tête du cycle (phase, statut, révision) et tâches impliquant le participant (auteur, reviewer ou testeur ; par défaut le vôtre, dérivé du jeton). Renvoie aussi caller : votre participant_id et votre statut (registered/unregistered). Lecture seule. La résolution complète (mémoire, packets par rôle) arrive en C3.',
+    description: 'A09 : résout issue/cycle/task, identité serveur (jamais un participant_id client), packet rôle/tâche sous budget, phase, mémoire C4 visible (scopes partagés + votre participant), delta optionnel depuis last_seen_seq. Lecture seule.',
     inputSchema: {
       cycle: z.string().min(1).max(64).optional(),
       issue: z.string().min(1).max(128).optional(),
       repository: z.string().min(1).max(200).optional(),
       task: z.string().min(1).max(64).optional(),
-      participant_id: z.string().min(1).max(128).optional(),
+      last_seen_seq: z.number().int().min(0).optional(),
+      include_delta: z.boolean().optional(),
+      delta_limit: z.number().int().min(1).max(200).optional(),
+      c0_baseline_tokens: z.number().int().min(1).max(100_000).optional(),
+      approved_budget_tokens: z.number().int().min(1).max(6000).optional(),
     },
     outputSchema: outputSchemas.collab_get_context,
     annotations: READ_ONLY,
-  }, async ({ cycle, issue, repository, task, participant_id }) => {
+  }, async (input) => {
     try {
       const identity = await context.identity();
-      const participantId = participant_id ?? identity.participant_id;
+      // A09 / C5 : identité uniquement dérivée du jeton serveur.
+      const participantId = identity.participant_id;
       const resolved = await resolveContextTarget(context.db, {
-        cycle, issue, repository, task, participant_id: participantId,
+        cycle: input.cycle,
+        issue: input.issue,
+        repository: input.repository,
+        task: input.task,
+        participant_id: participantId,
       });
       const value = await context.store.getContext(resolved.cycle_id, participantId);
+      const packet = await buildRolePacket(context.db, {
+        cycle: resolved.cycle_id,
+        task: input.task,
+        participant_id: participantId,
+      }, {
+        c0BaselineTokens: input.c0_baseline_tokens ?? DEFAULT_C0_BASELINE,
+        approvedBudgetTokens: input.approved_budget_tokens,
+        lastSeenSeq: input.last_seen_seq ?? 0,
+      });
+      let delta: { events: unknown[]; hasMore: boolean } | undefined;
+      if (input.include_delta) {
+        delta = await context.store.getDelta(
+          resolved.cycle_id,
+          input.last_seen_seq ?? 0,
+          input.delta_limit ?? 50,
+        );
+      }
       return collabSuccess({
         ...value,
         participant_id: participantId,
         caller: { participant_id: identity.participant_id, status: identity.status },
         resolved: { cycle_id: resolved.cycle_id, task: resolved.task },
+        packet: {
+          header: packet.header,
+          role_card: packet.role_card,
+          memory: packet.memory,
+          open_questions: packet.open_questions,
+          refs: packet.refs,
+          excluded_memory_ids: packet.excluded_memory_ids,
+          budget: packet.budget,
+        },
+        ...(delta ? { delta } : {}),
       });
     } catch (error) {
       return collabFailure(error, 'Contexte de cycle indisponible.');
@@ -121,7 +160,6 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   }, async (input) => {
     let outcome: AppendOutcome;
     try {
-      // CC-3 C5 : participant_id doit être celui dérivé du jeton ; client non enregistré = owner.request seulement.
       const participantId = authorizeAppend(await context.identity(), input.participant_id, input.type);
       outcome = await context.store.appendEvent({
         cycle_id: input.cycle,

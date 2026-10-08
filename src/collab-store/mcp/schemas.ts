@@ -1,5 +1,5 @@
 /**
- * CC-3 C2 — schémas de sortie (RAW SHAPES : registerTool attend un ZodRawShape,
+ * CC-3 C2/F5 — schémas de sortie (RAW SHAPES : registerTool attend un ZodRawShape,
  * pas un z.object complet).
  */
 import { z } from 'zod';
@@ -29,6 +29,15 @@ const contextTask = {
   revision: z.number(),
 };
 
+const packetMemory = {
+  id: z.string(),
+  version: z.number(),
+  scope: z.string(),
+  kind: z.string(),
+  text: z.string(),
+  confidence: z.string(),
+};
+
 export const outputSchemas = {
   collab_get_context: {
     cycle_id: z.string(),
@@ -37,11 +46,35 @@ export const outputSchemas = {
     revision: z.number(),
     tasks: z.array(z.object(contextTask)),
     participant_id: z.string().nullable().optional(),
-    // CC-3 C5 : identité dérivée du jeton (I8).
     caller: z.object({ participant_id: z.string(), status: z.enum(['registered', 'unregistered']) }).optional(),
     resolved: z.object({
       cycle_id: z.string(),
-      task: z.object(contextTask).nullable(),
+      task: z.object({
+        ...contextTask,
+        cycle_id: z.string().optional(),
+        target_ref: z.string().optional(),
+        participation: z.string().optional(),
+      }).nullable(),
+    }).optional(),
+    packet: z.object({
+      header: z.object({
+        cycle_id: z.string(),
+        phase: z.string(),
+        revision: z.number(),
+        status: z.string(),
+        participant_id: z.string(),
+        last_seen_seq: z.number(),
+      }),
+      role_card: z.object({ role: z.string(), duty: z.string() }).nullable(),
+      memory: z.array(z.object(packetMemory)),
+      open_questions: z.array(z.string()),
+      refs: z.object({ items: z.array(z.string()), complete: z.literal(false) }),
+      excluded_memory_ids: z.array(z.string()),
+      budget: z.object({ max_tokens: z.number(), estimated_tokens: z.number() }),
+    }).optional(),
+    delta: z.object({
+      events: z.array(z.object(storedEvent)),
+      hasMore: z.boolean(),
     }).optional(),
   },
   collab_phase_advance: {
@@ -59,7 +92,6 @@ export const outputSchemas = {
     revision: z.number().optional(),
     event: z.object(storedEvent).optional(),
   },
-  // CC-3 C6 : instantané pour une PR GitHub (lecture seule).
   collab_export: {
     cycle_id: z.string(),
     format: z.enum(['cc-state-1', 'memory-md']),

@@ -1,4 +1,5 @@
 import { CollabStoreError } from '../store/collab-store';
+import { ensureSchema } from '../store/schema';
 import { ensureContextSchema } from './schema';
 import { resolveContextTarget, type ResolveContextInput, type ResolvedTask } from './resolution';
 
@@ -11,6 +12,17 @@ export interface PacketOptions {
   lastSeenSeq?: number;
   refs?: string[];
   openQuestions?: string[];
+  /** Active memory slice already filtered for the caller (optional override for tests). */
+  memoryOverride?: PacketMemory[];
+}
+
+export interface PacketMemory {
+  id: string;
+  version: number;
+  scope: string;
+  kind: string;
+  text: string;
+  confidence: string;
 }
 
 export interface RolePacket {
@@ -24,7 +36,7 @@ export interface RolePacket {
   };
   task: ResolvedTask | null;
   role_card: { role: string; duty: string } | null;
-  memory: unknown[];
+  memory: PacketMemory[];
   open_questions: string[];
   refs: { items: string[]; complete: false };
   excluded_memory_ids: string[];
@@ -53,6 +65,21 @@ function effectiveBudget(options: PacketOptions): number {
   return Math.min(DEFAULT_PACKET_BUDGET, quarter, options.approvedBudgetTokens ?? Number.MAX_SAFE_INTEGER);
 }
 
+/** Shared scopes + caller's own participant scope only (C5 R5 / C6 export isolation). */
+function memoryVisible(scope: string, participantId: string): boolean {
+  if (scope.startsWith('participant:')) return scope === 'participant:' + participantId;
+  return true;
+}
+
+async function loadVisibleActiveMemory(db: D1Database, participantId: string): Promise<PacketMemory[]> {
+  await ensureSchema(db);
+  const { results } = await db.prepare([
+    'SELECT id, version, scope, kind, text, confidence',
+    "FROM memory_entries WHERE status = 'active' ORDER BY scope, id, version",
+  ].join(' ')).all<PacketMemory>();
+  return results.filter(row => memoryVisible(row.scope, participantId));
+}
+
 export async function buildRolePacket(
   db: D1Database,
   input: ResolveContextInput,
@@ -70,6 +97,11 @@ export async function buildRolePacket(
   while (estimateTokens(openQuestions) > OPEN_QUESTIONS_BUDGET && openQuestions.length) {
     openQuestions.pop();
   }
+
+  const allMemory = options.memoryOverride ?? await loadVisibleActiveMemory(db, input.participant_id);
+  const memory: PacketMemory[] = [];
+  const excluded: string[] = [];
+
   const packet: RolePacket = {
     header: {
       ...cycle,
@@ -78,20 +110,38 @@ export async function buildRolePacket(
     },
     task: resolved.task,
     role_card: roleCard(resolved.task),
-    memory: [],
+    memory,
     open_questions: openQuestions,
     refs: { items: [...(options.refs ?? [])], complete: false },
-    excluded_memory_ids: [],
+    excluded_memory_ids: excluded,
     budget: { max_tokens: maxTokens, estimated_tokens: 0 },
   };
+
+  // Prefer protected/high-value kinds first when fitting under budget.
+  const ranked = [...allMemory].sort((a, b) => {
+    const rank = (k: string) => (k === 'invariant' || k === 'decision' ? 0 : k === 'fact' ? 1 : 2);
+    return rank(a.kind) - rank(b.kind) || a.scope.localeCompare(b.scope) || a.id.localeCompare(b.id);
+  });
+  for (const entry of ranked) {
+    memory.push(entry);
+    if (estimateTokens({ ...packet, budget: { ...packet.budget, estimated_tokens: 0 } }) > maxTokens) {
+      memory.pop();
+      excluded.push(entry.id + '@' + entry.version);
+    }
+  }
 
   const trim = () => estimateTokens({ ...packet, budget: { ...packet.budget, estimated_tokens: 0 } });
   while (trim() > maxTokens && packet.refs.items.length) packet.refs.items.pop();
   while (trim() > maxTokens && packet.open_questions.length) packet.open_questions.pop();
+  while (trim() > maxTokens && packet.memory.length) {
+    const dropped = packet.memory.pop()!;
+    excluded.push(dropped.id + '@' + dropped.version);
+  }
   const estimated = trim();
   if (estimated > maxTokens) {
     throw new CollabStoreError('PACKET_BUDGET_TOO_SMALL', 'Le packet minimal dépasse le budget approuvé.');
   }
   packet.budget.estimated_tokens = estimated;
+  packet.excluded_memory_ids = excluded;
   return packet;
 }
