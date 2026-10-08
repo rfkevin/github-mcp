@@ -26,6 +26,17 @@ const PARTICIPANT_RE = /^[a-z0-9][a-z0-9:_-]{0,127}$/i;
 const RESERVED_PARTICIPANTS = /^(owner|unregistered(:.*)?|system)$/i;
 const MAX_ATTEMPTS = 3;
 
+/**
+ * A request event without a decision bound to its own seq (F2/A02, A06).
+ * The immutable identity of a request is its event `seq`; `request_id` is
+ * the agent-chosen name consumers (C4) bind to. `state`:
+ * - `pending`: decidable;
+ * - `blocked`: another event with the same request_id was already decided
+ *   (`decided_seq`) — one decision per request_id, so this one can never be
+ *   decided; the agent must file again under a new request_id;
+ * - `invalid`: the payload has no valid request_id — never decidable.
+ * Blocked and invalid requests are listed, never hidden.
+ */
 export interface PendingRequest {
   request_id: string;
   cycle_id: string;
@@ -34,6 +45,16 @@ export interface PendingRequest {
   summary: string;
   seq: number;
   at: number;
+  state: 'pending' | 'blocked' | 'invalid';
+  decided_seq?: number | null;
+}
+
+export interface PendingPage {
+  items: PendingRequest[];
+  /** Request events still awaiting a decision of their own (all states), across all pages. */
+  total: number;
+  /** Pass as `before` to read the next (older) page; null when this is the last page. */
+  next_before: number | null;
 }
 
 export interface OwnerWriteResult {
@@ -41,36 +62,113 @@ export interface OwnerWriteResult {
   event: StoredStoreEvent;
 }
 
-function requestIdOf(payloadJson: string): { request_id: string; summary: string } | null {
+function requestIdOf(payloadJson: string): { request_id: string; summary: string; valid: boolean } {
   try {
     const payload = JSON.parse(payloadJson) as Record<string, unknown>;
     const requestId = typeof payload.request_id === 'string' ? payload.request_id : '';
-    if (!REQUEST_ID_RE.test(requestId)) return null;
     const summary = typeof payload.summary === 'string' ? payload.summary.slice(0, 600) : '';
-    return { request_id: requestId, summary };
+    return { request_id: requestId.slice(0, 80), summary, valid: REQUEST_ID_RE.test(requestId) };
   } catch {
-    return null;
+    return { request_id: '', summary: '', valid: false };
   }
 }
 
-/** Requests filed by agents (owner.request / phase.request) without a recorded decision. */
-export async function listPendingRequests(db: D1Database, limit = 100): Promise<PendingRequest[]> {
+/** request_id of a request event, read in SQL (invalid JSON never raises). */
+const SQL_REQUEST_ID = "json_extract(CASE WHEN json_valid(e.payload_json) THEN e.payload_json ELSE '{}' END, '$.request_id')";
+/**
+ * Request events with no decision bound to their own seq. Filtering happens
+ * in SQL, before any LIMIT, so a page never hides older undecided requests
+ * behind newer decided ones (A06). The decision of a request_id is bound to a
+ * request seq through its owner.decision event (payload.request_seq).
+ */
+const UNDECIDED_FROM = [
+  'FROM events e',
+  'LEFT JOIN owner_decisions d ON d.request_id = ' + SQL_REQUEST_ID,
+  'LEFT JOIN events de ON de.seq = d.event_seq',
+  "WHERE e.type IN ('owner.request', 'phase.request')",
+  "  AND (d.request_id IS NULL OR json_extract(de.payload_json, '$.request_seq') IS NOT e.seq)",
+].join(' ');
+const MAX_PAGE = 500;
+
+/** One page of request events awaiting a decision, newest first, with a cursor to older pages. */
+export async function listPendingPage(db: D1Database, options: { limit?: number; before?: number } = {}): Promise<PendingPage> {
   await ensureSchema(db);
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), MAX_PAGE);
+  const before = Number.isSafeInteger(options.before) && (options.before as number) > 0 ? options.before as number : Number.MAX_SAFE_INTEGER;
   const { results } = await db.prepare([
-    'SELECT seq, cycle_id, at, type, participant_id, payload_json FROM events',
-    "WHERE type IN ('owner.request', 'phase.request') ORDER BY seq DESC LIMIT ?1",
-  ].join(' ')).bind(Math.min(Math.max(limit, 1), 500)).all<StoredStoreEvent>();
-  const decided = new Set((await db.prepare('SELECT request_id FROM owner_decisions')
-    .all<{ request_id: string }>()).results.map(row => row.request_id));
-  const pending: PendingRequest[] = [];
-  const seen = new Set<string>();
-  for (const row of results) {
+    'SELECT e.seq, e.cycle_id, e.at, e.type, e.participant_id, e.payload_json,',
+    "  d.request_id AS decided_id, json_extract(de.payload_json, '$.request_seq') AS decided_seq",
+    UNDECIDED_FROM, 'AND e.seq < ?1 ORDER BY e.seq DESC LIMIT ?2',
+  ].join(' ')).bind(before, limit + 1)
+    .all<StoredStoreEvent & { decided_id: string | null; decided_seq: number | null }>();
+  const total = (await db.prepare('SELECT COUNT(*) AS n ' + UNDECIDED_FROM).first<{ n: number }>())?.n ?? 0;
+  const items = results.slice(0, limit).map((row): PendingRequest => {
     const parsed = requestIdOf(row.payload_json);
-    if (!parsed || decided.has(parsed.request_id) || seen.has(parsed.request_id)) continue;
-    seen.add(parsed.request_id);
-    pending.push({ ...parsed, cycle_id: row.cycle_id, type: row.type, participant_id: row.participant_id, seq: row.seq, at: row.at });
+    const state = !parsed.valid ? 'invalid' : row.decided_id !== null ? 'blocked' : 'pending';
+    return {
+      request_id: parsed.request_id, summary: parsed.summary, cycle_id: row.cycle_id, type: row.type,
+      participant_id: row.participant_id, seq: row.seq, at: row.at, state,
+      ...(state === 'blocked' ? { decided_seq: row.decided_seq ?? null } : {}),
+    };
+  });
+  return { items, total, next_before: results.length > limit ? items[items.length - 1].seq : null };
+}
+
+/** Requests awaiting a decision (first page, newest first). See listPendingPage for paging. */
+export async function listPendingRequests(db: D1Database, limit = 100): Promise<PendingRequest[]> {
+  return (await listPendingPage(db, { limit })).items;
+}
+
+/** The request event of `seq`, if it is a request type. */
+async function requestEvent(db: D1Database, seq: number): Promise<StoredStoreEvent | null> {
+  return db.prepare("SELECT * FROM events WHERE seq = ?1 AND type IN ('owner.request', 'phase.request')")
+    .bind(seq).first<StoredStoreEvent>();
+}
+
+/** The request seq a recorded decision of `requestId` is bound to (null: decided without a bound event). */
+async function decidedSeqOf(db: D1Database, requestId: string): Promise<{ decision: string; request_seq: number | null } | null> {
+  const row = await db.prepare([
+    "SELECT d.decision, json_extract(de.payload_json, '$.request_seq') AS request_seq",
+    'FROM owner_decisions d LEFT JOIN events de ON de.seq = d.event_seq WHERE d.request_id = ?1',
+  ].join(' ')).bind(requestId).first<{ decision: string; request_seq: number | null }>();
+  return row ?? null;
+}
+
+/**
+ * Resolve the exact request a decision targets (A02).
+ * - With `request_seq` (the /owner form): that event, which must still carry
+ *   the displayed request_id (and cycle when given), else REQUEST_MISMATCH.
+ * - Without (programmatic callers): the single undecided request event with
+ *   this request_id across the whole log (no recent window, A06); several →
+ *   AMBIGUOUS_REQUEST, the caller must name the seq.
+ */
+async function resolveRequestTarget(db: D1Database, input: { request_id: string; request_seq?: number; cycle_id?: string }): Promise<StoredStoreEvent> {
+  if (input.request_seq !== undefined) {
+    if (!Number.isSafeInteger(input.request_seq) || input.request_seq <= 0) {
+      throw new CollabStoreError('INVALID_REQUEST_ID', 'Numéro de demande (seq) invalide.');
+    }
+    const event = await requestEvent(db, input.request_seq);
+    if (!event) throw new CollabStoreError('UNKNOWN_REQUEST', 'Aucune demande avec ce numéro (seq ' + input.request_seq + ').');
+    const parsed = requestIdOf(event.payload_json);
+    if (!parsed.valid || parsed.request_id !== input.request_id || (input.cycle_id && input.cycle_id !== event.cycle_id)) {
+      throw new CollabStoreError('REQUEST_MISMATCH',
+        'La demande seq ' + input.request_seq + ' ne correspond pas à celle affichée ; rien n’est décidé. Relisez /owner.');
+    }
+    return event;
   }
-  return pending;
+  const { results } = await db.prepare([
+    'SELECT e.* ' + UNDECIDED_FROM, 'AND ' + SQL_REQUEST_ID + ' = ?1 ORDER BY e.seq LIMIT 2',
+  ].join(' ')).bind(input.request_id).all<StoredStoreEvent>();
+  if (results.length > 1) {
+    throw new CollabStoreError('AMBIGUOUS_REQUEST',
+      'Plusieurs demandes portent cet identifiant (seq ' + results.map(row => row.seq).join(', ') + ') : précisez request_seq.');
+  }
+  if (results.length === 0) {
+    const prior = await decidedSeqOf(db, input.request_id);
+    if (prior) throw new CollabStoreError('ALREADY_DECIDED', 'Demande déjà tranchée : ' + prior.decision + '.');
+    throw new CollabStoreError('UNKNOWN_REQUEST', 'Aucune demande en attente avec cet identifiant.');
+  }
+  return results[0];
 }
 
 async function eventByKey(db: D1Database, key: string): Promise<StoredStoreEvent | null> {
@@ -137,22 +235,31 @@ export async function ownerAppend(db: D1Database, input: {
   throw new CollabStoreError('STALE', 'Le cycle change trop vite ; réessayez la décision.');
 }
 
-/** Approve or deny a pending owner.request / phase.request. One decision per request. */
+/**
+ * Approve or deny one owner.request / phase.request. One decision per
+ * request_id, bound to the exact request event (`request_seq`) the owner saw
+ * (A02): a homonym filed later, in any cycle, never receives it. Replaying the
+ * same form (same seq) is idempotent; a decision already bound to another seq
+ * of this request_id is refused with ALREADY_DECIDED.
+ */
 export async function recordOwnerDecision(db: D1Database, input: {
   request_id: string;
   decision: string;
   proof: OwnerProof;
+  /** Immutable target shown on /owner. Optional for programmatic callers (see resolveRequestTarget). */
+  request_seq?: number;
+  cycle_id?: string;
   now?: () => Date;
 }): Promise<OwnerWriteResult & { decision: Decision }> {
   if (!REQUEST_ID_RE.test(input.request_id)) throw new CollabStoreError('INVALID_REQUEST_ID', 'Identifiant de demande invalide.');
   if (!DECISIONS.includes(input.decision as Decision)) throw new CollabStoreError('INVALID_DECISION', 'Décision : approve ou deny.');
   const decision = input.decision as Decision;
-  const request = (await listPendingRequests(db, 500)).find(item => item.request_id === input.request_id);
-  if (!request) {
-    const prior = await db.prepare('SELECT decision FROM owner_decisions WHERE request_id = ?1')
-      .bind(input.request_id).first<{ decision: string }>();
-    if (prior) throw new CollabStoreError('ALREADY_DECIDED', 'Demande déjà tranchée : ' + prior.decision + '.');
-    throw new CollabStoreError('UNKNOWN_REQUEST', 'Aucune demande en attente avec cet identifiant.');
+  await ensureSchema(db);
+  const request = await resolveRequestTarget(db, input);
+  const prior = await decidedSeqOf(db, input.request_id);
+  if (prior && prior.request_seq !== request.seq) {
+    throw new CollabStoreError('ALREADY_DECIDED', 'Identifiant déjà tranché (' + prior.decision + ') pour une autre demande'
+      + (prior.request_seq ? ' (seq ' + prior.request_seq + ')' : '') + ' : rien n’est décidé pour la seq ' + request.seq + '.');
   }
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
   const result = await ownerAppend(db, {
@@ -168,9 +275,15 @@ export async function recordOwnerDecision(db: D1Database, input: {
     now: input.now,
   });
   if (result.status === 'duplicate') {
-    const prior = await db.prepare('SELECT decision FROM owner_decisions WHERE request_id = ?1')
-      .bind(input.request_id).first<{ decision: string }>();
-    return { ...result, decision: (prior?.decision as Decision) ?? decision };
+    // The stored decision must be bound to this very request; otherwise a
+    // concurrent decision of a homonym won and this one is refused.
+    const boundSeq = (JSON.parse(result.event.payload_json) as { request_seq?: unknown }).request_seq;
+    if (boundSeq !== request.seq) {
+      throw new CollabStoreError('ALREADY_DECIDED', 'Identifiant tranché entre-temps pour une autre demande'
+        + (typeof boundSeq === 'number' ? ' (seq ' + boundSeq + ')' : '') + ' : rien n’est décidé pour la seq ' + request.seq + '.');
+    }
+    const stored = await decidedSeqOf(db, input.request_id);
+    return { ...result, decision: (stored?.decision as Decision) ?? decision };
   }
   return { ...result, decision };
 }
