@@ -96,47 +96,69 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   }, async ({ cycle, since_seq, limit }) => {
     try {
       const { events, hasMore } = await context.store.getDelta(cycle, since_seq, limit);
-      return collabSuccess({ events, has_more: hasMore, next_seq: events.length ? events[events.length - 1].seq : since_seq });
+      return collabSuccess({ cycle_id: cycle, events, hasMore });
     } catch (error) {
-      return collabFailure(error, 'Delta de cycle indisponible.');
+      return collabFailure(error, 'Delta indisponible.');
     }
   });
 
   server.registerTool('collab_append_event', {
     title: 'Append d\'événement (store CC-3)',
-    description: 'Écriture idempotente dans le journal du cycle. Voir le guide pour les types et codes d\'erreur.',
+    description: 'Ajout idempotent au journal du cycle. participant_id doit être le vôtre (voir caller dans collab_get_context) : sinon PARTICIPANT_MISMATCH ; client non enregistré : owner.request uniquement (UNREGISTERED_CLIENT). CAS fail-closed : fournissez expected_rev (0 = création de cycle). Un op_id rejoué renvoie l\'événement original (status duplicate) sans seconde écriture. Un expected_rev périmé renvoie l\'erreur typée STALE avec currentRevision et le delta à rejouer. Quota quotidien épuisé : QUOTA_EXHAUSTED, aucune écriture.',
     inputSchema: {
       cycle: z.string().min(1).max(64),
-      type: z.string().min(1).max(64),
       expected_rev: z.number().int().min(0),
-      payload_json: z.string().min(2).max(100000),
-      op_id: z.string().min(1).max(200),
-      evidence_ref: z.string().max(512).optional(),
+      op_id: z.string().min(1).max(256),
+      type: z.string().min(1).max(64),
+      participant_id: z.string().min(1).max(128),
+      payload_json: z.string().min(1).max(65536),
+      session_id: z.string().min(1).max(128).optional(),
+      role: z.string().min(1).max(64).optional(),
+      evidence_ref: z.string().min(1).max(1024).optional(),
     },
     outputSchema: outputSchemas.collab_append_event,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => {
+  }, async (input) => {
+    let outcome: AppendOutcome;
     try {
-      const identity = await context.identity();
-      authorizeAppend(identity);
-      const outcome: AppendOutcome = await context.store.appendEvent({
-        cycle_id: args.cycle,
-        type: args.type as StoreEventType,
-        participant_id: identity.participant_id,
-        expected_rev: args.expected_rev,
-        payload_json: args.payload_json,
-        op_id: args.op_id,
-        evidence_ref: args.evidence_ref,
+      // CC-3 C5 : participant_id doit être celui dérivé du jeton ; client non enregistré = owner.request seulement.
+      const participantId = authorizeAppend(await context.identity(), input.participant_id, input.type);
+      outcome = await context.store.appendEvent({
+        cycle_id: input.cycle,
+        type: input.type as StoreEventType,
+        participant_id: participantId,
+        expected_rev: input.expected_rev,
+        payload_json: input.payload_json,
+        op_id: input.op_id,
+        session_id: input.session_id,
+        role: input.role,
+        evidence_ref: input.evidence_ref,
       });
-      return collabSuccess(outcome);
     } catch (error) {
-      return collabFailure(error, 'Append refusé.');
+      return collabFailure(error, 'Ajout impossible.');
     }
+    if (outcome.status === 'applied') {
+      return collabSuccess({ status: 'applied', revision: outcome.revision, event: outcome.event });
+    }
+    if (outcome.status === 'duplicate') {
+      return collabSuccess({ status: 'duplicate', event: outcome.event });
+    }
+    if (outcome.status === 'stale') {
+      return collabFailure(
+        new CollabStoreError('STALE', 'Conflit de révision : rejouez le delta puis réessayez à currentRevision.'),
+        'Conflit de révision.',
+        { currentRevision: outcome.currentRevision, delta: outcome.delta },
+      );
+    }
+    return collabFailure(
+      new CollabStoreError('QUOTA_EXHAUSTED', 'Quota quotidien épuisé (jour ' + outcome.day + ', limite ' + outcome.limit + ').'),
+      'Quota épuisé.',
+    );
   });
 
   server.registerTool('collab_export', {
-    title: 'Export CC-STATE-1 / memory-md (store CC-3)',
-    description: 'Instantané cohérent (lecture seule). Voir le guide.',
+    title: 'Instantané GitHub (store CC-3)',
+    description: 'Lecture seule. format cc-state-1 : l\'état CC-STATE-1 du cycle = dernier état importé par le propriétaire (/owner) + ce que le store a enregistré depuis (tâches, phase, décisions owner authentifiées, preuves evidence.add). Sans changement : identique à l\'état importé ; avec changements : proposition de révision N+1 sur la base N, validée par le parser L1. Ne contient ni proposition ni contenu scellé. format memory-md : mémoire active des scopes partagés + votre scope participant uniquement. N\'écrit jamais dans GitHub : pour publier, committez content sur une branche (outils GitHub) et ouvrez une PR ; fusion = Kevin, puis import sur /owner. NO_STATE_SNAPSHOT si aucun état n\'a été importé.',
     inputSchema: {
       cycle: z.string().min(1).max(64),
       format: z.enum(['cc-state-1', 'memory-md']).default('cc-state-1'),
@@ -147,13 +169,26 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
     try {
       if (format === 'memory-md') {
         const identity = await context.identity();
-        const md = await exportMemoryMarkdown(context.db, cycle, identity.participant_id);
-        return collabSuccess(md);
+        const memory = await exportMemoryMarkdown(context.db, identity.status === 'registered' ? identity.participant_id : null);
+        return collabSuccess({ cycle_id: cycle, format, content: memory.content, content_sha256: memory.content_sha256,
+          memory: { entries: memory.entries, scopes: memory.scopes },
+          publish: 'Lecture seule : aucun fichier GitHub n\'est écrit par cet outil.' });
       }
       const state = await exportCycleState(context.db, cycle);
-      return collabSuccess(state);
+      const target = state.imported.target;
+      return collabSuccess({
+        cycle_id: cycle, format, content: state.content, content_sha256: state.content_sha256,
+        state: {
+          revision: state.state_revision, base_revision: state.base_revision, changed: state.changed, changes: state.changes,
+          imported: state.imported, store_revision: state.store_revision, last_seq: state.last_seq,
+        },
+        publish: state.changed
+          ? 'Proposez content tel quel' + (target ? ' dans ' + target.repository + ':' + target.path + ' (base ' + target.ref + ')' : '')
+            + ' via une branche et une PR (outils GitHub) ; fusion = Kevin, puis import de l\'état fusionné sur /owner.'
+          : 'Aucun changement depuis l\'import : rien à publier.',
+      });
     } catch (error) {
-      return collabFailure(error, 'Export impossible.');
+      return collabFailure(error, 'Export indisponible.');
     }
   });
 }
