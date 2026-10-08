@@ -34,7 +34,7 @@ export const collabMcpHandler = {
         headers: { 'Cache-Control': 'no-store', 'Retry-After': '15' } });
     }
     try {
-      const tools = createCollabToolContext(env as AuthEnv & CollabStoreEnv, userId, ctx.auth.scope);
+      const tools = createCollabToolContext(env as AuthEnv & CollabStoreEnv, userId, ctx.auth.scope, {}, ctx.auth.clientId);
       return createMcpHandler(() => createCollabServer(tools), {
         // Le wrapper stateless du SDK agents ne traite que ce chemin exact
         // (défaut '/mcp') et répond 404 'Not Found' à tout autre pathname.
