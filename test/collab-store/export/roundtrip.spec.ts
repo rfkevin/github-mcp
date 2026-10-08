@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import stateR6 from './fixtures/cc3-state-r6.md?raw';
 import { deriveTaskContext, parseWorkflowState, taskRecords } from '../../../src/collab/state';
 import { canonicalState, sha256Hex } from '../../../src/collab-store/export/document';
+import { resolveContextTarget } from '../../../src/collab-store/context/resolution';
 import { exportCycleState } from '../../../src/collab-store/export/state-export';
 import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
@@ -57,6 +58,47 @@ describe('CC-3 C6 — export CC-STATE-1', () => {
     expect(byId.C2).toMatchObject({ owner_pid: 'vibe', reviewer_pid: 'claude', tester_pid: 'grok' });
     expect(byId.T0).toMatchObject({ owner_pid: 'owner', reviewer_pid: 'claude', tester_pid: '' });
     expect((await db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1').bind(cycle).first<{ phase: string }>())?.phase).toBe('P5');
+  });
+
+  it('l’import indexe les issues de l’état pour la résolution C3 issue → cycle → tâche', async () => {
+    const cycle = uniq('issues');
+    const imported = await importState(db, cycle, stateR6);
+    expect(imported.issue_refs).toEqual(['rfkevin/project-mcp-collab#24', 'rfkevin/project-mcp-collab#25']);
+    const resolved = await resolveContextTarget(db, { issue: 'rfkevin/project-mcp-collab#25', participant_id: 'sol', task: 'C3' });
+    expect(resolved.cycle_id).toBe(cycle);
+    expect(resolved.task).toMatchObject({ task_id: 'C3', participation: 'owner' });
+    expect((await resolveContextTarget(db, { issue: 'issue 24', repository: 'rfkevin/project-mcp-collab', participant_id: 'vibe', task: 'C2' })).cycle_id).toBe(cycle);
+
+    // Un nouvel import du même état dans un autre cycle reprend les issues, signalé, et l'ancien cycle ne les garde pas.
+    const other = uniq('issues-other');
+    const second = await importState(db, other, stateR6);
+    expect(second.reassigned_issues).toEqual(['rfkevin/project-mcp-collab#24 (' + cycle + ')', 'rfkevin/project-mcp-collab#25 (' + cycle + ')']);
+    expect((await resolveContextTarget(db, { issue: 'rfkevin/project-mcp-collab#25', participant_id: 'sol', task: 'C3' })).cycle_id).toBe(other);
+    expect((await db.prepare('SELECT COUNT(*) AS n FROM cycle_issue_refs_v2 WHERE cycle_id = ?1').bind(cycle).first<{ n: number }>())?.n).toBe(0);
+  });
+
+  it('refuse fail-closed un libellé porté par plusieurs participants actifs, ou par un participant et le propriétaire (I8)', async () => {
+    const { registerParticipant } = await import('../../../src/collab-store/owner/decisions');
+    const proof = { kind: 'secret' as const, subject: 'owner-secret' };
+    try {
+      await registerParticipant(db, { participant_id: 'grok-bis', display_label: 'Grok', proof, op: 'c6-dup-grok' });
+      await expect(importState(db, uniq('dup'), stateR6)).rejects.toMatchObject({ code: 'IMPORT_AMBIGUOUS_LABEL', message: expect.stringContaining('Grok') });
+    } finally {
+      await db.prepare("UPDATE participants SET status = 'inactive' WHERE participant_id = 'grok-bis'").run();
+    }
+    try {
+      await registerParticipant(db, { participant_id: 'kevin-agent', display_label: 'Kevin', proof, op: 'c6-dup-kevin' });
+      await expect(importState(db, uniq('dup-owner'), stateR6)).rejects.toMatchObject({ code: 'IMPORT_AMBIGUOUS_LABEL', message: expect.stringContaining('Kevin') });
+    } finally {
+      await db.prepare("UPDATE participants SET status = 'inactive' WHERE participant_id = 'kevin-agent'").run();
+    }
+    expect((await importState(db, uniq('dup-clean'), stateR6)).status).toBe('applied');
+  });
+
+  it('refuse fail-closed une tâche dont deux rôles présents désignent le même participant (D12), « none » restant permis', async () => {
+    const d12 = stateR6.replace('| C4 | in_progress | Grok | author | GPT-5.6 Sol | Claude |', '| C4 | in_progress | Grok | author | Grok | Claude |');
+    await expect(importState(db, uniq('d12'), d12)).rejects.toMatchObject({ code: 'IMPORT_DUPLICATE_ROLE', message: expect.stringContaining('C4') });
+    expect(await db.prepare("SELECT 1 FROM tasks WHERE cycle_id = 'c6-d12-" + n + "'").first()).toBeNull();
   });
 
   it('refuse fail-closed un libellé sans participant enregistré (K6 d’abord)', async () => {
@@ -114,6 +156,8 @@ describe('CC-3 C6 — export CC-STATE-1', () => {
     await registerCc3(restore, 'c6-restore-' + n);
     expect((await importState(restore, cycle, first.content)).status).toBe('applied');
     const second = await exportCycleState(restore, cycle);
+    // Après restauration dans une base vide, la résolution C3 par issue fonctionne aussitôt.
+    expect((await resolveContextTarget(restore, { issue: 'rfkevin/project-mcp-collab#25', participant_id: 'sol', task: 'C3' })).cycle_id).toBe(cycle);
     expect(second.content).toBe(first.content);
     expect(second.content_sha256).toBe(first.content_sha256);
     expect(second.changed).toBe(false);

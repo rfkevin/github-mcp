@@ -43,7 +43,7 @@ Pour demander quelque chose au propriétaire (faire avancer une phase, enregistr
 - **Sortie** : phase, statut et révision du cycle, tâches où le participant est auteur, reviewer ou testeur, et `caller`.
 - **Annotations** : lecture seule.
 - **Erreurs** : `UNKNOWN_CYCLE`, `STORE_UNAVAILABLE`.
-- **À venir avec C3** : packet complet par rôle et résolution `issue → cycle → tâche` (`AMBIGUOUS_TASK`, `AMBIGUOUS_ISSUE`, `UNKNOWN_ISSUE`, `INVALID_ISSUE_REF`, `CONTEXT_TARGET_REQUIRED`, `PACKET_BUDGET_TOO_SMALL`).
+- **Services C3 (fusionnés, branchement de l’outil à venir)** : packet complet par rôle et résolution `issue → cycle → tâche` (`AMBIGUOUS_TASK`, `AMBIGUOUS_ISSUE`, `UNKNOWN_ISSUE`, `INVALID_ISSUE_REF`, `CONTEXT_TARGET_REQUIRED`, `PACKET_BUDGET_TOO_SMALL`). Les issues d’un cycle sont indexées par l’import d’état (section 4).
 
 ### `collab_get_delta`
 - **Entrée** : `cycle`, `since_seq` (0 = depuis le début), `limit` (1 à 1000, 200 par défaut).
@@ -91,7 +91,9 @@ GitHub state.md fusionné ──import /owner──▶ store (base N)
 1. **Import (Kevin, `/owner` → « Importer un état »)** : collez le fichier CC-STATE-1 fusionné, avec son dépôt, son chemin et sa branche.
    - L’import est une décision owner (`import_state`).
    - Il fixe la phase, remplace les tâches matérialisées du cycle et devient la base de l’export.
-   - Les libellés des tâches doivent correspondre à des participants enregistrés (`IMPORT_UNKNOWN_PARTICIPANT` sinon). Le libellé owner (« Kevin » par défaut) correspond à l’identifiant réservé `owner` ; `none` signifie « personne ».
+   - Les libellés des tâches doivent correspondre chacun à **un seul** participant actif (`IMPORT_UNKNOWN_PARTICIPANT` ou `IMPORT_AMBIGUOUS_LABEL` sinon). Le libellé owner (« Kevin » par défaut) correspond à l’identifiant réservé `owner` ; `none` signifie « personne ».
+   - D12 est vérifiée à l’import : deux rôles présents d’une même tâche ne peuvent pas désigner le même participant (`IMPORT_DUPLICATE_ROLE`).
+   - Les issues GitHub citées par `framing_ref`, `plan_ref`, `contract_ref` et `acceptance_ref` sont indexées dans la même transaction pour la résolution `issue → cycle` (C3). Les anciennes associations du cycle sont remplacées. Une issue déjà associée à un autre cycle lui est reprise, et le message le signale.
    - Une annotation comme « Claude (for Muse Spark) » est conservée telle quelle ; seul le libellé de tête sert à l’identité.
    - Réimporter le fichier qui est déjà la base ne change rien (`duplicate`).
    - Le message indique les tâches retirées du store qui ne figurent pas dans le fichier.
@@ -263,6 +265,8 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `STATE_REQUIRED` | C6 | Contenu d’import vide | — |
 | `STATE_TOO_LARGE` | C6 | Fichier d’état de plus de 256 Kio | — |
 | `IMPORT_UNKNOWN_PARTICIPANT` | C6 | Libellé de tâche sans participant enregistré | Enregistrer le participant (K6) |
+| `IMPORT_AMBIGUOUS_LABEL` | C6 | Libellé porté par plusieurs participants actifs, ou par un participant et le propriétaire | Rendre les libellés uniques sur `/owner` |
+| `IMPORT_DUPLICATE_ROLE` | C6 | D12 : deux rôles présents d’une tâche désignent le même participant (`none` reste permis) | Corriger l’attribution dans l’état |
 | `IMPORT_INVALID_TASK` | C6 | Identifiant de tâche non importable | Corriger l’état |
 | `IMPORT_TOO_MANY_TASKS` | C6 | Plus de 200 tâches | — |
 | `INVALID_EXPORT_TARGET` | C6 | Cible d’export invalide (dépôt `owner/repo`, chemin relatif) | — |
@@ -326,6 +330,5 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 - L’export reprend `next_action`, Roles et la prose de la base importée. Seules les données gérées par le store sont superposées. Un changement de prose passe par la PR de l’export.
 - `based_on_sha` reste celui de la base importée ; il est mis à jour à la fusion par celui qui prépare la PR.
 - L’import remplace les tâches matérialisées du cycle. Importez toujours l’état fusionné le plus récent, qui contient les exports précédents.
-- L’import n’indexe pas encore les issues du plan (`framing_ref`, `plan_ref`) pour la résolution `issue → cycle` de C3 : à brancher une fois C3 fusionné (table `cycle_issue_refs_v2`).
 - Le contenu de l’état importé figure dans l’événement `import_state`, donc dans `collab_get_delta` du cycle : c’est le fichier fusionné dans GitHub, pas une donnée privée.
-- La branche C3 (contexte par rôle, scellement P1) et la branche C4 (cycle de vie mémoire) ne sont pas encore fusionnées. Les codes des sections 7.3 et 7.4 sont documentés d’avance, à partir de leurs heads du 2026-10-08.
+- C3 est fusionné. La branche C4 (cycle de vie mémoire) ne l’est pas encore : les codes de la section 7.4 sont documentés d’avance, à partir de son head du 2026-10-08.
