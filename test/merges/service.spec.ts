@@ -59,6 +59,50 @@ describe('Commit de résolution à deux parents sans force', () => {
     await expect(fixture.coordinator.resolve({ ...args, resolutions: [resolution] })).rejects.toThrow();
     expect(fixture.mutations()).toHaveLength(0);
   });
+  describe('deux ajouts divergents dans un journal', () => {
+    const journal = (path: string, blobs: { old: string; ours: string; theirs: string }) => {
+      const fixture = mergeFixture({ ancestor: [entry(path, OLD)], ours: [entry(path, OURS)], theirs: [entry(path, THEIRS)] });
+      fixture.blobs[OLD] = blobs.old; fixture.blobs[OURS] = blobs.ours; fixture.blobs[THEIRS] = blobs.theirs;
+      return fixture;
+    };
+    const sides = { old: '# Journal\n\n### a\nnote a\n', ours: '# Journal\n\n### a\nnote a\n\n### ours\nnote ours\n',
+      theirs: '# Journal\n\n### a\nnote a\n\n### base\nnote base é\n' };
+    it.each([
+      ['base puis ajout de la branche', '# Journal\n\n### a\nnote a\n\n### base\nnote base é\n\n### ours\nnote ours\n'],
+      ['sans ligne vide', '# Journal\n\n### a\nnote a\n\n### base\nnote base é\n### ours\nnote ours\n'],
+      ['suivi d’une nouvelle note', '# Journal\n\n### a\nnote a\n\n### base\nnote base é\n\n### ours\nnote ours\n\n### fusion\nnote\n'],
+    ])('accepte %s', async (_name, content) => {
+      for (const path of ['AGENT_MEMORY.md', 'TOOL_IMPROVEMENTS.md']) {
+        const fixture = journal(path, sides);
+        await expect(fixture.coordinator.resolve({ ...args, resolutions: [{ path, choice: 'content', content }] })).resolves.toMatchObject({ commitSha: NEXT });
+      }
+    });
+    it.each([
+      ['l’ajout de la branche avant la base', '# Journal\n\n### a\nnote a\n\n### ours\nnote ours\n\n### base\nnote base é\n'],
+      ['l’ajout de la branche modifié', '# Journal\n\n### a\nnote a\n\n### base\nnote base é\n\n### ours\nnote OURS\n'],
+      ['l’ajout de la branche tronqué', '# Journal\n\n### a\nnote a\n\n### base\nnote base é\n\n### ours\nnote'],
+      ['l’ajout de la branche absent', '# Journal\n\n### a\nnote a\n\n### base\nnote base é\n'],
+      ['l’ajout de la branche après une autre note', '# Journal\n\n### a\nnote a\n\n### base\nnote base é\n\n### x\n\n### ours\nnote ours\n'],
+      ['la base réécrite', '# Journal\n\n### a\nnote a\n\n### base\nnote base e\n\n### ours\nnote ours\n'],
+    ])('refuse %s avant toute mutation', async (_name, content) => {
+      const path = 'AGENT_MEMORY.md', fixture = journal(path, sides);
+      await expect(fixture.coordinator.resolve({ ...args, resolutions: [{ path, choice: 'content', content }] }))
+        .rejects.toMatchObject({ code: 'MEMORY_APPEND_ONLY', message: expect.stringContaining('theirs') });
+      expect(fixture.mutations()).toHaveLength(0);
+    });
+    it('refuse une branche qui a réécrit l’historique commun', async () => {
+      const path = 'TOOL_IMPROVEMENTS.md';
+      const fixture = journal(path, { ...sides, ours: '# Journal\n\n### a\nnote modifiée\n\n### ours\nnote ours\n' });
+      const content = sides.theirs + '\n### ours\nnote ours\n';
+      await expect(fixture.coordinator.resolve({ ...args, resolutions: [{ path, choice: 'content', content }] })).rejects.toMatchObject({ code: 'FEEDBACK_APPEND_ONLY' });
+      expect(fixture.mutations()).toHaveLength(0);
+    });
+    it('refuse theirs seul, qui perdrait l’ajout de la branche', async () => {
+      const path = 'AGENT_MEMORY.md', fixture = journal(path, sides);
+      await expect(fixture.coordinator.resolve({ ...args, resolutions: [{ path, choice: 'theirs' }] })).rejects.toMatchObject({ code: 'MEMORY_APPEND_ONLY' });
+      expect(fixture.mutations()).toHaveLength(0);
+    });
+  });
   it('refuse les fichiers entrants surdimensionnés avant tout POST', async () => {
     const fixture = mergeFixture({ ancestor: [], ours: [], theirs: [entry('large.txt', THEIRS, { size: 1_000_001 })] });
     await expect(fixture.coordinator.resolve({ ...args, resolutions: [] })).rejects.toMatchObject({ code: 'MERGE_FILE_TOO_LARGE' });

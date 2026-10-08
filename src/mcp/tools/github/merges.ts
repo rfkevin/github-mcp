@@ -21,7 +21,7 @@ export function registerMergeTools(server: McpServer, context: ToolContext): voi
   server.registerTool('github_resolve_conflicts', {
     title: 'Enregistrer la résolution des conflits sur sa branche', _meta: oauthMetadata('mcp:write'),
     outputSchema: outputSchemas.github_resolve_conflicts, inputSchema: resolveConflictsSchema.shape,
-    description: 'Après github_get_merge_context, résoudre explicitement chaque conflit par ours, theirs, delete ou content. Les autres changements de base sont repris. Créer un commit à deux parents sur sa branche mcp, avec head/base attendus et mise à jour sans force. Pas de fusion de PR vers master/main. Chemins protégés, liens, changements fichier/dossier et journaux réécrits refusés ; limites 50 fichiers et 1 Mo. Renouveler les avis et suivre followUp. Après résultat incertain, relire avant de rejouer.',
+    description: 'Après github_get_merge_context, résoudre explicitement chaque conflit par ours, theirs, delete ou content. Les autres changements de base sont repris. Créer un commit à deux parents sur sa branche mcp, avec head/base attendus et mise à jour sans force. Pas de fusion de PR vers master/main. Chemins protégés, liens, changements fichier/dossier et journaux réécrits refusés ; journal modifié des deux côtés : theirs intact puis l’ajout de ours ; limites 50 fichiers et 1 Mo. Renouveler les avis et suivre followUp. Après résultat incertain, relire avant de rejouer.',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async args => {
     try { const result = await coordinator.resolve(args); toolSuccess(context, 'resolve_conflicts'); return textPayload(result); }
