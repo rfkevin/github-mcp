@@ -322,7 +322,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | Budgets (tokens) | common ≤ 1500 · project ≤ 2000 · role ≤ 1500 · participant ≤ 500 · questions ouvertes ≤ 300 par packet |
 | Dépassement | consolider ou retirer avant toute nouvelle activation |
 | Plafonds courts | par cycle et scope : ≤ 10 activations et ≤ 10 retraits sans revue de consolidation |
-| Activation atomique | une seule transaction : garde CAS (candidat toujours candidate), réservation de plafond, budget, baseline et alarme de croissance, pause des kinds protégés — tout est appliqué ou rien ; un seul reviewer enregistré et un seul incrément de compteur par activation réellement appliquée (A03) |
+| Activation atomique | une seule transaction : garde CAS (candidat toujours candidate), réservation de plafond, budget, baseline et alarme de croissance, pause des kinds protégés — tout est appliqué ou rien ; un seul reviewer enregistré et un seul incrément de compteur par activation réellement appliquée (A03) ; toute autre version active du même id est supersédée dans la même transaction (I4 : exactement une version active, même en activation parallèle — pré-test Claude, F3) |
 | Curiosités | observation/open_question au niveau hypothesis, jamais une règle ; expirent après 3 cycles sans nouvelle preuve |
 | Mémoire personnelle vs registre | le scope participant porte stratégies et préférences ; les faits *sur* un participant (résultats, incidents, évaluations, mesures) vivent seulement dans `evidence_ledger`, référencés par identifiant (I11) |
 | Promotion | participant → role/project/common par revue d’un pair |
@@ -338,3 +338,4 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 - L’import remplace les tâches matérialisées du cycle. Importez toujours l’état fusionné le plus récent, qui contient les exports précédents.
 - Le contenu de l’état importé figure dans l’événement `import_state`, donc dans `collab_get_delta` du cycle : c’est le fichier fusionné dans GitHub, pas une donnée privée.
 - C3 est fusionné. La branche C4 (cycle de vie mémoire) ne l’est pas encore : les codes de la section 7.4 sont documentés d’avance, à partir de son head `eb5f98a` (testé PASS le 2026-10-08).
+- La garde de budget de la transaction d’activation compte des points de code SQL (`length(text)`), alors que le pré-contrôle JS compte des unités UTF-16 (`estimateTokens`) : pour du texte hors BMP (emoji), la garde est légèrement plus permissive — effet limité à la fenêtre de course, le pré-contrôle reste autoritaire (pré-test Claude, F3).

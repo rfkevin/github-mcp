@@ -320,10 +320,6 @@ export class MemoryStore {
     const capKey = `${META_ACT}${cycleId}:${row.scope}`;
     await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
     await this.assertBudgetAllows(row.scope, row.text);
-    const priorActive = await this.db
-      .prepare(`SELECT version FROM memory_entries WHERE id = ?1 AND status = 'active' ORDER BY version DESC LIMIT 1`)
-      .bind(id)
-      .first<{ version: number }>();
     const pauseKey = `${META_PAUSE}:${row.scope}`;
     const baseKey = `${META_BASE}${row.scope}`;
     const occKey = `${META_OCC}${row.scope}`;
@@ -335,6 +331,10 @@ export class MemoryStore {
       // candidate is still a candidate, the scope is not paused, the cycle
       // cap has a slot left and the scope budget still allows this text —
       // the same conditions as the pre-checks, re-verified at commit time.
+      // Budget divergence (pre-test Claude): SQLite length() counts code
+      // points while estimateTokens counts UTF-16 units, so the in-batch
+      // guard is slightly more permissive for non-BMP text; the JS
+      // pre-check above stays authoritative outside the race window.
       this.db.prepare([
         'INSERT INTO collab_store_guard (ok)',
         'SELECT CASE WHEN',
@@ -350,16 +350,17 @@ export class MemoryStore {
         .prepare(`INSERT INTO quota_counters (day, writes) VALUES (?1, 1) ON CONFLICT(day) DO UPDATE SET writes = writes + 1`)
         .bind(capKey),
     ];
-    if (priorActive) {
-      // A03: CAS on the superseded row as well (status = 'active'), so a
-      // version that stopped being active between the read and the commit
-      // is never superseded blindly.
-      statements.push(
-        this.db
-          .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
-          .bind(id, priorActive.version),
-      );
-    }
+    // A03/I4 (pre-test Claude): supersede ANY other active version of this
+    // id inside the transaction, not just the priorActive read before the
+    // batch. Two candidate versions of one id activated in parallel would
+    // otherwise both stay active (each call saw "no active version") and
+    // violate I4. Sequential and parallel now converge: exactly one active
+    // version, the loser ends up superseded.
+    statements.push(
+      this.db
+        .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND status = 'active' AND version <> ?2`)
+        .bind(id, version),
+    );
     statements.push(
       this.db
         .prepare(

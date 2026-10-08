@@ -826,4 +826,31 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     // The loser's cap reservation rolled back with its failed transaction.
     expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(3);
   });
+
+  it('A03/I4: two candidate versions of one id activated in parallel -> exactly one active version', async () => {
+    const mem = store();
+    const id = 'mem-i4-race';
+    const scope = 'project:a03-i4';
+    await seedBaseline(scope, 100); // keep the growth alarm out of this race
+    await mem.propose({ id, scope, kind: 'fact', text: 'v1 original.', evidence_refs: ['plan:4'], author_pid: 'agent:a' });
+    await mem.activate(id, 1, 'agent:b');
+    await mem.supersede(id, 'agent:a', 'v2 candidate replacing v1.', ['plan:4']);
+    const v3 = await mem.propose({ id, scope, kind: 'fact', text: 'v3 parallel candidate.', evidence_refs: ['plan:4'], author_pid: 'agent:a' });
+    expect(v3.version).toBe(3);
+    // Both versions are candidates: parallel activation must converge to the
+    // sequential outcome — exactly one active version of the id (I4).
+    const [a2, a3] = await Promise.all([mem.activate(id, 2, 'agent:c'), mem.activate(id, 3, 'agent:d')]);
+    expect(a2.status).toBe('active');
+    expect(a3.status).toBe('active');
+    const s2 = (await mem.get(id, 2))?.status;
+    const s3 = (await mem.get(id, 3))?.status;
+    expect([s2, s3].filter((st) => st === 'active')).toHaveLength(1);
+    expect([s2, s3]).toContain('superseded');
+    const winnerVersion = s2 === 'active' ? 2 : 3;
+    const activeRow = (await mem.get(id, winnerVersion))!;
+    expect(activeRow.reviewer_pid).toBe(winnerVersion === 2 ? 'agent:c' : 'agent:d');
+    expect((await mem.get(id, 1))?.status).toBe('superseded');
+    // Each applied activation bumps the cap counter exactly once.
+    expect(await capWrites('mem:act:default:' + scope)).toBe(3);
+  });
 });
