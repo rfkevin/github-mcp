@@ -7,7 +7,7 @@ import { CollabStoreError } from '../store/collab-store';
 import { StateContractError } from '../../collab/contracts';
 import { ownerChannelConfig, type OwnerChannelEnv } from './config';
 import { defaultJwksResolver, verifyOwnerProof, type JwksResolver } from './proof';
-import { listPendingRequests, listRegistry, mapClient, recordOwnerDecision, registerParticipant, unmapClient } from './decisions';
+import { listPendingPage, listRegistry, mapClient, recordOwnerDecision, registerParticipant, unmapClient } from './decisions';
 import { OWNER_PAGE_CSP, dashboardPage, loginPage } from './page';
 import { unregisteredParticipantId } from '../identity';
 import { importStateSnapshot, listImportedStates } from './state-import';
@@ -60,7 +60,7 @@ export async function handleOwnerRequest(
     const proof = await verifyOwnerProof(request, config, null, jwks);
     if (!proof) return denied('proof_invalid');
     audit('view', 'ok');
-    return html(dashboardPage(config, { pending: await listPendingRequests(db), ...await listRegistry(db), imports: await listImportedStates(db) }));
+    return html(dashboardPage(config, { pending: await listPendingPage(db), ...await listRegistry(db), imports: await listImportedStates(db) }));
   }
   if (request.method !== 'POST') {
     return new Response('Méthode non autorisée.', { status: 405, headers: { Allow: 'GET, POST', 'Cache-Control': 'no-store' } });
@@ -92,7 +92,12 @@ export async function handleOwnerRequest(
   try {
     const op = crypto.randomUUID();
     if (action === 'decide') {
-      const result = await recordOwnerDecision(db, { request_id: field('request_id'), decision: field('decision'), proof });
+      // F2/A02 : la décision vise la demande affichée (seq immuable), jamais une homonyme arrivée depuis.
+      const seqField = field('request_seq').trim();
+      const result = await recordOwnerDecision(db, {
+        request_id: field('request_id'), decision: field('decision'), proof,
+        request_seq: seqField ? Number(seqField) : undefined, cycle_id: field('cycle_id') || undefined,
+      });
       message = { text: (result.status === 'duplicate' ? 'Déjà enregistré : ' : 'Décision enregistrée : ')
         + result.decision + ' (seq ' + result.event.seq + ').', error: false };
     } else if (action === 'register') {
@@ -128,7 +133,9 @@ export async function handleOwnerRequest(
     audit(action, 'refused', error.code.toLowerCase());
     message = { text: error.code + ' : ' + error.message, error: true };
   }
-  return html(dashboardPage(config, { pending: await listPendingRequests(db), ...await listRegistry(db), imports: await listImportedStates(db), message }),
+  // F2/A06 : pagination des demandes après filtrage ; `before` vient du bouton « plus anciennes ».
+  const before = action === 'view' && /^[1-9][0-9]{0,15}$/.test(field('before')) ? Number(field('before')) : undefined;
+  return html(dashboardPage(config, { pending: await listPendingPage(db, { before }), ...await listRegistry(db), imports: await listImportedStates(db), message }),
     message?.error ? 409 : 200);
 }
 
