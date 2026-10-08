@@ -26,7 +26,7 @@ function registry(context: CollabToolContext): Map<string, Handler> {
 
 describe('CC-3 C3 — sealing through collab tools', () => {
   it('proposal.submit never leaks P1 plaintext through collab_get_delta, then reveals after phase opening', async () => {
-    await ensureSchema(db);
+    await ensureSchema(db, true);
     const cycle = 'c3-mcp-seal-' + Date.now();
     await db.prepare(
       "INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, 'open')"

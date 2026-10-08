@@ -163,8 +163,11 @@ function runnableStatements(sql: string): string[] {
   return noCommentLines.split(';').map(part => part.trim()).filter(Boolean);
 }
 
-export async function ensureSchema(db: D1Database): Promise<void> {
-  if (ENSURED.has(db as unknown as object)) return;
+export async function ensureSchema(db: D1Database, force = false): Promise<void> {
+  // Test pools can reuse the same D1 binding object while resetting the
+  // underlying database between isolated cases. `force` bypasses the
+  // process-local cache for those explicit fixture setup calls.
+  if (!force && ENSURED.has(db as unknown as object)) return;
   await db.batch([
     ...runnableStatements(CANONICAL_SCHEMA_SQL).map(statement => db.prepare(statement)),
     ...STORE_INTERNAL_SCHEMA.map(statement => db.prepare(statement)),
