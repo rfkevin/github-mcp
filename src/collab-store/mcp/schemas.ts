@@ -69,6 +69,7 @@ export const outputSchemas = {
       }),
       store_revision: z.number(),
       last_seq: z.number(),
+      snapshot_seq: z.number(),
     }).optional(),
     memory: z.object({ entries: z.number(), scopes: z.array(z.string()) }).optional(),
     publish: z.string(),

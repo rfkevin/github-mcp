@@ -21,15 +21,22 @@ export interface LabelDirectory {
   ambiguous: Set<string>;
 }
 
+/** Active participants, the only rows a label may resolve to (read alone or inside an export snapshot batch). */
+export const ACTIVE_PARTICIPANTS_SQL =
+  "SELECT participant_id, display_label FROM participants WHERE status = 'active' ORDER BY participant_id";
+
 export async function loadLabelDirectory(db: D1Database, ownerLabel = DEFAULT_OWNER_LABEL): Promise<LabelDirectory> {
   await ensureSchema(db);
-  const { results } = await db.prepare(
-    "SELECT participant_id, display_label FROM participants WHERE status = 'active' ORDER BY participant_id"
-  ).all<{ participant_id: string; display_label: string }>();
+  const { results } = await db.prepare(ACTIVE_PARTICIPANTS_SQL).all<{ participant_id: string; display_label: string }>();
+  return buildLabelDirectory(results, ownerLabel);
+}
+
+export function buildLabelDirectory(rows: ReadonlyArray<{ participant_id: string; display_label: string }>,
+  ownerLabel = DEFAULT_OWNER_LABEL): LabelDirectory {
   const byLabel = new Map<string, string>();
   const byPid = new Map<string, string>();
   const ambiguous = new Set<string>();
-  for (const row of results) {
+  for (const row of rows) {
     byPid.set(row.participant_id, row.display_label);
     if (byLabel.has(row.display_label) || row.display_label === ownerLabel) ambiguous.add(row.display_label);
     else byLabel.set(row.display_label, row.participant_id);

@@ -72,7 +72,10 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **`cc-state-1`** : l’état du cycle au format CC-STATE-1 (détaillé en section 4).
   - Sans changement depuis le dernier import : le fichier importé, octet pour octet.
   - Avec changements : la proposition de révision N+1 sur la base N.
-  - La sortie donne `content`, `content_sha256`, `state` (`revision`, `base_revision`, `changed`, `changes`, `imported`, `store_revision`, `last_seq`) et `publish`, la consigne de publication.
+  - La sortie donne `content`, `content_sha256`, `state` (`revision`, `base_revision`, `changed`, `changes`, `imported`, `store_revision`, `last_seq`, `snapshot_seq`) et `publish`, la consigne de publication.
+  - L’export est un **instantané cohérent** du store. L’import de base, les participants, la phase, les tâches, les événements et les curseurs sont lus dans une seule transaction D1. Une écriture concurrente (tâche, `evidence.add`, import owner, registre) est donc entièrement incluse ou entièrement absente.
+  - `snapshot_seq` est le plus grand numéro d’événement du cycle dans cet instantané.
+  - `last_seq` est le **curseur de reprise sûr** pour `collab_get_delta`. Tout événement de `seq ≤ last_seq` est soit rendu dans le document, soit antérieur à l’import (c’est alors l’état fusionné importé qui fait foi). Le document rend seulement les tâches, la phase, les décisions owner et les preuves. Après l’import, `last_seq` s’arrête donc juste avant le premier événement d’un autre type (proposition, objection, demande, checkpoint, mémoire, journal manuel). Un delta lu à partir de `last_seq` ne perd aucun événement absent du document ; il peut seulement renvoyer des événements déjà rendus.
 - **`memory-md`** : entrées de mémoire actives des scopes partagés (common, project, role, task) et de **votre** scope participant seulement (format `CC-MEMORY-MD-1`). La mémoire personnelle d’un autre participant n’est jamais exportée.
 - **Lecture seule** : l’outil n’écrit **jamais** dans GitHub.
 - **Erreurs** : `NO_STATE_SNAPSHOT` (aucun état importé), `EXPORT_INVALID`, `STATE_SNAPSHOT_CORRUPT`, `STORE_UNAVAILABLE`.
