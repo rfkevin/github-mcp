@@ -28,14 +28,27 @@ describe('CC-3 C3 — sealing through collab tools', () => {
   it('proposal.submit never leaks P1 plaintext through collab_get_delta, then reveals after phase opening', async () => {
     await ensureSchema(db, true);
     const cycle = 'c3-mcp-seal-' + Date.now();
+    const clientId = 'client-' + cycle;
     await db.prepare(
       "INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, 'open')"
     ).bind(cycle).run();
-    const handlers = registry(createCollabToolContext(
+    // C5 derives the caller from the OAuth client. Seed the same mapping here
+    // so this C3 regression test stays valid both before and after C5 is merged.
+    await db.prepare([
+      'INSERT INTO participants (participant_id, display_label, status)',
+      "VALUES ('sol', 'Sol', 'active')",
+      "ON CONFLICT(participant_id) DO UPDATE SET display_label = excluded.display_label, status = 'active'",
+    ].join(' ')).run();
+    await db.prepare(
+      'INSERT INTO participant_clients (oauth_client_id, participant_id) VALUES (?1, ?2)'
+    ).bind(clientId, 'sol').run();
+    const createContextCompat = createCollabToolContext as unknown as (...args: unknown[]) => CollabToolContext;
+    const handlers = registry(createContextCompat(
       { COLLAB_DB: db, COLLAB_STORE_ENABLED: 'true', COLLAB_DAILY_WRITE_LIMIT: '100000' },
       'agent:sol',
       ['collab:'],
       { now: () => new Date('2026-10-08T00:00:00Z') },
+      clientId,
     ));
     const append = await handlers.get('collab_append_event')!({
       cycle,
