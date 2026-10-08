@@ -425,7 +425,7 @@ describe('CC-3 F1 — A08 permissions des tâches', () => {
 describe('CC-3 F1 — rejeux après réponse perdue (review Claude)', () => {
   const expectReplayDuplicate = async (
     cycleTag: string,
-    request: { type: string; payload_json: string; opSuffix: string },
+    request: { type: 'task.handoff' | 'task.claim'; payload_json: string; opSuffix: string },
   ) => {
     const store = makeStore();
     const cycle = uniq(cycleTag);
