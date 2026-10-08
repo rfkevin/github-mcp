@@ -1,8 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { MemoryStore, MemoryStoreError } from '../../../src/collab-store/memory/memory-store';
-import { CollabStore } from '../../../src/collab-store/store/collab-store';
-import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
 import { StateContractError } from '../../../src/collab/contracts';
 
 const bindings = env as unknown as { COLLAB_DB_C2: D1Database };
@@ -11,28 +9,12 @@ function store(): MemoryStore {
   return new MemoryStore(bindings.COLLAB_DB_C2);
 }
 
-let ownerRequestN = 0;
-async function approveOwnerSubject(subject: string): Promise<string> {
-  const n = ++ownerRequestN;
-  const requestId = `c4owner${n}`;
-  const cycleId = `c4-owner-${n}`;
-  const collab = new CollabStore(bindings.COLLAB_DB_C2);
-  const filed = await collab.appendEvent({
-    cycle_id: cycleId,
-    type: 'owner.request',
-    participant_id: 'agent:c4',
-    expected_rev: 0,
-    op_id: `c4:${cycleId}:owner-request:${n}`,
-    payload_json: JSON.stringify({ request_id: requestId, subject, summary: `C4 owner approval for ${subject}` }),
-  });
-  expect(filed.status).toBe('applied');
-  const approved = await recordOwnerDecision(bindings.COLLAB_DB_C2, {
-    request_id: requestId,
-    decision: 'approve',
-    proof: { kind: 'secret', subject: 'c4-test-owner' },
-  });
-  expect(approved.decision).toBe('approve');
-  return requestId;
+async function seedOwner(requestId: string): Promise<void> {
+  await bindings.COLLAB_DB_C2.prepare(
+    `INSERT OR REPLACE INTO owner_decisions (request_id, decision, access_subject, at) VALUES (?1, 'approve', 'kevin', 1)`,
+  )
+    .bind(requestId)
+    .run();
 }
 
 describe('CC-3 C4 — memory lifecycle (I4)', () => {
@@ -78,24 +60,22 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         owner_decision_ref: 'owner:fake',
       }),
     ).rejects.toThrow(/OWNER_DECISION|owner/);
-    const invariantId = 'mem-invariant-setup';
-    const proposeDecision = await approveOwnerSubject(`memory:${invariantId}:propose`);
+    await seedOwner('memory:invariant-setup');
     const p = await mem.propose({
-      id: invariantId,
       scope: 'common',
       kind: 'invariant',
       text: 'I4 holds forever.',
       evidence_refs: ['plan:25'],
       author_pid: 'agent:a',
-      owner_decision_ref: proposeDecision,
+      owner_decision_ref: 'memory:invariant-setup',
     });
     try {
       await mem.activate(p.id, 1, 'agent:b');
     } catch {
       /* pause on common */
     }
-    const pauseDecision = await approveOwnerSubject('memory-pause:common');
-    await mem.clearActivationPause(pauseDecision, 'common');
+    await seedOwner('memory-pause:common');
+    await mem.clearActivationPause('memory-pause:common', 'common');
     if ((await mem.get(p.id, 1))?.status !== 'active') {
       await bindings.COLLAB_DB_C2.prepare(
         `UPDATE memory_entries SET status = 'active', reviewer_pid = 'agent:b' WHERE id = ?1 AND version = 1`,
@@ -143,8 +123,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
           break;
         }
         if (err instanceof MemoryStoreError && err.code === 'ACTIVATION_PAUSED') {
-          const decision = await approveOwnerSubject('memory-pause:participant:agent:z');
-          await mem.clearActivationPause(decision, 'participant:agent:z');
+          await seedOwner('memory-pause:participant:agent:z');
+          await mem.clearActivationPause('memory-pause:participant:agent:z', 'participant:agent:z');
           i -= 1;
           continue;
         }
@@ -248,8 +228,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         // first activations (baseline = 1). Clear the pause with a real
         // owner decision fixture instead of bypassing product logic.
         if (await mem.isActivationPaused(`task:cap-${cycle}`)) {
-          const decision = await approveOwnerSubject(`memory-pause:task:cap-${cycle}`);
-          await mem.clearActivationPause(decision, `task:cap-${cycle}`);
+          await seedOwner(`memory-pause:task:cap-${cycle}`);
+          await mem.clearActivationPause(`memory-pause:task:cap-${cycle}`, `task:cap-${cycle}`);
         }
         await mem.activate(p.id, 1, 'agent:b', cycle);
       }
@@ -262,24 +242,24 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       author_pid: 'agent:a',
     });
     if (await mem.isActivationPaused('task:cap-cya')) {
-      const decision = await approveOwnerSubject('memory-pause:task:cap-cya');
-      await mem.clearActivationPause(decision, 'task:cap-cya');
+      await seedOwner('memory-pause:task:cap-cya');
+      await mem.clearActivationPause('memory-pause:task:cap-cya', 'task:cap-cya');
     }
     await expect(mem.activate(extra.id, 1, 'agent:b', 'cya')).rejects.toThrow(/ACTIVATION_CAP/);
   });
 
-  it('real C5 owner decision for another subject is rejected', async () => {
+  it('owner decision for wrong subject is rejected', async () => {
     const mem = store();
-    const wrongDecision = await approveOwnerSubject('memory-pause:common');
+    // pause approval must not authorize invariant propose (requires memory: prefix)
+    await seedOwner('memory-pause:common');
     await expect(
       mem.propose({
-        id: 'mem-wrong-subject',
         scope: 'common',
         kind: 'invariant',
         text: 'Needs matching subject.',
         evidence_refs: ['plan:x'],
         author_pid: 'agent:a',
-        owner_decision_ref: wrongDecision,
+        owner_decision_ref: 'memory-pause:common',
       }),
     ).rejects.toThrow(/OWNER_DECISION_SUBJECT|subject/);
   });

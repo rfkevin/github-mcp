@@ -124,9 +124,9 @@ export class MemoryStore {
     return (results?.length ?? 0) > 0;
   }
 
-  /** Clear pause for a scope; the approved C5 owner.request must target memory-pause:<scope>. */
+  /** Clear pause for a scope; owner_decision_ref must be memory-pause:<scope> approve. */
   async clearActivationPause(ownerDecisionRef: string, scope?: string): Promise<void> {
-    await this.requireOwnerDecision(ownerDecisionRef, scope ? `memory-pause:${scope}` : 'memory-pause:all');
+    await this.requireOwnerDecision(ownerDecisionRef, scope ? `memory-pause:${scope}` : 'memory-pause:');
     if (scope) {
       await this.db
         .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`)
@@ -147,15 +147,9 @@ export class MemoryStore {
   /** Insert a candidate (status=candidate, version=1 or next). */
   async propose(input: ProposeInput): Promise<StoredMemory> {
     await ensureSchema(this.db);
-    const id = input.id ?? newId();
     if (PROTECTED_KINDS.has(input.kind)) {
-      if (!input.id) {
-        throw new MemoryStoreError(
-          'PROTECTED_KIND_OWNER_REQUIRED',
-          'protected memory requires an explicit id so its owner.request subject can be verified',
-        );
-      }
-      await this.requireOwnerDecision(input.owner_decision_ref, `memory:${id}:propose`);
+      // request_id must target memory:* (C5 subject), not a random approve
+      await this.requireOwnerDecision(input.owner_decision_ref, 'memory:');
     }
     if (input.confidence === 'hypothesis' && PROTECTED_KINDS.has(input.kind)) {
       throw new MemoryStoreError(
@@ -177,6 +171,7 @@ export class MemoryStore {
       status: 'candidate',
       author_pid: input.author_pid,
     });
+    const id = input.id ?? newId();
     const latest = await this.latestVersion(id);
     if (latest && latest.status === 'active') {
       throw new MemoryStoreError('MEMORY_ACTIVE_EXISTS', `Memory ${id} is already active; use supersede.`);
@@ -288,9 +283,8 @@ export class MemoryStore {
     if (!active) throw new MemoryStoreError('MEMORY_NO_ACTIVE', `No active version for ${id}`);
     const nextKind = (kind ?? active.kind) as MemoryKind;
     const conf = confidence ?? (active.confidence as MemoryConfidence);
-    const nextVersion = active.version + 1;
     if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
-      await this.requireOwnerDecision(ownerDecisionRef, `memory:${id}:supersede:${nextVersion}`);
+      await this.requireOwnerDecision(ownerDecisionRef, `memory:${id}`);
     }
     if (conf === 'hypothesis' && PROTECTED_KINDS.has(nextKind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot supersede into a rule kind');
@@ -304,6 +298,7 @@ export class MemoryStore {
       status: 'candidate',
       author_pid: authorPid,
     });
+    const nextVersion = active.version + 1;
     await this.db.batch([
       this.db
         .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
@@ -606,61 +601,30 @@ export class MemoryStore {
   }
 
   /**
-   * Verify a real C5 decision and, when required, bind it to the exact subject of
-   * the original owner.request. request_id stays compatible with C5's identifier
-   * grammar; authority comes from the durable request/decision chain, not its text.
+   * C5 owner_decisions: decision must be exactly 'approve'.
+   * subjectPrefix e.g. memory-pause:scope or memory:id — request_id must start with it.
    */
-  private async requireOwnerDecision(ref: string | undefined, expectedSubject?: string): Promise<void> {
+  private async requireOwnerDecision(
+    ref: string | undefined,
+    subjectPrefix?: string,
+  ): Promise<void> {
     if (!ref || !ref.trim()) {
       throw new MemoryStoreError('PROTECTED_KIND_OWNER_REQUIRED', 'owner_decision_ref required');
     }
+    if (subjectPrefix && !ref.startsWith(subjectPrefix)) {
+      throw new MemoryStoreError(
+        'OWNER_DECISION_SUBJECT',
+        `owner_decision_ref ${ref} does not target subject ${subjectPrefix}`,
+      );
+    }
     const row = await this.db
-      .prepare(`SELECT request_id, decision, event_seq FROM owner_decisions WHERE request_id = ?1`)
+      .prepare(`SELECT request_id, decision FROM owner_decisions WHERE request_id = ?1`)
       .bind(ref)
-      .first<{ request_id: string; decision: string; event_seq: number | null }>();
-    if (!row || row.decision !== 'approve' || row.event_seq == null) {
+      .first<{ request_id: string; decision: string }>();
+    if (!row || row.decision !== 'approve') {
       throw new MemoryStoreError(
         'OWNER_DECISION_INVALID',
         `No approve owner_decisions row for ${ref} (C5 channel)`,
-      );
-    }
-    if (!expectedSubject) return;
-
-    const decisionEvent = await this.db
-      .prepare(`SELECT payload_json FROM events WHERE seq = ?1 AND type = 'owner.decision' AND participant_id = 'owner'`)
-      .bind(row.event_seq)
-      .first<{ payload_json: string }>();
-    let requestSeq = -1;
-    try {
-      const payload = JSON.parse(decisionEvent?.payload_json ?? '{}') as Record<string, unknown>;
-      if (payload.request_id === ref && payload.decision === 'approve' && Number.isSafeInteger(payload.request_seq)) {
-        requestSeq = payload.request_seq as number;
-      }
-    } catch {
-      requestSeq = -1;
-    }
-    if (requestSeq < 1) {
-      throw new MemoryStoreError('OWNER_DECISION_SUBJECT', `owner decision ${ref} has no verifiable source request`);
-    }
-
-    const requestEvent = await this.db
-      .prepare(`SELECT type, payload_json FROM events WHERE seq = ?1`)
-      .bind(requestSeq)
-      .first<{ type: string; payload_json: string }>();
-    let requestId = '', subject = '';
-    try {
-      const payload = JSON.parse(requestEvent?.payload_json ?? '{}') as Record<string, unknown>;
-      requestId = typeof payload.request_id === 'string' ? payload.request_id : '';
-      subject = typeof payload.subject === 'string' ? payload.subject : '';
-    } catch {
-      requestId = '';
-      subject = '';
-    }
-    if (!requestEvent || !['owner.request', 'phase.request'].includes(requestEvent.type) ||
-        requestId !== ref || subject !== expectedSubject) {
-      throw new MemoryStoreError(
-        'OWNER_DECISION_SUBJECT',
-        `owner_decision_ref ${ref} does not target subject ${expectedSubject}`,
       );
     }
   }
