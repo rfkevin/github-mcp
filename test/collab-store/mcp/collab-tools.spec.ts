@@ -1,9 +1,10 @@
 import { env } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { createCollabToolContext, type CollabToolContext } from '../../../src/collab-store/mcp/context';
 import { registerCollabStoreTools } from '../../../src/collab-store/mcp/tools';
+import { mapClient, registerParticipant } from '../../../src/collab-store/owner/decisions';
 
 // Registre local cloné de test/mcp/tool-registry.ts, typé pour le contexte C2.
 const bindings = env as unknown as { COLLAB_DB_C2: D1Database };
@@ -36,8 +37,17 @@ function makeContext(dailyWriteLimit = 100_000): CollabToolContext {
   const stamp = '2026-11-' + String(day).padStart(2, '0') + 'T10:00:00.000Z';
   return createCollabToolContext(
     { COLLAB_DB: bindings.COLLAB_DB_C2, COLLAB_STORE_ENABLED: 'true', COLLAB_DAILY_WRITE_LIMIT: String(dailyWriteLimit) },
-    'agent:vibe', ['collab:'], { now: () => new Date(stamp) });
+    'agent:vibe', ['collab:'], { now: () => new Date(stamp) }, CLIENT_ID);
 }
+
+// CC-3 C5 : l'identité est dérivée du client OAuth ; ces tests C2 écrivent au nom
+// de 'agent:a', enregistré et associé à leur client par le canal owner.
+const CLIENT_ID = 'client-c2-tools';
+beforeAll(async () => {
+  const proof = { kind: 'secret' as const, subject: 'owner-secret' };
+  await registerParticipant(bindings.COLLAB_DB_C2, { participant_id: 'agent:a', display_label: 'A', proof, op: 'c2-tools-register' });
+  await mapClient(bindings.COLLAB_DB_C2, { oauth_client_id: CLIENT_ID, participant_id: 'agent:a', proof, op: 'c2-tools-map' });
+});
 
 function cycle(label: string): string {
   return ('c2m-' + label + '-' + counter).slice(0, 64);

@@ -93,3 +93,10 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `docs/collaboration/profile-decision.md` : décision G4 mesurée (catalogue conservé, aucun filtrage) et critère de réouverture.
 - `src/mcp/workflow-guidance.ts` : renvoi court vers `github_collab_context` et `usage.md`.
 - `test/collab/guide.spec.ts` : chemins, liens et noms d'outils cités par le guide, plus le renvoi des consignes d'initialisation.
+
+## CC-3 C5 — canal owner et identité
+
+- `src/collab-store/identity/` : `resolve.ts` (client OAuth du jeton → participant, sinon `unregistered:<hash>`), `guard.ts` (`PARTICIPANT_MISMATCH`, `UNREGISTERED_CLIENT`).
+- `src/collab-store/owner/` : `config.ts` (modes `access`/`secret`, fail-closed), `proof.ts` (JWT Access, secret à temps constant), `decisions.ts` (seul écrivain de `owner.decision`, `owner_decisions` et du registre), `handler.ts` + `page.ts` (route `/owner`, hors OAuth).
+- Branchement : `src/index.ts` (route `/owner`), `src/collab-store/mcp/{context,tools,handler,schemas}.ts` (identité appliquée aux outils `collab_*`).
+- Tests : `test/collab-store/owner/` (`identity`, `decisions`, `channel`, `tool-binding`, `no-agent-path`). Guide : `docs/collaboration/cc3/owner-setup.md`.

@@ -10,6 +10,7 @@ import { outputSchemas } from './schemas';
 import { collabFailure, collabSuccess } from './result';
 import { CollabStoreError, type AppendOutcome } from '../store/collab-store';
 import type { StoreEventType } from '../contracts';
+import { authorizeAppend } from '../identity';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -24,7 +25,7 @@ export function createCollabServer(context: CollabToolContext): McpServer {
 export function registerCollabStoreTools(server: McpServer, context: CollabToolContext): void {
   server.registerTool('collab_get_context', {
     title: 'Contexte de cycle (store CC-3)',
-    description: 'En-tête du cycle (phase, statut, révision) et tâches impliquant le participant (auteur, reviewer ou testeur). Lecture seule. La résolution complète (mémoire, packets par rôle) arrive en C3.',
+    description: 'En-tête du cycle (phase, statut, révision) et tâches impliquant le participant (auteur, reviewer ou testeur ; par défaut le vôtre, dérivé du jeton). Renvoie aussi caller : votre participant_id et votre statut (registered/unregistered). Lecture seule. La résolution complète (mémoire, packets par rôle) arrive en C3.',
     inputSchema: {
       cycle: z.string().min(1).max(64),
       participant_id: z.string().min(1).max(128).optional(),
@@ -33,8 +34,10 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
     annotations: READ_ONLY,
   }, async ({ cycle, participant_id }) => {
     try {
-      const value = await context.store.getContext(cycle, participant_id);
-      return collabSuccess({ ...value, participant_id: participant_id ?? null });
+      const identity = await context.identity();
+      const value = await context.store.getContext(cycle, participant_id ?? identity.participant_id);
+      return collabSuccess({ ...value, participant_id: participant_id ?? identity.participant_id,
+        caller: { participant_id: identity.participant_id, status: identity.status } });
     } catch (error) {
       return collabFailure(error, 'Contexte de cycle indisponible.');
     }
@@ -61,7 +64,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
 
   server.registerTool('collab_append_event', {
     title: 'Append d\'événement (store CC-3)',
-    description: 'Ajout idempotent au journal du cycle. CAS fail-closed : fournissez expected_rev (0 = création de cycle). Un op_id rejoué renvoie l\'événement original (status duplicate) sans seconde écriture. Un expected_rev périmé renvoie l\'erreur typée STALE avec currentRevision et le delta à rejouer. Quota quotidien épuisé : QUOTA_EXHAUSTED, aucune écriture.',
+    description: 'Ajout idempotent au journal du cycle. participant_id doit être le vôtre (voir caller dans collab_get_context) : sinon PARTICIPANT_MISMATCH ; client non enregistré : owner.request uniquement (UNREGISTERED_CLIENT). CAS fail-closed : fournissez expected_rev (0 = création de cycle). Un op_id rejoué renvoie l\'événement original (status duplicate) sans seconde écriture. Un expected_rev périmé renvoie l\'erreur typée STALE avec currentRevision et le delta à rejouer. Quota quotidien épuisé : QUOTA_EXHAUSTED, aucune écriture.',
     inputSchema: {
       cycle: z.string().min(1).max(64),
       expected_rev: z.number().int().min(0),
@@ -78,10 +81,12 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   }, async (input) => {
     let outcome: AppendOutcome;
     try {
+      // CC-3 C5 : participant_id doit être celui dérivé du jeton ; client non enregistré = owner.request seulement.
+      const participantId = authorizeAppend(await context.identity(), input.participant_id, input.type);
       outcome = await context.store.appendEvent({
         cycle_id: input.cycle,
         type: input.type as StoreEventType,
-        participant_id: input.participant_id,
+        participant_id: participantId,
         expected_rev: input.expected_rev,
         payload_json: input.payload_json,
         op_id: input.op_id,

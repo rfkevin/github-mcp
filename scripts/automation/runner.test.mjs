@@ -33,7 +33,13 @@ function fixture(t, plan = { version: 1, checks: { quick: ['exit 0'] } }) {
   const commands = [];
   const execute = (env = {}, head = SHA, filesystem = fs, real = false) => vm.runInNewContext(CHECK_RUNNER, {
     console: { log() {} },
-    process: { cwd: () => root, env: { ...process.env, CHECK_SHA: SHA, GITHUB_EVENT_NAME: 'push', ...env } },
+    process: { cwd: () => root, env: {
+      ...process.env,
+      // Keep fixtures independent from parent workflows such as agent-checks,
+      // which export CHECK_SCOPE/CHECK_TARGET/CHECK_REQUEST_ID at job level.
+      CHECK_SCOPE: '', CHECK_TARGET: '', CHECK_REQUEST_ID: '',
+      CHECK_SHA: SHA, GITHUB_EVENT_NAME: 'push', ...env,
+    } },
     require: name => {
       if (name === 'node:fs') return filesystem;
       if (name === 'node:path') return path;
