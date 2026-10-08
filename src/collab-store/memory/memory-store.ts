@@ -263,8 +263,8 @@ export class MemoryStore {
     await this.db
       .prepare(
         `INSERT INTO memory_entries
-         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10)`,
+         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11)`,
       )
       .bind(
         id,
@@ -277,6 +277,9 @@ export class MemoryStore {
         entry.author_pid,
         input.supersedes ?? null,
         expiresRev,
+        // A03/F3 (review Sol): persist the canonical cost so the in-batch
+        // budget guard measures exactly what estimateTokens measures.
+        estimateTokens(entry.text),
       )
       .run();
     return (await this.get(id, version))!;
@@ -331,17 +334,17 @@ export class MemoryStore {
       // candidate is still a candidate, the scope is not paused, the cycle
       // cap has a slot left and the scope budget still allows this text —
       // the same conditions as the pre-checks, re-verified at commit time.
-      // Budget divergence (pre-test Claude): SQLite length() counts code
-      // points while estimateTokens counts UTF-16 units, so the in-batch
-      // guard is slightly more permissive for non-BMP text; the JS
-      // pre-check above stays authoritative outside the race window.
+      // Budget measure (review Sol, F3): the guard sums the persisted exact
+      // cost (token_cost = estimateTokens, UTF-16 units) so non-BMP text is
+      // counted identically by the JS pre-check and this transaction; the
+      // length() fallback only covers pre-migration rows (code points).
       this.db.prepare([
         'INSERT INTO collab_store_guard (ok)',
         'SELECT CASE WHEN',
         `  EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = 'candidate')`,
         '  AND NOT EXISTS (SELECT 1 FROM quota_counters WHERE day = ?3 AND writes > 0)',
         '  AND COALESCE((SELECT writes FROM quota_counters WHERE day = ?4), 0) < ?5',
-        `  AND COALESCE((SELECT SUM((length(text) + 3) / 4) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8`,
+        `  AND COALESCE((SELECT SUM(COALESCE(token_cost, (length(text) + 3) / 4)) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8`,
         '  THEN 1 ELSE 0 END',
       ].join(' ')).bind(id, version, pauseKey, capKey, MAX_ACTIVATIONS_PER_CYCLE, row.scope, newTokens, budget),
       // A03: the cap reservation lives inside the transaction — exactly one
@@ -416,10 +419,14 @@ export class MemoryStore {
       throw error;
     }
     // A03: explicit CAS control — the activation UPDATE must have applied
-    // exactly one row; the guard makes this a defensive invariant.
+    // exactly one row. The batch's own change count is authoritative: a
+    // concurrent activation of another candidate version of the same id can
+    // supersede this row between our own commit and the durable re-read —
+    // that is the expected I4 convergence (exactly one active version), not
+    // a race. The re-read only backs the check up when meta is unavailable.
     const activated = await this.get(id, version);
     const changes = results[activateIndex]?.meta?.changes;
-    if (changes === 0 || !activated || activated.status !== 'active') {
+    if (changes === 0 || !activated || (changes !== 1 && activated.status === 'candidate')) {
       throw new MemoryStoreError('ACTIVATION_RACE', `Candidate ${id}@${version} was not activated (concurrent change)`);
     }
     const growth = await this.growthAlarmFor(row.scope);
@@ -479,8 +486,8 @@ export class MemoryStore {
       this.db
         .prepare(
           `INSERT INTO memory_entries
-           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL)`,
+           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
         )
         .bind(
           id,
@@ -492,6 +499,7 @@ export class MemoryStore {
           entry.confidence,
           entry.author_pid,
           `${id}@${active.version}`,
+          estimateTokens(entry.text),
         ),
     ]);
     if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
@@ -625,8 +633,8 @@ export class MemoryStore {
       this.db
         .prepare(
           `INSERT INTO memory_entries
-           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL)`,
+           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
         )
         .bind(
           id,
@@ -638,6 +646,7 @@ export class MemoryStore {
           entry.confidence,
           entry.author_pid,
           `${id}@${row.version}`,
+          estimateTokens(entry.text),
         ),
     ]);
     return (await this.get(id, nextVersion))!;

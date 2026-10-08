@@ -152,6 +152,20 @@ export const STORE_INTERNAL_SCHEMA = [
 export const STORE_MIGRATION_0002 =
   "ALTER TABLE events ADD COLUMN model_meta TEXT NOT NULL DEFAULT ''";
 
+/**
+ * Store-owned migration 0003 (A03 / F3 review): memory_entries.token_cost.
+ * estimateTokens() counts UTF-16 units (JS string length) while SQLite
+ * length() counts code points, so the transactional budget guard
+ * under-counted non-BMP text (emoji) and could let two concurrent
+ * activations exceed a scope budget. Every row now persists its exact
+ * estimateTokens cost at INSERT; the in-batch guard sums token_cost.
+ * Pre-0003 rows are backfilled with the code-point approximation.
+ */
+export const STORE_MIGRATION_0003_ALTER =
+  'ALTER TABLE memory_entries ADD COLUMN token_cost INTEGER';
+export const STORE_MIGRATION_0003_BACKFILL =
+  'UPDATE memory_entries SET token_cost = (length(text) + 3) / 4 WHERE token_cost IS NULL';
+
 const ENSURED = new WeakSet<object>();
 
 function runnableStatements(sql: string): string[] {
@@ -177,6 +191,13 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
   const columns = await db.prepare('PRAGMA table_info(events)').all<{ name: string }>();
   if (!columns.results.some(column => column.name === 'model_meta')) {
     await db.prepare(STORE_MIGRATION_0002).run();
+  }
+  const memColumns = await db.prepare('PRAGMA table_info(memory_entries)').all<{ name: string }>();
+  if (!memColumns.results.some(column => column.name === 'token_cost')) {
+    await db.batch([
+      db.prepare(STORE_MIGRATION_0003_ALTER),
+      db.prepare(STORE_MIGRATION_0003_BACKFILL),
+    ]);
   }
   ENSURED.add(db as unknown as object);
 }

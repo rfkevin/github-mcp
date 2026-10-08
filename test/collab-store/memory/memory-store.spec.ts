@@ -827,6 +827,61 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(3);
   });
 
+  it('A03: non-BMP budget race -> the guard sums the persisted exact token cost', async () => {
+    const mem = store();
+    const scope = 'participant:agent:uni03';
+    const cycle = 'cy-a03-unicode';
+    await seedBaseline(scope, 100); // keep the growth alarm out of this race
+    // Emoji fillers: one rocket is 2 UTF-16 units in JS but a single code
+    // point for SQLite length(), so the old in-batch guard under-counted
+    // non-BMP text. Used after activation: 150 + 150 + 120 = 420 tokens
+    // (budget 500 for a participant scope).
+    for (const [i, units] of [600, 600, 480].entries()) {
+      const p = await mem.propose({
+        scope,
+        kind: 'lesson',
+        text: '🚀'.repeat(units / 2),
+        evidence_refs: [`e-uni-${i}`],
+        author_pid: 'agent:uni03',
+      });
+      await mem.activate(p.id, 1, 'agent:rev03', cycle);
+    }
+    // Two 60-token candidates (120 emoji = 240 UTF-16 units): each passes the
+    // JS pre-check alone (420 + 60 <= 500), together they exceed the budget
+    // (540 > 500). The transactional guard must refuse the second one using
+    // the persisted exact costs, not the under-counting SQL approximation.
+    const a = await mem.propose({
+      scope,
+      kind: 'lesson',
+      text: '🚀'.repeat(120),
+      evidence_refs: ['e-uni-a'],
+      author_pid: 'agent:uni03',
+    });
+    const b = await mem.propose({
+      scope,
+      kind: 'lesson',
+      text: '🚀'.repeat(120),
+      evidence_refs: ['e-uni-b'],
+      author_pid: 'agent:uni03',
+    });
+    const { winner, loserError } = await raceTwo(
+      mem.activate(a.id, 1, 'agent:rev03', cycle),
+      mem.activate(b.id, 1, 'agent:rev04', cycle),
+    );
+    expect(loserError.code).toBe('MEMORY_BUDGET_EXCEEDED');
+    await expectWinnerActiveLoserCandidate(mem, a, b, winner);
+    const { results: activeCosts } = await bindings.COLLAB_DB_C2.prepare(
+      `SELECT COALESCE(token_cost, -1) AS token_cost FROM memory_entries WHERE status = 'active' AND scope = ?1`,
+    )
+      .bind(scope)
+      .all<{ token_cost: number }>();
+    // Exact persisted costs (UTF-16 based), never the code-point approximation.
+    expect((activeCosts ?? []).map((r) => r.token_cost).sort((x, y) => x - y)).toEqual([60, 120, 150, 150]);
+    // 420 + 60 = 480 <= 500: the scope budget holds at the JS contract level.
+    expect((activeCosts ?? []).reduce((sum, r) => sum + r.token_cost, 0)).toBe(480);
+    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(4);
+  });
+
   it('A03/I4: two candidate versions of one id activated in parallel -> exactly one active version', async () => {
     const mem = store();
     const id = 'mem-i4-race';
@@ -840,8 +895,12 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     // Both versions are candidates: parallel activation must converge to the
     // sequential outcome — exactly one active version of the id (I4).
     const [a2, a3] = await Promise.all([mem.activate(id, 2, 'agent:c'), mem.activate(id, 3, 'agent:d')]);
-    expect(a2.status).toBe('active');
-    expect(a3.status).toBe('active');
+    // Both activations applied; the loser may already have been superseded
+    // by the winner between its own commit and its durable re-read (I4
+    // convergence), so each returned row is active or superseded, never a
+    // candidate anymore.
+    expect(['active', 'superseded']).toContain(a2.status);
+    expect(['active', 'superseded']).toContain(a3.status);
     const s2 = (await mem.get(id, 2))?.status;
     const s3 = (await mem.get(id, 3))?.status;
     expect([s2, s3].filter((st) => st === 'active')).toHaveLength(1);
