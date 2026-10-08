@@ -35,7 +35,12 @@ export async function loadLabelDirectory(db: D1Database, ownerLabel = DEFAULT_OW
 
 /** Leading label of a cell, without a trailing parenthesised annotation. */
 export function leadingLabel(cell: string): string {
-  return cell.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const value = cell.trim();
+  if (value.endsWith(')')) {
+    const open = value.lastIndexOf('(');
+    if (open > 0) return value.slice(0, open).trim();
+  }
+  return value;
 }
 
 /** '' = no participant; null = label unknown to the registry. */

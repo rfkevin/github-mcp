@@ -65,7 +65,7 @@ function blocksOf(lines: string[]): Block[] {
 }
 
 function normalizedLines(markdown: string): string[] {
-  const lines = markdown.replace(/\r/g, '').split('\n').map(line => line.replace(/\s+$/, ''));
+  const lines = markdown.replace(/\r/g, '').split('\n').map(line => line.trimEnd());
   while (lines.length && lines[lines.length - 1] === '') lines.pop();
   return lines;
 }
@@ -126,14 +126,22 @@ export function cloneDocument(document: StateDocument): StateDocument {
   return JSON.parse(JSON.stringify(document)) as StateDocument;
 }
 
-const HEADER_RE = /^([a-z][a-z0-9_]*)\s*:\s*(.*)$/;
+const KEY_RE = /^[a-z][a-z0-9_]*$/;
+
+/** `key: value` control line, same grammar as the L1 parser, without a backtracking regex. */
+function headerOf(line: string): { key: string; value: string } | null {
+  const colon = line.indexOf(':');
+  if (colon < 1) return null;
+  const key = line.slice(0, colon).trimEnd();
+  return KEY_RE.test(key) ? { key, value: line.slice(colon + 1).trim() } : null;
+}
 
 export function getHeader(document: StateDocument, key: string): string | undefined {
   for (const block of document.preamble) {
     if (block.kind !== 'text') continue;
     for (const line of block.lines) {
-      const match = line.match(HEADER_RE);
-      if (match && match[1] === key) return match[2].trim();
+      const header = headerOf(line);
+      if (header?.key === key) return header.value;
     }
   }
   return undefined;
@@ -143,7 +151,7 @@ export function getHeader(document: StateDocument, key: string): string | undefi
 export function setHeader(document: StateDocument, key: string, value: string): void {
   for (const block of document.preamble) {
     if (block.kind !== 'text') continue;
-    const index = block.lines.findIndex(line => line.match(HEADER_RE)?.[1] === key);
+    const index = block.lines.findIndex(line => headerOf(line)?.key === key);
     if (index >= 0) {
       block.lines[index] = key + ': ' + value;
       return;

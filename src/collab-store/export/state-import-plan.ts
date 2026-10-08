@@ -104,7 +104,7 @@ export async function planStateImport(input: {
   }
   if (unknown.size) {
     throw new CollabStoreError('IMPORT_UNKNOWN_PARTICIPANT',
-      'Libellés sans participant enregistré (enregistrez-les sur /owner, K6) : ' + [...unknown].sort().join(', '));
+      'Libellés sans participant enregistré (enregistrez-les sur /owner, K6) : ' + [...unknown].sort((a, b) => a.localeCompare(b)).join(', '));
   }
   return {
     cycle_id: input.cycle_id,
