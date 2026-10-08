@@ -163,22 +163,20 @@ function runnableStatements(sql: string): string[] {
   return noCommentLines.split(';').map(part => part.trim()).filter(Boolean);
 }
 
-export async function ensureSchema(db: D1Database): Promise<void> {
-  if (ENSURED.has(db as unknown as object)) return;
+export async function ensureSchema(db: D1Database, force = false): Promise<void> {
+  // Test pools can reuse the same D1 binding object while resetting the
+  // underlying database between isolated cases. `force` bypasses the
+  // process-local cache for those explicit fixture setup calls.
+  if (!force && ENSURED.has(db as unknown as object)) return;
   await db.batch([
     ...runnableStatements(CANONICAL_SCHEMA_SQL).map(statement => db.prepare(statement)),
     ...STORE_INTERNAL_SCHEMA.map(statement => db.prepare(statement)),
   ]);
-  try {
-    // Idempotent: SQLite refuses a duplicate column, which is the expected
-    // outcome when the migration already ran.
+  // Structural idempotence: avoid depending on the exact wording of a
+  // duplicate-column error, which differs between D1 and Miniflare.
+  const columns = await db.prepare('PRAGMA table_info(events)').all<{ name: string }>();
+  if (!columns.results.some(column => column.name === 'model_meta')) {
     await db.prepare(STORE_MIGRATION_0002).run();
-  } catch (error) {
-    // D1/miniflare may wrap the SQLite message; inspect the full error chain.
-    const text = [String(error), (error as { message?: unknown })?.message,
-      (error as { cause?: unknown })?.cause]
-      .map(part => (part === undefined || part === null ? '' : String(part))).join(' ');
-    if (!/duplicate column/i.test(text)) throw error;
   }
   ENSURED.add(db as unknown as object);
 }
