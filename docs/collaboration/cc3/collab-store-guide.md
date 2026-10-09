@@ -62,8 +62,14 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
   - `task.claim` attend `{ "task": { task_id, owner_pid, reviewer_pid, tester_pid, owned_paths[], next_action } }`. Les trois rôles doivent être distincts (D12, `DUPLICATE_TASK_ROLE`) et enregistrés actifs (K6, `UNREGISTERED_PARTICIPANT`) ; la première affectation est faite par l’`owner_pid` lui-même, une réaffectation par l’owner courant uniquement (`TASK_FORBIDDEN`).
   - `task.status` attend `{ "task": { task_id, status } }`, émis par l’owner, le reviewer ou le testeur de la tâche (`TASK_FORBIDDEN`).
   - `task.handoff` attend `{ "task": { task_id, owner_pid?, next_action } }`, émis par l’owner courant ; le nouvel owner doit être enregistré actif (`UNREGISTERED_PARTICIPANT`).
+- **Mémoire (lifecycle C4, CR-B/CR-02)** : `memory.propose`, `memory.review`, `memory.consolidate` et `memory.retire` appliquent le cycle de vie mémoire **dans la même transaction que l’append** : un `applied` porte toujours son effet `memory_entries` (renvoyé dans le champ `memory`), un refus n’écrit rien du tout (ni journal, ni mémoire). L’auteur est votre participant serveur ; le payload va dans `payload_json` sous la clé `memory` (`INVALID_MEMORY_PAYLOAD` sinon) :
+  - `memory.propose` attend `{ "memory": { id?, scope, kind, text, evidence_refs?, confidence?, expires_rev?, owner_decision_ref? } }` → candidate (l’expiry des hypothèses est calculée depuis la révision de l’append). Un id déjà actif → `MEMORY_ACTIVE_EXISTS` (consolidez).
+  - `memory.review` attend `{ "memory": { id, version } }`, émis par un reviewer **distinct de l’auteur** (`MEMORY_SELF_ACTIVATION`) ; une preuve est exigée (`MEMORY_EVIDENCE_REQUIRED`) → active.
+  - `memory.consolidate` attend `{ "memory": { id, text, evidence_refs, kind?, confidence?, owner_decision_ref? } }` (`evidence_refs` requis, non vide) → nouvelle version candidate, l’ancienne devient `superseded`.
+  - `memory.retire` attend `{ "memory": { id, version?, owner_decision_ref? } }` → tombstone `retired` (jamais d’effacement).
+  - Les kinds protégés (`invariant`, `decision`) exigent `owner_decision_ref` lié au sujet exact (`PROTECTED_KIND_OWNER_REQUIRED`) et une confiance non `hypothesis` (`HYPOTHESIS_NOT_RULE`). Budgets, plafonds par cycle et alarmes C4 s’appliquent (section 9).
 - **Sortie** :
-  - `applied`, avec la nouvelle révision et l’événement ;
+  - `applied`, avec la nouvelle révision, l’événement et, pour un événement `memory.*`, son effet dans le champ `memory` ;
   - `duplicate`, avec l’événement original ; — le rejeu doit porter la même requête octet par octet : l'ordre des clés JSON compte, une intention réordonnée donne `IDEMPOTENCY_CONFLICT` ;
   - `IDEMPOTENCY_CONFLICT` quand l’`op_id` rejoué porte une autre intention (type, auteur, contenu) : incrémentez le compteur `n` ;
   - `STALE`, avec `currentRevision` et `delta` à rejouer avant de réessayer ;
@@ -89,9 +95,6 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Règle** : transition autorisée (P1→P2→P3→P4→P5→P6, plus un retour d’un cran), définition et conditions d’entrée de la cible, rejeu de la même intention détecté **avant** `STALE`.
 - **Définitions de phase** : installées par Kevin sur `/owner` (opération K-phases). Sans elles, `PHASE_DEFINITION_MISSING`.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `PHASE_ADVANCE_FORBIDDEN`, `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
-
-### `collab_memory` (lot C4, à venir)
-Cycle de vie de la mémoire : proposer, revoir, consolider, retirer. Voir la section 9. Tant que C4 n’est pas fusionné, cet outil n’existe pas dans le catalogue.
 
 ## 4. Cycle de vie de l’état : import, travail, export, fusion
 
@@ -245,6 +248,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | Code | Lot | Signification | Que faire |
 | --- | --- | --- | --- |
 | `INVALID_MEMORY_SCOPE` | C1 | Scope hors common, project, role:…, participant:…, task:… | — |
+| `INVALID_MEMORY_PAYLOAD` | CR-B | `payload_json.memory` absent, JSON invalide ou champ mal typé pour un événement `memory.*` | Contrat mémoire en section 3 |
 | `INVALID_MEMORY_KIND` | C1 | Type de mémoire inconnu | — |
 | `INVALID_MEMORY_TEXT` | C1 | Texte vide ou de plus de 600 caractères | — |
 | `INVALID_MEMORY_CONFIDENCE` | C1 | Confiance hors hypothesis, observed, verified, owner_validated | — |
@@ -346,13 +350,14 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | Dépassement | consolider ou retirer avant toute nouvelle activation |
 | Plafonds courts | par cycle et scope : ≤ 10 activations et ≤ 10 retraits sans revue de consolidation |
 | Activation atomique | une seule transaction : garde CAS (candidat toujours candidate), réservation de plafond, budget, baseline et alarme de croissance, pause des kinds protégés — tout est appliqué ou rien ; un seul reviewer enregistré et un seul incrément de compteur par activation réellement appliquée (A03) ; toute autre version active du même id est supersédée dans la même transaction (I4 : exactement une version active, même en activation parallèle — pré-test Claude, F3) ; la garde de budget somme le coût exact persisté à l’insertion (`token_cost`, migration 0003), même mesure que `estimateTokens` (unités UTF-16, texte hors BMP compris — review Sol, F3) ; les lignes antérieures à la migration sont rattrapées par un backfill JS exact et idempotent rejoué à chaque amorçage à froid (un crash entre l’ALTER et le backfill est réparé au démarrage suivant) |
+| Journal public (CR-B) | `memory.propose`/`memory.review`/`memory.consolidate`/`memory.retire` via `collab_append_event` appliquent leurs effets `memory_entries` dans la même transaction que l’append : un `applied` renvoie son effet (champ `memory`), un refus n’écrit rien du tout (ni journal, ni mémoire) |
 | Curiosités | observation/open_question au niveau hypothesis, jamais une règle ; expirent après 3 cycles sans nouvelle preuve |
 | Mémoire personnelle vs registre | le scope participant porte stratégies et préférences ; les faits *sur* un participant (résultats, incidents, évaluations, mesures) vivent seulement dans `evidence_ledger`, référencés par identifiant (I11) |
 | Promotion | participant → role/project/common par revue d’un pair |
 | Alarme | invariant touché, plus de 5 réfutations ou croissance nette au-dessus du seuil → `owner.request` ; activations en pause dans ce scope |
 | Export | `collab_export` en `memory-md` : scopes partagés + scope de l’appelant |
 
-État d’implémentation : le schéma et les contrats (C1) sont fusionnés ; le cycle de vie, le registre, les budgets et les alarmes arrivent avec C4 (github-mcp#67).
+État d’implémentation : schéma et contrats (C1), cycle de vie C4 avec registre, budgets et alarmes (github-mcp#67), et raccordement public du lifecycle au journal `collab_append_event` (CR-B/CR-02 : un `applied` porte toujours son effet mémoire, un refus n’écrit rien du tout) sont fusionnés.
 
 ## 10. Limites connues
 
@@ -360,5 +365,5 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 - `based_on_sha` reste celui de la base importée ; il est mis à jour à la fusion par celui qui prépare la PR.
 - L’import remplace les tâches matérialisées du cycle. Importez toujours l’état fusionné le plus récent, qui contient les exports précédents.
 - Le contenu de l’état importé figure dans l’événement `import_state`, donc dans `collab_get_delta` du cycle : c’est le fichier fusionné dans GitHub, pas une donnée privée.
-- C3 est fusionné. La branche C4 (cycle de vie mémoire) ne l’est pas encore : les codes de la section 7.4 sont documentés d’avance, à partir de son head `eb5f98a` (testé PASS le 2026-10-08).
+- C3 et C4 (cycle de vie mémoire) sont fusionnés. Le lifecycle est servi par `collab_append_event` (CR-B/CR-02) : les événements `memory.*` appliquent leurs effets dans la même transaction que l’append — un `applied` porte toujours son effet mémoire, un refus n’écrit rien du tout.
 - La divergence de mesure du budget (`length()` SQL en points de code vs `estimateTokens` JS en unités UTF-16, texte hors BMP) est fermée : chaque ligne persiste son coût exact à l’insertion (`memory_entries.token_cost`, migration 0003) et la garde transactionnelle somme cette valeur ; les lignes antérieures à la migration sont rattrapées par un backfill JS exact et idempotent rejoué à chaque amorçage à froid : une interruption de la migration entre l’ALTER et le backfill est réparée au démarrage suivant, la même fonction canonique étant appliquée y compris hors BMP (review Sol, F3).
