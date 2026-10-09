@@ -15,6 +15,7 @@ import { createSealedEnvelope, parseSealedEnvelope } from '../phases/sealed-enve
 import { ensureSchema } from './schema';
 import { sha256Hex } from './hash';
 import { DEFAULT_DAILY_WRITE_LIMIT } from './config';
+import { isMemoryEventType, prepareMemoryEvent } from '../memory/journal-lifecycle';
 
 export class CollabStoreError extends Error {
   constructor(readonly code: string, message: string) {
@@ -57,7 +58,7 @@ export interface StoredStoreEvent {
 }
 
 export type AppendOutcome =
-  | { status: 'applied'; revision: number; event: StoredStoreEvent }
+  | { status: 'applied'; revision: number; event: StoredStoreEvent; memory?: { id: string; version: number; status: string } }
   | { status: 'duplicate'; event: StoredStoreEvent }
   | { status: 'stale'; currentRevision: number; delta: StoredStoreEvent[] }
   | { status: 'quota_exhausted'; day: string; limit: number };
@@ -171,7 +172,15 @@ export class CollabStore {
     const day = now.toISOString().slice(0, 10);
     const nextRevision = event.expected_rev + 1;
     const taskStatements = await this.taskStatements(event, nextRevision);
-    const statements: D1PreparedStatement[] = [
+    // CR-B (CR-02) : un événement memory.* porte ses effets memory_entries
+    // dans le MÊME batch CAS que l'append du journal — un applied garantit
+    // l'effet mémoire (champ memory), un refus n'écrit rien du tout (ni
+    // journal, ni mémoire). Les pre-checks typés sont read-only : les rejeter
+    // ici reste fail-closed, et les rejouer re-diagnostique un échec.
+    const memoryEffect = isMemoryEventType(event.type)
+      ? await prepareMemoryEvent(this.db, event, nextRevision)
+      : null;
+    const journal: D1PreparedStatement[] = [
       // Transactional CAS guard: the whole batch rolls back unless the key is
       // new AND the cycle is exactly at expected_rev AND the quota is open.
       this.db.prepare([
@@ -198,10 +207,18 @@ export class CollabStore {
         'UPDATE cycles SET revision = ?2 WHERE cycle_id = ?1 AND revision = ?3'
       ).bind(event.cycle_id, nextRevision, event.expected_rev),
       ...taskStatements,
+    ];
+    // CR-B (CR-02) : les statements mémoire rejoignent le MÊME batch, avant le
+    // nettoyage du garde ; l'index de vérification est décalé d'autant.
+    const memoryVerifyIndex = memoryEffect ? journal.length + memoryEffect.verifyIndex : -1;
+    const statements: D1PreparedStatement[] = [
+      ...journal,
+      ...(memoryEffect ? memoryEffect.statements : []),
       this.db.prepare('DELETE FROM collab_store_guard'),
     ];
+    let results: Array<{ meta?: { changes?: number } }>;
     try {
-      await this.db.batch(statements);
+      results = (await this.db.batch(statements)) as unknown as Array<{ meta?: { changes?: number } }>;
     } catch (error) {
       // Fail-closed: diagnose from the durable state, never guess. F1: a
       // duplicate idempotency key wins over STALE.
@@ -216,10 +233,31 @@ export class CollabStore {
       if (currentRevision !== event.expected_rev) {
         return { status: 'stale', currentRevision, delta: await this.deltaSinceRevision(event.cycle_id, event.expected_rev) };
       }
+      // CR-B (CR-02) : le batch a roulé en arrière au complet (garde CAS ou
+      // garde d'effet mémoire) ; re-préparer le lifecycle sur l'état durable
+      // donne la cause typée (ex. une candidature devenue non candidate),
+      // sinon l'erreur d'origine est relancée telle quelle.
+      if (isMemoryEventType(event.type)) {
+        await prepareMemoryEvent(this.db, event, nextRevision);
+      }
       throw error;
     }
+    if (memoryEffect) {
+      // Défensif : les gardes transactionnelles du lifecycle garantissent
+      // l'effet dans le batch ; un changes nul trahit un défaut imprévu.
+      const changes = results[memoryVerifyIndex]?.meta?.changes;
+      if (changes === 0) {
+        throw new CollabStoreError('ACTIVATION_RACE', 'Effet mémoire non appliqué dans le batch (changement concurrent).');
+      }
+      await memoryEffect.postCommit?.();
+    }
     const stored = await this.eventByKey(key);
-    return { status: 'applied', revision: nextRevision, event: stored! };
+    return {
+      status: 'applied',
+      revision: nextRevision,
+      event: stored!,
+      ...(memoryEffect ? { memory: memoryEffect.summary } : {}),
+    };
   }
 
   async getDelta(cycleId: string, sinceSeq: number, limit = 200): Promise<{ events: StoredStoreEvent[]; hasMore: boolean }> {

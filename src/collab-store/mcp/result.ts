@@ -5,6 +5,7 @@
  */
 import { StateContractError } from '../../collab/contracts';
 import { CollabStoreError } from '../store/collab-store';
+import { MemoryStoreError } from '../memory/memory-store';
 import { storeFallback, type StoreFallback } from '../export/fallback';
 
 export type ToolPayload = { content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown> };
@@ -27,7 +28,10 @@ export function collabFailure(
   extra: Record<string, unknown> = {},
   storeDown: StoreFallback = storeFallback(null),
 ): ToolErrorResult {
-  const known = error instanceof StateContractError || error instanceof CollabStoreError;
+  // CR-B (CR-02) : les erreurs typées du lifecycle mémoire (C4) gardent leur
+  // code propre ; sans cela elles deviendraient STORE_UNAVAILABLE retryable.
+  const known =
+    error instanceof StateContractError || error instanceof CollabStoreError || error instanceof MemoryStoreError;
   if (!known) {
     // Diagnostic serveur : l'erreur inconnue est consignée mais jamais exposée au client.
     console.warn(JSON.stringify({ service: 'collab-store', outcome: 'store_unavailable',
