@@ -1,45 +1,14 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { createOAuthFixture } from '../../oauth/helpers';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
+import { e2eScenario, toolCode as code } from './e2e-harness';
 
 // CC-3 CR-A (contre-revue Codex github-mcp#79, CR-01 + CR-03), par le vrai chemin HTTP :
 // OAuth + /collab/mcp pour les agents, /owner (secret) pour Kevin, D1 local partant d'une base
 // vide pour ce cycle. Aucune ligne de phase_definitions, de tâche ou de cycle n'est écrite en SQL
 // par le test : il ne fait que lire l'état pour vérifier qu'une mutation refusée ne change rien.
+// Harnais HTTP partagé avec les autres specs E2E : e2e-harness.ts (même dossier).
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
-const SECRET = 'owner-secret-CRA-0123456789abcdefghijklmn';
-let n = 0;
-const uniq = (label: string) => `cra-${label}-${Date.now().toString(36)}-${++n}`;
-type ToolResult = { isError?: boolean; structuredContent: Record<string, unknown> };
-
-function scenario() {
-  const fixture = createOAuthFixture({ COLLAB_DB: db, COLLAB_STORE_ENABLED: 'true', OWNER_AUTH_MODE: 'secret', OWNER_SECRET: SECRET });
-  const owner = (fields: Record<string, string>) => fixture.send('/owner', { method: 'POST',
-    headers: { Origin: fixture.ORIGIN }, body: new URLSearchParams({ ...fields, owner_secret: SECRET }) });
-  let id = 10;
-  async function client() {
-    const session = await fixture.mcpSession('mcp:read collab: offline_access', 'http://localhost:4321/callback',
-      fixture.ORIGIN + '/collab/mcp');
-    const call = async (name: string, args: Record<string, unknown>) => fixture.rpcResult(await (await fixture.send('/collab/mcp', {
-      method: 'POST', headers: session.headers,
-      body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method: 'tools/call', params: { name, arguments: args } }),
-    })).text()) as ToolResult;
-    // Pseudonyme de ce client (C5) : renvoyé par le refus PARTICIPANT_MISMATCH, sans rien écrire.
-    const probe = await call('collab_append_event', { cycle: 'cra-probe', expected_rev: 0, op_id: 'p:cra-probe:x:1',
-      type: 'owner.request', participant_id: 'agent:probe', payload_json: '{}' });
-    const pseudonym = (probe.structuredContent.error as { message: string }).message.match(/unregistered:[0-9a-f]{16}/)![0];
-    return { call, pseudonym };
-  }
-  async function agent(label: string) {
-    const { call, pseudonym } = await client();
-    const pid = uniq(label);
-    expect((await owner({ action: 'register', participant_id: pid, display_label: label })).status).toBe(200);
-    expect((await owner({ action: 'map', oauth_client_id: pseudonym, participant_id: pid })).status).toBe(200);
-    return { call, pid };
-  }
-  return { owner, client, agent };
-}
 
 async function state(cycle: string) {
   await ensureSchema(db);
@@ -49,11 +18,9 @@ async function state(cycle: string) {
   return { phase: row?.phase, revision: row?.revision, events: events?.n, sealed: sealed?.n };
 }
 
-const code = (result: ToolResult) => (result.structuredContent.error as { code: string } | undefined)?.code;
-
 describe('CC-3 CR-A — amorçage owner des phases et garde d’identité de collab_phase_advance (HTTP)', () => {
   it('cycle neuf via MCP → phases installées sur /owner → seuls les participants du cycle avancent', async () => {
-    const { owner, client, agent } = scenario();
+    const { owner, client, agent, uniq } = e2eScenario(db, 'cra', 'owner-secret-CRA-0123456789abcdefghijklmn');
     const [alpha, beta, gamma, delta] = [await agent('alpha'), await agent('beta'), await agent('gamma'), await agent('delta')];
     const stranger = await client();
     const cycle = uniq('cycle');

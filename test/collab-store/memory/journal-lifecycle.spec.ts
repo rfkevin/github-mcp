@@ -272,20 +272,19 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 dispatche par appendEvent (
     const scope = 'role:' + uniq('e');
     const before = await state(cycle);
 
-    expect(await refuse({ cycle, type: 'memory.propose', participant: 'agent:x', op: 'no-key',
-      payload: { note: 'pas de cle memory' } })).toBe('INVALID_MEMORY_PAYLOAD');
-    expect(await refuse({ cycle, type: 'memory.propose', participant: 'agent:x', op: 'not-object',
-      payload: { memory: 'texte' } })).toBe('INVALID_MEMORY_PAYLOAD');
-    expect(await refuse({ cycle, type: 'memory.propose', participant: 'agent:x', op: 'no-scope',
-      payload: { memory: { kind: 'fact', text: 'sans scope' } } })).toBe('INVALID_MEMORY_PAYLOAD');
-    expect(await refuse({ cycle, type: 'memory.propose', participant: 'agent:x', op: 'bad-refs',
-      payload: { memory: { scope, kind: 'fact', text: 'refs mal types', evidence_refs: 'ev:1' } } })).toBe('INVALID_MEMORY_PAYLOAD');
-    expect(await refuse({ cycle, type: 'memory.review', participant: 'agent:y', op: 'no-version',
-      payload: { memory: { id: 'whatever' } } })).toBe('INVALID_MEMORY_PAYLOAD');
-    expect(await refuse({ cycle, type: 'memory.review', participant: 'agent:y', op: 'zero-version',
-      payload: { memory: { id: 'whatever', version: 0 } } })).toBe('INVALID_MEMORY_PAYLOAD');
-    expect(await refuse({ cycle, type: 'memory.retire', participant: 'agent:y', op: 'string-version',
-      payload: { memory: { id: 'whatever', version: '1' } } })).toBe('INVALID_MEMORY_PAYLOAD');
+    const cases: Array<{ type: StoreEventType; participant: string; op: string; payload: Record<string, unknown> }> = [
+      { type: 'memory.propose', participant: 'agent:x', op: 'no-key', payload: { note: 'pas de cle memory' } },
+      { type: 'memory.propose', participant: 'agent:x', op: 'not-object', payload: { memory: 'texte' } },
+      { type: 'memory.propose', participant: 'agent:x', op: 'no-scope', payload: { memory: { kind: 'fact', text: 'sans scope' } } },
+      { type: 'memory.propose', participant: 'agent:x', op: 'bad-refs', payload: { memory: { scope, kind: 'fact', text: 'refs mal types', evidence_refs: 'ev:1' } } },
+      { type: 'memory.review', participant: 'agent:y', op: 'no-version', payload: { memory: { id: 'whatever' } } },
+      { type: 'memory.review', participant: 'agent:y', op: 'zero-version', payload: { memory: { id: 'whatever', version: 0 } } },
+      { type: 'memory.retire', participant: 'agent:y', op: 'string-version', payload: { memory: { id: 'whatever', version: '1' } } },
+    ];
+    for (const invalid of cases) {
+      expect(await refuse({ cycle, type: invalid.type, participant: invalid.participant, op: invalid.op, payload: invalid.payload }))
+        .toBe('INVALID_MEMORY_PAYLOAD');
+    }
 
     // Aucun de ces refus n'a ecrit : le journal du cycle est toujours vierge...
     expect(await state(cycle)).toEqual(before);
