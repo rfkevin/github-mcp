@@ -75,6 +75,8 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
           resolved.cycle_id,
           input.last_seen_seq ?? 0,
           input.delta_limit ?? 50,
+          // CR-C (GPT6-01) : rendu pour l'identité serveur ; non enregistré = anonyme.
+          identity.status === 'registered' ? identity.participant_id : null,
         );
       }
       return collabSuccess({
@@ -125,7 +127,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
 
   server.registerTool('collab_get_delta', {
     title: 'Delta de cycle (store CC-3)',
-    description: 'Événements du cycle après un curseur de séquence, pour reprise incrémentale. Lecture seule.',
+    description: 'Événements du cycle après un curseur de séquence, pour reprise incrémentale. Lecture seule. Les événements memory.* qui touchent le scope privé participant:<autre> sont rendus masqués (payload {"memory":{id,version},"redacted":"private_scope"}, session_id/role/evidence_ref vides) selon votre identité serveur ; seq et curseurs inchangés (CR-C).',
     inputSchema: {
       cycle: z.string().min(1).max(64),
       since_seq: z.number().int().min(0).default(0),
@@ -135,7 +137,10 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
     annotations: READ_ONLY,
   }, async ({ cycle, since_seq, limit }) => {
     try {
-      const { events, hasMore } = await context.store.getDelta(cycle, since_seq, limit);
+      // CR-C (GPT6-01) : mémoire privée d'autrui masquée selon l'identité serveur.
+      const identity = await context.identity();
+      const viewer = identity.status === 'registered' ? identity.participant_id : null;
+      const { events, hasMore } = await context.store.getDelta(cycle, since_seq, limit, viewer);
       return collabSuccess({ cycle_id: cycle, events, hasMore });
     } catch (error) {
       return collabFailure(error, 'Delta indisponible.');
