@@ -6,6 +6,7 @@ import { GitHubIssues } from '../../src/github/issues';
 import type { GitHubServiceContext } from '../../src/github/service-context';
 import { registerIssueTools } from '../../src/mcp/tools/github/issues';
 import { toolRegistry } from './tool-registry';
+import { maskedRevision } from '../../src/mcp/tools/github/discussion-content';
 const issue: GitHubIssue = { number: 11, title: 'Bug', state: 'open', html_url: 'https://github.com/o/r/issues/11',
     body: 'Details', user: { login: 'owner' }, labels: ['bug', { name: 'mcp' }], assignees: [{ login: 'owner' }] };
 function fixture() {
@@ -59,6 +60,67 @@ describe('MCP Issues : réponses bornées et séparées des PR', () => {
         const second = (await getComment({ offset: first.nextOffset, revision: first.revision })).structuredContent;
         expect(second).toMatchObject({ content: 'B', offset: 5, nextOffset: null, truncated: false });
         expect(await getComment({ offset: 5 })).toMatchObject({ isError: true, structuredContent: { error: { code: 'COMMENT_REVISION_REQUIRED' } } });
+    });
+    it('A11 : garde l’extrait historique par défaut et publie révision et taille du corps masqué', async () => {
+        const { get } = fixture();
+        const result = (await get()).structuredContent;
+        expect(result).toMatchObject({ body: 'Details', bodyTruncated: false, bodyOffset: null, bodyNextOffset: null,
+            bodyTotalBytes: 7, maskingVersion: 'known-secrets-v1' });
+        expect(result.bodyRevision).toMatch(/^[a-f0-9]{64}$/);
+    });
+    it('A11 : lit le corps par pages UTF-8 sans perte avec révision obligatoire', async () => {
+        const { get, issues } = fixture();
+        issues.getIssue.mockResolvedValue({ ...issue, body: 'A😀B' });
+        const first = (await get({ includeComments: false, bodyOffset: 0, bodyLimit: 3 })).structuredContent as Record<string, unknown>;
+        expect(first).toMatchObject({ body: 'A😀', bodyTruncated: true, bodyOffset: 0, bodyNextOffset: 5, bodyTotalBytes: 6 });
+        const second = (await get({ includeComments: false, bodyOffset: first.bodyNextOffset, bodyRevision: first.bodyRevision })).structuredContent;
+        expect(second).toMatchObject({ body: 'B', bodyTruncated: false, bodyOffset: 5, bodyNextOffset: null, bodyRevision: first.bodyRevision });
+        issues.getIssue.mockClear();
+        expect(await get({ bodyOffset: 5 })).toMatchObject({ isError: true, structuredContent: { error: { code: 'COMMENT_REVISION_REQUIRED' } } });
+        expect(issues.getIssue).not.toHaveBeenCalled();
+        expect(await get({ bodyOffset: 2, bodyRevision: first.bodyRevision })).toMatchObject({ isError: true, structuredContent: { error: { code: 'INVALID_COMMENT_OFFSET' } } });
+        expect(await get({ bodyOffset: 7, bodyRevision: first.bodyRevision })).toMatchObject({ isError: true, structuredContent: { error: { code: 'INVALID_COMMENT_OFFSET' } } });
+    });
+    it('A11 : refuse de mélanger deux versions du corps entre deux pages', async () => {
+        const { get, issues } = fixture();
+        issues.getIssue.mockResolvedValue({ ...issue, body: 'ancienne version du plan' });
+        const first = (await get({ includeComments: false, bodyOffset: 0, bodyLimit: 8 })).structuredContent as Record<string, unknown>;
+        issues.getIssue.mockResolvedValue({ ...issue, body: 'nouvelle version du plan' });
+        expect(await get({ includeComments: false, bodyOffset: first.bodyNextOffset, bodyRevision: first.bodyRevision }))
+            .toMatchObject({ isError: true, structuredContent: { error: { code: 'DISCUSSION_ITEM_CHANGED' } } });
+    });
+    it('A11 : reconstruit exactement un long corps masqué (emoji, accents, combinants, CRLF, secret)', async () => {
+        const { get, issues } = fixture();
+        const unit = 'Plan é😀 é 漢字\r\nligne ghp_SECRETTOKEN fin\n';
+        const source = unit.repeat(900);
+        issues.getIssue.mockResolvedValue({ ...issue, body: source });
+        const parts: string[] = [];
+        let offset: number | null = 0;
+        let revision: string | undefined;
+        let pages = 0;
+        while (offset !== null) {
+            const page = (await get({ includeComments: false, bodyOffset: offset, ...(revision ? { bodyRevision: revision } : {}) })).structuredContent as Record<string, unknown>;
+            expect(page.bodyOffset).toBe(offset);
+            const next = page.bodyNextOffset as number | null;
+            if (next !== null) expect(next).toBeGreaterThan(offset);
+            expect(new TextEncoder().encode(String(page.body)).length).toBeLessThanOrEqual(12_003);
+            expect(String(page.body)).not.toContain('�');
+            parts.push(String(page.body));
+            revision = page.bodyRevision as string;
+            offset = next;
+            pages += 1;
+        }
+        const rebuilt = parts.join('');
+        expect(pages).toBeGreaterThan(3);
+        expect(rebuilt).toBe(source.replaceAll('ghp_SECRETTOKEN', '[jeton masqué]'));
+        expect(rebuilt).not.toContain('SECRETTOKEN');
+        expect(new TextEncoder().encode(rebuilt).length).toBe((await get({ includeComments: false })).structuredContent.bodyTotalBytes);
+        expect(await maskedRevision(rebuilt)).toBe(revision);
+    });
+    it('A11 : refuse aussi une PR en mode page', async () => {
+        const { get, issues } = fixture();
+        issues.getIssue.mockResolvedValue({ ...issue, pull_request: {} });
+        expect(await get({ bodyOffset: 0 })).toMatchObject({ isError: true, structuredContent: { error: { code: 'NOT_AN_ISSUE' } } });
     });
     it('ne publie pas les messages d’erreur distants', async () => {
         const { get, issues } = fixture();

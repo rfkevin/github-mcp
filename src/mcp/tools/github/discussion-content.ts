@@ -19,12 +19,13 @@ export async function pageMaskedContent(
   offset: number,
   limit: number,
   expectedRevision?: string,
+  subject = 'Le commentaire',
 ): Promise<{ content: string; offset: number; nextOffset: number | null; totalBytes: number; revision: string; truncated: boolean }> {
   const masked = redactDiagnostic(value);
   const bytes = encoder.encode(masked);
   const revision = await maskedRevision(masked);
   if (expectedRevision && expectedRevision !== revision) {
-    throw new InputValidationError('Le commentaire a changé depuis la page précédente. Reprenez la lecture à zéro.', 'DISCUSSION_ITEM_CHANGED');
+    throw new InputValidationError(subject + ' a changé depuis la page précédente. Reprenez la lecture à zéro.', 'DISCUSSION_ITEM_CHANGED');
   }
   if (!Number.isInteger(offset) || offset < 0 || offset > bytes.length) {
     throw new InputValidationError('Offset de commentaire invalide.', 'INVALID_COMMENT_OFFSET');
