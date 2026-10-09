@@ -73,6 +73,12 @@ async function seedPhaseCycle(label: string, autoAdvance = 'policy-p1'): Promise
     'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
     "VALUES (?1, 'P2', '[]', '[]', '[]', 'none')",
   ].join(' ')).bind(cycleId).run();
+  // CR-A / CR-01 : seul un participant qui tient un rôle dans le cycle déclenche la policy.
+  // Parcours sans SQL (amorçage owner + garde d'identité) : phase-bootstrap-e2e.spec.ts.
+  await bindings.COLLAB_DB_C2.prepare([
+    'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
+    "VALUES ('T-phase', ?1, 'agent:a', 'agent:b', 'agent:c', 'in_progress', '[]', '', '', 1)",
+  ].join(' ')).bind(cycleId).run();
   return cycleId;
 }
 

@@ -95,7 +95,8 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="unmap">'
     + '<label>Client OAuth <input type="text" name="oauth_client_id" required maxlength="512"></label>' + secret
     + '<p><button type="submit">Retirer l’association</button></p></form></fieldset>'
-    + importSection(data.imports ?? [], secret));
+    + importSection(data.imports ?? [], secret)
+    + phaseSection(secret));
 }
 
 /**
@@ -132,4 +133,17 @@ function importSection(imports: ImportedStateSummary[], secret: string): string 
     + '<label>Libellé owner dans l’état <input type="text" name="owner_label" maxlength="80" placeholder="Kevin"></label>'
     + '<label>Contenu CC-STATE-1 (fichier fusionné, brut) <textarea name="state" required></textarea></label>' + secret
     + '<p><button type="submit">Importer l’état</button></p></form></fieldset>';
+}
+
+/** CR-A / CR-03 : installation des définitions de phase d'un cycle (décision owner). */
+function phaseSection(secret: string): string {
+  return '<h2>Définitions de phase</h2>'
+    + '<p class="note">Installe l’ensemble des phases d’un cycle (remplace l’ensemble précédent), enregistré comme décision owner. '
+    + 'Laisser vide : P1–P6 sans condition, <code>auto_advance</code> = <code>none</code> (aucune avance tant qu’une policy n’est pas nommée). '
+    + 'Format : liste JSON, par ex. <code>[{"phase":"P1","auto_advance":"cc3-p1"},{"phase":"P2"}]</code> ; champs facultatifs '
+    + '<code>entry_conditions</code>, <code>exit_conditions</code>, <code>expected_outputs</code> ([{role, kind, count}]).</p>'
+    + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="install_phases">'
+    + '<label>Cycle <input type="text" name="cycle_id" required pattern="[a-z0-9][a-z0-9_-]{0,63}"></label>'
+    + '<label>Définitions (JSON, facultatif) <textarea name="phases"></textarea></label>' + secret
+    + '<p><button type="submit">Installer les phases</button></p></form></fieldset>';
 }

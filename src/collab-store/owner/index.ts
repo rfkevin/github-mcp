@@ -5,3 +5,4 @@ export {
   OWNER_PARTICIPANT, REGISTRY_CYCLE,
 } from './decisions';
 export { handleOwnerRequest, OWNER_PATH, type OwnerRouteEnv } from './handler';
+export { installPhaseDefinitions, normalizePhaseDefinitions, PHASE_INSTALL_KEY_PREFIX, type PhaseInstallResult } from './phase-install';
