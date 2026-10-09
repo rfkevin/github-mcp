@@ -384,6 +384,14 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     const lifted = await mem.promoteScope(p.id, 1, 'agent:b', 'project:cc3');
     expect(lifted.scope).toBe('project:cc3');
     expect(lifted.status).toBe('candidate');
+    // CR-D (GPT6-02) : la copie promue a son propre id (scope immuable), lignée tracée.
+    expect(lifted.id).not.toBe(p.id);
+    expect(lifted.version).toBe(1);
+    expect(lifted.supersedes).toBe(`${p.id}@1`);
+    expect((await mem.get(p.id, 1))?.status).toBe('superseded');
+    expect(await mem.get(p.id, 2)).toBeNull();
+    // La copie promue reste activable par un pair (aucune lignée multi-scope).
+    expect((await mem.activate(lifted.id, 1, 'agent:c')).status).toBe('active');
   });
 
   it('retire keeps tombstone', async () => {
@@ -513,8 +521,28 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     await approveViaC5(goodRef, 'Approve lifting mem-prot-scope to project:cc4.', 'scope-ok');
     const lifted = await mem.promoteScope(p.id, 1, 'agent:b', 'project:cc4', goodRef);
     expect(lifted.scope).toBe('project:cc4');
-    expect(lifted.version).toBe(2);
+    // CR-D (GPT6-02) : nouvel id dans le scope cible ; l'approbation reste liée à la lignée source.
+    expect(lifted.id).not.toBe(p.id);
+    expect(lifted.version).toBe(1);
+    expect(lifted.supersedes).toBe(`${p.id}@1`);
     expect(lifted.status).toBe('candidate');
+  });
+
+  it('CRD-R2 (revue GPT-6) : une approbation owner de promotion ne sert qu’une fois, même en course', async () => {
+    const mem = store();
+    const p = await proposeProtectedInvariant(mem, 'mem-prot-race', 'participant:agent:a');
+    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'scope-race');
+    const ref = await promoteScopeRequestId(p.id, 2, 'project:cc5');
+    await approveViaC5(ref, 'Approve lifting mem-prot-race to project:cc5 once.', 'scope-race-ok');
+    // Deux promotions préparées avec la même approbation avant le premier commit.
+    const first = await mem.preparePromoteScope(p.id, 1, 'agent:b', 'project:cc5', ref);
+    const second = await mem.preparePromoteScope(p.id, 1, 'agent:c', 'project:cc5', ref);
+    await bindings.COLLAB_DB_C2.batch(first.statements);
+    await expect(bindings.COLLAB_DB_C2.batch(second.statements)).rejects.toThrow();
+    const copies = await bindings.COLLAB_DB_C2.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE supersedes = ?1')
+      .bind(`${p.id}@1`).first<{ n: number }>();
+    expect(copies?.n).toBe(1);
+    await expect(mem.promoteScope(p.id, 1, 'agent:c', 'project:cc5', ref)).rejects.toMatchObject({ code: 'MEMORY_NOT_ACTIVE' });
   });
 
   it('promoteConfidence of a protected kind requires an owner decision (candidate and active)', async () => {
