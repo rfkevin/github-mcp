@@ -41,11 +41,12 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 ## 3. Outils de `/collab/mcp`
 
 ### `collab_get_context`
-- **Entrée** : `cycle` ; `participant_id` optionnel (par défaut le vôtre).
-- **Sortie** : phase, statut et révision du cycle, tâches où le participant est auteur, reviewer ou testeur, et `caller`.
+- **Entrée** : `cycle` (ou `issue` / `repository` / `task`) ; identité toujours dérivée du jeton serveur (jamais un `participant_id` client).
+- **Sortie** : phase, statut et révision du cycle, tâches, `caller`, `resolved`, `packet` (rôle, mémoire I6, budget) et `delta` optionnel.
+- **Mémoire (I6)** : le packet n’inclut que `common`, `participant:<caller>`, `role:<rôle courant>`, `task:<tâche courante>` et `project:<id>` (contrat C4 : `project:[A-Za-z0-9_-]{1,64}`) quand applicables. Les scopes `task:other` / `role:other` / `project:other` ne fuitent pas.
 - **Annotations** : lecture seule.
-- **Erreurs** : `UNKNOWN_CYCLE`, `STORE_UNAVAILABLE`.
-- **Services C3 (fusionnés, branchement de l’outil à venir)** : packet complet par rôle et résolution `issue → cycle → tâche` (`AMBIGUOUS_TASK`, `AMBIGUOUS_ISSUE`, `UNKNOWN_ISSUE`, `INVALID_ISSUE_REF`, `CONTEXT_TARGET_REQUIRED`, `PACKET_BUDGET_TOO_SMALL`). Les issues d’un cycle sont indexées par l’import d’état (section 4).
+- **Erreurs** : `UNKNOWN_CYCLE`, `STORE_UNAVAILABLE`, `CONTEXT_TARGET_REQUIRED`, `AMBIGUOUS_TASK`, `AMBIGUOUS_ISSUE`, `UNKNOWN_ISSUE`, `INVALID_ISSUE_REF`, `PACKET_BUDGET_TOO_SMALL`.
+- **Services C3** : packet complet par rôle et résolution `issue → cycle → tâche`. Les issues d’un cycle sont indexées par l’import d’état (section 4).
 
 ### `collab_get_delta`
 - **Entrée** : `cycle`, `since_seq` (0 = depuis le début), `limit` (1 à 1000, 200 par défaut).
@@ -80,6 +81,12 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **`memory-md`** : entrées de mémoire actives des scopes partagés (common, project, role, task) et de **votre** scope participant seulement (format `CC-MEMORY-MD-1`). La mémoire personnelle d’un autre participant n’est jamais exportée.
 - **Lecture seule** : l’outil n’écrit **jamais** dans GitHub.
 - **Erreurs** : `NO_STATE_SNAPSHOT` (aucun état importé), `EXPORT_INVALID`, `STATE_SNAPSHOT_CORRUPT`, `STORE_UNAVAILABLE`.
+
+### `collab_phase_advance`
+- **Entrée** : `cycle`, `expected_rev`, `next_phase` (`P1`–`P6`). **Pas de `policy_id` côté agent** : la policy est dérivée côté serveur de `auto_advance` de la phase courante (`none` → `POLICY_NOT_AUTHORIZED`).
+- **Sortie** : `applied` ou `duplicate`, avec `revision` et `event_seq`.
+- **Règle** : transition autorisée (P1→P2→P3→P4→P5→P6, plus un retour d’un cran), définition et conditions d’entrée de la cible, rejeu de la même intention détecté **avant** `STALE`.
+- **Erreurs** : `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
 
 ### `collab_memory` (lot C4, à venir)
 Cycle de vie de la mémoire : proposer, revoir, consolider, retirer. Voir la section 9. Tant que C4 n’est pas fusionné, cet outil n’existe pas dans le catalogue.

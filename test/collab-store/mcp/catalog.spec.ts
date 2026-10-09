@@ -26,7 +26,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
     const result = fixture.rpcResult(await response.text()) as { tools: Array<{ name: string }> };
     expect(result.tools.map(tool => tool.name).sort())
-      .toEqual(['collab_append_event', 'collab_export', 'collab_get_context', 'collab_get_delta']);
+      .toEqual(['collab_append_event', 'collab_export', 'collab_get_context', 'collab_get_delta', 'collab_phase_advance']);
   });
 
   it('sans le scope collab:, /collab/mcp refuse l\'accès', async () => {
