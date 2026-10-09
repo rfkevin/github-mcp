@@ -58,6 +58,24 @@ export interface ProposeInput {
   cycle_rev?: number;
 }
 
+/**
+ * CR-B (CR-02) — mutation du lifecycle mémoire préparée mais NON exécutée.
+ * Les statements rejoignent le batch CAS du caller (CollabStore.appendEvent ou
+ * le batch interne du MemoryStore) : un « applied » porte toujours l'effet
+ * mémoire, un refus n'écrit rien du tout — ni journal, ni mémoire.
+ */
+export interface MemoryMutation {
+  statements: D1PreparedStatement[];
+  /** Index (dans statements) du statement dont le changes appliqué doit être 1 (contrôle défensif). */
+  verifyIndex: number;
+  /** Effet résumé renvoyé au client (champ memory d'un append applied). */
+  summary: { id: string; version: number; status: string };
+  /** Effets post-commit (alarmes kinds protégés), exécutés après un batch appliqué. */
+  postCommit?: () => Promise<void>;
+  /** Entrées de re-diagnostic fail-closed (activation) dans le catch du caller. */
+  diagnosis?: { scope: string; text: string; capKey: string; kind: string; protectedKind: boolean };
+}
+
 /** Token budgets per scope family (plan §4). */
 export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
   common: 1500,
@@ -219,6 +237,19 @@ export class MemoryStore {
 
   /** Insert a candidate (status=candidate, version=1 or next). */
   async propose(input: ProposeInput): Promise<StoredMemory> {
+    const prepared = await this.preparePropose(input);
+    await this.db.batch(prepared.statements);
+    return (await this.get(prepared.summary.id, prepared.summary.version))!;
+  }
+
+  /**
+   * CR-B (CR-02) : pre-checks typés + statements d'un propose, SANS exécution.
+   * Les statements rejoignent le batch CAS du caller (l'appendEvent du store
+   * ou le batch interne ci-dessus) : un applied porte toujours l'effet
+   * mémoire, un refus n'écrit rien du tout (ni journal, ni mémoire). Toutes
+   * les lectures sont read-only : rejouer cette méthode re-diagnostique.
+   */
+  async preparePropose(input: ProposeInput): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     if (input.confidence === 'hypothesis' && PROTECTED_KINDS.has(input.kind)) {
       throw new MemoryStoreError(
@@ -261,29 +292,33 @@ export class MemoryStore {
         exact: proposeRequestId(protectedId, version),
       });
     }
-    await this.db
-      .prepare(
-        `INSERT INTO memory_entries
-         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11)`,
-      )
-      .bind(
-        id,
-        version,
-        entry.scope,
-        entry.kind,
-        entry.text,
-        JSON.stringify(entry.evidence_refs),
-        entry.confidence,
-        entry.author_pid,
-        input.supersedes ?? null,
-        expiresRev,
-        // A03/F3 (review Sol): persist the canonical cost so the in-batch
-        // budget guard measures exactly what estimateTokens measures.
-        estimateTokens(entry.text),
-      )
-      .run();
-    return (await this.get(id, version))!;
+    return {
+      statements: [
+        this.db
+          .prepare(
+            `INSERT INTO memory_entries
+             (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11)`,
+          )
+          .bind(
+            id,
+            version,
+            entry.scope,
+            entry.kind,
+            entry.text,
+            JSON.stringify(entry.evidence_refs),
+            entry.confidence,
+            entry.author_pid,
+            input.supersedes ?? null,
+            expiresRev,
+            // A03/F3 (review Sol): persist the canonical cost so the in-batch
+            // budget guard measures exactly what estimateTokens measures.
+            estimateTokens(entry.text),
+          ),
+      ],
+      verifyIndex: 0,
+      summary: { id, version, status: 'candidate' },
+    };
   }
 
   /**
@@ -303,6 +338,67 @@ export class MemoryStore {
     reviewerPid: string,
     cycleId = 'default',
   ): Promise<StoredMemory> {
+    const prepared = await this.prepareActivation(id, version, reviewerPid, cycleId);
+    const { scope, text, capKey, kind, protectedKind } = prepared.diagnosis!;
+    let results: Array<{ meta?: { changes?: number } }>;
+    try {
+      results = (await this.db.batch(prepared.statements)) as unknown as Array<{ meta?: { changes?: number } }>;
+    } catch (error) {
+      // Fail-closed: diagnose from the durable state, never guess (A03). The
+      // batch either applied fully or not at all — nothing in between.
+      const current = await this.get(id, version);
+      if (current && current.status === 'active') {
+        throw new MemoryStoreError(
+          'ACTIVATION_RACE',
+          `Candidate ${id}@${version} was not activated (concurrent change)`,
+        );
+      }
+      if (current && current.status !== 'candidate') {
+        throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${current.status}`);
+      }
+      await this.assertNotPaused(scope);
+      await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
+      await this.assertBudgetAllows(scope, text);
+      throw error;
+    }
+    // A03: explicit CAS control — the activation UPDATE must have applied
+    // exactly one row. The batch's own change count is authoritative: a
+    // concurrent activation of another candidate version of the same id can
+    // supersede this row between our own commit and the durable re-read —
+    // that is the expected I4 convergence (exactly one active version), not
+    // a race. The re-read only backs the check up when meta is unavailable.
+    const activated = await this.get(id, version);
+    const changes = results[prepared.verifyIndex]?.meta?.changes;
+    if (changes === 0 || !activated || (changes !== 1 && activated.status === 'candidate')) {
+      throw new MemoryStoreError('ACTIVATION_RACE', `Candidate ${id}@${version} was not activated (concurrent change)`);
+    }
+    const growth = await this.growthAlarmFor(scope);
+    if (growth) this.localAlarms.push(growth);
+    if (protectedKind) {
+      this.localAlarms.push({
+        code: 'INVARIANT_TOUCHED',
+        message: `Protected kind ${kind} activated on ${id}`,
+        scope,
+        details: { id, version },
+      });
+    }
+    return activated;
+  }
+
+  /**
+   * CR-B (CR-02) : pre-checks + statements de l'activation (revue par un pair
+   * distinct de l'auteur), SANS exécution — même contrat fail-closed que
+   * preparePropose. La garde transactionnelle A03 re-vérifie candidature,
+   * pause, cap de cycle et budget À L'INTÉRIEUR du batch du caller : un
+   * changement concurrent entre les pre-checks et le commit roule tout en
+   * arrière (l'append du journal compris, CR-02).
+   */
+  async prepareActivation(
+    id: string,
+    version: number,
+    reviewerPid: string,
+    cycleId = 'default',
+  ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const row = await this.get(id, version);
     if (!row) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id}@${version} not found`);
@@ -398,49 +494,12 @@ export class MemoryStore {
       );
     }
     statements.push(this.db.prepare(`DELETE FROM collab_store_guard`));
-    let results: Array<{ meta?: { changes?: number } }>;
-    try {
-      results = (await this.db.batch(statements)) as unknown as Array<{ meta?: { changes?: number } }>;
-    } catch (error) {
-      // Fail-closed: diagnose from the durable state, never guess (A03). The
-      // batch either applied fully or not at all — nothing in between.
-      const current = await this.get(id, version);
-      if (current && current.status === 'active') {
-        throw new MemoryStoreError(
-          'ACTIVATION_RACE',
-          `Candidate ${id}@${version} was not activated (concurrent change)`,
-        );
-      }
-      if (current && current.status !== 'candidate') {
-        throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${current.status}`);
-      }
-      await this.assertNotPaused(row.scope);
-      await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
-      await this.assertBudgetAllows(row.scope, row.text);
-      throw error;
-    }
-    // A03: explicit CAS control — the activation UPDATE must have applied
-    // exactly one row. The batch's own change count is authoritative: a
-    // concurrent activation of another candidate version of the same id can
-    // supersede this row between our own commit and the durable re-read —
-    // that is the expected I4 convergence (exactly one active version), not
-    // a race. The re-read only backs the check up when meta is unavailable.
-    const activated = await this.get(id, version);
-    const changes = results[activateIndex]?.meta?.changes;
-    if (changes === 0 || !activated || (changes !== 1 && activated.status === 'candidate')) {
-      throw new MemoryStoreError('ACTIVATION_RACE', `Candidate ${id}@${version} was not activated (concurrent change)`);
-    }
-    const growth = await this.growthAlarmFor(row.scope);
-    if (growth) this.localAlarms.push(growth);
-    if (protectedKind) {
-      this.localAlarms.push({
-        code: 'INVARIANT_TOUCHED',
-        message: `Protected kind ${row.kind} activated on ${id}`,
-        scope: row.scope,
-        details: { id, version },
-      });
-    }
-    return activated;
+    return {
+      statements,
+      verifyIndex: activateIndex,
+      summary: { id, version, status: 'active' },
+      diagnosis: { scope: row.scope, text: row.text, capKey, kind: row.kind, protectedKind },
+    };
   }
 
   /** Atomic supersede: batch UPDATE active→superseded + INSERT candidate (fail-closed). */
@@ -453,6 +512,27 @@ export class MemoryStore {
     confidence?: MemoryConfidence,
     ownerDecisionRef?: string,
   ): Promise<StoredMemory> {
+    const prepared = await this.prepareSupersede(id, authorPid, text, evidenceRefs, kind, confidence, ownerDecisionRef);
+    await this.db.batch(prepared.statements);
+    await prepared.postCommit?.();
+    return (await this.get(id, prepared.summary.version))!;
+  }
+
+  /**
+   * CR-B (CR-02) : pre-checks + statements du supersede (consolidation), SANS
+   * exécution — même contrat que preparePropose. L'alarme des kinds protégés
+   * (pause du scope, C4) reste un effet post-commit : elle n'appartient pas à
+   * la transaction du caller.
+   */
+  async prepareSupersede(
+    id: string,
+    authorPid: string,
+    text: string,
+    evidenceRefs: string[],
+    kind?: MemoryKind,
+    confidence?: MemoryConfidence,
+    ownerDecisionRef?: string,
+  ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const active = await this.db
       .prepare(`SELECT * FROM memory_entries WHERE id = ?1 AND status = 'active' ORDER BY version DESC LIMIT 1`)
@@ -480,38 +560,52 @@ export class MemoryStore {
       status: 'candidate',
       author_pid: authorPid,
     });
-    await this.db.batch([
-      this.db
-        .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
-        .bind(id, active.version),
-      this.db
-        .prepare(
-          `INSERT INTO memory_entries
-           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
-        )
-        .bind(
-          id,
-          nextVersion,
-          entry.scope,
-          entry.kind,
-          entry.text,
-          JSON.stringify(entry.evidence_refs),
-          entry.confidence,
-          entry.author_pid,
-          `${id}@${active.version}`,
-          estimateTokens(entry.text),
-        ),
-    ]);
-    if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
-      await this.raiseAlarm({
-        code: 'INVARIANT_TOUCHED',
-        message: `Protected kind supersede on ${id}`,
-        scope: active.scope,
-        details: { id, ownerDecisionRef },
-      });
-    }
-    return (await this.get(id, nextVersion))!;
+    return {
+      statements: [
+        this.db
+          .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
+          .bind(id, active.version),
+        this.db
+          .prepare(
+            `INSERT INTO memory_entries
+             (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
+          )
+          .bind(
+            id,
+            nextVersion,
+            entry.scope,
+            entry.kind,
+            entry.text,
+            JSON.stringify(entry.evidence_refs),
+            entry.confidence,
+            entry.author_pid,
+            `${id}@${active.version}`,
+            estimateTokens(entry.text),
+          ),
+        // CR-B (CR-02) : garde transactionnelle d'effet — le batch du caller ne
+        // passe que si l'ancienne version active est durablement superseded.
+        this.db
+          .prepare(
+            `INSERT INTO collab_store_guard (ok) SELECT CASE WHEN EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = 'superseded') THEN 1 ELSE 0 END`,
+          )
+          .bind(id, active.version),
+      ],
+      verifyIndex: 1,
+      summary: { id, version: nextVersion, status: 'candidate' },
+      ...(PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)
+        ? {
+            postCommit: async () => {
+              await this.raiseAlarm({
+                code: 'INVARIANT_TOUCHED',
+                message: `Protected kind supersede on ${id}`,
+                scope: active.scope,
+                details: { id, ownerDecisionRef },
+              });
+            },
+          }
+        : {}),
+    };
   }
 
   /**
@@ -664,6 +758,23 @@ export class MemoryStore {
     cycleId = 'default',
     ownerDecisionRef?: string,
   ): Promise<StoredMemory> {
+    const prepared = await this.prepareRetire(id, version, cycleId, ownerDecisionRef);
+    await this.db.batch(prepared.statements);
+    return (await this.get(id, prepared.summary.version))!;
+  }
+
+  /**
+   * CR-B (CR-02) : pre-checks + statements du retire (tombstone), SANS
+   * exécution. Le cap par cycle est réservé DANS le batch (comme le cap
+   * d'activation A03) et une garde transactionnelle exige que la ligne soit
+   * durablement retired : un applied porte toujours l'effet mémoire.
+   */
+  async prepareRetire(
+    id: string,
+    version?: number,
+    cycleId = 'default',
+    ownerDecisionRef?: string,
+  ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const target =
       version != null
@@ -680,12 +791,28 @@ export class MemoryStore {
     }
     const retKey = `${META_RET}${cycleId}:${target.scope}`;
     await this.assertCycleCap(retKey, MAX_RETIREMENTS_PER_CYCLE, 'RETIREMENT_CAP');
-    await this.db
-      .prepare(`UPDATE memory_entries SET status = 'retired' WHERE id = ?1 AND version = ?2`)
-      .bind(id, target.version)
-      .run();
-    await this.bumpCycleCap(retKey);
-    return (await this.get(id, target.version))!;
+    return {
+      statements: [
+        this.db
+          .prepare(`UPDATE memory_entries SET status = 'retired' WHERE id = ?1 AND version = ?2`)
+          .bind(id, target.version),
+        this.db
+          .prepare(
+            `INSERT INTO quota_counters (day, writes) VALUES (?1, 1) ON CONFLICT(day) DO UPDATE SET writes = writes + 1`,
+          )
+          .bind(retKey),
+        // CR-B (CR-02) : garde transactionnelle d'effet — le batch ne passe que
+        // si la ligne est durablement retired (fail-closed, jamais un applied
+        // sans effet mémoire).
+        this.db
+          .prepare(
+            `INSERT INTO collab_store_guard (ok) SELECT CASE WHEN EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = 'retired') THEN 1 ELSE 0 END`,
+          )
+          .bind(id, target.version),
+      ],
+      verifyIndex: 0,
+      summary: { id, version: target.version, status: 'retired' },
+    };
   }
 
   async get(id: string, version: number): Promise<StoredMemory | null> {
@@ -883,18 +1010,6 @@ export class MemoryStore {
     if ((row?.writes ?? 0) >= max) {
       throw new MemoryStoreError(code, `${code}: ${key} cap ${max} reached; consolidate review required`);
     }
-  }
-
-  private async bumpCycleCap(key: string): Promise<void> {
-    const row = await this.db
-      .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-      .bind(key)
-      .first<{ writes: number }>();
-    const next = (row?.writes ?? 0) + 1;
-    await this.db
-      .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`)
-      .bind(key, next)
-      .run();
   }
 
   /**

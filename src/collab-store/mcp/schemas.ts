@@ -91,6 +91,8 @@ export const outputSchemas = {
     status: z.enum(['applied', 'duplicate']),
     revision: z.number().optional(),
     event: z.object(storedEvent).optional(),
+    // CR-B (CR-02) : effet memory_entries d'un événement memory.* applied.
+    memory: z.object({ id: z.string(), version: z.number(), status: z.string() }).optional(),
   },
   // CC-3 C6 : instantané pour une PR GitHub (lecture seule).
   collab_export: {
