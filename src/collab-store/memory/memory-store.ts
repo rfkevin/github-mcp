@@ -94,6 +94,21 @@ function assertParticipantScopeAllowed(scope: string, callerPid: string | undefi
   }
 }
 
+/**
+ * CR-D (github-mcp#89, constat GPT6-02) : un id mémoire n'a qu'un scope,
+ * immuable sur toutes ses versions (candidate, active, superseded, retired).
+ * Toute mutation d'une lignée dont l'id est enregistré sous un autre scope —
+ * proposition concurrente, id recyclé après retrait, ou données anciennes
+ * incohérentes antérieures à CR-D — est refusée avant tout effet. Le message
+ * ne nomme pas le scope existant (il peut être privé).
+ */
+function scopeMismatch(id: string, type: string): MemoryStoreError {
+  return new MemoryStoreError(
+    'MEMORY_SCOPE_MISMATCH',
+    `${type}: memory id ${id} is already bound to another scope; a memory id keeps one immutable scope (CR-D).`,
+  );
+}
+
 /** Token budgets per scope family (plan §4). */
 export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
   common: 1500,
@@ -290,6 +305,9 @@ export class MemoryStore {
       author_pid: input.author_pid,
     });
     const id = input.id ?? newId();
+    // CR-D : le scope d'un id est immuable, retirées et superseded comprises —
+    // refus avant tout effet (ni événement, ni ligne, ni quota, ni révision).
+    await this.assertIdScope(id, entry.scope, 'memory.propose');
     const latest = await this.latestVersion(id);
     if (latest && latest.status === 'active') {
       throw new MemoryStoreError('MEMORY_ACTIVE_EXISTS', `Memory ${id} is already active; use supersede.`);
@@ -311,8 +329,14 @@ export class MemoryStore {
       });
     }
     return {
-      statements: [this.insertCandidate(entry, id, version, input.supersedes ?? null, expiresRev)],
-      verifyIndex: 0,
+      statements: [
+        // CR-D : garde transactionnelle — une proposition concurrente du même
+        // id dans un autre scope, committée entre les pré-checks et ce batch,
+        // roule tout en arrière ; le caller re-diagnostique MEMORY_SCOPE_MISMATCH.
+        this.scopeIdentityGuard(id, entry.scope),
+        this.insertCandidate(entry, id, version, input.supersedes ?? null, expiresRev),
+      ],
+      verifyIndex: 1,
       summary: { id, version, status: 'candidate' },
     };
   }
@@ -352,6 +376,7 @@ export class MemoryStore {
       if (current && current.status !== 'candidate') {
         throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${current.status}`);
       }
+      await this.assertIdScope(id, scope, 'memory.review');
       await this.assertNotPaused(scope);
       await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
       await this.assertBudgetAllows(scope, text);
@@ -402,6 +427,9 @@ export class MemoryStore {
     if (row.status !== 'candidate') {
       throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${row.status}`);
     }
+    // CR-D : une lignée enregistrée sous plusieurs scopes (données anciennes)
+    // n'est jamais activée — l'activation superséderait une version d'un autre scope.
+    await this.assertIdScope(id, row.scope, 'memory.review');
     if (row.confidence === 'hypothesis' && PROTECTED_KINDS.has(row.kind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot activate as a rule');
     }
@@ -435,6 +463,8 @@ export class MemoryStore {
         'INSERT INTO collab_store_guard (ok)',
         'SELECT CASE WHEN',
         `  EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = 'candidate')`,
+        // CR-D : l'id n'a, au commit, aucune version dans un autre scope.
+        '  AND NOT EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND scope <> ?6)',
         '  AND NOT EXISTS (SELECT 1 FROM quota_counters WHERE day = ?3 AND writes > 0)',
         '  AND COALESCE((SELECT writes FROM quota_counters WHERE day = ?4), 0) < ?5',
         `  AND COALESCE((SELECT SUM(COALESCE(token_cost, (length(text) + 3) / 4)) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8`,
@@ -452,10 +482,12 @@ export class MemoryStore {
     // otherwise both stay active (each call saw "no active version") and
     // violate I4. Sequential and parallel now converge: exactly one active
     // version, the loser ends up superseded.
+    // CR-D (GPT6-02) : la supersession est bornée au scope de la candidate —
+    // jamais `WHERE id = ?` seul, même si la garde ci-dessus l'assure déjà.
     statements.push(
       this.db
-        .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND status = 'active' AND version <> ?2`)
-        .bind(id, version),
+        .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND status = 'active' AND version <> ?2 AND scope = ?3`)
+        .bind(id, version, row.scope),
     );
     statements.push(
       this.db
@@ -541,6 +573,8 @@ export class MemoryStore {
     if (!active) throw new MemoryStoreError('MEMORY_NO_ACTIVE', `No active version for ${id}`);
     // CRB-R1 (revue Sol) : un scope participant est privé — son propriétaire seul consolide.
     assertParticipantScopeAllowed(active.scope, callerPid, 'memory.consolidate');
+    // CR-D : jamais de consolidation d'une lignée enregistrée sous plusieurs scopes.
+    await this.assertIdScope(id, active.scope, 'memory.consolidate');
     const nextKind = (kind ?? active.kind) as MemoryKind;
     const conf = confidence ?? (active.confidence as MemoryConfidence);
     const nextVersion = active.version + 1;
@@ -571,6 +605,8 @@ export class MemoryStore {
         // CR-B (CR-02) : garde transactionnelle d'effet — le batch du caller ne
         // passe que si l'ancienne version active est durablement superseded.
         this.statusEffectGuard(id, active.version, 'superseded'),
+        // CR-D : au commit, l'id n'a toujours qu'un scope.
+        this.scopeIdentityGuard(id, active.scope),
       ],
       verifyIndex: 1,
       summary: { id, version: nextVersion, status: 'candidate' },
@@ -656,7 +692,11 @@ export class MemoryStore {
    * Promote scope participant:<id> → role|project|common via peer review (not task).
    * Marks prior active superseded and inserts candidate on new scope (atomic batch).
    * Protected kinds additionally require an owner decision bound to
-   * promoteScopeRequestId(id, resulting version, newScope) (plan §4).
+   * promoteScopeRequestId(id, version + 1, newScope) (plan §4).
+   * CR-D (GPT6-02) : un id garde un scope immuable — la copie promue reçoit un
+   * NOUVEL id dans le scope cible, sa lignée restant tracée par
+   * supersedes = `<id>@<version>`. L'approbation owner reste liée à la lignée
+   * source (id, version + 1, scope cible), format inchangé.
    */
   async promoteScope(
     id: string,
@@ -701,7 +741,7 @@ export class MemoryStore {
       status: 'candidate',
       author_pid: row.author_pid,
     });
-    const nextVersion = row.version + 1;
+    const liftedId = newId();
     await this.db.batch([
       this.db
         .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
@@ -713,8 +753,8 @@ export class MemoryStore {
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
         )
         .bind(
-          id,
-          nextVersion,
+          liftedId,
+          1,
           entry.scope,
           entry.kind,
           entry.text,
@@ -724,8 +764,11 @@ export class MemoryStore {
           `${id}@${row.version}`,
           estimateTokens(entry.text),
         ),
+      // Fail-closed : la ligne source doit être durablement superseded, sinon
+      // rien n'est promu (concurrence avec une autre mutation de la source).
+      this.statusEffectGuard(id, row.version, 'superseded'),
     ]);
-    return (await this.get(id, nextVersion))!;
+    return (await this.get(liftedId, 1))!;
   }
 
   /**
@@ -772,6 +815,8 @@ export class MemoryStore {
     if (!target) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id} not found for retire`);
     // CRB-R1 (revue Sol) : un scope participant est privé — son propriétaire seul retire.
     assertParticipantScopeAllowed(target.scope, callerPid, 'memory.retire');
+    // CR-D : jamais de retrait dans une lignée enregistrée sous plusieurs scopes.
+    await this.assertIdScope(id, target.scope, 'memory.retire');
     if (PROTECTED_KINDS.has(target.kind)) {
       await this.requireOwnerDecision(ownerDecisionRef, { exact: retireRequestId(id, target.version) });
     }
@@ -791,6 +836,8 @@ export class MemoryStore {
         // si la ligne est durablement retired (fail-closed, jamais un applied
         // sans effet mémoire).
         this.statusEffectGuard(id, target.version, 'retired'),
+        // CR-D : au commit, l'id n'a toujours qu'un scope.
+        this.scopeIdentityGuard(id, target.scope),
       ],
       verifyIndex: 0,
       summary: { id, version: target.version, status: 'retired' },
@@ -926,6 +973,32 @@ export class MemoryStore {
         `INSERT INTO collab_store_guard (ok) SELECT CASE WHEN EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = ?3) THEN 1 ELSE 0 END`,
       )
       .bind(id, version, status);
+  }
+
+  /**
+   * CR-D (GPT6-02) : pré-check read-only — l'id ne doit avoir aucune version,
+   * quel que soit son statut, dans un autre scope que `scope`. Une lignée
+   * ancienne déjà incohérente (plusieurs scopes) est figée : fail-closed.
+   */
+  private async assertIdScope(id: string, scope: string, type: string): Promise<void> {
+    const other = await this.db
+      .prepare(`SELECT 1 AS found FROM memory_entries WHERE id = ?1 AND scope <> ?2 LIMIT 1`)
+      .bind(id, scope)
+      .first<{ found: number }>();
+    if (other) throw scopeMismatch(id, type);
+  }
+
+  /**
+   * CR-D (GPT6-02) : garde transactionnelle du même invariant, re-vérifiée au
+   * commit dans le batch du caller (course entre deux cycles distincts que le
+   * CAS de révision du journal ne sérialise pas).
+   */
+  private scopeIdentityGuard(id: string, scope: string): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `INSERT INTO collab_store_guard (ok) SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND scope <> ?2) THEN 1 ELSE 0 END`,
+      )
+      .bind(id, scope);
   }
 
   /** Budget is per exact scope string (not whole family). */

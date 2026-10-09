@@ -384,6 +384,14 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     const lifted = await mem.promoteScope(p.id, 1, 'agent:b', 'project:cc3');
     expect(lifted.scope).toBe('project:cc3');
     expect(lifted.status).toBe('candidate');
+    // CR-D (GPT6-02) : la copie promue a son propre id (scope immuable), lignée tracée.
+    expect(lifted.id).not.toBe(p.id);
+    expect(lifted.version).toBe(1);
+    expect(lifted.supersedes).toBe(`${p.id}@1`);
+    expect((await mem.get(p.id, 1))?.status).toBe('superseded');
+    expect(await mem.get(p.id, 2)).toBeNull();
+    // La copie promue reste activable par un pair (aucune lignée multi-scope).
+    expect((await mem.activate(lifted.id, 1, 'agent:c')).status).toBe('active');
   });
 
   it('retire keeps tombstone', async () => {
@@ -513,7 +521,10 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     await approveViaC5(goodRef, 'Approve lifting mem-prot-scope to project:cc4.', 'scope-ok');
     const lifted = await mem.promoteScope(p.id, 1, 'agent:b', 'project:cc4', goodRef);
     expect(lifted.scope).toBe('project:cc4');
-    expect(lifted.version).toBe(2);
+    // CR-D (GPT6-02) : nouvel id dans le scope cible ; l'approbation reste liée à la lignée source.
+    expect(lifted.id).not.toBe(p.id);
+    expect(lifted.version).toBe(1);
+    expect(lifted.supersedes).toBe(`${p.id}@1`);
     expect(lifted.status).toBe('candidate');
   });
 
