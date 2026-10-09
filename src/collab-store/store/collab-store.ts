@@ -16,6 +16,7 @@ import { ensureSchema } from './schema';
 import { sha256Hex } from './hash';
 import { DEFAULT_DAILY_WRITE_LIMIT } from './config';
 import { isMemoryEventType, prepareMemoryEvent } from '../memory/journal-lifecycle';
+import { redactEventsFor } from './visibility';
 
 export class CollabStoreError extends Error {
   constructor(readonly code: string, message: string) {
@@ -231,7 +232,10 @@ export class CollabStore {
       }
       const currentRevision = await this.currentRevision(event.cycle_id);
       if (currentRevision !== event.expected_rev) {
-        return { status: 'stale', currentRevision, delta: await this.deltaSinceRevision(event.cycle_id, event.expected_rev) };
+        // CR-C (GPT6-01) : le delta d'erreur est rendu pour l'appelant (identité
+        // serveur, déjà autorisée) : aucune mémoire privée d'autrui.
+        const delta = await this.deltaSinceRevision(event.cycle_id, event.expected_rev);
+        return { status: 'stale', currentRevision, delta: await redactEventsFor(this.db, event.participant_id, delta) };
       }
       // CR-B (CR-02) : le batch a roulé en arrière au complet (garde CAS ou
       // garde d'effet mémoire) ; re-préparer le lifecycle sur l'état durable
@@ -260,12 +264,20 @@ export class CollabStore {
     };
   }
 
-  async getDelta(cycleId: string, sinceSeq: number, limit = 200): Promise<{ events: StoredStoreEvent[]; hasMore: boolean }> {
+  /**
+   * Events after `sinceSeq`, rendered for `viewer` (CR-C, GPT6-01): the server
+   * identity of a registered reader, or null for an unregistered client or an
+   * internal reader without identity (most restrictive). memory.* events on
+   * another participant's private scope come back redacted; seq and cursors
+   * are unchanged.
+   */
+  async getDelta(cycleId: string, sinceSeq: number, limit = 200, viewer: string | null = null): Promise<{ events: StoredStoreEvent[]; hasMore: boolean }> {
     await ensureSchema(this.db);
     const { results } = await this.db.prepare(
       'SELECT * FROM events WHERE cycle_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3'
     ).bind(cycleId, sinceSeq, limit + 1).all<StoredStoreEvent>();
-    const events = await Promise.all(results.slice(0, limit).map(event => this.revealProposalPayload(event)));
+    const revealed = await Promise.all(results.slice(0, limit).map(event => this.revealProposalPayload(event)));
+    const events = await redactEventsFor(this.db, viewer, revealed);
     return { events, hasMore: results.length > limit };
   }
 

@@ -54,6 +54,7 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Usage** : réutilisez la plus grande `seq` reçue comme curseur.
 - **Annotations** : lecture seule.
 - **Contenu scellé** : avec C3, le contenu des propositions P1 non révélées est masqué (`sealed_id` et `content_hash` seulement).
+- **Mémoire privée (CR-C)** : un événement `memory.*` qui touche le scope `participant:<x>` d’un autre participant est rendu masqué selon votre identité serveur : `payload_json` = `{"memory":{"id":…,"version":…},"redacted":"private_scope"}` (version seulement si l’auteur l’a fournie), `session_id`, `role`, `evidence_ref` et `model_meta` vides. `seq`, `type`, `participant_id`, `expected_rev` et `idempotency_key` sont conservés : curseurs et preuves d’idempotence intacts. Vous voyez toujours vos propres événements tels qu’écrits, et le propriétaire du scope voit tout son historique. Client non enregistré : aucun scope privé. Fail-closed : scope indéterminable (payload illisible, id inconnu) ou id présent dans un scope privé d’autrui → masqué. Même règle pour le `delta` de `collab_get_context` et le `delta` d’une erreur `STALE`. Le journal stocké n’est pas modifié.
 
 ### `collab_append_event`
 - **Entrée** : `cycle`, `expected_rev` (0 = création), `op_id` au format `{client}:{cycle}:{op}:{n}` (n numérique), `type`, `participant_id`, `payload_json`, et en option `session_id`, `role`, `evidence_ref`. Le segment `{cycle}` de l’`op_id` doit désigner le cycle visé (`INVALID_OP_ID` sinon).
@@ -73,7 +74,7 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
   - `applied`, avec la nouvelle révision, l’événement et, pour un événement `memory.*`, son effet dans le champ `memory` ;
   - `duplicate`, avec l’événement original ; — le rejeu doit porter la même requête octet par octet : l'ordre des clés JSON compte, une intention réordonnée donne `IDEMPOTENCY_CONFLICT` ;
   - `IDEMPOTENCY_CONFLICT` quand l’`op_id` rejoué porte une autre intention (type, auteur, contenu) : incrémentez le compteur `n` ;
-  - `STALE`, avec `currentRevision` et `delta` à rejouer avant de réessayer ;
+  - `STALE`, avec `currentRevision` et `delta` à rejouer avant de réessayer (delta rendu pour l’appelant : mémoire privée d’autrui masquée, CR-C) ;
   - `QUOTA_EXHAUSTED` quand le quota quotidien est atteint (5000 par défaut, `COLLAB_DAILY_WRITE_LIMIT`).
 
 ### `collab_export`
@@ -360,7 +361,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | Alarme | invariant touché, plus de 5 réfutations ou croissance nette au-dessus du seuil → `owner.request` ; activations en pause dans ce scope |
 | Export | `collab_export` en `memory-md` : scopes partagés + scope de l’appelant |
 
-État d’implémentation : schéma et contrats (C1) et cycle de vie C4 avec registre, budgets et alarmes (github-mcp#67) sont fusionnés ; le raccordement public du lifecycle au journal `collab_append_event` (CR-B/CR-02 : un `applied` porte toujours son effet mémoire, un refus n’écrit rien du tout, administration des scopes participant CRB-R1 comprise) est en revue (PR #87) et sera fusionné par Kevin après les verdicts.
+État d’implémentation : schéma et contrats (C1) et cycle de vie C4 avec registre, budgets et alarmes (github-mcp#67) sont fusionnés ; le raccordement public du lifecycle au journal `collab_append_event` (CR-B/CR-02 : un `applied` porte toujours son effet mémoire, un refus n’écrit rien du tout, administration des scopes participant CRB-R1 comprise) est fusionné (PR #87).
 
 ## 10. Limites connues
 
@@ -368,5 +369,6 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 - `based_on_sha` reste celui de la base importée ; il est mis à jour à la fusion par celui qui prépare la PR.
 - L’import remplace les tâches matérialisées du cycle. Importez toujours l’état fusionné le plus récent, qui contient les exports précédents.
 - Le contenu de l’état importé figure dans l’événement `import_state`, donc dans `collab_get_delta` du cycle : c’est le fichier fusionné dans GitHub, pas une donnée privée.
-- C3 et C4 (cycle de vie mémoire) sont fusionnés. Le raccordement du lifecycle au journal (`collab_append_event`, CR-B/CR-02 : les événements `memory.*` appliquent leurs effets dans la même transaction que l’append — un `applied` porte toujours son effet mémoire, un refus n’écrit rien du tout, CRB-R1 comprise) est en revue (PR #87) et sera fusionné par Kevin après les verdicts.
+- Masquage CR-C : l’`id` d’une mémoire privée (choisi par l’auteur) et sa `version` restent visibles, car la revue par un pair distinct en a besoin. N’y mettez aucune donnée sensible. Le texte et les preuves d’une mémoire privée ne sont donc pas lisibles par son reviewer via le journal : la revue d’une mémoire privée par un pair (point X2) reste un arbitrage owner. Les scopes partagés (`common`, `project:`, `role:`, `task:`) ne sont pas masqués dans le journal ; la politique P1 des mémoires partagées (X5) reste un arbitrage owner.
+- C3 et C4 (cycle de vie mémoire) sont fusionnés. Le raccordement du lifecycle au journal (`collab_append_event`, CR-B/CR-02 : les événements `memory.*` appliquent leurs effets dans la même transaction que l’append — un `applied` porte toujours son effet mémoire, un refus n’écrit rien du tout, CRB-R1 comprise) est fusionné (PR #87).
 - La divergence de mesure du budget (`length()` SQL en points de code vs `estimateTokens` JS en unités UTF-16, texte hors BMP) est fermée : chaque ligne persiste son coût exact à l’insertion (`memory_entries.token_cost`, migration 0003) et la garde transactionnelle somme cette valeur ; les lignes antérieures à la migration sont rattrapées par un backfill JS exact et idempotent rejoué à chaque amorçage à froid : une interruption de la migration entre l’ALTER et le backfill est réparée au démarrage suivant, la même fonction canonique étant appliquée y compris hors BMP (review Sol, F3).
