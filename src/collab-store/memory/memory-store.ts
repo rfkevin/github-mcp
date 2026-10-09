@@ -293,29 +293,7 @@ export class MemoryStore {
       });
     }
     return {
-      statements: [
-        this.db
-          .prepare(
-            `INSERT INTO memory_entries
-             (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11)`,
-          )
-          .bind(
-            id,
-            version,
-            entry.scope,
-            entry.kind,
-            entry.text,
-            JSON.stringify(entry.evidence_refs),
-            entry.confidence,
-            entry.author_pid,
-            input.supersedes ?? null,
-            expiresRev,
-            // A03/F3 (review Sol): persist the canonical cost so the in-batch
-            // budget guard measures exactly what estimateTokens measures.
-            estimateTokens(entry.text),
-          ),
-      ],
+      statements: [this.insertCandidate(entry, id, version, input.supersedes ?? null, expiresRev)],
       verifyIndex: 0,
       summary: { id, version, status: 'candidate' },
     };
@@ -565,31 +543,10 @@ export class MemoryStore {
         this.db
           .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
           .bind(id, active.version),
-        this.db
-          .prepare(
-            `INSERT INTO memory_entries
-             (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
-          )
-          .bind(
-            id,
-            nextVersion,
-            entry.scope,
-            entry.kind,
-            entry.text,
-            JSON.stringify(entry.evidence_refs),
-            entry.confidence,
-            entry.author_pid,
-            `${id}@${active.version}`,
-            estimateTokens(entry.text),
-          ),
+        this.insertCandidate(entry, id, nextVersion, `${id}@${active.version}`, null),
         // CR-B (CR-02) : garde transactionnelle d'effet — le batch du caller ne
         // passe que si l'ancienne version active est durablement superseded.
-        this.db
-          .prepare(
-            `INSERT INTO collab_store_guard (ok) SELECT CASE WHEN EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = 'superseded') THEN 1 ELSE 0 END`,
-          )
-          .bind(id, active.version),
+        this.statusEffectGuard(id, active.version, 'superseded'),
       ],
       verifyIndex: 1,
       summary: { id, version: nextVersion, status: 'candidate' },
@@ -804,11 +761,7 @@ export class MemoryStore {
         // CR-B (CR-02) : garde transactionnelle d'effet — le batch ne passe que
         // si la ligne est durablement retired (fail-closed, jamais un applied
         // sans effet mémoire).
-        this.db
-          .prepare(
-            `INSERT INTO collab_store_guard (ok) SELECT CASE WHEN EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = 'retired') THEN 1 ELSE 0 END`,
-          )
-          .bind(id, target.version),
+        this.statusEffectGuard(id, target.version, 'retired'),
       ],
       verifyIndex: 0,
       summary: { id, version: target.version, status: 'retired' },
@@ -895,6 +848,55 @@ export class MemoryStore {
       n += 1;
     }
     return n;
+  }
+
+  /**
+   * CR-B (CR-02) : INSERT candidate partagé par preparePropose et
+   * prepareSupersede — SQL unique, binds identiques (un supersede passe
+   * expires_rev = null : pas d'expiry sur les versions consolidées).
+   */
+  private insertCandidate(
+    entry: MemoryEntry,
+    id: string,
+    version: number,
+    supersedes: string | null,
+    expiresRev: number | null,
+  ): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `INSERT INTO memory_entries
+         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11)`,
+      )
+      .bind(
+        id,
+        version,
+        entry.scope,
+        entry.kind,
+        entry.text,
+        JSON.stringify(entry.evidence_refs),
+        entry.confidence,
+        entry.author_pid,
+        supersedes,
+        expiresRev,
+        // A03/F3 (review Sol): persist the canonical cost so the in-batch
+        // budget guard measures exactly what estimateTokens measures.
+        estimateTokens(entry.text),
+      );
+  }
+
+  /**
+   * CR-B (CR-02) : garde transactionnelle d'effet partagée par prepareSupersede
+   * et prepareRetire — la ligne visée doit être durablement au statut attendu,
+   * sinon tout le batch du caller roule en arrière (jamais un applied sans
+   * effet mémoire).
+   */
+  private statusEffectGuard(id: string, version: number, status: 'superseded' | 'retired'): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `INSERT INTO collab_store_guard (ok) SELECT CASE WHEN EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = ?3) THEN 1 ELSE 0 END`,
+      )
+      .bind(id, version, status);
   }
 
   /** Budget is per exact scope string (not whole family). */
