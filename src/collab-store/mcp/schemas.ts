@@ -92,6 +92,7 @@ export const outputSchemas = {
     revision: z.number().optional(),
     event: z.object(storedEvent).optional(),
   },
+  // CC-3 C6 : instantané pour une PR GitHub (lecture seule).
   collab_export: {
     cycle_id: z.string(),
     format: z.enum(['cc-state-1', 'memory-md']),
@@ -110,6 +111,7 @@ export const outputSchemas = {
       }),
       store_revision: z.number(),
       last_seq: z.number(),
+      snapshot_seq: z.number(),
     }).optional(),
     memory: z.object({ entries: z.number(), scopes: z.array(z.string()) }).optional(),
     publish: z.string(),

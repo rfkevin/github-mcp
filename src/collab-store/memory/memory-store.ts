@@ -5,6 +5,7 @@
  * Budgets, alarms, participant isolation, protected kinds, hypothesis expiry.
  */
 import {
+  estimateTokens,
   validateMemoryActivation,
   validateMemoryEntry,
   type MemoryConfidence,
@@ -13,6 +14,10 @@ import {
   type MemoryStatus,
 } from '../contracts/memory';
 import { StateContractError } from '../../collab/contracts';
+
+// estimateTokens now lives in contracts/memory.ts (single canonical metric,
+// shared with the schema backfill); re-exported here for API compatibility.
+export { estimateTokens };
 import { ensureSchema } from '../store/schema';
 
 export class MemoryStoreError extends Error {
@@ -142,10 +147,6 @@ const META_ACT = 'mem:act:';
 const META_RET = 'mem:ret:';
 const META_BASE = 'mem:base:';
 
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
 export function scopeFamily(scope: string): string {
   if (scope === 'common') return 'common';
   const i = scope.indexOf(':');
@@ -263,8 +264,8 @@ export class MemoryStore {
     await this.db
       .prepare(
         `INSERT INTO memory_entries
-         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10)`,
+         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11)`,
       )
       .bind(
         id,
@@ -277,12 +278,25 @@ export class MemoryStore {
         entry.author_pid,
         input.supersedes ?? null,
         expiresRev,
+        // A03/F3 (review Sol): persist the canonical cost so the in-batch
+        // budget guard measures exactly what estimateTokens measures.
+        estimateTokens(entry.text),
       )
       .run();
     return (await this.get(id, version))!;
   }
 
-  /** Activate candidate → active; reviewer ≠ author; budget enforced (I4 / §4). */
+  /**
+   * Activate candidate → active; reviewer ≠ author; budget enforced (I4 / §4).
+   * A03 (post-audit F3): the activation is ONE D1 batch — a single SQL
+   * transaction. A transactional guard re-verifies candidate status, pause,
+   * cycle cap and budget inside the batch, so a concurrent change between
+   * the pre-checks and the commit rolls the entire activation back
+   * (fail-closed) instead of half-applying it. Cap reservation, growth
+   * baseline/alarm and protected-kind pause live in the same transaction:
+   * exactly one counter increment and one registered reviewer per applied
+   * activation.
+   */
   async activate(
     id: string,
     version: number,
@@ -292,9 +306,7 @@ export class MemoryStore {
     await ensureSchema(this.db);
     const row = await this.get(id, version);
     if (!row) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id}@${version} not found`);
-    if (await this.isActivationPaused(row.scope)) {
-      throw new MemoryStoreError('ACTIVATION_PAUSED', `Activations paused for scope ${row.scope}`);
-    }
+    await this.assertNotPaused(row.scope);
     if (row.status !== 'candidate') {
       throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${row.status}`);
     }
@@ -309,43 +321,126 @@ export class MemoryStore {
         'evidence_refs',
       );
     }
-    await this.assertCycleCap(`${META_ACT}${cycleId}:${row.scope}`, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
+    const capKey = `${META_ACT}${cycleId}:${row.scope}`;
+    await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
     await this.assertBudgetAllows(row.scope, row.text);
-    const priorActive = await this.db
-      .prepare(`SELECT version FROM memory_entries WHERE id = ?1 AND status = 'active' ORDER BY version DESC LIMIT 1`)
-      .bind(id)
-      .first<{ version: number }>();
-    const stmts: D1PreparedStatement[] = [];
-    if (priorActive) {
-      stmts.push(
-        this.db
-          .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2`)
-          .bind(id, priorActive.version),
-      );
-    }
-    stmts.push(
+    const pauseKey = `${META_PAUSE}:${row.scope}`;
+    const baseKey = `${META_BASE}${row.scope}`;
+    const occKey = `${META_OCC}${row.scope}`;
+    const budget = MEMORY_TOKEN_BUDGETS[scopeFamily(row.scope)] ?? 500;
+    const newTokens = estimateTokens(row.text);
+    const protectedKind = PROTECTED_KINDS.has(row.kind);
+    const statements: D1PreparedStatement[] = [
+      // A03 transactional guard: the whole batch rolls back unless the
+      // candidate is still a candidate, the scope is not paused, the cycle
+      // cap has a slot left and the scope budget still allows this text —
+      // the same conditions as the pre-checks, re-verified at commit time.
+      // Budget measure (review Sol, F3): the guard sums the persisted exact
+      // cost (token_cost = estimateTokens, UTF-16 units) so non-BMP text is
+      // counted identically by the JS pre-check and this transaction; the
+      // length() fallback only covers pre-migration rows (code points).
+      this.db.prepare([
+        'INSERT INTO collab_store_guard (ok)',
+        'SELECT CASE WHEN',
+        `  EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = 'candidate')`,
+        '  AND NOT EXISTS (SELECT 1 FROM quota_counters WHERE day = ?3 AND writes > 0)',
+        '  AND COALESCE((SELECT writes FROM quota_counters WHERE day = ?4), 0) < ?5',
+        `  AND COALESCE((SELECT SUM(COALESCE(token_cost, (length(text) + 3) / 4)) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8`,
+        '  THEN 1 ELSE 0 END',
+      ].join(' ')).bind(id, version, pauseKey, capKey, MAX_ACTIVATIONS_PER_CYCLE, row.scope, newTokens, budget),
+      // A03: the cap reservation lives inside the transaction — exactly one
+      // increment per applied activation, rolled back with a failed one.
+      this.db
+        .prepare(`INSERT INTO quota_counters (day, writes) VALUES (?1, 1) ON CONFLICT(day) DO UPDATE SET writes = writes + 1`)
+        .bind(capKey),
+    ];
+    // A03/I4 (pre-test Claude): supersede ANY other active version of this
+    // id inside the transaction, not just the priorActive read before the
+    // batch. Two candidate versions of one id activated in parallel would
+    // otherwise both stay active (each call saw "no active version") and
+    // violate I4. Sequential and parallel now converge: exactly one active
+    // version, the loser ends up superseded.
+    statements.push(
+      this.db
+        .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND status = 'active' AND version <> ?2`)
+        .bind(id, version),
+    );
+    statements.push(
       this.db
         .prepare(
           `UPDATE memory_entries SET status = 'active', reviewer_pid = ?1 WHERE id = ?2 AND version = ?3 AND status = 'candidate'`,
         )
         .bind(reviewerPid, id, version),
     );
-    await this.db.batch(stmts);
+    const activateIndex = statements.length - 1;
+    // A03: growth baseline + alarm + pause occurrence in the same transaction
+    // (previously post-batch writes that a crash could skip). Integer form:
+    // growth % > GROWTH_ALARM_PERCENT  <=>  100 * n > (100 + limit) * baseline.
+    const growthExceeded = `100 * (SELECT COUNT(*) FROM memory_entries WHERE status = 'active' AND scope = ?2) > ${100 + GROWTH_ALARM_PERCENT} * (SELECT writes FROM quota_counters WHERE day = ?3)`;
+    const bumpOccurrence =
+      'INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, COALESCE((SELECT writes FROM quota_counters WHERE day = ?1), 0) + 1';
+    statements.push(
+      this.db
+        .prepare(
+          `INSERT INTO quota_counters (day, writes) SELECT ?1, MAX(1, (SELECT COUNT(*) FROM memory_entries WHERE status = 'active' AND scope = ?2) - 1) WHERE NOT EXISTS (SELECT 1 FROM quota_counters WHERE day = ?1)`,
+        )
+        .bind(baseKey, row.scope),
+      this.db
+        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, 1 WHERE ${growthExceeded}`)
+        .bind(pauseKey, row.scope, baseKey),
+      this.db.prepare(`${bumpOccurrence} WHERE ${growthExceeded}`).bind(occKey, row.scope, baseKey),
+    );
+    if (protectedKind) {
+      // A03: INVARIANT_TOUCHED pause + occurrence, also inside the batch.
+      statements.push(
+        this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`).bind(pauseKey),
+        this.db.prepare(bumpOccurrence).bind(occKey),
+      );
+    }
+    statements.push(this.db.prepare(`DELETE FROM collab_store_guard`));
+    let results: Array<{ meta?: { changes?: number } }>;
+    try {
+      results = (await this.db.batch(statements)) as unknown as Array<{ meta?: { changes?: number } }>;
+    } catch (error) {
+      // Fail-closed: diagnose from the durable state, never guess (A03). The
+      // batch either applied fully or not at all — nothing in between.
+      const current = await this.get(id, version);
+      if (current && current.status === 'active') {
+        throw new MemoryStoreError(
+          'ACTIVATION_RACE',
+          `Candidate ${id}@${version} was not activated (concurrent change)`,
+        );
+      }
+      if (current && current.status !== 'candidate') {
+        throw new MemoryStoreError('MEMORY_NOT_CANDIDATE', `Memory ${id}@${version} status is ${current.status}`);
+      }
+      await this.assertNotPaused(row.scope);
+      await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
+      await this.assertBudgetAllows(row.scope, row.text);
+      throw error;
+    }
+    // A03: explicit CAS control — the activation UPDATE must have applied
+    // exactly one row. The batch's own change count is authoritative: a
+    // concurrent activation of another candidate version of the same id can
+    // supersede this row between our own commit and the durable re-read —
+    // that is the expected I4 convergence (exactly one active version), not
+    // a race. The re-read only backs the check up when meta is unavailable.
     const activated = await this.get(id, version);
-    if (!activated || activated.status !== 'active') {
+    const changes = results[activateIndex]?.meta?.changes;
+    if (changes === 0 || !activated || (changes !== 1 && activated.status === 'candidate')) {
       throw new MemoryStoreError('ACTIVATION_RACE', `Candidate ${id}@${version} was not activated (concurrent change)`);
     }
-    await this.bumpCycleCap(`${META_ACT}${cycleId}:${row.scope}`);
-    await this.checkGrowthAlarm(row.scope);
-    if (PROTECTED_KINDS.has(row.kind)) {
-      await this.raiseAlarm({
+    const growth = await this.growthAlarmFor(row.scope);
+    if (growth) this.localAlarms.push(growth);
+    if (protectedKind) {
+      this.localAlarms.push({
         code: 'INVARIANT_TOUCHED',
         message: `Protected kind ${row.kind} activated on ${id}`,
         scope: row.scope,
         details: { id, version },
       });
     }
-    return (await this.get(id, version))!;
+    return activated;
   }
 
   /** Atomic supersede: batch UPDATE active→superseded + INSERT candidate (fail-closed). */
@@ -392,8 +487,8 @@ export class MemoryStore {
       this.db
         .prepare(
           `INSERT INTO memory_entries
-           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL)`,
+           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
         )
         .bind(
           id,
@@ -405,6 +500,7 @@ export class MemoryStore {
           entry.confidence,
           entry.author_pid,
           `${id}@${active.version}`,
+          estimateTokens(entry.text),
         ),
     ]);
     if (PROTECTED_KINDS.has(active.kind) || PROTECTED_KINDS.has(nextKind)) {
@@ -538,8 +634,8 @@ export class MemoryStore {
       this.db
         .prepare(
           `INSERT INTO memory_entries
-           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL)`,
+           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
         )
         .bind(
           id,
@@ -551,6 +647,7 @@ export class MemoryStore {
           entry.confidence,
           entry.author_pid,
           `${id}@${row.version}`,
+          estimateTokens(entry.text),
         ),
     ]);
     return (await this.get(id, nextVersion))!;
@@ -690,34 +787,40 @@ export class MemoryStore {
     }
   }
 
-  private async checkGrowthAlarm(scope: string): Promise<void> {
+  /** A03: fail with the contract error when a scope's activations are paused. */
+  private async assertNotPaused(scope: string): Promise<void> {
+    if (await this.isActivationPaused(scope)) {
+      throw new MemoryStoreError('ACTIVATION_PAUSED', `Activations paused for scope ${scope}`);
+    }
+  }
+
+  /**
+   * A03: derive the growth alarm from the committed transaction state. The
+   * activation batch owns every write (baseline, pause, occurrence); this
+   * read-only derivation keeps getAlarms() consistent without reopening a
+   * post-mutation write window.
+   */
+  private async growthAlarmFor(scope: string): Promise<MemoryAlarm | null> {
     const countRow = await this.db
       .prepare(`SELECT COUNT(*) AS n FROM memory_entries WHERE status = 'active' AND scope = ?1`)
       .bind(scope)
       .first<{ n: number }>();
-    const n = countRow?.n ?? 0;
-    const baseKey = META_BASE + scope;
-    let baseRow = await this.db
+    const baseRow = await this.db
       .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-      .bind(baseKey)
+      .bind(`${META_BASE}${scope}`)
       .first<{ writes: number }>();
-    if (!baseRow) {
-      const baseline = Math.max(1, n - 1);
-      await this.db
-        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`)
-        .bind(baseKey, baseline)
-        .run();
-      baseRow = { writes: baseline };
-    }
+    if (!baseRow) return null;
+    const n = countRow?.n ?? 0;
     const growth = ((n - baseRow.writes) / baseRow.writes) * 100;
     if (growth > GROWTH_ALARM_PERCENT) {
-      await this.raiseAlarm({
+      return {
         code: 'GROWTH_THRESHOLD',
         message: `Net growth ${growth.toFixed(0)}% > ${GROWTH_ALARM_PERCENT}% on ${scope}`,
         scope,
         details: { baseline: baseRow.writes, current: n },
-      });
+      };
     }
+    return null;
   }
 
   private async raiseAlarm(alarm: MemoryAlarm): Promise<void> {

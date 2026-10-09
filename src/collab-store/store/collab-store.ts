@@ -13,6 +13,7 @@
 import { opIdToIdempotencyKey, validateAgentEvent, validateTaskAssignment, type StoreEvent, type StoreEventType } from '../contracts';
 import { createSealedEnvelope, parseSealedEnvelope } from '../phases/sealed-envelope';
 import { ensureSchema } from './schema';
+import { sha256Hex } from './hash';
 import { DEFAULT_DAILY_WRITE_LIMIT } from './config';
 
 export class CollabStoreError extends Error {
@@ -96,6 +97,16 @@ export class CollabStore {
 
   async appendEvent(input: AppendEventInput): Promise<AppendOutcome> {
     const key = opIdToIdempotencyKey(input.op_id);
+    // A05 (F1): the op_id cycle segment must be the target cycle. The client
+    // segment may contain ':' but the cycle never does: parse from the right.
+    const segments = input.op_id.split(':');
+    const opCycle = segments[segments.length - 3] || '';
+    if (opCycle !== input.cycle_id) {
+      throw new CollabStoreError(
+        'INVALID_OP_ID',
+        'op_id doit porter le segment cycle de la requête ({client}:{cycle}:{op}:{n}) : attendu « ' + input.cycle_id + ' », reçu « ' + opCycle + ' »',
+      );
+    }
     const event: StoreEvent = {
       cycle_id: input.cycle_id,
       type: input.type,
@@ -109,6 +120,17 @@ export class CollabStore {
     };
     validateAgentEvent(event);
     await ensureSchema(this.db);
+    // A05 (F1): fingerprint the incoming intent BEFORE P1 sealing rewrites
+    // the payload, so a replay compares the raw intent to the stored one.
+    const intentFingerprint = await this.intentFingerprint(event);
+
+    // A05 (F1, review Claude): judge an existing key BEFORE the P1 sealing
+    // and the task permission statements. Otherwise a lost-response replay
+    // of task.handoff or of a task.claim reassignment would be judged on the
+    // state its own first write produced (TASK_FORBIDDEN) instead of
+    // returning duplicate with the original event.
+    const replayed = await this.replayOutcome(key, intentFingerprint);
+    if (replayed) return replayed;
 
     let sealedInsert: D1PreparedStatement | null = null;
     if (event.type === 'proposal.submit') {
@@ -125,7 +147,9 @@ export class CollabStore {
         if (typeof payload.content !== 'string' || !payload.content) {
           throw new CollabStoreError('INVALID_PROPOSAL_PAYLOAD', 'proposal.submit requires payload_json.content in P1.');
         }
-        const sealedId = 'sealed-' + key.slice(0, 48);
+        // A01 (F1): hash the full key + cycle instead of truncating the
+        // key: long op_ids sharing a 48-char prefix collided on sealed ids.
+        const sealedId = 'sealed-' + (await sha256Hex(key + '|' + event.cycle_id));
         const envelope = await createSealedEnvelope(payload.content);
         event.payload_json = JSON.stringify({ sealed_id: sealedId, content_hash: envelope.content_hash });
         sealedInsert = this.db.prepare([
@@ -181,8 +205,8 @@ export class CollabStore {
     } catch (error) {
       // Fail-closed: diagnose from the durable state, never guess. F1: a
       // duplicate idempotency key wins over STALE.
-      const existing = await this.eventByKey(key);
-      if (existing) return { status: 'duplicate', event: existing };
+      const replay = await this.replayOutcome(key, intentFingerprint);
+      if (replay) return replay;
       const quota = await this.db.prepare('SELECT writes FROM quota_counters WHERE day = ?1')
         .bind(day).first<{ writes: number }>();
       if ((quota?.writes ?? 0) >= this.dailyWriteLimit) {
@@ -277,6 +301,26 @@ export class CollabStore {
   }
 
   /**
+   * A05 (F1): a reused op_id is only idempotent for the same intent; a
+   * different intent under the same key is a conflict, never a silent
+   * overwrite of the stored event. Returns null for a new key, the duplicate
+   * outcome otherwise (IDEMPOTENCY_CONFLICT on intent mismatch). The message
+   * stays neutral: it never echoes the stored seq/type.
+   */
+  private async replayOutcome(key: string, intentFingerprint: string): Promise<AppendOutcome | null> {
+    const existing = await this.eventByKey(key);
+    if (!existing) return null;
+    const storedFingerprint = await this.intentFingerprint(existing);
+    if (storedFingerprint !== intentFingerprint) {
+      throw new CollabStoreError(
+        'IDEMPOTENCY_CONFLICT',
+        'op_id déjà utilisé pour une intention différente. Incrémentez le compteur n de l\'op_id.',
+      );
+    }
+    return { status: 'duplicate', event: existing };
+  }
+
+  /**
    * Materialized task statements, validated BEFORE the batch (fail-closed).
    *
    * TOCTOU (accepted, review C2) : the existence check for task.status/handoff
@@ -310,6 +354,21 @@ export class CollabStore {
         reviewer_pid: typeof record.reviewer_pid === 'string' ? record.reviewer_pid : '',
         tester_pid: typeof record.tester_pid === 'string' ? record.tester_pid : '',
       });
+      // A08 (F1): a first claim is filed by the owner themselves; an
+      // existing task can only be reassigned by its current owner.
+      const current = await this.db.prepare(
+        'SELECT owner_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2'
+      ).bind(event.cycle_id, taskId).first<{ owner_pid: string }>();
+      const allowedOwner = current ? current.owner_pid : assignment.owner_pid;
+      if (allowedOwner !== event.participant_id) {
+        throw new CollabStoreError(
+          'TASK_FORBIDDEN',
+          current
+            ? 'task.claim sur une tâche existante est réservé à son owner courant (' + current.owner_pid + '), pas à ' + event.participant_id
+            : 'task.claim initial doit être fait par l\'owner de la tâche (' + assignment.owner_pid + '), pas par ' + event.participant_id,
+        );
+      }
+      await this.requireRegisteredParticipants([assignment.owner_pid, assignment.reviewer_pid, assignment.tester_pid]);
       return [this.db.prepare([
         'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status,',
         '                  owned_paths, target_ref, next_action, revision)',
@@ -330,6 +389,14 @@ export class CollabStore {
       throw new CollabStoreError('TASK_UNKNOWN', 'Tâche inconnue dans le cycle ' + event.cycle_id + ' : ' + taskId);
     }
     if (event.type === 'task.status') {
+      // A08 (F1): only the task roles may move the status.
+      const roles = [existing.owner_pid, existing.reviewer_pid, existing.tester_pid];
+      if (!roles.includes(event.participant_id)) {
+        throw new CollabStoreError(
+          'TASK_FORBIDDEN',
+          'task.status réservé aux rôles de la tâche ' + taskId + ' (' + roles.join(', ') + '), pas à ' + event.participant_id,
+        );
+      }
       const status = typeof record.status === 'string' ? record.status : '';
       if (!TASK_STATUSES.includes(status as TaskStatus)) {
         throw new CollabStoreError('INVALID_TASK_STATUS', 'Statut de tâche non supporté : ' + status);
@@ -339,6 +406,13 @@ export class CollabStore {
       ).bind(event.cycle_id, status, nextRevision, taskId)];
     }
     // task.handoff: transfer the task to a new owner with a new next action.
+    // A08 (F1): only the current owner may hand the task over.
+    if (existing.owner_pid !== event.participant_id) {
+      throw new CollabStoreError(
+        'TASK_FORBIDDEN',
+        'task.handoff réservé à l\'owner courant de la tâche ' + taskId + ' (' + existing.owner_pid + '), pas à ' + event.participant_id,
+      );
+    }
     // D12 stays enforced at write time: the (possibly new) owner must remain
     // distinct from the reviewer and the tester.
     const ownerPid = typeof record.owner_pid === 'string' && record.owner_pid ? record.owner_pid : existing.owner_pid;
@@ -346,11 +420,91 @@ export class CollabStore {
     if (pids.some(pid => !pid) || new Set(pids).size !== pids.length) {
       throw new CollabStoreError('DUPLICATE_TASK_ROLE', 'D12 : auteur, reviewer et testeur doivent etre distincts.');
     }
+    // A08 (F1): the (possibly new) owner must be a participant registered as
+    // active on /owner (K6).
+    await this.requireRegisteredParticipants([ownerPid]);
     return [this.db.prepare(
       'UPDATE tasks SET next_action = ?2, owner_pid = ?3, revision = ?4 WHERE cycle_id = ?1 AND task_id = ?5'
     ).bind(event.cycle_id,
       typeof record.next_action === 'string' ? record.next_action : '',
       ownerPid,
       nextRevision, taskId)];
+  }
+
+  /**
+   * A08 (F1): every task role must be a participant registered as active on
+   * /owner (K6). Unregistered identities cannot own store work.
+   */
+  private async requireRegisteredParticipants(pids: string[]): Promise<void> {
+    for (const pid of pids) {
+      const row = await this.db.prepare(
+        'SELECT status FROM participants WHERE participant_id = ?1'
+      ).bind(pid).first<{ status: string }>();
+      if (!row || row.status !== 'active') {
+        throw new CollabStoreError(
+          'UNREGISTERED_PARTICIPANT',
+          'participant non enregistré (actif) pour ce rôle : ' + pid + '. Enregistrement par le propriétaire sur /owner (K6).',
+        );
+      }
+    }
+  }
+
+  /**
+   * A05 (F1): canonical intent fingerprint of an append. expected_rev is
+   * excluded on purpose: a retry after STALE replays the same intent at a
+   * new revision and must stay idempotent.
+   */
+  private async intentFingerprint(source: {
+    cycle_id: string;
+    type: string;
+    participant_id: string;
+    session_id?: string;
+    role?: string;
+    payload_json: string;
+    evidence_ref?: string;
+  }): Promise<string> {
+    const payloadIntent = source.type === 'proposal.submit'
+      ? await this.proposalIntent(source.payload_json, source.cycle_id)
+      : source.payload_json;
+    return JSON.stringify({
+      cycle_id: source.cycle_id,
+      type: source.type,
+      participant_id: source.participant_id,
+      session_id: source.session_id ?? '',
+      role: source.role ?? '',
+      payload_intent: payloadIntent,
+      evidence_ref: source.evidence_ref ?? '',
+    });
+  }
+
+  /**
+   * A05 (F1): content-level intent of a proposal — raw content before P1
+   * sealing, sealed envelope content once stored — so a raw replay of a P1
+   * proposal compares equal to its sealed event.
+   */
+  private async proposalIntent(payloadJson: string, cycleId: string): Promise<unknown> {
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(payloadJson) as Record<string, unknown>;
+    } catch {
+      return { invalid: payloadJson };
+    }
+    if (typeof payload.content === 'string' && payload.content) {
+      return { proposal_content: await sha256Hex(payload.content) };
+    }
+    if (typeof payload.sealed_id === 'string' && payload.sealed_id) {
+      const row = await this.db.prepare(
+        'SELECT content, content_hash FROM sealed_items WHERE id = ?1 AND cycle_id = ?2'
+      ).bind(payload.sealed_id, cycleId).first<{ content: string; content_hash: string }>();
+      if (row) {
+        try {
+          return { proposal_content: await sha256Hex(parseSealedEnvelope(row.content).content) };
+        } catch {
+          return { proposal_content: 'sealed:' + row.content_hash };
+        }
+      }
+      return { sealed_id: payload.sealed_id, content_hash: typeof payload.content_hash === 'string' ? payload.content_hash : '' };
+    }
+    return { raw: payloadJson };
   }
 }
