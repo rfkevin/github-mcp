@@ -142,7 +142,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
 
   server.registerTool('collab_append_event', {
     title: 'Append d\'événement (store CC-3)',
-    description: 'Ajout idempotent au journal du cycle. participant_id doit être le vôtre (voir caller dans collab_get_context) : sinon PARTICIPANT_MISMATCH ; client non enregistré : owner.request uniquement (UNREGISTERED_CLIENT). CAS fail-closed : fournissez expected_rev (0 = création de cycle). Un op_id rejoué renvoie l\'événement original (status duplicate) sans seconde écriture. Un expected_rev périmé renvoie l\'erreur typée STALE avec currentRevision et le delta à rejouer. Quota quotidien épuisé : QUOTA_EXHAUSTED, aucune écriture.',
+    description: 'Ajout idempotent au journal du cycle. participant_id doit être le vôtre (voir caller dans collab_get_context) : sinon PARTICIPANT_MISMATCH ; client non enregistré : owner.request uniquement (UNREGISTERED_CLIENT). CAS fail-closed : fournissez expected_rev (0 = création de cycle). Un op_id rejoué renvoie l\'événement original (status duplicate) sans seconde écriture ; le même op_id avec une intention différente (type, auteur, contenu) donne IDEMPOTENCY_CONFLICT : incrémentez le compteur n. Le segment cycle de l\'op_id doit viser ce cycle (INVALID_OP_ID). task.claim, task.status et task.handoff sont limités aux rôles de la tâche (owner courant pour claim/handoff, owner/reviewer/testeur pour status : TASK_FORBIDDEN) et aux participants enregistrés actifs (UNREGISTERED_PARTICIPANT). Un expected_rev périmé renvoie l\'erreur typée STALE avec currentRevision et le delta à rejouer. Quota quotidien épuisé : QUOTA_EXHAUSTED, aucune écriture.',
     inputSchema: {
       cycle: z.string().min(1).max(64),
       expected_rev: z.number().int().min(0),
@@ -159,6 +159,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   }, async (input) => {
     let outcome: AppendOutcome;
     try {
+      // CC-3 C5 : participant_id doit être celui dérivé du jeton ; client non enregistré = owner.request seulement.
       const participantId = authorizeAppend(await context.identity(), input.participant_id, input.type);
       outcome = await context.store.appendEvent({
         cycle_id: input.cycle,
