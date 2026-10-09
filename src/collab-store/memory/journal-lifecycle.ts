@@ -110,6 +110,23 @@ function optionalInt(memory: Record<string, unknown>, key: string, type: string,
 }
 
 /**
+ * CRB-R1 (revue Sol, github-mcp#79/6086862463) : les scopes `participant:<id>`
+ * sont la mémoire privée d'un participant — memory.propose ne peut viser que le
+ * scope de l'appelant (MEMORY_SCOPE_FORBIDDEN sinon, avant tout batch : un
+ * refus n'écrit rien du tout). La revue par un pair distinct reste ouverte
+ * (activation C4) et les scopes partagés (common/project/role/task) restent
+ * collaboratifs. Délégation ou dérogation : owner.request (C5).
+ */
+function assertScopeOwnership(scope: string, participantId: string, type: string): void {
+  if (scope.startsWith('participant:') && scope !== `participant:${participantId}`) {
+    throw new MemoryStoreError(
+      'MEMORY_SCOPE_FORBIDDEN',
+      `${type} : le scope ${scope} est la mémoire privée d'un autre participant (CRB-R1).`,
+    );
+  }
+}
+
+/**
  * Pré-vérifications typées + statements du lifecycle mémoire d'un événement du
  * journal, SANS exécution : le caller (CollabStore.appendEvent) fusionne les
  * statements dans son propre batch CAS. Read-only ici — rejouer la fonction
@@ -123,9 +140,12 @@ export async function prepareMemoryEvent(
   const memory = memoryPayload(event);
   const store = new MemoryStore(db);
   if (event.type === 'memory.propose') {
+    // CRB-R1 (revue Sol) : le scope participant visé doit être celui de l'appelant.
+    const scope = requiredString(memory, 'scope', event.type);
+    assertScopeOwnership(scope, event.participant_id, event.type);
     const input: ProposeInput = {
       id: optionalString(memory, 'id', event.type),
-      scope: requiredString(memory, 'scope', event.type),
+      scope,
       kind: requiredString(memory, 'kind', event.type) as MemoryKind,
       text: requiredString(memory, 'text', event.type),
       evidence_refs: stringArray(memory, 'evidence_refs', event.type, false),
@@ -164,6 +184,8 @@ export async function prepareMemoryEvent(
       optionalString(memory, 'kind', event.type) as MemoryKind | undefined,
       optionalString(memory, 'confidence', event.type) as MemoryConfidence | undefined,
       optionalString(memory, 'owner_decision_ref', event.type),
+      // CRB-R1 : l'appelant ne consolide que son scope participant (garde store).
+      event.participant_id,
     );
   }
   if (event.type === 'memory.retire') {
@@ -172,6 +194,8 @@ export async function prepareMemoryEvent(
       optionalInt(memory, 'version', event.type, 1),
       event.cycle_id,
       optionalString(memory, 'owner_decision_ref', event.type),
+      // CRB-R1 : l'appelant ne retire que son scope participant (garde store).
+      event.participant_id,
     );
   }
   throw new MemoryStoreError(

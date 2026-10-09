@@ -267,6 +267,48 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 dispatche par appendEvent (
     expect(retire).toMatchObject({ status: 'applied', memory: { id, version: 1, status: 'retired' } });
   });
 
+  it('CRB-R1 : scopes participant prives — propose/consolidate/retire reserves au proprietaire, revue pair preservee', async () => {
+    const cycle = uniq('cyc');
+    const own = 'participant:agent:x';
+    const other = 'participant:agent:y';
+    const id = uniq('mem');
+    const x = 'agent:x';
+    const y = 'agent:y';
+
+    // Injection dans le scope participant d un autre : refus pre-batch, rien ecrit.
+    const before = await state(cycle);
+    expect(await refuse({ cycle, type: 'memory.propose', participant: x, op: 'inj',
+      payload: { memory: { id, scope: other, kind: 'fact', text: 'memoire privee d autrui', evidence_refs: ['ev:1'] } } }))
+      .toBe('MEMORY_SCOPE_FORBIDDEN');
+    expect(await state(cycle)).toEqual(before);
+    expect(await countRows(id)).toBe(0);
+
+    // Chemins legitimes : le proprietaire propose, un pair distinct reve (revoir n est pas administrer).
+    expect((await append({ cycle, type: 'memory.propose', participant: x, op: 'own',
+      payload: { memory: { id, scope: own, kind: 'fact', text: 'memoire personnelle', evidence_refs: ['ev:1'] } } })).status).toBe('applied');
+    expect((await append({ cycle, type: 'memory.review', participant: y, op: 'rev',
+      payload: { memory: { id, version: 1 } } })).status).toBe('applied');
+
+    // consolidate et retire restent au proprietaire : refus du pair, aucun etat change.
+    const mid = await state(cycle);
+    expect(await refuse({ cycle, type: 'memory.consolidate', participant: y, op: 'sup-y',
+      payload: { memory: { id, text: 'consolidation interdite', evidence_refs: ['ev:2'] } } })).toBe('MEMORY_SCOPE_FORBIDDEN');
+    expect(await refuse({ cycle, type: 'memory.retire', participant: y, op: 'ret-y',
+      payload: { memory: { id } } })).toBe('MEMORY_SCOPE_FORBIDDEN');
+    expect(await state(cycle)).toEqual(mid);
+    expect(await countRows(id)).toBe(1);
+
+    // Le proprietaire consolide puis retire ; v2 remplace v1 : pas de pause de croissance.
+    expect((await append({ cycle, type: 'memory.consolidate', participant: x, op: 'sup',
+      payload: { memory: { id, text: 'consolidation du proprietaire', evidence_refs: ['ev:2'] } } })))
+      .toMatchObject({ status: 'applied', memory: { id, version: 2, status: 'candidate' } });
+    expect((await append({ cycle, type: 'memory.review', participant: y, op: 'rev2',
+      payload: { memory: { id, version: 2 } } })).status).toBe('applied');
+    expect(await new MemoryStore(db).isActivationPaused(own)).toBe(false);
+    expect((await append({ cycle, type: 'memory.retire', participant: x, op: 'ret',
+      payload: { memory: { id } } }))).toMatchObject({ status: 'applied', memory: { id, version: 2, status: 'retired' } });
+  });
+
   it('INVALID_MEMORY_PAYLOAD : payload sans cle memory ou champs invalides, aucun evenement ecrit', async () => {
     const cycle = uniq('cyc');
     const scope = 'role:' + uniq('e');

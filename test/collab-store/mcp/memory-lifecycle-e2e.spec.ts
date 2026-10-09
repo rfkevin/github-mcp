@@ -65,25 +65,38 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 par le journal public (HTTP
     const expBeta = await beta.call('collab_export', { cycle, format: 'memory-md' });
     expect(expBeta.structuredContent.content as string).not.toContain(mid);
 
-    // 8. beta consolide (rev 3 -> 4) : v1 superseded, v2 candidate.
-    const consolidate = await beta.call('collab_append_event', { cycle, expected_rev: 3, op_id: 'beta:' + cycle + ':consolidate:1',
+    // 8. CRB-R1 (revue Sol) : participant:<alpha> est prive — ni beta (consolidate) ni gamma
+    // (injection propose) n y touchent (refus pre-batch, revision inchangee) ; seul
+    // alpha consolide (rev 3 -> 4) : v1 superseded, v2 candidate.
+    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 3, op_id: 'beta:' + cycle + ':consolidate:1',
       type: 'memory.consolidate', participant_id: beta.pid,
+      payload_json: JSON.stringify({ memory: { id: mid, text: text2, evidence_refs: ['ev:crb-2'] } }) }))).toBe('MEMORY_SCOPE_FORBIDDEN');
+    const injectId = uniq('inject');
+    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 3, op_id: 'gamma:' + cycle + ':inject:1',
+      type: 'memory.propose', participant_id: gamma.pid,
+      payload_json: JSON.stringify({ memory: { id: injectId, scope, kind: 'fact', text: 'injection interdite', evidence_refs: ['ev:crb-x'] } }) })))
+      .toBe('MEMORY_SCOPE_FORBIDDEN');
+    const consolidate = await alpha.call('collab_append_event', { cycle, expected_rev: 3, op_id: 'alpha:' + cycle + ':consolidate:1',
+      type: 'memory.consolidate', participant_id: alpha.pid,
       payload_json: JSON.stringify({ memory: { id: mid, text: text2, evidence_refs: ['ev:crb-2'] } }) });
     expect(consolidate.structuredContent).toMatchObject({ status: 'applied', revision: 4, memory: { id: mid, version: 2, status: 'candidate' } });
 
-    // 9. Consolidation sans evidence_refs : payload invalide, rien ecrit.
-    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'beta:' + cycle + ':consolidate:2',
-      type: 'memory.consolidate', participant_id: beta.pid,
+    // 9. Consolidation sans evidence_refs (par le proprietaire) : payload invalide, rien ecrit.
+    expect(code(await alpha.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'alpha:' + cycle + ':consolidate:2',
+      type: 'memory.consolidate', participant_id: alpha.pid,
       payload_json: JSON.stringify({ memory: { id: mid, text: 'sans preuve' } }) }))).toBe('INVALID_MEMORY_PAYLOAD');
 
-    // 10. alpha (auteur initial, different du consolidateur) reve v2 (rev 4 -> 5).
-    const review2 = await alpha.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'alpha:' + cycle + ':review:2',
-      type: 'memory.review', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid, version: 2 } }) });
+    // 10. beta (pair distinct — revoir n est pas administrer, CRB-R1) reve v2 (rev 4 -> 5).
+    const review2 = await beta.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'beta:' + cycle + ':review:2',
+      type: 'memory.review', participant_id: beta.pid, payload_json: JSON.stringify({ memory: { id: mid, version: 2 } }) });
     expect(review2.structuredContent).toMatchObject({ status: 'applied', revision: 5, memory: { id: mid, version: 2, status: 'active' } });
 
-    // 11. gamma retire (rev 5 -> 6) : tombstone durable, l'export ne contient plus la memoire.
-    const retire = await gamma.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'gamma:' + cycle + ':retire:1',
-      type: 'memory.retire', participant_id: gamma.pid, payload_json: JSON.stringify({ memory: { id: mid } }) });
+    // 11. CRB-R1 : gamma ne peut pas retirer la memoire privee d alpha ; alpha retire
+    // (rev 5 -> 6) : tombstone durable, l'export ne contient plus la memoire.
+    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'gamma:' + cycle + ':retire:1',
+      type: 'memory.retire', participant_id: gamma.pid, payload_json: JSON.stringify({ memory: { id: mid } }) }))).toBe('MEMORY_SCOPE_FORBIDDEN');
+    const retire = await alpha.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'alpha:' + cycle + ':retire:1',
+      type: 'memory.retire', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid } }) });
     expect(retire.structuredContent).toMatchObject({ status: 'applied', revision: 6, memory: { id: mid, version: 2, status: 'retired' } });
     const expAfter = await alpha.call('collab_export', { cycle, format: 'memory-md' });
     expect(expAfter.structuredContent.content as string).not.toContain(mid);
@@ -96,6 +109,9 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 par le journal public (HTTP
     expect(rows.results[1].supersedes).toBe(mid + '@1');
     const cycleRow = await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(cycle).first<{ revision: number }>();
     expect(cycleRow?.revision).toBe(6);
+    // L'injection CRB-R1 de gamma n a jamais ecrit de ligne memoire.
+    const injected = await db.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE id = ?1').bind(injectId).first<{ n: number }>();
+    expect(injected?.n).toBe(0);
 
     // 13. Client non enregistre : memory.propose refuse avant tout effet (UNREGISTERED_CLIENT).
     const strangerId = uniq('memstranger');

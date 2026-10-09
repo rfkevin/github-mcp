@@ -76,6 +76,24 @@ export interface MemoryMutation {
   diagnosis?: { scope: string; text: string; capKey: string; kind: string; protectedKind: boolean };
 }
 
+/**
+ * CRB-R1 (revue Sol, github-mcp#79/6086862463) : les scopes `participant:<id>`
+ * sont la mémoire privée d'un participant — consolidate et retire via le journal
+ * public ne peuvent viser que le scope de l'appelant. Les scopes partagés
+ * (common/project/role/task) restent collaboratifs ; la revue par un pair
+ * distinct reste ouverte (activation C4). callerPid null = appel interne du
+ * MemoryStore (wrappers supersede/retire) : garde désactivée, inchangée.
+ */
+function assertParticipantScopeAllowed(scope: string, callerPid: string | undefined, type: string): void {
+  if (!callerPid) return;
+  if (scope.startsWith('participant:') && scope !== `participant:${callerPid}`) {
+    throw new MemoryStoreError(
+      'MEMORY_SCOPE_FORBIDDEN',
+      `${type}: participant scope ${scope} belongs to another participant (CRB-R1).`,
+    );
+  }
+}
+
 /** Token budgets per scope family (plan §4). */
 export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
   common: 1500,
@@ -501,6 +519,9 @@ export class MemoryStore {
    * exécution — même contrat que preparePropose. L'alarme des kinds protégés
    * (pause du scope, C4) reste un effet post-commit : elle n'appartient pas à
    * la transaction du caller.
+   * CRB-R1 (revue Sol) : avec un callerPid (journal public), le scope privé
+   * `participant:<autre>` est refusé MEMORY_SCOPE_FORBIDDEN avant tout batch —
+   * le propriétaire du scope seul consolide sa mémoire privée.
    */
   async prepareSupersede(
     id: string,
@@ -510,6 +531,7 @@ export class MemoryStore {
     kind?: MemoryKind,
     confidence?: MemoryConfidence,
     ownerDecisionRef?: string,
+    callerPid?: string,
   ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const active = await this.db
@@ -517,6 +539,8 @@ export class MemoryStore {
       .bind(id)
       .first<StoredMemory>();
     if (!active) throw new MemoryStoreError('MEMORY_NO_ACTIVE', `No active version for ${id}`);
+    // CRB-R1 (revue Sol) : un scope participant est privé — son propriétaire seul consolide.
+    assertParticipantScopeAllowed(active.scope, callerPid, 'memory.consolidate');
     const nextKind = (kind ?? active.kind) as MemoryKind;
     const conf = confidence ?? (active.confidence as MemoryConfidence);
     const nextVersion = active.version + 1;
@@ -725,12 +749,15 @@ export class MemoryStore {
    * exécution. Le cap par cycle est réservé DANS le batch (comme le cap
    * d'activation A03) et une garde transactionnelle exige que la ligne soit
    * durablement retired : un applied porte toujours l'effet mémoire.
+   * CRB-R1 (revue Sol) : avec un callerPid (journal public), retirer la
+   * mémoire privée d'un autre participant est refusé MEMORY_SCOPE_FORBIDDEN.
    */
   async prepareRetire(
     id: string,
     version?: number,
     cycleId = 'default',
     ownerDecisionRef?: string,
+    callerPid?: string,
   ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const target =
@@ -743,6 +770,8 @@ export class MemoryStore {
             .bind(id)
             .first<StoredMemory>();
     if (!target) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id} not found for retire`);
+    // CRB-R1 (revue Sol) : un scope participant est privé — son propriétaire seul retire.
+    assertParticipantScopeAllowed(target.scope, callerPid, 'memory.retire');
     if (PROTECTED_KINDS.has(target.kind)) {
       await this.requireOwnerDecision(ownerDecisionRef, { exact: retireRequestId(id, target.version) });
     }
