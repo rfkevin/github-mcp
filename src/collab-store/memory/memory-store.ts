@@ -705,12 +705,44 @@ export class MemoryStore {
     newScope: string,
     ownerDecisionRef?: string,
   ): Promise<StoredMemory> {
+    const prepared = await this.preparePromoteScope(id, version, reviewerPid, newScope, ownerDecisionRef);
+    try {
+      await this.db.batch(prepared.statements);
+    } catch (error) {
+      // Fail-closed (CRD-R2) : re-diagnostic depuis l'état durable — une promotion
+      // concurrente committée entre-temps laisse la source superseded
+      // (MEMORY_NOT_ACTIVE) ; sinon l'erreur d'origine est relancée.
+      await this.preparePromoteScope(id, version, reviewerPid, newScope, ownerDecisionRef);
+      throw error;
+    }
+    return (await this.get(prepared.summary.id, prepared.summary.version))!;
+  }
+
+  /**
+   * Pré-checks + statements d'une promotion de scope, SANS exécution (même
+   * contrat que les autres prepare*). CR-D (revue GPT-6, CRD-R1/CRD-R2) :
+   * - la lignée source doit n'avoir qu'un scope (pré-check + garde au commit) :
+   *   une lignée ancienne multi-scope reste figée, promotion comprise ;
+   * - une garde AVANT l'UPDATE exige que la source soit encore active au
+   *   commit, puis une garde d'effet exige que l'UPDATE ait changé exactement
+   *   une ligne : deux promotions préparées avant le premier commit ne créent
+   *   qu'une copie, et une approbation owner liée à la source ne sert qu'une fois.
+   */
+  async preparePromoteScope(
+    id: string,
+    version: number,
+    reviewerPid: string,
+    newScope: string,
+    ownerDecisionRef?: string,
+  ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const row = await this.get(id, version);
     if (!row) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id}@${version} not found`);
     if (row.status !== 'active') {
       throw new MemoryStoreError('MEMORY_NOT_ACTIVE', 'only active memories can be scope-promoted');
     }
+    // CRD-R1 : jamais de promotion depuis une lignée enregistrée sous plusieurs scopes.
+    await this.assertIdScope(id, row.scope, 'memory.promote');
     if (reviewerPid === row.author_pid) {
       throw new MemoryStoreError('PEER_REQUIRED', 'scope promotion requires a distinct peer reviewer');
     }
@@ -742,33 +774,46 @@ export class MemoryStore {
       author_pid: row.author_pid,
     });
     const liftedId = newId();
-    await this.db.batch([
-      this.db
-        .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
-        .bind(id, row.version),
-      this.db
-        .prepare(
-          `INSERT INTO memory_entries
-           (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
-        )
-        .bind(
-          liftedId,
-          1,
-          entry.scope,
-          entry.kind,
-          entry.text,
-          JSON.stringify(entry.evidence_refs),
-          entry.confidence,
-          entry.author_pid,
-          `${id}@${row.version}`,
-          estimateTokens(entry.text),
-        ),
-      // Fail-closed : la ligne source doit être durablement superseded, sinon
-      // rien n'est promu (concurrence avec une autre mutation de la source).
-      this.statusEffectGuard(id, row.version, 'superseded'),
-    ]);
-    return (await this.get(liftedId, 1))!;
+    return {
+      statements: [
+        // CRD-R1/CRD-R2 : au commit, la source est encore active et sa lignée n'a qu'un scope.
+        this.db
+          .prepare([
+            'INSERT INTO collab_store_guard (ok) SELECT CASE WHEN',
+            `  EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND version = ?2 AND status = 'active')`,
+            '  AND NOT EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND scope <> ?3)',
+            '  THEN 1 ELSE 0 END',
+          ].join(' '))
+          .bind(id, row.version, row.scope),
+        this.db
+          .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active' AND scope = ?3`)
+          .bind(id, row.version, row.scope),
+        // CRD-R2 : effet réel — l'UPDATE précédent a changé exactement une ligne
+        // (changes() porte sur la dernière instruction de la transaction).
+        this.db.prepare('INSERT INTO collab_store_guard (ok) SELECT CASE WHEN changes() = 1 THEN 1 ELSE 0 END'),
+        this.db
+          .prepare(
+            `INSERT INTO memory_entries
+             (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, NULL, ?10)`,
+          )
+          .bind(
+            liftedId,
+            1,
+            entry.scope,
+            entry.kind,
+            entry.text,
+            JSON.stringify(entry.evidence_refs),
+            entry.confidence,
+            entry.author_pid,
+            `${id}@${row.version}`,
+            estimateTokens(entry.text),
+          ),
+        this.db.prepare('DELETE FROM collab_store_guard'),
+      ],
+      verifyIndex: 1,
+      summary: { id: liftedId, version: 1, status: 'candidate' },
+    };
   }
 
   /**

@@ -528,6 +528,23 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(lifted.status).toBe('candidate');
   });
 
+  it('CRD-R2 (revue GPT-6) : une approbation owner de promotion ne sert qu’une fois, même en course', async () => {
+    const mem = store();
+    const p = await proposeProtectedInvariant(mem, 'mem-prot-race', 'participant:agent:a');
+    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'scope-race');
+    const ref = await promoteScopeRequestId(p.id, 2, 'project:cc5');
+    await approveViaC5(ref, 'Approve lifting mem-prot-race to project:cc5 once.', 'scope-race-ok');
+    // Deux promotions préparées avec la même approbation avant le premier commit.
+    const first = await mem.preparePromoteScope(p.id, 1, 'agent:b', 'project:cc5', ref);
+    const second = await mem.preparePromoteScope(p.id, 1, 'agent:c', 'project:cc5', ref);
+    await bindings.COLLAB_DB_C2.batch(first.statements);
+    await expect(bindings.COLLAB_DB_C2.batch(second.statements)).rejects.toThrow();
+    const copies = await bindings.COLLAB_DB_C2.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE supersedes = ?1')
+      .bind(`${p.id}@1`).first<{ n: number }>();
+    expect(copies?.n).toBe(1);
+    await expect(mem.promoteScope(p.id, 1, 'agent:c', 'project:cc5', ref)).rejects.toMatchObject({ code: 'MEMORY_NOT_ACTIVE' });
+  });
+
   it('promoteConfidence of a protected kind requires an owner decision (candidate and active)', async () => {
     const mem = store();
     const p = await proposeProtectedInvariant(mem, 'mem-prot-conf', 'participant:agent:a', 'observed');

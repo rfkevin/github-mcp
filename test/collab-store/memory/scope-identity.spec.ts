@@ -114,3 +114,50 @@ describe('CC-3 CR-D — lifecycle légitime dans le scope d’origine', () => {
     ]);
   });
 });
+
+/** Copies promues depuis la version `version` de la lignée `id` (lignée tracée par supersedes). */
+async function liftedCopies(id: string, version: number): Promise<number> {
+  return (await db.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE supersedes = ?1')
+    .bind(`${id}@${version}`).first<{ n: number }>())?.n ?? 0;
+}
+
+// Revue GPT-6 de la PR #91 (CRD-R1, CRD-R2) : la promotion de scope respecte le même invariant.
+describe('CC-3 CR-D — promotion de scope (revue GPT-6 CRD-R1/CRD-R2)', () => {
+  it('CRD-R1 : une lignée ancienne multi-scope n’est jamais promue (ni supersession ni copie)', async () => {
+    const id = 'crd-promote-legacy';
+    await seed(id, 1, 'participant:agent:a', 'active');
+    await seed(id, 2, 'common', 'candidate', 'agent:b');
+    const before = await lineage(id);
+    await expect(mem().promoteScope(id, 1, 'agent:b', 'project:crd')).rejects.toMatchObject({ code: 'MEMORY_SCOPE_MISMATCH' });
+    expect(await lineage(id)).toEqual(before);
+    expect(await liftedCopies(id, 1)).toBe(0);
+  });
+
+  it('CRD-R1 : une autre version hors scope apparue au commit annule la promotion', async () => {
+    const id = 'crd-promote-commit';
+    await propose(id, 'participant:agent:p', 'agent:p');
+    await mem().activate(id, 1, 'agent:b');
+    const prepared = await mem().preparePromoteScope(id, 1, 'agent:b', 'project:crd');
+    await seed(id, 2, 'common', 'candidate', 'agent:z');
+    await expect(db.batch(prepared.statements)).rejects.toThrow();
+    expect((await lineage(id)).find(row => row.version === 1)?.status).toBe('active');
+    expect(await liftedCopies(id, 1)).toBe(0);
+  });
+
+  it('CRD-R2 : deux promotions préparées avant le premier commit → une seule copie, perdant refusé', async () => {
+    const id = 'crd-promote-race';
+    await propose(id, 'participant:agent:q', 'agent:q');
+    await mem().activate(id, 1, 'agent:b');
+    // Les deux appels lisent la source active avant tout commit (course reproduite pas à pas).
+    const first = await mem().preparePromoteScope(id, 1, 'agent:b', 'project:crd-a');
+    const second = await mem().preparePromoteScope(id, 1, 'agent:c', 'project:crd-b');
+    expect(first.summary.id).not.toBe(second.summary.id);
+    await db.batch(first.statements);
+    await expect(db.batch(second.statements)).rejects.toThrow();
+    expect(await liftedCopies(id, 1)).toBe(1);
+    expect(await mem().get(second.summary.id, 1)).toBeNull();
+    // Par l'API : le perdant reçoit un refus typé, sans nouvelle copie.
+    await expect(mem().promoteScope(id, 1, 'agent:c', 'project:crd-b')).rejects.toMatchObject({ code: 'MEMORY_NOT_ACTIVE' });
+    expect(await liftedCopies(id, 1)).toBe(1);
+  });
+});

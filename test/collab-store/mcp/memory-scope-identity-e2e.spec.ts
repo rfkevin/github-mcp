@@ -114,12 +114,17 @@ describe('CC-3 CR-D — scope immuable d’un id mémoire (HTTP, D01–D07)', ()
     expect(await revision(loser.cycle)).toBe(0);
 
     // Rejeu : même op_id du gagnant → duplicate sans nouvel effet ; même op_id du perdant → toujours refusé.
+    // Revue GPT-6 (#91) : duplicate strict (A05 : expected_rev hors empreinte), état et quota inchangés.
     const winnerScope = stored[0].scope;
-    const replayWinner = await append(winner.agent, winner.cycle === cycleA ? cycleA : cycleB, 'race', 'memory.propose',
+    const beforeReplay = await snapshot(winner.cycle, id);
+    const replayWinner = await append(winner.agent, winner.cycle, 'race', 'memory.propose',
       fact(id, winnerScope, winnerScope === 'project:crd6-a' ? 'course a' : 'course b'));
-    expect(['duplicate', 'stale']).toContain(replayWinner.structuredContent.status);
+    expect(replayWinner.structuredContent.status).toBe('duplicate');
+    expect(await snapshot(winner.cycle, id)).toEqual(beforeReplay);
+    const beforeRetry = await snapshot(loser.cycle, id);
     expect(code(await append(loser.agent, loser.cycle, 'race', 'memory.propose', fact(id, loser.scope, loser.text))))
       .toBe('MEMORY_SCOPE_MISMATCH');
+    expect(await snapshot(loser.cycle, id)).toEqual(beforeRetry);
     expect(await rows(id)).toEqual(stored);
 
     // Revues concurrentes de la même candidate depuis deux cycles : une seule activation.
