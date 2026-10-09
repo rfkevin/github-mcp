@@ -10,7 +10,7 @@ import { outputSchemas } from './schemas';
 import { collabFailure as failure, collabSuccess } from './result';
 import { CollabStoreError, type AppendOutcome } from '../store/collab-store';
 import type { StoreEventType } from '../contracts';
-import { authorizeAppend } from '../identity';
+import { authorizeAppend, authorizePhaseAdvance } from '../identity';
 import { exportCycleState, exportMemoryMarkdown } from '../export';
 import { resolveContextTarget, buildRolePacket } from '../context';
 import { advanceGuarded } from '../phases/gate';
@@ -100,7 +100,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
 
   server.registerTool('collab_phase_advance', {
     title: 'Avance de phase (store CC-3)',
-    description: 'Avance policy avec transitions autorisées et conditions d\'entrée de la cible (A07). La policy est dérivée de auto_advance de la phase courante (jamais fournie par l\'agent). Rejeu de la même intention détecté avant STALE. N\'est pas un canal owner.',
+    description: 'Avance policy avec transitions autorisées et conditions d\'entrée de la cible (A07). La policy est dérivée de auto_advance de la phase courante (jamais fournie par l\'agent). Réservé aux participants enregistrés qui tiennent un rôle sur une tâche du cycle (UNREGISTERED_CLIENT, PHASE_ADVANCE_FORBIDDEN, vérifiés avant tout effet). Rejeu de la même intention détecté avant STALE. Les définitions de phase sont installées par Kevin sur /owner. N\'est pas un canal owner.',
     inputSchema: {
       cycle: z.string().min(1).max(64),
       expected_rev: z.number().int().min(0),
@@ -110,6 +110,8 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ cycle, expected_rev, next_phase }) => {
     try {
+      // CR-A / CR-01 : garde d'identité C5 avant toute mutation, y compris un rejeu.
+      await authorizePhaseAdvance(context.db, await context.identity(), cycle);
       const outcome = await advanceGuarded(context.db, {
         cycle_id: cycle,
         expected_revision: expected_rev,

@@ -85,8 +85,10 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 ### `collab_phase_advance`
 - **Entrée** : `cycle`, `expected_rev`, `next_phase` (`P1`–`P6`). **Pas de `policy_id` côté agent** : la policy est dérivée côté serveur de `auto_advance` de la phase courante (`none` → `POLICY_NOT_AUTHORIZED`).
 - **Sortie** : `applied` ou `duplicate`, avec `revision` et `event_seq`.
+- **Qui** : un participant enregistré qui tient un rôle (owner, reviewer ou testeur) sur une tâche du cycle. Vérifié **avant tout effet**, rejeu compris : client non enregistré → `UNREGISTERED_CLIENT`, participant sans rôle dans le cycle → `PHASE_ADVANCE_FORBIDDEN` ; phase, révision et journal restent inchangés.
 - **Règle** : transition autorisée (P1→P2→P3→P4→P5→P6, plus un retour d’un cran), définition et conditions d’entrée de la cible, rejeu de la même intention détecté **avant** `STALE`.
-- **Erreurs** : `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
+- **Définitions de phase** : installées par Kevin sur `/owner` (opération K-phases). Sans elles, `PHASE_DEFINITION_MISSING`.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `PHASE_ADVANCE_FORBIDDEN`, `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
 
 ### `collab_memory` (lot C4, à venir)
 Cycle de vie de la mémoire : proposer, revoir, consolider, retirer. Voir la section 9. Tant que C4 n’est pas fusionné, cet outil n’existe pas dans le catalogue.
@@ -152,6 +154,7 @@ Toute erreur non typée du store (D1 indisponible, binding absent) répond `STOR
 | K7 | Fusionner chaque lot dans `cc3-integration` | Chaque lot | en cours |
 | K8 | Promouvoir vers `master` et la production | Fin | à faire |
 | K-import | Importer l’état CC-STATE-1 fusionné du cycle sur `/owner` (section 4), puis réimporter après chaque fusion d’export | Avant C7, puis à chaque fusion | à faire |
+| K-phases | Installer les définitions de phase d’un cycle sur `/owner` (« Définitions de phase ») : liste JSON validée, qui remplace l’ensemble précédent ; vide = P1–P6 sans condition avec `auto_advance` = `none`. Nommer une policy (`auto_advance`) pour une phase autorise les participants du cycle à déclencher l’avance depuis cette phase. Réinstaller le même ensemble ne change rien (doublon) | À l’ouverture d’un cycle, puis à chaque changement de règles | à faire |
 | K-fallback | Facultatif : définir `COLLAB_FALLBACK_STATE` sur l’environnement (non secret) | Avec K4 | facultatif |
 | K-decide | Trancher les `owner.request` et `phase.request` sur `/owner` (approuver ou refuser). Chaque bouton vise la demande affichée (cycle et `seq`). Toutes les demandes non tranchées sont listées, des plus récentes aux plus anciennes, avec leur total et le bouton « Demandes plus anciennes ». Aucune n’est masquée, y compris celles qui sont non décidables (identifiant invalide ou déjà tranché) | En continu | — |
 | K-rotate | Changer le secret owner au moindre soupçon d’exposition : l’ancien secret est refusé immédiatement | Au besoin | — |
@@ -223,7 +226,9 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVALID_PROPOSAL_PAYLOAD` | C3 | `proposal.submit` en P1 sans `payload_json.content` | Fournir `content` |
 | `INVALID_SEALED_ENVELOPE` | C3 | Enveloppe scellée illisible | Signaler (incident) |
 | `SEALED_ITEM_UNKNOWN` | C3 | Proposition scellée inconnue | — |
-| `PHASE_DEFINITION_MISSING` | C3 | Pas de définition pour la phase courante | Demander à Kevin |
+| `PHASE_DEFINITION_MISSING` | C3 | Pas de définition pour la phase courante ou la phase visée | Demander à Kevin (K-phases) |
+| `PHASE_ADVANCE_FORBIDDEN` | CR-A | L’appelant ne tient aucun rôle sur une tâche du cycle : il ne peut pas déclencher la policy de phase | Passer par un participant du cycle, ou `phase.request` |
+| `INVALID_PHASE_DEFINITIONS` | CR-A | Définitions de phase refusées sur `/owner` : JSON illisible, phase en double, plus de 6 entrées, liste invalide ou `auto_advance` mal formé | Corriger la liste (K-phases) |
 | `PHASE_OUTPUTS_INCOMPLETE` | C3 | Sorties attendues non produites par des participants distincts | Compléter |
 | `PHASE_EXIT_CONDITIONS_UNMET` | C3 | Conditions de sortie non remplies | — |
 | `POLICY_NOT_AUTHORIZED` | C3 | Politique d’avance non autorisée pour cette phase | `phase.request` |

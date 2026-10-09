@@ -12,6 +12,7 @@ import { OWNER_PAGE_CSP, dashboardPage, loginPage } from './page';
 import { unregisteredParticipantId } from '../identity';
 import { importStateSnapshot, listImportedStates } from './state-import';
 import { parseExportTarget } from '../export/state-import-plan';
+import { installPhaseDefinitions } from './phase-install';
 
 export const OWNER_PATH = '/owner';
 // CC-3 C6 : un import d'état CC-STATE-1 (≤ 256 Kio) passe par ce formulaire ; marge pour l'encodage.
@@ -41,7 +42,7 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state'] as const;
+const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases'] as const;
 
 /** null when the channel is not configured: the caller lets the request fall through (404). */
 export async function handleOwnerRequest(
@@ -123,6 +124,12 @@ export async function handleOwnerRequest(
         + (result.issue_refs.length ? ', issues indexées : ' + result.issue_refs.join(', ') : '')
         + (result.reassigned_issues.length ? '. Issues reprises à un autre cycle : ' + result.reassigned_issues.join(', ') : '')
         + (result.dropped_tasks.length ? '. Tâches retirées du store : ' + result.dropped_tasks.join(', ') : '') + '.', error: false };
+    } else if (action === 'install_phases') {
+      // CR-A / CR-03 : amorçage owner des définitions de phase (vide = P1–P6, auto_advance none).
+      const result = await installPhaseDefinitions(db, { cycle_id: field('cycle_id'), definitions: field('phases'), proof });
+      message = { text: (result.status === 'duplicate' ? 'Déjà installées' : 'Phases installées') + ' pour ' + result.event.cycle_id + ' : '
+        + result.phases.map(item => item.phase + ' (' + item.auto_advance + ')').join(', ')
+        + ', sha256 ' + result.definitions_sha256.slice(0, 12) + ' (seq ' + result.event.seq + ').', error: false };
     }
     audit(action, 'ok');
   } catch (error) {

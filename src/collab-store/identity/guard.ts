@@ -23,3 +23,28 @@ export function authorizeAppend(identity: ParticipantIdentity, declaredParticipa
   }
   return identity.participant_id;
 }
+
+/**
+ * CC-3 CR-A / CR-01 — who may trigger a phase policy (collab_phase_advance).
+ *
+ * The advance itself is signed by the server-derived policy, never by the
+ * caller; but it is a mutation, so the C5 restrictions apply before anything
+ * else (even a replay): an unregistered client is refused, and a registered
+ * participant must hold a role (owner, reviewer or tester) on a task of the
+ * cycle. Any of the cycle's task roles may trigger; the policy, the matrix
+ * and the entry/exit conditions still decide whether the advance happens.
+ */
+export async function authorizePhaseAdvance(db: D1Database, identity: ParticipantIdentity, cycleId: string): Promise<string> {
+  if (identity.status === 'unregistered') {
+    throw new CollabStoreError('UNREGISTERED_CLIENT',
+      'Client non enregistré : lecture et owner.request uniquement. Demandez au propriétaire d’associer ce client à un participant.');
+  }
+  const role = await db.prepare(
+    'SELECT 1 AS ok FROM tasks WHERE cycle_id = ?1 AND (owner_pid = ?2 OR reviewer_pid = ?2 OR tester_pid = ?2) LIMIT 1',
+  ).bind(cycleId, identity.participant_id).first<{ ok: number }>();
+  if (!role) {
+    throw new CollabStoreError('PHASE_ADVANCE_FORBIDDEN',
+      'Seuls les participants qui tiennent un rôle (owner, reviewer, testeur) sur une tâche du cycle peuvent déclencher la policy de phase.');
+  }
+  return identity.participant_id;
+}
