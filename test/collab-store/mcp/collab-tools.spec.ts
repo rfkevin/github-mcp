@@ -338,6 +338,12 @@ describe('F5 A09 — collab_get_context packet + mémoire', () => {
     expect(contrib.isError).toBeFalsy();
     expect(contrib.structuredContent.status).toBe('applied');
 
+    // A09 : la contribution doit être observable via collab_get_delta dans le même parcours.
+    const contribSeq = (contrib.structuredContent.event as { seq: number }).seq;
+    const deltaAfter = await handlers.get('collab_get_delta')!({ cycle: cycleId, since_seq: 0, limit: 20 });
+    if (deltaAfter.isError) throw new Error('E2E delta après contribution : ' + JSON.stringify(deltaAfter.structuredContent));
+    expect((deltaAfter.structuredContent.events as Array<{ seq: number }>).map(e => e.seq)).toContain(contribSeq);
+
     const adv = await handlers.get('collab_phase_advance')!({
       cycle: cycleId, expected_rev: 2, next_phase: 'P2',
     });

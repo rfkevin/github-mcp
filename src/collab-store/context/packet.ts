@@ -64,12 +64,25 @@ function effectiveBudget(options: PacketOptions): number {
   return Math.min(DEFAULT_PACKET_BUDGET, quarter, options.approvedBudgetTokens ?? Number.MAX_SAFE_INTEGER);
 }
 
-/** C4: project:[A-Za-z0-9_-]{1,64}. Slugify owner/repo if needed. */
+/** I6 — empreinte FNV-1a 64 bits du project exact (owner/repo), hex 16 chars. */
+function fnv1a64Hex(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let hash = 0xcbf29ce484222325n;
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= BigInt(bytes[i]);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+/** I6 (review Sol F5) : clé projet collision-résistante, compatible C4 project:[A-Za-z0-9_-]{1,64}. */
 export function toProjectScopeKey(project: string | null | undefined): string | null {
   if (!project || !project.trim()) return null;
-  if (/^[A-Za-z0-9_-]{1,64}$/.test(project)) return project;
-  const slug = project.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
-  return slug || null;
+  const value = project.trim();
+  if (/^[A-Za-z0-9_-]{1,64}$/.test(value)) return value;
+  const slug = value.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 43);
+  const key = slug + '-' + fnv1a64Hex(value);
+  return key.length <= 64 ? key : key.slice(0, 64);
 }
 
 /** I6 — common, participant:<caller>, role:<role>, task:<task>, project:<id C4>. */
