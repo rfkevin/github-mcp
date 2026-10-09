@@ -90,7 +90,7 @@ async function countRows(id: string): Promise<number> {
 async function ownerApprove(cycle: string, requestId: string, op: string): Promise<void> {
   expect((await append({ cycle, type: 'owner.request', participant: 'agent:a', op,
     payload: { request_id: requestId, summary: 'approbation CR-B' } })).status).toBe('applied');
-  const decision = await recordOwnerDecision(db, { request_id: requestId, decision: 'approve', proof: PROOF, now: NOW() });
+  const decision = await recordOwnerDecision(db, { request_id: requestId, decision: 'approve', proof: PROOF, now: NOW });
   expect(decision.status).toBe('applied');
 }
 
