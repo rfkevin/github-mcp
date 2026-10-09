@@ -51,7 +51,6 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   }, async (input) => {
     try {
       const identity = await context.identity();
-      // A09 / C5 : identité uniquement dérivée du jeton serveur.
       const participantId = identity.participant_id;
       const resolved = await resolveContextTarget(context.db, {
         cycle: input.cycle,
@@ -219,6 +218,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
         state: {
           revision: state.state_revision, base_revision: state.base_revision, changed: state.changed, changes: state.changes,
           imported: state.imported, store_revision: state.store_revision, last_seq: state.last_seq,
+          snapshot_seq: state.snapshot_seq,
         },
         publish: state.changed
           ? 'Proposez content tel quel' + (target ? ' dans ' + target.repository + ':' + target.path + ' (base ' + target.ref + ')' : '')
