@@ -251,7 +251,7 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 dispatche par appendEvent (
     // Approbation owner via le canal C5, propose applique.
     await ownerApprove(cycle, proposeRequestId(id, 1), 'req-propose');
     const propose = await append({ cycle, type: 'memory.propose', participant: x, op: 'ok',
-      payload: { memory: { id, scope, kind: 'invariant', text: 'invariant du store', confidence: 'observed', owner_decision_ref: proposeRequestId(id, 1) } } });
+      payload: { memory: { id, scope, kind: 'invariant', text: 'invariant du store', confidence: 'observed', evidence_refs: ['ev:inv'], owner_decision_ref: proposeRequestId(id, 1) } } });
     expect(propose).toMatchObject({ status: 'applied', memory: { id, version: 1, status: 'candidate' } });
     expect((await append({ cycle, type: 'memory.review', participant: y, op: 'rev',
       payload: { memory: { id, version: 1 } } })).status).toBe('applied');
