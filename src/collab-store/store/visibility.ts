@@ -61,34 +61,59 @@ function redacted(event: StoredStoreEvent, memory: Record<string, unknown> | nul
 
 /**
  * Rend `events` pour `viewer` (participant enregistré, ou null pour un client
- * non enregistré). Lecture seule ; une requête par id mémoire distinct au plus.
+ * non enregistré). Lecture seule ; batch N IDs en groupes de ≤100 pour rester
+ * dans les limites D1 (50 requêtes Free, 100 paramètres par statement).
+ * RC-C-R1 : éviter N+1 D1 queries sur deltas massifs.
  */
 export async function redactEventsFor(
   db: D1Database,
   viewer: string | null,
   events: StoredStoreEvent[],
 ): Promise<StoredStoreEvent[]> {
-  const scopesById = new Map<string, Promise<string[]>>();
-  const scopesOf = (id: string): Promise<string[]> => {
-    let pending = scopesById.get(id);
-    if (!pending) {
-      pending = db.prepare('SELECT DISTINCT scope FROM memory_entries WHERE id = ?1').bind(id)
-        .all<{ scope: string }>().then(({ results }) => results.map(row => row.scope));
-      scopesById.set(id, pending);
+  // Collecte les IDs mémoire distincts nécessitant une recherche de scope
+  const idsToLookup = new Set<string>();
+  for (const event of events) {
+    if (!MEMORY_EVENT_TYPES.has(event.type)) continue;
+    if (viewer !== null && event.participant_id === viewer) continue;
+    const memory = memoryOf(event);
+    if (!memory || typeof memory.id !== 'string') continue;
+    idsToLookup.add(memory.id);
+  }
+
+  // Batch lookup : groupes de ≤100 IDs (limite SQL paramètres)
+  // Une requête par batch au lieu d'une par ID.
+  const scopesById = new Map<string, string[]>();
+  const idArray = Array.from(idsToLookup);
+  const BATCH_SIZE = 100;
+
+  for (let i = 0; i < idArray.length; i += BATCH_SIZE) {
+    const batch = idArray.slice(i, i + BATCH_SIZE);
+    const placeholders = batch.map((_, idx) => `?${idx + 1}`).join(',');
+    const sql = `SELECT DISTINCT id, scope FROM memory_entries WHERE id IN (${placeholders})`;
+    const { results } = await db.prepare(sql).bind(...batch)
+      .all<{ id: string; scope: string }>();
+    for (const row of results) {
+      if (!scopesById.has(row.id)) {
+        scopesById.set(row.id, []);
+      }
+      scopesById.get(row.id)!.push(row.scope);
     }
-    return pending;
-  };
-  return Promise.all(events.map(async (event) => {
+  }
+
+  // Rendu des événements avec les données de scope batchées
+  return events.map((event) => {
     if (!MEMORY_EVENT_TYPES.has(event.type)) return event;
     if (viewer !== null && event.participant_id === viewer) return event;
     const memory = memoryOf(event);
     if (!memory) return redacted(event, null);
     const scopes: string[] = [];
-    // memory.propose déclare son scope ; les autres types le tiennent de l'id.
+    // memory.propose déclare son scope ; les autres le tiennent de l'id.
     if (event.type === 'memory.propose' && typeof memory.scope === 'string') scopes.push(memory.scope);
-    if (typeof memory.id === 'string') scopes.push(...await scopesOf(memory.id));
+    if (typeof memory.id === 'string') {
+      scopes.push(...(scopesById.get(memory.id) ?? []));
+    }
     // Scope indéterminable (propose sans id ni scope lisible, id inconnu) : masqué.
     if (scopes.length === 0) return redacted(event, memory);
     return scopes.some(scope => isForeignPrivate(scope, viewer)) ? redacted(event, memory) : event;
-  }));
+  });
 }

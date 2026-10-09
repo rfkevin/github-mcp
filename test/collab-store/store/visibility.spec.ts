@@ -73,3 +73,89 @@ describe('CC-3 CR-C — redactEventsFor', () => {
     expect(await redactEventsFor(db, null, [shared, proposal, other])).toEqual([shared, proposal, other]);
   });
 });
+
+// RC-C-R1 (revue GPT-6 6088326412) : la résolution des scopes est groupée. Le nombre de requêtes
+// D1 dépend de ceil(ids distincts / 100), jamais du nombre d'ids ni d'événements.
+describe('CC-3 CR-C RC-C-R1 — résolution groupée des scopes', () => {
+  /** D1 instrumentée : compte chaque instruction préparée, ou échoue sur demande. */
+  function countingDb(fail = false): { db: D1Database; queries: () => number } {
+    let count = 0;
+    const wrapped = {
+      prepare(sql: string) {
+        count += 1;
+        if (fail) throw new Error('D1 indisponible (simulé)');
+        return db.prepare(sql);
+      },
+    } as unknown as D1Database;
+    return { db: wrapped, queries: () => count };
+  }
+
+  const BULK_IDS = 250;
+  const bulkScope = (index: number): string => ['participant:alpha', 'common', 'role:reviewer', 'participant:beta', 'task:t1'][index % 5];
+
+  beforeAll(async () => {
+    const statements: D1PreparedStatement[] = [];
+    for (let index = 0; index < BULK_IDS; index += 1) {
+      statements.push(db.prepare([
+        'INSERT INTO memory_entries (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid)',
+        "VALUES (?1, 1, ?2, 'fact', ?3, '[]', 'observed', 'candidate', 'alpha', '')",
+      ].join(' ')).bind(`crc-bulk-${index}`, bulkScope(index), SECRET));
+    }
+    // Donnée ancienne multi-scope dans le lot : version privée d'un id par ailleurs commun.
+    statements.push(db.prepare([
+      'INSERT INTO memory_entries (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid)',
+      "VALUES ('crc-bulk-1', 2, 'participant:alpha', 'fact', ?1, '[]', 'observed', 'candidate', 'alpha', '')",
+    ].join(' ')).bind(SECRET));
+    await db.batch(statements);
+  });
+
+  it('1 000 événements sur 250 ids distincts : 3 requêtes D1, aucun secret, ordre et seq intacts', async () => {
+    const events: StoredStoreEvent[] = [];
+    for (let index = 0; index < 1000; index += 1) {
+      const id = `crc-bulk-${index % BULK_IDS}`;
+      events.push(event(index % 2 === 0 ? 'memory.review' : 'memory.retire', 'gamma',
+        { memory: { id, version: 1, note: SECRET } }));
+    }
+    const { db: counted, queries } = countingDb();
+    const out = await redactEventsFor(counted, 'beta', events);
+
+    expect(queries()).toBe(Math.ceil(BULK_IDS / 100));
+    // Aucune troncature silencieuse : même nombre d'événements, mêmes seq, même ordre (curseurs intacts).
+    expect(out.map(item => item.seq)).toEqual(events.map(item => item.seq));
+    for (let index = 0; index < out.length; index += 1) {
+      const idIndex = index % BULK_IDS;
+      const scope = bulkScope(idIndex);
+      // crc-bulk-1 est commun mais a aussi une version privée d'alpha : masqué (fail-closed).
+      const hidden = idIndex === 1 || scope === 'participant:alpha';
+      if (hidden) {
+        expect(JSON.parse(out[index].payload_json)).toEqual({ memory: { id: `crc-bulk-${idIndex}`, version: 1 }, redacted: 'private_scope' });
+        expect(JSON.stringify(out[index])).not.toContain(SECRET);
+      } else {
+        // Scopes partagés et scope privé du lecteur (participant:beta) : événement inchangé.
+        expect(out[index]).toEqual(events[index]);
+      }
+    }
+  });
+
+  it('le nombre de requêtes ne dépend que des ids distincts à résoudre', async () => {
+    const none = countingDb();
+    await redactEventsFor(none.db, 'beta', [event('evidence.add', 'beta', { state: SECRET })]);
+    expect(none.queries()).toBe(0);
+
+    const repeated = countingDb();
+    const sameId = Array.from({ length: 300 }, () => event('memory.review', 'gamma', { memory: { id: 'crc-bulk-0', version: 1 } }));
+    await redactEventsFor(repeated.db, 'beta', sameId);
+    expect(repeated.queries()).toBe(1);
+
+    const boundary = countingDb();
+    const hundredOne = Array.from({ length: 101 }, (_, index) => event('memory.review', 'gamma', { memory: { id: `crc-bulk-${index}`, version: 1 } }));
+    await redactEventsFor(boundary.db, 'beta', hundredOne);
+    expect(boundary.queries()).toBe(2);
+  });
+
+  it('pas de repli permissif si D1 échoue : la lecture échoue, rien n’est rendu', async () => {
+    const { db: failing } = countingDb(true);
+    const events = [event('memory.review', 'gamma', { memory: { id: 'crc-bulk-0', version: 1, note: SECRET } })];
+    await expect(redactEventsFor(failing, 'beta', events)).rejects.toThrow('D1 indisponible');
+  });
+});
