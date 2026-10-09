@@ -129,7 +129,10 @@ export async function prepareMemoryEvent(
       kind: requiredString(memory, 'kind', event.type) as MemoryKind,
       text: requiredString(memory, 'text', event.type),
       evidence_refs: stringArray(memory, 'evidence_refs', event.type, false),
-      confidence: optionalString(memory, 'confidence', event.type) as MemoryConfidence | undefined,
+      // CR-B : le defaut 'hypothesis' est normalise ICI, pas dans preparePropose,
+      // pour qu'un kind protege propose sans confidence explicite recoive le
+      // diagnostic exact HYPOTHESIS_NOT_RULE (jamais un PROTECTED_KIND_OWNER_REQUIRED trompeur).
+      confidence: (optionalString(memory, 'confidence', event.type) ?? 'hypothesis') as MemoryConfidence,
       author_pid: event.participant_id,
       expires_rev: optionalInt(memory, 'expires_rev', event.type, 1),
       owner_decision_ref: optionalString(memory, 'owner_decision_ref', event.type),
