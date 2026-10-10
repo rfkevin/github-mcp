@@ -15,6 +15,7 @@ import { CollabStoreError, type StoredStoreEvent } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import type { OwnerProof } from './proof';
 import { currentPauseOf, isPauseRequestId, resumeGuard, resumeStatements, type PauseOccurrence } from '../memory/pause-resume';
+import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 
 export const OWNER_PARTICIPANT = 'owner';
 export const REGISTRY_CYCLE = 'owner-registry';
@@ -217,6 +218,8 @@ export async function ownerAppend(db: D1Database, input: {
         ].join(' ')).bind(input.cycleId, at, OWNER_PARTICIPANT, payloadJson, revision, input.key, 'owner-proof:' + input.proof.kind),
         db.prepare('UPDATE cycles SET revision = ?2 WHERE cycle_id = ?1 AND revision = ?3')
           .bind(input.cycleId, revision + 1, revision),
+        // CR-F04 (#96) : une décision owner avance la révision, donc les échéances du cycle.
+        expireDueHypotheses(db, input.cycleId),
         ...input.sideEffects(input.key),
         db.prepare('DELETE FROM collab_store_guard'),
       ]);
