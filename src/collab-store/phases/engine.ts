@@ -2,6 +2,7 @@ import { assertPhase, type Phase } from '../../collab/contracts';
 import { validatePhaseDefinition, type PhaseDefinition } from '../contracts';
 import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
+import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 
 export interface PhaseFacts {
   definition: PhaseDefinition;
@@ -122,6 +123,8 @@ export async function advanceByPolicy(db: D1Database, input: {
       ),
       db.prepare('UPDATE cycles SET phase = ?2, revision = ?3 WHERE cycle_id = ?1 AND revision = ?4')
         .bind(input.cycle_id, input.next_phase, input.expected_revision + 1, input.expected_revision),
+      // CR-F04 (#96) : une transition avance la révision, donc les échéances du cycle.
+      expireDueHypotheses(db, input.cycle_id),
       // Reveal only still-sealed items for the *leaving* phase. Items from a prior
       // completed visit already have revealed_at set; new-round seals stay NULL until this advance.
       db.prepare(
