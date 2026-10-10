@@ -18,6 +18,8 @@
  * fournit des clés, des identifiants et des statements à joindre aux batchs.
  */
 
+import { expireDueHypotheses } from './hypothesis-expiry';
+
 export const PAUSE_REQUEST_PREFIX = 'mem-pause-';
 /** Cycle système qui porte les demandes owner déposées par les alarmes mémoire. */
 export const MEMORY_ALARM_CYCLE = 'memory-alarms';
@@ -83,6 +85,9 @@ export async function alarmRequestStatements(
       'UPDATE cycles SET revision = revision + 1 WHERE cycle_id = ?1',
       `AND EXISTS (SELECT 1 FROM events WHERE idempotency_key = ?3 || ${occurrence} AND expected_rev = cycles.revision)`,
     ].join(' ')).bind(MEMORY_ALARM_CYCLE, occurrenceKey(scope), keyPrefix),
+    // CR-F04 (#96) : toute avance de révision applique les échéances de son cycle
+    // (idempotent : sans alarme, la révision ne bouge pas et rien n'expire).
+    expireDueHypotheses(db, MEMORY_ALARM_CYCLE),
   ];
 }
 
