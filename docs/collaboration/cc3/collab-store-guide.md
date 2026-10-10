@@ -274,7 +274,8 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `MEMORY_SCOPE_MISMATCH` | CR-D | L’id mémoire est déjà enregistré sous un autre scope (toutes versions et statuts), ou sa lignée ancienne est multi-scope | Choisir un autre id ; lignée ancienne incohérente : `owner.request` |
 | `MEMORY_NOT_PROMOTABLE` | C4 | Promotion impossible | — |
 | `MEMORY_BUDGET_EXCEEDED` | C4 | Budget du scope dépassé | Consolider ou retirer avant d’activer |
-| `ACTIVATION_PAUSED` | C4 | Activations en pause après une alarme | Décision owner |
+| `ACTIVATION_PAUSED` | C4 | Activations en pause après une alarme | Kevin approuve sur `/owner` la demande `mem-pause-…` déposée par l’alarme (cycle `memory-alarms`) : la pause est levée dans la transaction de la décision (CR-F02) |
+| `MEMORY_PAUSE_NOT_CURRENT` | CR-F02 | Approbation d’une demande `mem-pause-…` qui ne désigne aucune pause en cours (autre scope, occurrence ancienne ou future, pause déjà levée) : rien n’est décidé | Trancher la demande de l’occurrence courante, ou refuser celle-ci |
 | `INVARIANT_TOUCHED` | C4 | Alarme : invariant touché | — |
 | `REFUTE_THRESHOLD` | C4 | Alarme : plus de 5 réfutations | — |
 | `GROWTH_THRESHOLD` | C4 | Alarme : croissance nette au-dessus du seuil | — |
@@ -360,7 +361,8 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | Curiosités | observation/open_question au niveau hypothesis, jamais une règle ; expirent après 3 cycles sans nouvelle preuve |
 | Mémoire personnelle vs registre | le scope participant porte stratégies et préférences ; les faits *sur* un participant (résultats, incidents, évaluations, mesures) vivent seulement dans `evidence_ledger`, référencés par identifiant (I11) |
 | Promotion | participant → role/project/common par revue d’un pair ; la copie promue reçoit un **nouvel id** dans le scope cible, lignée tracée par `supersedes` (CR-D) ; une seule promotion par version source, même en course (l’approbation owner ne sert qu’une fois) |
-| Alarme | invariant touché, plus de 5 réfutations ou croissance nette au-dessus du seuil → `owner.request` ; activations en pause dans ce scope |
+| Alarme | invariant touché, plus de 5 réfutations ou croissance nette au-dessus du seuil → activations en pause dans ce scope et nouvelle occurrence ; dans la même transaction, une `owner.request` système (participant réservé `system`, cycle `memory-alarms`) porte l’identifiant exact `mem-pause-<sha256(scope)[0:20]>-<occurrence>`, le scope, l’occurrence et la cause (CR-F02) |
+| Reprise (CR-F02) | Kevin approuve cette demande sur `/owner` : la pause est levée **dans la transaction de la décision**, et la base de croissance devient la taille active approuvée (sinon chaque activation suivante rouvrirait l’alarme). L’identifiant est recalculé côté serveur à partir des pauses en cours, jamais lu dans la demande. Une approbation d’une autre occurrence ou d’un autre scope est refusée (`MEMORY_PAUSE_NOT_CURRENT`, rien n’est écrit) ; une approbation déjà utilisée n’est jamais réutilisable (une décision par identifiant, nouvel identifiant à chaque occurrence) ; un refus maintient la pause. La demande ne contient ni texte ni preuve de mémoire ; le nom du scope (éventuellement `participant:<id>`) y figure pour que Kevin sache quoi reprendre |
 | Export | `collab_export` en `memory-md` : scopes partagés + scope de l’appelant |
 
 État d’implémentation : schéma et contrats (C1) et cycle de vie C4 avec registre, budgets et alarmes (github-mcp#67) sont fusionnés ; le raccordement public du lifecycle au journal `collab_append_event` (CR-B/CR-02 : un `applied` porte toujours son effet mémoire, un refus n’écrit rien du tout, administration des scopes participant CRB-R1 comprise) est fusionné (PR #87).
