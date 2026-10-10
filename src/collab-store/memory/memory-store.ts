@@ -1218,13 +1218,19 @@ export class MemoryStore {
     // Each pause event is a new occurrence; clearing must target it exactly.
     // CR-F02 (#93) : pause, nouvelle occurrence et owner.request exacte de cette
     // occurrence dans UNE transaction — jamais une pause sans demande de reprise.
-    const occurrenceBefore = await this.occurrenceOf(alarm.scope);
+    // CR-F02-R1 (contre-revue Codex #79/6099400915) : l'occurrence est incrémentée
+    // EN SQL au commit, jamais réécrite depuis une lecture antérieure au batch.
+    // Une alarme dont le batch est retardé ouvre donc l'occurrence suivante (et
+    // dépose sa demande exacte) au lieu de réécrire une occurrence déjà approuvée.
+    // La lecture ci-dessous n'est qu'un plancher : alarmRequestStatements lit
+    // l'occurrence fraîche en SQL pour l'identifiant et la clé de la demande.
+    const occurrenceFloor = await this.occurrenceOf(alarm.scope);
     await this.db.batch([
       setPause(pauseKey(alarm.scope)),
       this.db
-        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`)
-        .bind(occurrenceKey(alarm.scope), occurrenceBefore + 1),
-      ...await alarmRequestStatements(this.db, alarm.scope, occurrenceBefore,
+        .prepare(`INSERT INTO quota_counters (day, writes) VALUES (?1, 1) ON CONFLICT(day) DO UPDATE SET writes = writes + 1`)
+        .bind(occurrenceKey(alarm.scope)),
+      ...await alarmRequestStatements(this.db, alarm.scope, occurrenceFloor,
         ALARM_REASONS[alarm.code], Math.floor(Date.now() / 1000)),
     ]);
   }
