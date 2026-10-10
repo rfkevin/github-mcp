@@ -186,6 +186,10 @@ export async function prepareMemoryEvent(
       optionalString(memory, 'owner_decision_ref', event.type),
       // CRB-R1 : l'appelant ne consolide que son scope participant (garde store).
       event.participant_id,
+      // CR-F03 (#95) : une consolidation qui HAUSSE la confiance exige une preuve
+      // de registre NOUVELLE d'un pair distinct (peer_evidence_ref), sinon le
+      // refus est pré-batch : rien n'est écrit, ni journal ni mémoire.
+      optionalString(memory, 'peer_evidence_ref', event.type),
     );
   }
   if (event.type === 'memory.retire') {
