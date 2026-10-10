@@ -6,7 +6,9 @@ import { e2eScenario, toolCode as code, type E2eClient } from './e2e-harness';
 // HTTP : OAuth + /collab/mcp pour les agents, D1 local. Toute HAUSSE de confiance
 // d'une consolidation exige une preuve NOUVELLE du registre evidence_ledger,
 // produite par un pair distinct de l'auteur : aucun recyclage, aucune
-// auto-validation. Aucune ligne memory_entries, journal, quota ou décision n'est
+// auto-validation. La nouveauté se juge sur la lignée ENTIÈRE de l’id
+// (revue Claude PR #100/6098002656) : une consolidation qui retire la preuve
+// ne la « blanchit » pas. Aucune ligne memory_entries, journal, quota ou décision n'est
 // écrite en SQL par le test : les SELECT ne servent qu'à prouver l'état. Le
 // registre evidence_ledger n'a pas encore de canal d'écriture HTTP (I11) : les
 // lignes d'évaluation du pair y sont semées directement, comme dans les tests
@@ -119,5 +121,58 @@ describe("CC-3 CR-F03 — hausse de confiance d'une consolidation par preuve pai
       memory: { id, text: 'fait reformule, confiance inchangee', evidence_refs: ['ev:crf3-v1'] },
     })).structuredContent.status).toBe('applied');
     expect((await rowsOf(id))[2]).toMatchObject({ version: 3, status: 'candidate', confidence: 'verified' });
+  });
+
+  it('revue Claude #100 (P1) : une preuve retirée par une consolidation intermédiaire n’est pas « blanchie » — le recyclage reste refusé (HTTP)', async () => {
+    const { agent, uniq } = e2eScenario(db, 'crf3b', 'owner-secret-CRF3B-0123456789abcdefghijklm');
+    const [alpha, beta] = [await agent('alpha'), await agent('beta')];
+    const cycle = uniq('cycle');
+    const scope = 'role:' + uniq('wash');
+    const id = uniq('mem');
+    const append = async (who: Agent, op: string, type: string, payload: Record<string, unknown>) =>
+      who.call('collab_append_event', {
+        cycle,
+        expected_rev: await revision(cycle),
+        op_id: `${who.pid}:${cycle}:${op}:1`,
+        type,
+        participant_id: who.pid,
+        payload_json: JSON.stringify(payload),
+      });
+
+    // v1 : observed, revue par le pair distinct beta → active.
+    expect((await append(alpha, 'p1', 'memory.propose', {
+      memory: { id, scope, kind: 'fact', text: 'fait observe, lavage de preuve', evidence_refs: ['ev:crf3b-a'], confidence: 'observed' },
+    })).structuredContent.status).toBe('applied');
+    expect((await append(beta, 'r1', 'memory.review', { memory: { id, version: 1 } })).structuredContent.status).toBe('applied');
+
+    // v2 : hausse verified avec la preuve NOUVELLE L1 du pair beta → active.
+    await seedLedgerRow(beta.pid, 'ev:crf3b-l1');
+    expect((await append(alpha, 'c1', 'memory.consolidate', {
+      memory: { id, text: 'fait renforce par la preuve L1', evidence_refs: ['ev:crf3b-a'], confidence: 'verified', peer_evidence_ref: 'ev:crf3b-l1' },
+    })).structuredContent.status).toBe('applied');
+    expect((await append(beta, 'r2', 'memory.review', { memory: { id, version: 2 } })).structuredContent.status).toBe('applied');
+
+    // v3 : consolidation à confiance inchangée qui RETIRE L1 des refs (permise)
+    // — c’est le « lavage de preuve » que la garde doit couvrir.
+    expect((await append(alpha, 'c2', 'memory.consolidate', {
+      memory: { id, text: 'fait reformule sans L1', evidence_refs: ['ev:crf3b-a'] },
+    })).structuredContent.status).toBe('applied');
+    expect((await append(beta, 'r3', 'memory.review', { memory: { id, version: 3 } })).structuredContent.status).toBe('applied');
+
+    // Recyclage de L1 — elle ne soutient plus que la v2 SUPERSEDED — : refus
+    // pré-batch, aucune écriture (ni journal, ni révision, ni quota, ni mémoire).
+    const snapshot = async () => ({
+      rev: await revision(cycle),
+      events: await eventsIn(cycle),
+      quota: await dayWrites(),
+      rows: await rowsOf(id),
+    });
+    const before = await snapshot();
+    expect(code(await append(alpha, 'c3', 'memory.consolidate', {
+      memory: { id, text: 'fait re-hausse en recyclant L1', evidence_refs: ['ev:crf3b-a'], confidence: 'owner_validated', peer_evidence_ref: 'ev:crf3b-l1' },
+    }))).toBe('PEER_EVIDENCE_REQUIRED');
+    expect(await snapshot()).toEqual(before);
+    // La lignée est intacte : v1 et v2 superseded, v3 active (verified).
+    expect((await rowsOf(id)).map((row) => row.status)).toEqual(['superseded', 'superseded', 'active']);
   });
 });

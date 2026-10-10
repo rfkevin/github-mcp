@@ -618,13 +618,14 @@ export class MemoryStore {
     // CR-F03 (#95, contre-revue Codex #79/6096598889) : TOUTE hausse de confiance
     // — chemin public (memory.consolidate) comme chemin interne (promoteConfidence) —
     // exige une preuve du registre produite par un pair distinct de l'auteur, et
-    // NOUVELLE : un ref résolu déjà présent dans les evidence_refs de la version
-    // active est refusé (aucun recyclage, aucune auto-validation). Fail-closed
-    // uniforme ; à confiance inchangée, aucun ref supplémentaire n'est exigé
-    // (la consolidation ordinaire reste intacte).
+    // NOUVELLE : un ref résolu déjà soutenu par une version QUELCONQUE de la
+    // lignée de l'id (revue Claude PR #100/6098002656) — active, superseded ou
+    // retirée — est refusé : une consolidation qui retire le ref ne le blanchit
+    // pas. Fail-closed uniforme ; à confiance inchangée, aucun ref supplémentaire
+    // n'est exigé (la consolidation ordinaire reste intacte).
     let refs = evidenceRefs;
     if (confidence !== undefined && confidenceRank(conf) > confidenceRank(active.confidence as MemoryConfidence)) {
-      const ledgerRef = await this.requireRaiseEvidence(peerEvidenceRef, authorPid, JSON.parse(active.evidence_refs || '[]') ?? []);
+      const ledgerRef = await this.requireRaiseEvidence(peerEvidenceRef, authorPid, id);
       if (!refs.includes(ledgerRef)) refs = [...refs, ledgerRef];
     }
     const entry = validateMemoryEntry({
@@ -698,6 +699,12 @@ export class MemoryStore {
       );
     }
     const ledgerRef = await this.requirePeerLedgerEvidence(peerEvidenceRef, reviewerPid, row.author_pid);
+    // CR-F03 (revue Claude PR #100/6098002656) : le chemin CANDIDATE (UPDATE
+    // direct, sans supersede) passe lui aussi par la garde anti-recyclage —
+    // le ref validé ne doit soutenir aucune version de la lignée de l'id.
+    if (row.status === 'candidate') {
+      await this.requireRaiseEvidence(peerEvidenceRef, row.author_pid, id);
+    }
     const refs: string[] = JSON.parse(row.evidence_refs || '[]');
     refs.push(ledgerRef);
     if (PROTECTED_KINDS.has(row.kind) && row.status === 'active') {
@@ -1209,14 +1216,17 @@ export class MemoryStore {
    * CR-F03 (#95, contre-revue Codex #79/6096598889) : une consolidation qui HAUSSE
    * la confiance exige une preuve du registre evidence_ledger — ref evidence_ref ou
    * `ledger:<seq>` — produite par un pair DISTINCT de l'auteur (aucune
-   * auto-validation), et NOUVELLE : le ref résolu ne doit pas déjà figurer dans
-   * les evidence_refs de la version active (aucun recyclage). Retourne le ref
-   * résolu, à joindre aux evidence_refs de la nouvelle version.
+   * auto-validation), et NOUVELLE : le ref résolu ne doit figurer dans les evidence_refs
+   * d'AUCUNE version de la lignée de l'id, quel que soit son statut (revue
+   * Claude PR #100/6098002656) — une consolidation qui le retire ne le
+   * blanchit pas, les deux formes du ref (evidence_ref, `ledger:<seq>`) étant
+   * vérifiées. Retourne le ref résolu, à joindre aux evidence_refs de la
+   * nouvelle version.
    */
   private async requireRaiseEvidence(
     peerEvidenceRef: string | undefined,
     authorPid: string,
-    activeRefs: string[],
+    id: string,
   ): Promise<string> {
     if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
       throw new MemoryStoreError(
@@ -1244,10 +1254,23 @@ export class MemoryStore {
       throw new MemoryStoreError('PEER_EVIDENCE_SELF', 'ledger producer cannot be the memory author');
     }
     const ledgerRef = row.evidence_ref || `ledger:${row.seq}`;
-    if (activeRefs.includes(ledgerRef)) {
+    // Anti-recyclage sur la lignée ENTIÈRE de l'id (revue Claude PR
+    // #100/6098002656) : le ref résolu — ou son alias `ledger:<seq>` — ne doit
+    // soutenir aucune version de l'id, active, superseded ou retirée. Une
+    // consolidation intermédiaire qui retire le ref ne le blanchit pas.
+    const recycled = await this.db
+      .prepare(
+        [
+          'SELECT 1 FROM memory_entries m, json_each(COALESCE(m.evidence_refs, \'[]\')) j',
+          'WHERE m.id = ?1 AND j.value IN (?2, ?3) LIMIT 1',
+        ].join(' '),
+      )
+      .bind(id, row.evidence_ref, `ledger:${row.seq}`)
+      .first();
+    if (recycled) {
       throw new MemoryStoreError(
         'PEER_EVIDENCE_REQUIRED',
-        `evidence ${ledgerRef} already backs the active version: a confidence raise requires a NEW peer evidence`,
+        `evidence ${ledgerRef} already backs a version of ${id}: a confidence raise requires a NEW peer evidence`,
       );
     }
     return ledgerRef;
