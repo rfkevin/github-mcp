@@ -28,7 +28,8 @@ function html(body: string, status = 200): Response {
     'Cache-Control': 'no-store',
     'Content-Security-Policy': OWNER_PAGE_CSP,
     'X-Frame-Options': 'DENY',
-    'Referrer-Policy': 'no-referrer',
+    // Same-origin HTML form POSTs must retain Origin for the strict CSRF check below.
+    'Referrer-Policy': 'same-origin',
   } });
 }
 

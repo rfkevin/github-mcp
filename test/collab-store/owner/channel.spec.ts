@@ -53,6 +53,9 @@ describe('CC-3 C5 — canal owner, mode secret', () => {
     }
     const crossSite = await post(fixture, { action: 'view', owner_secret: SECRET }, { Origin: 'https://evil.example' });
     expect(crossSite.status).toBe(403);
+    // Never bypass the Origin check to compensate for the old no-referrer policy.
+    const opaqueOrigin = await post(fixture, { action: 'view', owner_secret: SECRET }, { Origin: 'null' });
+    expect(opaqueOrigin.status).toBe(403);
     await ensureSchema(db);
     expect((await db.prepare("SELECT COUNT(*) AS n FROM participants WHERE participant_id = 'p-intrus'").first<{ n: number }>())?.n).toBe(0);
   });
@@ -69,6 +72,8 @@ describe('CC-3 C5 — canal owner, mode secret', () => {
     expect(body).toContain('type="password"');
     expect(body).not.toContain(requestId);
     expect(response.headers.get('Content-Security-Policy')).toContain("default-src 'none'");
+    // HTML form navigation under no-referrer sends Origin: null and cannot pass the CSRF guard.
+    expect(response.headers.get('Referrer-Policy')).toBe('same-origin');
   });
 
   it('avec le secret : liste, tranche une demande et ne renvoie ni ne journalise jamais le secret (R3)', async () => {
