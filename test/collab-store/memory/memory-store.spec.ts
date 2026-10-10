@@ -232,8 +232,9 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(blocked).toBe(true);
   });
 
-  it('hypothesis expires at expires_rev', async () => {
+  it('hypothesis expires at expires_rev of ITS origin cycle only (CR-F04)', async () => {
     const mem = store();
+    const db = bindings.COLLAB_DB_C2;
     const p = await mem.propose({
       scope: 'role:tester',
       kind: 'observation',
@@ -241,10 +242,21 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       confidence: 'hypothesis',
       author_pid: 'agent:a',
       cycle_rev: 10,
+      cycle_id: 'crf4-unit-origin',
     });
     expect(p.expires_rev).toBe(13);
-    expect(await mem.expireHypotheses(13)).toBeGreaterThanOrEqual(1);
+    expect(p.expires_cycle).toBe('crf4-unit-origin');
+    // Another cycle far ahead never expires it (the old global sweep did).
+    await db.prepare("INSERT INTO cycles (cycle_id, revision) VALUES ('crf4-unit-other', 50)").run();
+    expect(await mem.expireHypotheses('crf4-unit-other')).toBe(0);
+    await db.prepare("INSERT INTO cycles (cycle_id, revision) VALUES ('crf4-unit-origin', 12)").run();
+    expect(await mem.expireHypotheses('crf4-unit-origin')).toBe(0);
+    expect((await mem.get(p.id, 1))?.status).toBe('candidate');
+    await db.prepare("UPDATE cycles SET revision = 13 WHERE cycle_id = 'crf4-unit-origin'").run();
+    expect(await mem.expireHypotheses('crf4-unit-origin')).toBe(1);
     expect((await mem.get(p.id, 1))?.status).toBe('retired');
+    // Idempotent.
+    expect(await mem.expireHypotheses('crf4-unit-origin')).toBe(0);
   });
 
   it('refute threshold raises alarm', async () => {
