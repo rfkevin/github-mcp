@@ -48,6 +48,26 @@ async function seedLedgerRow(producer: string, evidenceRef: string): Promise<voi
   ).bind('subject:crf3', producer, evidenceRef).run();
 }
 
+/** Append d'un événement mémoire par le vrai canal /collab/mcp d'un agent. */
+async function appendEvent(who: Agent, cycle: string, op: string, type: string, payload: Record<string, unknown>) {
+  return who.call('collab_append_event', {
+    cycle,
+    expected_rev: await revision(cycle),
+    op_id: `${who.pid}:${cycle}:${op}:1`,
+    type,
+    participant_id: who.pid,
+    payload_json: JSON.stringify(payload),
+  });
+}
+
+/** État du cycle et de la mémoire : révision, journal, quota du jour, lignes. */
+const snapshotOf = async (cycle: string, id: string) => ({
+  rev: await revision(cycle),
+  events: await eventsIn(cycle),
+  quota: await dayWrites(),
+  rows: await rowsOf(id),
+});
+
 describe("CC-3 CR-F03 — hausse de confiance d'une consolidation par preuve pair (HTTP)", () => {
   it('sans preuve, preuve recyclée ou preuve de l’auteur → refus sans journal/quota/révision ; preuve nouvelle → v2 candidate puis active', async () => {
     const { agent, uniq } = e2eScenario(db, 'crf3', 'owner-secret-CRF3-0123456789abcdefghijklm');
@@ -55,15 +75,7 @@ describe("CC-3 CR-F03 — hausse de confiance d'une consolidation par preuve pai
     const cycle = uniq('cycle');
     const scope = 'role:' + uniq('raise');
     const id = uniq('mem');
-    const append = async (who: Agent, op: string, type: string, payload: Record<string, unknown>) =>
-      who.call('collab_append_event', {
-        cycle,
-        expected_rev: await revision(cycle),
-        op_id: `${who.pid}:${cycle}:${op}:1`,
-        type,
-        participant_id: who.pid,
-        payload_json: JSON.stringify(payload),
-      });
+    const append = (who: Agent, op: string, type: string, payload: Record<string, unknown>) => appendEvent(who, cycle, op, type, payload);
 
     // v1 : proposition observée par alpha, revue par le pair distinct beta → active.
     expect((await append(alpha, 'p1', 'memory.propose', {
@@ -72,12 +84,7 @@ describe("CC-3 CR-F03 — hausse de confiance d'une consolidation par preuve pai
     expect((await append(beta, 'r1', 'memory.review', { memory: { id, version: 1 } })).structuredContent.status).toBe('applied');
 
     // Refus pré-batch = aucune écriture : ni journal, ni révision, ni quota, ni mémoire.
-    const snapshot = async () => ({
-      rev: await revision(cycle),
-      events: await eventsIn(cycle),
-      quota: await dayWrites(),
-      rows: await rowsOf(id),
-    });
+    const snapshot = () => snapshotOf(cycle, id);
     const before = await snapshot();
     const raise = (op: string, extra: Record<string, unknown>) =>
       append(alpha, op, 'memory.consolidate', {
@@ -129,15 +136,7 @@ describe("CC-3 CR-F03 — hausse de confiance d'une consolidation par preuve pai
     const cycle = uniq('cycle');
     const scope = 'role:' + uniq('wash');
     const id = uniq('mem');
-    const append = async (who: Agent, op: string, type: string, payload: Record<string, unknown>) =>
-      who.call('collab_append_event', {
-        cycle,
-        expected_rev: await revision(cycle),
-        op_id: `${who.pid}:${cycle}:${op}:1`,
-        type,
-        participant_id: who.pid,
-        payload_json: JSON.stringify(payload),
-      });
+    const append = (who: Agent, op: string, type: string, payload: Record<string, unknown>) => appendEvent(who, cycle, op, type, payload);
 
     // v1 : observed, revue par le pair distinct beta → active.
     expect((await append(alpha, 'p1', 'memory.propose', {
@@ -161,12 +160,7 @@ describe("CC-3 CR-F03 — hausse de confiance d'une consolidation par preuve pai
 
     // Recyclage de L1 — elle ne soutient plus que la v2 SUPERSEDED — : refus
     // pré-batch, aucune écriture (ni journal, ni révision, ni quota, ni mémoire).
-    const snapshot = async () => ({
-      rev: await revision(cycle),
-      events: await eventsIn(cycle),
-      quota: await dayWrites(),
-      rows: await rowsOf(id),
-    });
+    const snapshot = () => snapshotOf(cycle, id);
     const before = await snapshot();
     expect(code(await append(alpha, 'c3', 'memory.consolidate', {
       memory: { id, text: 'fait re-hausse en recyclant L1', evidence_refs: ['ev:crf3b-a'], confidence: 'owner_validated', peer_evidence_ref: 'ev:crf3b-l1' },

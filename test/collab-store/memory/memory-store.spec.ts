@@ -1042,6 +1042,34 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
   // NOUVELLE, produite par un pair distinct de l'auteur. Chaque refus est
   // pré-batch : aucune version 2 n'est créée, la version active reste intacte.
 
+  /** Un fait observed proposé par agent:a puis activé par le pair distinct agent:b. */
+  async function observedFact(mem: MemoryStore, scope: string, refs: string[]): Promise<string> {
+    const p = await mem.propose({
+      scope,
+      kind: 'fact',
+      text: `Observed fact for ${scope}.`,
+      evidence_refs: refs,
+      confidence: 'observed',
+      author_pid: 'agent:a',
+    });
+    await mem.activate(p.id, 1, 'agent:b');
+    return p.id;
+  }
+
+  /** Hausse verified acceptée avec une preuve NOUVELLE d'un pair, puis activation. */
+  async function raiseVerified(mem: MemoryStore, id: string, refs: string[], evidence: string): Promise<number> {
+    await seedLedger('agent:b', evidence);
+    const up = await mem.supersede(id, 'agent:a', `Verified consolidation of ${id}.`, refs, undefined, 'verified', undefined, evidence);
+    await mem.activate(id, up.version, 'agent:b');
+    return up.version;
+  }
+
+  /** Une hausse recyclant une preuve déjà utilisée par la lignée : refus pré-batch. */
+  const expectRaiseRefused = (mem: MemoryStore, id: string, refs: string[], presented: string, target: string = 'verified') =>
+    expect(
+      mem.supersede(id, 'agent:a', 'Raise recycling an already-used evidence.', refs, undefined, target, undefined, presented),
+    ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
+
   it('CR-F03: a consolidate raising confidence requires a NEW peer ledger evidence (no recycling, no self-validation)', async () => {
     const mem = store();
     const p = await mem.propose({
@@ -1127,63 +1155,37 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     const mem = store();
     const scope = 'project:crf3-lineage';
     await seedBaseline(scope, 100);
-    const p = await mem.propose({
-      scope,
-      kind: 'fact',
-      text: 'Observed fact, whole-lineage anti-recycling.',
-      evidence_refs: ['ev:crf3-l0'],
-      confidence: 'observed',
-      author_pid: 'agent:a',
-    });
-    await mem.activate(p.id, 1, 'agent:b');
+    const id = await observedFact(mem, scope, ['ev:crf3-l0']);
     // v2 : the raise is accepted with a NEW peer evidence L1.
-    await seedLedger('agent:b', 'ev:crf3-l1');
-    const v2 = await mem.supersede(p.id, 'agent:a', 'v2 verified with L1.', ['ev:crf3-l0'], undefined, 'verified', undefined, 'ev:crf3-l1');
-    expect(JSON.parse(v2.evidence_refs || '[]')).toContain('ev:crf3-l1');
-    await mem.activate(p.id, 2, 'agent:b');
+    await raiseVerified(mem, id, ['ev:crf3-l0'], 'ev:crf3-l1');
+    expect(JSON.parse((await mem.get(id, 2))!.evidence_refs || '[]')).toContain('ev:crf3-l1');
     // v3 : an unchanged-confidence consolidation may DROP L1 from evidence_refs.
-    const v3 = await mem.supersede(p.id, 'agent:a', 'v3 reworded, L1 dropped.', ['ev:crf3-l0']);
+    const v3 = await mem.supersede(id, 'agent:a', 'v3 reworded, L1 dropped.', ['ev:crf3-l0']);
     expect(v3.confidence).toBe('verified');
     expect(JSON.parse(v3.evidence_refs || '[]')).not.toContain('ev:crf3-l1');
-    await mem.activate(p.id, 3, 'agent:b');
+    await mem.activate(id, v3.version, 'agent:b');
     // Re-raising by recycling L1 — which now only backs the SUPERSEDED v2 —
     // must stay refused: the anti-recycling check covers every version of the id.
-    await expect(
-      mem.supersede(p.id, 'agent:a', 'v4 raise recycling L1.', ['ev:crf3-l0'], undefined, 'owner_validated', undefined, 'ev:crf3-l1'),
-    ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
+    await expectRaiseRefused(mem, id, ['ev:crf3-l0'], 'ev:crf3-l1', 'owner_validated');
     // The refusal is pre-batch: no v4 exists, v3 stays active.
-    expect(await mem.get(p.id, 4)).toBeNull();
-    expect((await mem.get(p.id, 3))?.status).toBe('active');
+    expect(await mem.get(id, 4)).toBeNull();
+    expect((await mem.get(id, 3))?.status).toBe('active');
   });
-
   it('CR-F03 (Claude review #100, P1b): a downgrade followed by a re-raise cannot recycle the evidence of the superseded version', async () => {
     const mem = store();
     const scope = 'project:crf3-downup';
     await seedBaseline(scope, 100);
-    const p = await mem.propose({
-      scope,
-      kind: 'fact',
-      text: 'Observed fact, downgrade then re-raise.',
-      evidence_refs: ['ev:crf3-d0'],
-      confidence: 'observed',
-      author_pid: 'agent:a',
-    });
-    await mem.activate(p.id, 1, 'agent:b');
-    await seedLedger('agent:b', 'ev:crf3-d1');
-    const v2 = await mem.supersede(p.id, 'agent:a', 'v2 verified with D1.', ['ev:crf3-d0'], undefined, 'verified', undefined, 'ev:crf3-d1');
-    await mem.activate(p.id, 2, 'agent:b');
+    const id = await observedFact(mem, scope, ['ev:crf3-d0']);
+    await raiseVerified(mem, id, ['ev:crf3-d0'], 'ev:crf3-d1');
     // A consolidation may LOWER the confidence without any peer evidence…
-    const v3 = await mem.supersede(p.id, 'agent:a', 'v3 back to observed.', ['ev:crf3-d0'], undefined, 'observed');
+    const v3 = await mem.supersede(id, 'agent:a', 'v3 back to observed.', ['ev:crf3-d0'], undefined, 'observed');
     expect(v3.confidence).toBe('observed');
-    await mem.activate(p.id, 3, 'agent:b');
+    await mem.activate(id, v3.version, 'agent:b');
     // …but re-raising to the former level cannot recycle D1, which already
     // backs the superseded v2: the whole lineage of the id is checked.
-    await expect(
-      mem.supersede(p.id, 'agent:a', 'v4 re-raise recycling D1.', ['ev:crf3-d0'], undefined, 'verified', undefined, 'ev:crf3-d1'),
-    ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
-    expect(await mem.get(p.id, 4)).toBeNull();
+    await expectRaiseRefused(mem, id, ['ev:crf3-d0'], 'ev:crf3-d1');
+    expect(await mem.get(id, 4)).toBeNull();
   });
-
   it('CR-F03 (Claude review #100, P2): promoteConfidence on a CANDIDATE cannot recycle an evidence already in the lineage', async () => {
     const mem = store();
     const p = await mem.propose({
@@ -1217,37 +1219,17 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     await seedBaseline(scope, 100);
     const seqOf = async (ref: string): Promise<number> =>
       (await bindings.COLLAB_DB_C2.prepare('SELECT seq FROM evidence_ledger WHERE evidence_ref = ?1').bind(ref).first<{ seq: number }>())!.seq;
-    // Direct case: v1 active cites the ledger alias form of row A; the raise
-    // presents the evidence_ref form of the SAME row.
-    await seedLedger('agent:b', 'ev:crf3-alias-a');
-    const seqA = await seqOf('ev:crf3-alias-a');
-    const p = await mem.propose({
-      scope,
-      kind: 'fact',
-      text: 'Observed fact citing the ledger alias form.',
-      evidence_refs: [`ledger:${seqA}`],
-      confidence: 'observed',
-      author_pid: 'agent:a',
-    });
-    await mem.activate(p.id, 1, 'agent:b');
-    await expect(
-      mem.supersede(p.id, 'agent:a', 'Raise with the other form of the same row.', [`ledger:${seqA}`], undefined, 'verified', undefined, 'ev:crf3-alias-a'),
-    ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
-    // Inverse case: v1 active cites the evidence_ref form; the raise presents
-    // the ledger alias of the same row.
-    await seedLedger('agent:b', 'ev:crf3-alias-b');
-    const seqB = await seqOf('ev:crf3-alias-b');
-    const q = await mem.propose({
-      scope,
-      kind: 'fact',
-      text: 'Observed fact citing the evidence_ref form.',
-      evidence_refs: ['ev:crf3-alias-b'],
-      confidence: 'observed',
-      author_pid: 'agent:a',
-    });
-    await mem.activate(q.id, 1, 'agent:b');
-    await expect(
-      mem.supersede(q.id, 'agent:a', 'Raise with the ledger alias of the same row.', ['ev:crf3-alias-b'], undefined, 'verified', undefined, `ledger:${seqB}`),
-    ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
+    // v1 cites one form of a ledger row; the raise presents the OTHER form of
+    // the SAME row — both directions must be refused as recycling.
+    for (const [ref, citeAlias] of [['ev:crf3-alias-a', true], ['ev:crf3-alias-b', false]] as Array<[string, boolean]>) {
+      await seedLedger('agent:b', ref);
+      const alias = `ledger:${await seqOf(ref)}`;
+      const refs = [citeAlias ? alias : ref];
+      const id = await observedFact(mem, scope, refs);
+      await expectRaiseRefused(mem, id, refs, citeAlias ? ref : alias);
+      // The refusal is pre-batch: no v2, the observed v1 stays active.
+      expect(await mem.get(id, 2)).toBeNull();
+      expect((await mem.get(id, 1))?.status).toBe('active');
+    }
   });
 });

@@ -1234,19 +1234,7 @@ export class MemoryStore {
         'raising confidence requires a NEW peer ledger evidence_ref (peer_evidence_ref)',
       );
     }
-    const seqMatch = /^ledger:(\d+)$/.exec(peerEvidenceRef);
-    let row: { seq: number; producer: string; evidence_ref: string } | null = null;
-    if (seqMatch) {
-      row = await this.db
-        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE seq = ?1`)
-        .bind(Number(seqMatch[1]))
-        .first();
-    } else {
-      row = await this.db
-        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE evidence_ref = ?1 LIMIT 1`)
-        .bind(peerEvidenceRef)
-        .first();
-    }
+    const row = await this.findLedgerRow(peerEvidenceRef);
     if (!row) {
       throw new MemoryStoreError('PEER_EVIDENCE_NOT_FOUND', `No evidence_ledger row for ${peerEvidenceRef}`);
     }
@@ -1277,6 +1265,29 @@ export class MemoryStore {
   }
 
   /**
+   * Résout une ligne du registre evidence_ledger par son evidence_ref ou son
+   * alias `ledger:<seq>` ; null quand aucune ligne ne correspond. Partagé par
+   * requireRaiseEvidence et requirePeerLedgerEvidence — la duplication des
+   * deux résolveurs faisait échouer la porte qualité SonarCloud sur le nouveau
+   * code (Duplication on New Code > 3 %).
+   */
+  private async findLedgerRow(
+    peerEvidenceRef: string,
+  ): Promise<{ seq: number; producer: string; evidence_ref: string } | null> {
+    const seqMatch = /^ledger:(\d+)$/.exec(peerEvidenceRef);
+    if (seqMatch) {
+      return this.db
+        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE seq = ?1`)
+        .bind(Number(seqMatch[1]))
+        .first<{ seq: number; producer: string; evidence_ref: string }>();
+    }
+    return this.db
+      .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE evidence_ref = ?1 LIMIT 1`)
+      .bind(peerEvidenceRef)
+      .first<{ seq: number; producer: string; evidence_ref: string }>();
+  }
+
+  /**
    * peerEvidenceRef must match evidence_ledger.evidence_ref or ledger:<seq>,
    * with producer === reviewerPid and producer ≠ authorPid.
    */
@@ -1288,19 +1299,7 @@ export class MemoryStore {
     if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
       throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', 'evidence_ref must be a ledger entry from peer');
     }
-    const seqMatch = /^ledger:(\d+)$/.exec(peerEvidenceRef);
-    let row: { seq: number; producer: string; evidence_ref: string } | null = null;
-    if (seqMatch) {
-      row = await this.db
-        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE seq = ?1`)
-        .bind(Number(seqMatch[1]))
-        .first();
-    } else {
-      row = await this.db
-        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE evidence_ref = ?1 LIMIT 1`)
-        .bind(peerEvidenceRef)
-        .first();
-    }
+    const row = await this.findLedgerRow(peerEvidenceRef);
     if (!row) {
       throw new MemoryStoreError(
         'PEER_EVIDENCE_NOT_FOUND',
