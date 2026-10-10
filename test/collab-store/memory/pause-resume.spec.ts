@@ -115,3 +115,87 @@ describe('CC-3 CR-F02 — reprise par décision owner', () => {
     expect(await new MemoryStore(db).isActivationPaused(scope)).toBe(true);
   });
 });
+
+describe('CC-3 CR-F02-R1 — une alarme retardée ouvre une NOUVELLE occurrence (contre-revue Codex #79/6099400915)', () => {
+  it('A et B lisent l’occurrence 0, B suspendu ; A + approbation owner ; B committe → occurrence 2, demande exacte, #1 inutilisable', async () => {
+    const scope = 'role:crf2r1-race';
+    const mem = new MemoryStore(db);
+    const p = await mem.propose({ scope, kind: 'fact', text: 'affirmation disputée R1', evidence_refs: ['e0'], author_pid: 'agent:a' });
+    await mem.activate(p.id, 1, 'agent:b');
+    for (let i = 0; i < 5; i++) await mem.recordRefute(p.id, 'agent:r' + i); // 5 réfutations : pas encore d'alarme
+    expect(await alarmRequests(scope)).toEqual([]);
+
+    // D1 instrumentée pour B : son batch d'alarme est suspendu jusqu'au signal.
+    let armed = false;
+    let reached!: () => void;
+    let release!: () => void;
+    const atBatch = new Promise<void>(resolve => { reached = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const suspended = new Proxy(db, {
+      get(target, property) {
+        if (property === 'batch') {
+          return async (statements: D1PreparedStatement[]) => {
+            if (armed) {
+              armed = false;
+              reached();
+              await gate;
+            }
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    await ensureSchema(suspended);
+    armed = true;
+    // B : 6e réfutation, lit l'occurrence 0 puis attend devant son batch.
+    const late = new MemoryStore(suspended).recordRefute(p.id, 'agent:late');
+    await atBatch;
+    // A : 7e réfutation, lit aussi l'occurrence 0 et committe : pause + occurrence 1 + demande #1.
+    await mem.recordRefute(p.id, 'agent:early');
+    const [first] = await alarmRequests(scope);
+    expect(first).toMatchObject({ occurrence: 1, reason: 'refute', request_id: await pauseRequestId(scope, 1) });
+    // Le propriétaire approuve #1 : la pause est levée.
+    expect(await recordOwnerDecision(db, { request_id: first.request_id, request_seq: first.seq, decision: 'approve', proof }))
+      .toMatchObject({ status: 'applied', memory_resume: { scope, occurrence: 1 } });
+    expect(await counter(pauseKey(scope))).toBe(0);
+
+    // B committe enfin : nouvelle occurrence (2) et sa propre demande, jamais la réécriture de #1.
+    release();
+    await late;
+    expect(await counter(occurrenceKey(scope))).toBe(2);
+    expect(await counter(pauseKey(scope))).toBe(1);
+    const requests = await alarmRequests(scope);
+    expect(requests.map(r => r.occurrence)).toEqual([1, 2]);
+    expect(requests[1]).toMatchObject({ reason: 'refute', request_id: await pauseRequestId(scope, 2) });
+
+    // L'approbation #1 ne lève pas la pause #2 : rejeu = duplicate, pause maintenue.
+    expect(await recordOwnerDecision(db, { request_id: first.request_id, request_seq: first.seq, decision: 'approve', proof }))
+      .toMatchObject({ status: 'duplicate' });
+    expect(await counter(pauseKey(scope))).toBe(1);
+    // L'approbation #2 reprend réellement les activations.
+    expect(await recordOwnerDecision(db, { request_id: requests[1].request_id, request_seq: requests[1].seq, decision: 'approve', proof }))
+      .toMatchObject({ status: 'applied', memory_resume: { scope, occurrence: 2 } });
+    expect(await counter(pauseKey(scope))).toBe(0);
+    expect(await new MemoryStore(db).isActivationPaused(scope)).toBe(false);
+    // Le cycle memory-alarms garde sa règle de révision : une révision par événement.
+    const cycle = await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(MEMORY_ALARM_CYCLE).first<{ revision: number }>();
+    const events = await db.prepare('SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1').bind(MEMORY_ALARM_CYCLE).first<{ n: number }>();
+    expect(cycle?.revision).toBe(events?.n);
+  });
+
+  it('alarmes successives sans course : chaque alarme ouvre l’occurrence suivante avec sa demande', async () => {
+    const scope = 'project:crf2r1-seq';
+    const mem = new MemoryStore(db);
+    const p = await mem.propose({ scope, kind: 'fact', text: 'affirmation R1 séquentielle', evidence_refs: ['e0'], author_pid: 'agent:a' });
+    await mem.activate(p.id, 1, 'agent:b');
+    for (let i = 0; i < 8; i++) await mem.recordRefute(p.id, 'agent:s' + i); // alarmes aux 6e, 7e, 8e réfutations
+    expect(await counter(occurrenceKey(scope))).toBe(3);
+    const requests = await alarmRequests(scope);
+    expect(requests.map(r => r.occurrence)).toEqual([1, 2, 3]);
+    for (const [index, request] of requests.entries()) {
+      expect(request.request_id).toBe(await pauseRequestId(scope, index + 1));
+    }
+  });
+});
