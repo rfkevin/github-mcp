@@ -66,6 +66,7 @@
         "GITHUB_WRITES_ENABLED": "true",
         "GITHUB_AUTOMATION_ENABLED": "false",
         "COLLAB_STORE_ENABLED": "true",
+        "OWNER_AUTH_MODE": "secret",
         "GITHUB_CHECKS_CONFIG": "[{\"repository\":\"rfkevin/github-mcp\",\"ref\":\"master\",\"controllerSha\":\"774a3117e5359ca9c164fcef59fa6d6dc8b0bde7\"}]"
       }
     }
