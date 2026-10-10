@@ -104,7 +104,11 @@ export default {
       || pathname === '/.well-known/oauth-protected-resource/collab/mcp')) {
       return collab.fetch(request, authEnv, ctx);
     }
-    return authorizationServer.fetch(request, env, ctx);
+    if (pathname.startsWith('/oauth/') || pathname.startsWith('/.well-known/')) {
+      return authorizationServer.fetch(request, env, ctx);
+    }
+    // Retain the existing friendly HTML 404 for non-OAuth paths.
+    return authHandler.fetch(request, authEnv);
   },
 } satisfies ExportedHandler<AppEnv>;
 
