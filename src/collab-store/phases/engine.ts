@@ -26,12 +26,30 @@ async function definition(db: D1Database, cycleId: string, phase: string): Promi
   });
 }
 
+/**
+ * CR-F01 — seq of the most recent phase.advance that *entered* this phase.
+ * Events with seq <= this value belong to a prior visit and must not satisfy
+ * the current round's expected_outputs. 0 = first visit (no prior entry event).
+ */
+async function phaseEntrySeq(db: D1Database, cycleId: string, phase: string): Promise<number> {
+  const row = await db.prepare([
+    'SELECT MAX(seq) AS n FROM events',
+    "WHERE cycle_id = ?1 AND type = 'phase.advance'",
+    'AND json_valid(payload_json)',
+    "AND json_extract(payload_json, '$.to') = ?2",
+  ].join(' ')).bind(cycleId, phase).first<{ n: number | null }>();
+  return row?.n ?? 0;
+}
+
 async function outputsSatisfied(db: D1Database, def: PhaseDefinition): Promise<boolean> {
+  // CR-F01: only count contributions from the *current* visit to this phase.
+  const entrySeq = await phaseEntrySeq(db, def.cycle_id, def.phase);
   for (const expected of def.expected_outputs) {
     const count = await db.prepare([
       'SELECT COUNT(DISTINCT e.participant_id) AS n',
       'FROM events e',
       'WHERE e.cycle_id = ?1 AND e.type = ?2',
+      'AND e.seq > ?4',
       'AND EXISTS (',
       '  SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND (',
       "    ((?3 = 'author' OR ?3 = 'owner') AND t.owner_pid = e.participant_id)",
@@ -39,7 +57,7 @@ async function outputsSatisfied(db: D1Database, def: PhaseDefinition): Promise<b
       "    OR (?3 = 'tester' AND t.tester_pid = e.participant_id)",
       '  )',
       ')',
-    ].join(' ')).bind(def.cycle_id, expected.kind, expected.role).first<{ n: number }>();
+    ].join(' ')).bind(def.cycle_id, expected.kind, expected.role, entrySeq).first<{ n: number }>();
     if ((count?.n ?? 0) < expected.count) return false;
   }
   return true;
@@ -104,6 +122,8 @@ export async function advanceByPolicy(db: D1Database, input: {
       ),
       db.prepare('UPDATE cycles SET phase = ?2, revision = ?3 WHERE cycle_id = ?1 AND revision = ?4')
         .bind(input.cycle_id, input.next_phase, input.expected_revision + 1, input.expected_revision),
+      // Reveal only still-sealed items for the *leaving* phase. Items from a prior
+      // completed visit already have revealed_at set; new-round seals stay NULL until this advance.
       db.prepare(
         'UPDATE sealed_items SET revealed_at = ?3 WHERE cycle_id = ?1 AND phase = ?2 AND revealed_at IS NULL'
       ).bind(input.cycle_id, facts.phase, at),
