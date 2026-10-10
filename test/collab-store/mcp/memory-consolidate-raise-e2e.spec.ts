@@ -53,7 +53,7 @@ describe("CC-3 CR-F03 — hausse de confiance d'une consolidation par preuve pai
     const cycle = uniq('cycle');
     const scope = 'role:' + uniq('raise');
     const id = uniq('mem');
-    const append = (who: Agent, op: string, type: string, payload: Record<string, unknown>) =>
+    const append = async (who: Agent, op: string, type: string, payload: Record<string, unknown>) =>
       who.call('collab_append_event', {
         cycle,
         expected_rev: await revision(cycle),
