@@ -555,8 +555,19 @@ export class MemoryStore {
     kind?: MemoryKind,
     confidence?: MemoryConfidence,
     ownerDecisionRef?: string,
+    peerEvidenceRef?: string,
   ): Promise<StoredMemory> {
-    const prepared = await this.prepareSupersede(id, authorPid, text, evidenceRefs, kind, confidence, ownerDecisionRef);
+    const prepared = await this.prepareSupersede(
+      id,
+      authorPid,
+      text,
+      evidenceRefs,
+      kind,
+      confidence,
+      ownerDecisionRef,
+      undefined,
+      peerEvidenceRef,
+    );
     await this.db.batch(prepared.statements);
     await prepared.postCommit?.();
     return (await this.get(id, prepared.summary.version))!;
@@ -580,6 +591,7 @@ export class MemoryStore {
     confidence?: MemoryConfidence,
     ownerDecisionRef?: string,
     callerPid?: string,
+    peerEvidenceRef?: string,
   ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const active = await this.db
@@ -603,11 +615,24 @@ export class MemoryStore {
     if (conf === 'hypothesis' && PROTECTED_KINDS.has(nextKind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot supersede into a rule kind');
     }
+    // CR-F03 (#95, contre-revue Codex #79/6096598889) : TOUTE hausse de confiance
+    // — chemin public (memory.consolidate) comme chemin interne (promoteConfidence) —
+    // exige une preuve du registre produite par un pair distinct de l'auteur, et
+    // NOUVELLE : un ref résolu déjà soutenu par une version QUELCONQUE de la
+    // lignée de l'id (revue Claude PR #100/6098002656) — active, superseded ou
+    // retirée — est refusé : une consolidation qui retire le ref ne le blanchit
+    // pas. Fail-closed uniforme ; à confiance inchangée, aucun ref supplémentaire
+    // n'est exigé (la consolidation ordinaire reste intacte).
+    let refs = evidenceRefs;
+    if (confidence !== undefined && confidenceRank(conf) > confidenceRank(active.confidence as MemoryConfidence)) {
+      const ledgerRef = await this.requireRaiseEvidence(peerEvidenceRef, authorPid, id);
+      if (!refs.includes(ledgerRef)) refs = [...refs, ledgerRef];
+    }
     const entry = validateMemoryEntry({
       scope: active.scope,
       kind: nextKind,
       text,
-      evidence_refs: evidenceRefs,
+      evidence_refs: refs,
       confidence: conf,
       status: 'candidate',
       author_pid: authorPid,
@@ -674,6 +699,12 @@ export class MemoryStore {
       );
     }
     const ledgerRef = await this.requirePeerLedgerEvidence(peerEvidenceRef, reviewerPid, row.author_pid);
+    // CR-F03 (revue Claude PR #100/6098002656) : le chemin CANDIDATE (UPDATE
+    // direct, sans supersede) passe lui aussi par la garde anti-recyclage —
+    // le ref validé ne doit soutenir aucune version de la lignée de l'id.
+    if (row.status === 'candidate') {
+      await this.requireRaiseEvidence(peerEvidenceRef, row.author_pid, id);
+    }
     const refs: string[] = JSON.parse(row.evidence_refs || '[]');
     refs.push(ledgerRef);
     if (PROTECTED_KINDS.has(row.kind) && row.status === 'active') {
@@ -686,6 +717,9 @@ export class MemoryStore {
         row.kind as MemoryKind,
         newConfidence,
         ownerDecisionRef,
+        // CR-F03 : le supersede interne re-valide la preuve (elle est nouvelle :
+        // elle ne figure pas encore dans les refs de la version active).
+        ledgerRef,
       );
     }
     if (PROTECTED_KINDS.has(row.kind)) {
@@ -695,7 +729,7 @@ export class MemoryStore {
       });
     }
     if (row.status === 'active') {
-      return this.supersede(id, row.author_pid, row.text, refs, row.kind as MemoryKind, newConfidence);
+      return this.supersede(id, row.author_pid, row.text, refs, row.kind as MemoryKind, newConfidence, undefined, ledgerRef);
     }
     await this.db
       .prepare(`UPDATE memory_entries SET confidence = ?1, evidence_refs = ?2 WHERE id = ?3 AND version = ?4`)
@@ -1179,6 +1213,98 @@ export class MemoryStore {
   }
 
   /**
+   * CR-F03 (#95, contre-revue Codex #79/6096598889) : une consolidation qui HAUSSE
+   * la confiance exige une preuve du registre evidence_ledger — ref evidence_ref ou
+   * `ledger:<seq>` — produite par un pair DISTINCT de l'auteur (aucune
+   * auto-validation), et NOUVELLE : le ref résolu ne doit figurer dans les evidence_refs
+   * d'AUCUNE version de la lignée de l'id, quel que soit son statut (revue
+   * Claude PR #100/6098002656) — une consolidation qui le retire ne le
+   * blanchit pas, les deux formes du ref (evidence_ref, `ledger:<seq>`) étant
+   * vérifiées. Retourne le ref résolu, à joindre aux evidence_refs de la
+   * nouvelle version.
+   */
+  private async requireRaiseEvidence(
+    peerEvidenceRef: string | undefined,
+    authorPid: string,
+    id: string,
+  ): Promise<string> {
+    const row = await this.resolvePeerLedgerRow(
+      peerEvidenceRef,
+      authorPid,
+      'raising confidence requires a NEW peer ledger evidence_ref (peer_evidence_ref)',
+    );
+    if (row.producer === authorPid) {
+      throw new MemoryStoreError('PEER_EVIDENCE_SELF', 'ledger producer cannot be the memory author');
+    }
+    const ledgerRef = row.evidence_ref || `ledger:${row.seq}`;
+    // Anti-recyclage sur la lignée ENTIÈRE de l'id (revue Claude PR
+    // #100/6098002656) : le ref résolu — ou son alias `ledger:<seq>` — ne doit
+    // soutenir aucune version de l'id, active, superseded ou retirée. Une
+    // consolidation intermédiaire qui retire le ref ne le blanchit pas.
+    const recycled = await this.db
+      .prepare(
+        [
+          'SELECT 1 FROM memory_entries m, json_each(COALESCE(m.evidence_refs, \'[]\')) j',
+          'WHERE m.id = ?1 AND j.value IN (?2, ?3) LIMIT 1',
+        ].join(' '),
+      )
+      .bind(id, row.evidence_ref, `ledger:${row.seq}`)
+      .first();
+    if (recycled) {
+      throw new MemoryStoreError(
+        'PEER_EVIDENCE_REQUIRED',
+        `evidence ${ledgerRef} already backs a version of ${id}: a confidence raise requires a NEW peer evidence`,
+      );
+    }
+    return ledgerRef;
+  }
+
+  /**
+   * Résout une ligne du registre evidence_ledger par son evidence_ref ou son
+   * alias `ledger:<seq>` ; null quand aucune ligne ne correspond. Résolution
+   * partagée via resolvePeerLedgerRow — la duplication des deux résolveurs
+   * faisait échouer la porte qualité SonarCloud sur le nouveau code
+   * (Duplication on New Code > 3 %).
+   */
+  private async findLedgerRow(
+    peerEvidenceRef: string,
+  ): Promise<{ seq: number; producer: string; evidence_ref: string } | null> {
+    const seqMatch = /^ledger:(\d+)$/.exec(peerEvidenceRef);
+    if (seqMatch) {
+      return this.db
+        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE seq = ?1`)
+        .bind(Number(seqMatch[1]))
+        .first<{ seq: number; producer: string; evidence_ref: string }>();
+    }
+    return this.db
+      .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE evidence_ref = ?1 LIMIT 1`)
+      .bind(peerEvidenceRef)
+      .first<{ seq: number; producer: string; evidence_ref: string }>();
+  }
+
+  /**
+   * Garde d'entrée partagée des deux vérificateurs de preuve pair : ref non
+   * vide (jamais `self:<authorPid>`) qui résout une ligne du registre, ou
+   * PEER_EVIDENCE_REQUIRED / PEER_EVIDENCE_NOT_FOUND. Le message de refus
+   * reste propre à chaque appelant ; dédupliqué pour la porte qualité
+   * SonarCloud (Duplication on New Code > 3 %).
+   */
+  private async resolvePeerLedgerRow(
+    peerEvidenceRef: string | undefined,
+    authorPid: string,
+    requiredMessage: string,
+  ): Promise<{ seq: number; producer: string; evidence_ref: string }> {
+    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
+      throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', requiredMessage);
+    }
+    const row = await this.findLedgerRow(peerEvidenceRef);
+    if (!row) {
+      throw new MemoryStoreError('PEER_EVIDENCE_NOT_FOUND', `No evidence_ledger row for ${peerEvidenceRef}`);
+    }
+    return row;
+  }
+
+  /**
    * peerEvidenceRef must match evidence_ledger.evidence_ref or ledger:<seq>,
    * with producer === reviewerPid and producer ≠ authorPid.
    */
@@ -1187,28 +1313,7 @@ export class MemoryStore {
     reviewerPid: string,
     authorPid: string,
   ): Promise<string> {
-    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
-      throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', 'evidence_ref must be a ledger entry from peer');
-    }
-    const seqMatch = /^ledger:(\d+)$/.exec(peerEvidenceRef);
-    let row: { seq: number; producer: string; evidence_ref: string } | null = null;
-    if (seqMatch) {
-      row = await this.db
-        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE seq = ?1`)
-        .bind(Number(seqMatch[1]))
-        .first();
-    } else {
-      row = await this.db
-        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE evidence_ref = ?1 LIMIT 1`)
-        .bind(peerEvidenceRef)
-        .first();
-    }
-    if (!row) {
-      throw new MemoryStoreError(
-        'PEER_EVIDENCE_NOT_FOUND',
-        `No evidence_ledger row for ${peerEvidenceRef}`,
-      );
-    }
+    const row = await this.resolvePeerLedgerRow(peerEvidenceRef, authorPid, 'evidence_ref must be a ledger entry from peer');
     if (row.producer !== reviewerPid) {
       throw new MemoryStoreError(
         'PEER_EVIDENCE_PRODUCER',
