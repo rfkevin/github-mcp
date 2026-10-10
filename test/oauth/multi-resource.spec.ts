@@ -43,6 +43,21 @@ describe('CC-3: OAuth multi-resource sur un même Worker', () => {
     expect(authorization.html).toContain('collab:');
   });
 
+  it('termine la connexion Grok avec la liste complète de scopes demandés', async () => {
+    const { headers } = await mcpSession(
+      'mcp:read offline_access mcp:checks mcp:write mcp:integration collab:',
+      'https://grok.com/connectors-oauth-exchange-code/', collabResource,
+    );
+    const listed = await send('/collab/mcp', { method: 'POST', headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' }),
+    });
+    expect(listed.status).toBe(200);
+    const text = await listed.text();
+    expect(text).toContain('collab_get_context');
+    expect(text).not.toContain('github_commit_changes');
+    expect((await send('/mcp', { method: 'POST', headers, body: '{}' })).status).toBe(401);
+  });
+
   it('termine GET authorize, POST authorize, GitHub callback et token exchange sur collab', async () => {
     const { headers } = await mcpSession(
       'collab: offline_access', 'https://grok.com/connectors-oauth-exchange-code/', collabResource,
