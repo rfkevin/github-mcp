@@ -19,6 +19,21 @@ import { StateContractError } from '../../collab/contracts';
 // shared with the schema backfill); re-exported here for API compatibility.
 export { estimateTokens };
 import { ensureSchema } from '../store/schema';
+import {
+  PAUSE_REQUEST_PREFIX,
+  alarmRequestStatements,
+  baselineKey,
+  occurrenceKey,
+  pauseKey,
+  pauseRequestId,
+  sha256Hex,
+  type PauseReason,
+} from './pause-resume';
+import { expireDueHypotheses, expiresInCycle, isDueAt } from './hypothesis-expiry';
+
+// CR-F02 : clés et identifiants de pause vivent dans pause-resume.ts (partagés avec
+// le canal owner) ; ré-exportés ici pour la compatibilité de l'API publique.
+export { PAUSE_REQUEST_PREFIX, pauseRequestId };
 
 export class MemoryStoreError extends Error {
   constructor(readonly code: string, message: string) {
@@ -42,6 +57,8 @@ export interface StoredMemory {
   uses: number;
   last_used_rev: number | null;
   expires_rev: number | null;
+  /** CR-F04 : cycle d'origine de expires_rev (NULL = pas d'expiration automatique). */
+  expires_cycle?: string | null;
 }
 
 export interface ProposeInput {
@@ -55,7 +72,10 @@ export interface ProposeInput {
   supersedes?: string;
   expires_rev?: number;
   owner_decision_ref?: string;
+  /** Révision du cycle d'origine APRÈS l'append qui propose (base de l'échéance). */
   cycle_rev?: number;
+  /** CR-F04 : cycle d'origine ; sans lui, aucune expiration automatique. */
+  cycle_id?: string;
 }
 
 /**
@@ -145,7 +165,6 @@ export const SUPERSEDE_REQUEST_PREFIX = 'mem-supersede-';
 export const RETIRE_REQUEST_PREFIX = 'mem-retire-';
 export const SCOPE_REQUEST_PREFIX = 'mem-scope-';
 export const CONFIDENCE_REQUEST_PREFIX = 'mem-conf-';
-export const PAUSE_REQUEST_PREFIX = 'mem-pause-';
 /** Protected memory ids stay short so request_id never exceeds 64 chars. */
 const MEMORY_ID_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
 
@@ -162,16 +181,6 @@ export function supersedeRequestId(id: string, nextVersion: number): string {
 /** Retire approvals are bound to the exact version being retired. */
 export function retireRequestId(id: string, version: number): string {
   return `${RETIRE_REQUEST_PREFIX}${id}-v${version}`;
-}
-
-async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** Pause-clearing approvals are bound to the scope's current pause occurrence. */
-export async function pauseRequestId(scope: string, occurrence: number): Promise<string> {
-  return PAUSE_REQUEST_PREFIX + (await sha256Hex(scope)).slice(0, 20) + '-' + occurrence;
 }
 
 /** Scope-promotion approvals bind id + resulting version + target scope. */
@@ -192,11 +201,8 @@ export async function promoteConfidenceRequestId(
   return CONFIDENCE_REQUEST_PREFIX + (await sha256Hex(`${id}:${version}:${confidence}`)).slice(0, 20);
 }
 
-const META_PAUSE = 'mem:pause';
-const META_OCC = 'mem:occ:';
 const META_ACT = 'mem:act:';
 const META_RET = 'mem:ret:';
-const META_BASE = 'mem:base:';
 
 export function scopeFamily(scope: string): string {
   if (scope === 'common') return 'common';
@@ -210,6 +216,12 @@ export interface MemoryAlarm {
   scope?: string;
   details?: Record<string, unknown>;
 }
+
+const ALARM_REASONS: Record<MemoryAlarm['code'], PauseReason> = {
+  INVARIANT_TOUCHED: 'invariant',
+  REFUTE_THRESHOLD: 'refute',
+  GROWTH_THRESHOLD: 'growth',
+};
 
 function newId(): string {
   return 'mem-' + crypto.randomUUID().replace(/-/g, '').slice(0, 20);
@@ -230,14 +242,14 @@ export class MemoryStore {
     if (scope) {
       const row = await this.db
         .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-        .bind(`${META_PAUSE}:${scope}`)
+        .bind(pauseKey(scope))
         .first<{ writes: number }>();
       return (row?.writes ?? 0) > 0;
     }
     // Any paused scope (for tests / diagnostics)
     const { results } = await this.db
       .prepare(`SELECT writes FROM quota_counters WHERE day LIKE ?1 AND writes > 0 LIMIT 1`)
-      .bind(`${META_PAUSE}:%`)
+      .bind('mem:pause:%')
       .all<{ writes: number }>();
     return (results?.length ?? 0) > 0;
   }
@@ -248,11 +260,16 @@ export class MemoryStore {
    */
   async pauseClearRequestId(scope: string): Promise<string> {
     await ensureSchema(this.db);
+    return pauseRequestId(scope, await this.occurrenceOf(scope));
+  }
+
+  /** Current pause occurrence of a scope (0 before any alarm). */
+  private async occurrenceOf(scope: string): Promise<number> {
     const row = await this.db
       .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-      .bind(`${META_OCC}${scope}`)
+      .bind(occurrenceKey(scope))
       .first<{ writes: number }>();
-    return pauseRequestId(scope, row?.writes ?? 0);
+    return row?.writes ?? 0;
   }
 
   /**
@@ -264,7 +281,7 @@ export class MemoryStore {
     await this.requireOwnerDecision(ownerDecisionRef, { exact: await this.pauseClearRequestId(scope) });
     await this.db
       .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`)
-      .bind(`${META_PAUSE}:${scope}`)
+      .bind(pauseKey(scope))
       .run();
   }
 
@@ -294,6 +311,16 @@ export class MemoryStore {
     let expiresRev = input.expires_rev ?? null;
     if (confidence === 'hypothesis' && expiresRev == null && input.cycle_rev != null) {
       expiresRev = input.cycle_rev + HYPOTHESIS_EXPIRE_CYCLES;
+    }
+    // CR-F04 (#96) : l'échéance est une révision du cycle qui propose ; ce
+    // cycle est mémorisé avec elle et seul lui la fait expirer. Une échéance
+    // déjà atteinte par la révision de cet append est refusée avant tout effet.
+    const expiresCycle = confidence === 'hypothesis' && expiresRev != null && input.cycle_id ? input.cycle_id : null;
+    if (expiresCycle && input.cycle_rev != null && expiresRev != null && expiresRev <= input.cycle_rev) {
+      throw new MemoryStoreError(
+        'MEMORY_HYPOTHESIS_EXPIRED',
+        `expires_rev ${expiresRev} is already reached by revision ${input.cycle_rev} of cycle ${expiresCycle}`,
+      );
     }
     const entry: MemoryEntry = validateMemoryEntry({
       scope: input.scope,
@@ -334,7 +361,7 @@ export class MemoryStore {
         // id dans un autre scope, committée entre les pré-checks et ce batch,
         // roule tout en arrière ; le caller re-diagnostique MEMORY_SCOPE_MISMATCH.
         this.scopeIdentityGuard(id, entry.scope),
-        this.insertCandidate(entry, id, version, input.supersedes ?? null, expiresRev),
+        this.insertCandidate(entry, id, version, input.supersedes ?? null, expiresRev, expiresCycle),
       ],
       verifyIndex: 1,
       summary: { id, version, status: 'candidate' },
@@ -419,6 +446,7 @@ export class MemoryStore {
     version: number,
     reviewerPid: string,
     cycleId = 'default',
+    cycleRev?: number,
   ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const row = await this.get(id, version);
@@ -430,6 +458,8 @@ export class MemoryStore {
     // CR-D : une lignée enregistrée sous plusieurs scopes (données anciennes)
     // n'est jamais activée — l'activation superséderait une version d'un autre scope.
     await this.assertIdScope(id, row.scope, 'memory.review');
+    // CR-F04 : une hypothèse échue n'est jamais activée.
+    await this.assertNotExpired(row, cycleId, cycleRev);
     if (row.confidence === 'hypothesis' && PROTECTED_KINDS.has(row.kind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot activate as a rule');
     }
@@ -444,9 +474,9 @@ export class MemoryStore {
     const capKey = `${META_ACT}${cycleId}:${row.scope}`;
     await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
     await this.assertBudgetAllows(row.scope, row.text);
-    const pauseKey = `${META_PAUSE}:${row.scope}`;
-    const baseKey = `${META_BASE}${row.scope}`;
-    const occKey = `${META_OCC}${row.scope}`;
+    const pausedKey = pauseKey(row.scope);
+    const baseKey = baselineKey(row.scope);
+    const occKey = occurrenceKey(row.scope);
     const budget = MEMORY_TOKEN_BUDGETS[scopeFamily(row.scope)] ?? 500;
     const newTokens = estimateTokens(row.text);
     const protectedKind = PROTECTED_KINDS.has(row.kind);
@@ -469,7 +499,7 @@ export class MemoryStore {
         '  AND COALESCE((SELECT writes FROM quota_counters WHERE day = ?4), 0) < ?5',
         `  AND COALESCE((SELECT SUM(COALESCE(token_cost, (length(text) + 3) / 4)) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8`,
         '  THEN 1 ELSE 0 END',
-      ].join(' ')).bind(id, version, pauseKey, capKey, MAX_ACTIVATIONS_PER_CYCLE, row.scope, newTokens, budget),
+      ].join(' ')).bind(id, version, pausedKey, capKey, MAX_ACTIVATIONS_PER_CYCLE, row.scope, newTokens, budget),
       // A03: the cap reservation lives inside the transaction — exactly one
       // increment per applied activation, rolled back with a failed one.
       this.db
@@ -511,16 +541,21 @@ export class MemoryStore {
         .bind(baseKey, row.scope),
       this.db
         .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, 1 WHERE ${growthExceeded}`)
-        .bind(pauseKey, row.scope, baseKey),
+        .bind(pausedKey, row.scope, baseKey),
       this.db.prepare(`${bumpOccurrence} WHERE ${growthExceeded}`).bind(occKey, row.scope, baseKey),
     );
     if (protectedKind) {
       // A03: INVARIANT_TOUCHED pause + occurrence, also inside the batch.
       statements.push(
-        this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`).bind(pauseKey),
+        this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`).bind(pausedKey),
         this.db.prepare(bumpOccurrence).bind(occKey),
       );
     }
+    // CR-F02 (#93) : l'alarme dépose, dans cette même transaction, l'owner.request
+    // exacte de l'occurrence qu'elle ouvre (croissance : conditionnelle ; invariant :
+    // certaine). Sans alarme, l'occurrence n'avance pas et rien n'est déposé.
+    statements.push(...await alarmRequestStatements(this.db, row.scope, await this.occurrenceOf(row.scope),
+      protectedKind ? 'invariant' : 'growth', Math.floor(Date.now() / 1000)));
     statements.push(this.db.prepare(`DELETE FROM collab_store_guard`));
     return {
       statements,
@@ -539,8 +574,19 @@ export class MemoryStore {
     kind?: MemoryKind,
     confidence?: MemoryConfidence,
     ownerDecisionRef?: string,
+    peerEvidenceRef?: string,
   ): Promise<StoredMemory> {
-    const prepared = await this.prepareSupersede(id, authorPid, text, evidenceRefs, kind, confidence, ownerDecisionRef);
+    const prepared = await this.prepareSupersede(
+      id,
+      authorPid,
+      text,
+      evidenceRefs,
+      kind,
+      confidence,
+      ownerDecisionRef,
+      undefined,
+      peerEvidenceRef,
+    );
     await this.db.batch(prepared.statements);
     await prepared.postCommit?.();
     return (await this.get(id, prepared.summary.version))!;
@@ -564,6 +610,9 @@ export class MemoryStore {
     confidence?: MemoryConfidence,
     ownerDecisionRef?: string,
     callerPid?: string,
+    peerEvidenceRef?: string,
+    cycleId?: string,
+    cycleRev?: number,
   ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const active = await this.db
@@ -575,6 +624,8 @@ export class MemoryStore {
     assertParticipantScopeAllowed(active.scope, callerPid, 'memory.consolidate');
     // CR-D : jamais de consolidation d'une lignée enregistrée sous plusieurs scopes.
     await this.assertIdScope(id, active.scope, 'memory.consolidate');
+    // CR-F04 : une hypothèse échue ne se renouvelle pas — elle se re-propose.
+    await this.assertNotExpired(active, cycleId, cycleRev);
     const nextKind = (kind ?? active.kind) as MemoryKind;
     const conf = confidence ?? (active.confidence as MemoryConfidence);
     const nextVersion = active.version + 1;
@@ -587,21 +638,35 @@ export class MemoryStore {
     if (conf === 'hypothesis' && PROTECTED_KINDS.has(nextKind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot supersede into a rule kind');
     }
+    // CR-F03 (#95, contre-revue Codex #79/6096598889) : TOUTE hausse de confiance
+    // — chemin public (memory.consolidate) comme chemin interne (promoteConfidence) —
+    // exige une preuve du registre produite par un pair distinct de l'auteur, et
+    // NOUVELLE : un ref résolu déjà soutenu par une version QUELCONQUE de la
+    // lignée de l'id (revue Claude PR #100/6098002656) — active, superseded ou
+    // retirée — est refusé : une consolidation qui retire le ref ne le blanchit
+    // pas. Fail-closed uniforme ; à confiance inchangée, aucun ref supplémentaire
+    // n'est exigé (la consolidation ordinaire reste intacte).
+    let refs = evidenceRefs;
+    if (confidence !== undefined && confidenceRank(conf) > confidenceRank(active.confidence as MemoryConfidence)) {
+      const ledgerRef = await this.requireRaiseEvidence(peerEvidenceRef, authorPid, id);
+      if (!refs.includes(ledgerRef)) refs = [...refs, ledgerRef];
+    }
     const entry = validateMemoryEntry({
       scope: active.scope,
       kind: nextKind,
       text,
-      evidence_refs: evidenceRefs,
+      evidence_refs: refs,
       confidence: conf,
       status: 'candidate',
       author_pid: authorPid,
     });
+    const expiry = this.renewedExpiry(active, conf, cycleId, cycleRev);
     return {
       statements: [
         this.db
           .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
           .bind(id, active.version),
-        this.insertCandidate(entry, id, nextVersion, `${id}@${active.version}`, null),
+        this.insertCandidate(entry, id, nextVersion, `${id}@${active.version}`, expiry.rev, expiry.cycle),
         // CR-B (CR-02) : garde transactionnelle d'effet — le batch du caller ne
         // passe que si l'ancienne version active est durablement superseded.
         this.statusEffectGuard(id, active.version, 'superseded'),
@@ -658,6 +723,12 @@ export class MemoryStore {
       );
     }
     const ledgerRef = await this.requirePeerLedgerEvidence(peerEvidenceRef, reviewerPid, row.author_pid);
+    // CR-F03 (revue Claude PR #100/6098002656) : le chemin CANDIDATE (UPDATE
+    // direct, sans supersede) passe lui aussi par la garde anti-recyclage —
+    // le ref validé ne doit soutenir aucune version de la lignée de l'id.
+    if (row.status === 'candidate') {
+      await this.requireRaiseEvidence(peerEvidenceRef, row.author_pid, id);
+    }
     const refs: string[] = JSON.parse(row.evidence_refs || '[]');
     refs.push(ledgerRef);
     if (PROTECTED_KINDS.has(row.kind) && row.status === 'active') {
@@ -670,6 +741,9 @@ export class MemoryStore {
         row.kind as MemoryKind,
         newConfidence,
         ownerDecisionRef,
+        // CR-F03 : le supersede interne re-valide la preuve (elle est nouvelle :
+        // elle ne figure pas encore dans les refs de la version active).
+        ledgerRef,
       );
     }
     if (PROTECTED_KINDS.has(row.kind)) {
@@ -679,7 +753,7 @@ export class MemoryStore {
       });
     }
     if (row.status === 'active') {
-      return this.supersede(id, row.author_pid, row.text, refs, row.kind as MemoryKind, newConfidence);
+      return this.supersede(id, row.author_pid, row.text, refs, row.kind as MemoryKind, newConfidence, undefined, ledgerRef);
     }
     await this.db
       .prepare(`UPDATE memory_entries SET confidence = ?1, evidence_refs = ?2 WHERE id = ?3 AND version = ?4`)
@@ -743,6 +817,9 @@ export class MemoryStore {
     }
     // CRD-R1 : jamais de promotion depuis une lignée enregistrée sous plusieurs scopes.
     await this.assertIdScope(id, row.scope, 'memory.promote');
+    // CR-F04 : une hypothèse échue n'est jamais promue (la copie promue, montée en
+    // observed, n'expirerait plus).
+    await this.assertNotExpired(row);
     if (reviewerPid === row.author_pid) {
       throw new MemoryStoreError('PEER_REQUIRED', 'scope promotion requires a distinct peer reviewer');
     }
@@ -950,31 +1027,60 @@ export class MemoryStore {
     return refuteCount;
   }
 
-  async expireHypotheses(currentCycleRev: number): Promise<number> {
+  /**
+   * CR-F04 (#96) : rattrapage idempotent des hypothèses échues d'UN cycle,
+   * contre la révision courante de CE cycle uniquement — jamais une révision
+   * fournie par l'appelant ni celle d'un autre cycle. Le chemin normal n'en a
+   * pas besoin : chaque transaction qui avance une révision inclut déjà
+   * expireDueHypotheses. Renvoie le nombre de versions retirées.
+   */
+  async expireHypotheses(cycleId: string): Promise<number> {
     await ensureSchema(this.db);
-    const { results } = await this.db
-      .prepare(
-        `SELECT id, version FROM memory_entries
-         WHERE confidence = 'hypothesis' AND status IN ('active','candidate')
-           AND expires_rev IS NOT NULL AND expires_rev <= ?1`,
-      )
-      .bind(currentCycleRev)
-      .all<{ id: string; version: number }>();
-    let n = 0;
-    for (const row of results ?? []) {
-      await this.db
-        .prepare(`UPDATE memory_entries SET status = 'retired' WHERE id = ?1 AND version = ?2`)
-        .bind(row.id, row.version)
-        .run();
-      n += 1;
+    const result = await expireDueHypotheses(this.db, cycleId).run();
+    return result.meta?.changes ?? 0;
+  }
+
+  /** CR-F04 : refus typé d'une hypothèse échue dans son cycle d'origine. */
+  private async assertNotExpired(row: StoredMemory, eventCycle?: string, eventRev?: number): Promise<void> {
+    if (!expiresInCycle(row)) return;
+    // L'append en cours amène son cycle à eventRev : s'il est le cycle
+    // d'origine, c'est la révision qui juge l'échéance. Sinon, seule la
+    // révision courante du cycle d'origine compte (jamais celle de l'appelant).
+    const revision = eventCycle === row.expires_cycle && eventRev !== undefined
+      ? eventRev
+      : (await this.db.prepare('SELECT COALESCE((SELECT revision FROM cycles WHERE cycle_id = ?1), 0) AS revision')
+          .bind(row.expires_cycle).first<{ revision: number }>())?.revision ?? 0;
+    if (isDueAt(row, revision)) {
+      throw new MemoryStoreError(
+        'MEMORY_HYPOTHESIS_EXPIRED',
+        `Hypothesis ${row.id}@${row.version} expired at revision ${row.expires_rev} of its origin cycle`,
+      );
     }
-    return n;
+  }
+
+  /**
+   * CR-F04 (décision Kevin) : échéance de la version consolidée. Restée
+   * `hypothesis`, elle ouvre une fenêtre complète depuis le cycle qui consolide ;
+   * sans contexte de cycle (API interne), elle hérite de l'échéance active
+   * (ni prolongée, ni supprimée). Une hausse de confiance retire l'échéance.
+   */
+  private renewedExpiry(
+    active: StoredMemory,
+    confidence: MemoryConfidence,
+    cycleId?: string,
+    cycleRev?: number,
+  ): { rev: number | null; cycle: string | null } {
+    if (confidence !== 'hypothesis') return { rev: null, cycle: null };
+    if (cycleId !== undefined && cycleRev !== undefined) {
+      return { rev: cycleRev + HYPOTHESIS_EXPIRE_CYCLES, cycle: cycleId };
+    }
+    return { rev: active.expires_rev ?? null, cycle: active.expires_cycle ?? null };
   }
 
   /**
    * CR-B (CR-02) : INSERT candidate partagé par preparePropose et
-   * prepareSupersede — SQL unique, binds identiques (un supersede passe
-   * expires_rev = null : pas d'expiry sur les versions consolidées).
+   * prepareSupersede — SQL unique, binds identiques. CR-F04 : l'échéance
+   * (expires_rev) est toujours accompagnée de son cycle d'origine.
    */
   private insertCandidate(
     entry: MemoryEntry,
@@ -982,12 +1088,13 @@ export class MemoryStore {
     version: number,
     supersedes: string | null,
     expiresRev: number | null,
+    expiresCycle: string | null,
   ): D1PreparedStatement {
     return this.db
       .prepare(
         `INSERT INTO memory_entries
-         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11)`,
+         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost, expires_cycle)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11, ?12)`,
       )
       .bind(
         id,
@@ -1003,6 +1110,7 @@ export class MemoryStore {
         // A03/F3 (review Sol): persist the canonical cost so the in-batch
         // budget guard measures exactly what estimateTokens measures.
         estimateTokens(entry.text),
+        expiresCycle,
       );
   }
 
@@ -1083,7 +1191,7 @@ export class MemoryStore {
       .first<{ n: number }>();
     const baseRow = await this.db
       .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-      .bind(`${META_BASE}${scope}`)
+      .bind(baselineKey(scope))
       .first<{ writes: number }>();
     if (!baseRow) return null;
     const n = countRow?.n ?? 0;
@@ -1101,23 +1209,30 @@ export class MemoryStore {
 
   private async raiseAlarm(alarm: MemoryAlarm): Promise<void> {
     this.localAlarms.push(alarm);
-    const key = alarm.scope ? `${META_PAUSE}:${alarm.scope}` : META_PAUSE;
-    await this.db
-      .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`)
-      .bind(key)
-      .run();
-    if (alarm.scope) {
-      // Each pause event is a new occurrence; clearing must target it exactly.
-      const occKey = `${META_OCC}${alarm.scope}`;
-      const occRow = await this.db
-        .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-        .bind(occKey)
-        .first<{ writes: number }>();
-      await this.db
-        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`)
-        .bind(occKey, (occRow?.writes ?? 0) + 1)
-        .run();
+    const setPause = (key: string) =>
+      this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`).bind(key);
+    if (!alarm.scope) {
+      await setPause('mem:pause').run();
+      return;
     }
+    // Each pause event is a new occurrence; clearing must target it exactly.
+    // CR-F02 (#93) : pause, nouvelle occurrence et owner.request exacte de cette
+    // occurrence dans UNE transaction — jamais une pause sans demande de reprise.
+    // CR-F02-R1 (contre-revue Codex #79/6099400915) : l'occurrence est incrémentée
+    // EN SQL au commit, jamais réécrite depuis une lecture antérieure au batch.
+    // Une alarme dont le batch est retardé ouvre donc l'occurrence suivante (et
+    // dépose sa demande exacte) au lieu de réécrire une occurrence déjà approuvée.
+    // La lecture ci-dessous n'est qu'un plancher : alarmRequestStatements lit
+    // l'occurrence fraîche en SQL pour l'identifiant et la clé de la demande.
+    const occurrenceFloor = await this.occurrenceOf(alarm.scope);
+    await this.db.batch([
+      setPause(pauseKey(alarm.scope)),
+      this.db
+        .prepare(`INSERT INTO quota_counters (day, writes) VALUES (?1, 1) ON CONFLICT(day) DO UPDATE SET writes = writes + 1`)
+        .bind(occurrenceKey(alarm.scope)),
+      ...await alarmRequestStatements(this.db, alarm.scope, occurrenceFloor,
+        ALARM_REASONS[alarm.code], Math.floor(Date.now() / 1000)),
+    ]);
   }
 
   /**
@@ -1162,6 +1277,98 @@ export class MemoryStore {
   }
 
   /**
+   * CR-F03 (#95, contre-revue Codex #79/6096598889) : une consolidation qui HAUSSE
+   * la confiance exige une preuve du registre evidence_ledger — ref evidence_ref ou
+   * `ledger:<seq>` — produite par un pair DISTINCT de l'auteur (aucune
+   * auto-validation), et NOUVELLE : le ref résolu ne doit figurer dans les evidence_refs
+   * d'AUCUNE version de la lignée de l'id, quel que soit son statut (revue
+   * Claude PR #100/6098002656) — une consolidation qui le retire ne le
+   * blanchit pas, les deux formes du ref (evidence_ref, `ledger:<seq>`) étant
+   * vérifiées. Retourne le ref résolu, à joindre aux evidence_refs de la
+   * nouvelle version.
+   */
+  private async requireRaiseEvidence(
+    peerEvidenceRef: string | undefined,
+    authorPid: string,
+    id: string,
+  ): Promise<string> {
+    const row = await this.resolvePeerLedgerRow(
+      peerEvidenceRef,
+      authorPid,
+      'raising confidence requires a NEW peer ledger evidence_ref (peer_evidence_ref)',
+    );
+    if (row.producer === authorPid) {
+      throw new MemoryStoreError('PEER_EVIDENCE_SELF', 'ledger producer cannot be the memory author');
+    }
+    const ledgerRef = row.evidence_ref || `ledger:${row.seq}`;
+    // Anti-recyclage sur la lignée ENTIÈRE de l'id (revue Claude PR
+    // #100/6098002656) : le ref résolu — ou son alias `ledger:<seq>` — ne doit
+    // soutenir aucune version de l'id, active, superseded ou retirée. Une
+    // consolidation intermédiaire qui retire le ref ne le blanchit pas.
+    const recycled = await this.db
+      .prepare(
+        [
+          'SELECT 1 FROM memory_entries m, json_each(COALESCE(m.evidence_refs, \'[]\')) j',
+          'WHERE m.id = ?1 AND j.value IN (?2, ?3) LIMIT 1',
+        ].join(' '),
+      )
+      .bind(id, row.evidence_ref, `ledger:${row.seq}`)
+      .first();
+    if (recycled) {
+      throw new MemoryStoreError(
+        'PEER_EVIDENCE_REQUIRED',
+        `evidence ${ledgerRef} already backs a version of ${id}: a confidence raise requires a NEW peer evidence`,
+      );
+    }
+    return ledgerRef;
+  }
+
+  /**
+   * Résout une ligne du registre evidence_ledger par son evidence_ref ou son
+   * alias `ledger:<seq>` ; null quand aucune ligne ne correspond. Résolution
+   * partagée via resolvePeerLedgerRow — la duplication des deux résolveurs
+   * faisait échouer la porte qualité SonarCloud sur le nouveau code
+   * (Duplication on New Code > 3 %).
+   */
+  private async findLedgerRow(
+    peerEvidenceRef: string,
+  ): Promise<{ seq: number; producer: string; evidence_ref: string } | null> {
+    const seqMatch = /^ledger:(\d+)$/.exec(peerEvidenceRef);
+    if (seqMatch) {
+      return this.db
+        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE seq = ?1`)
+        .bind(Number(seqMatch[1]))
+        .first<{ seq: number; producer: string; evidence_ref: string }>();
+    }
+    return this.db
+      .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE evidence_ref = ?1 LIMIT 1`)
+      .bind(peerEvidenceRef)
+      .first<{ seq: number; producer: string; evidence_ref: string }>();
+  }
+
+  /**
+   * Garde d'entrée partagée des deux vérificateurs de preuve pair : ref non
+   * vide (jamais `self:<authorPid>`) qui résout une ligne du registre, ou
+   * PEER_EVIDENCE_REQUIRED / PEER_EVIDENCE_NOT_FOUND. Le message de refus
+   * reste propre à chaque appelant ; dédupliqué pour la porte qualité
+   * SonarCloud (Duplication on New Code > 3 %).
+   */
+  private async resolvePeerLedgerRow(
+    peerEvidenceRef: string | undefined,
+    authorPid: string,
+    requiredMessage: string,
+  ): Promise<{ seq: number; producer: string; evidence_ref: string }> {
+    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
+      throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', requiredMessage);
+    }
+    const row = await this.findLedgerRow(peerEvidenceRef);
+    if (!row) {
+      throw new MemoryStoreError('PEER_EVIDENCE_NOT_FOUND', `No evidence_ledger row for ${peerEvidenceRef}`);
+    }
+    return row;
+  }
+
+  /**
    * peerEvidenceRef must match evidence_ledger.evidence_ref or ledger:<seq>,
    * with producer === reviewerPid and producer ≠ authorPid.
    */
@@ -1170,28 +1377,7 @@ export class MemoryStore {
     reviewerPid: string,
     authorPid: string,
   ): Promise<string> {
-    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
-      throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', 'evidence_ref must be a ledger entry from peer');
-    }
-    const seqMatch = /^ledger:(\d+)$/.exec(peerEvidenceRef);
-    let row: { seq: number; producer: string; evidence_ref: string } | null = null;
-    if (seqMatch) {
-      row = await this.db
-        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE seq = ?1`)
-        .bind(Number(seqMatch[1]))
-        .first();
-    } else {
-      row = await this.db
-        .prepare(`SELECT seq, producer, evidence_ref FROM evidence_ledger WHERE evidence_ref = ?1 LIMIT 1`)
-        .bind(peerEvidenceRef)
-        .first();
-    }
-    if (!row) {
-      throw new MemoryStoreError(
-        'PEER_EVIDENCE_NOT_FOUND',
-        `No evidence_ledger row for ${peerEvidenceRef}`,
-      );
-    }
+    const row = await this.resolvePeerLedgerRow(peerEvidenceRef, authorPid, 'evidence_ref must be a ledger entry from peer');
     if (row.producer !== reviewerPid) {
       throw new MemoryStoreError(
         'PEER_EVIDENCE_PRODUCER',

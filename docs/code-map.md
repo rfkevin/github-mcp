@@ -97,7 +97,9 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 ## CC-3 C5 — canal owner et identité
 
 - `src/collab-store/identity/` : `resolve.ts` (client OAuth du jeton → participant, sinon `unregistered:<hash>`), `guard.ts` (`PARTICIPANT_MISMATCH`, `UNREGISTERED_CLIENT`).
-- `src/collab-store/owner/` : `config.ts` (modes `access`/`secret`, fail-closed), `proof.ts` (JWT Access, secret à temps constant), `decisions.ts` (seul écrivain de `owner.decision`, `owner_decisions` et du registre), `handler.ts` + `page.ts` (route `/owner`, hors OAuth).
+- `src/collab-store/owner/` : `config.ts` (modes `access`/`secret`, fail-closed), `proof.ts` (JWT Access, secret à temps constant), `decisions.ts` (seul écrivain de `owner.decision`, `owner_decisions` et du registre ; l’approbation d’une demande `mem-pause-…` lève la pause mémoire dans la même transaction, CR-F02), `handler.ts` + `page.ts` (route `/owner`, hors OAuth).
+- `src/collab-store/memory/hypothesis-expiry.ts` (CR-F04) : expiration des hypothèses isolée par cycle — statement `expireDueHypotheses` joint à chaque transaction qui avance la révision d’un cycle (append, décision owner, transition de phase, alarme mémoire), échéance jugée contre le seul cycle d’origine (`expires_cycle`, migration store 0004). Tests : `test/collab-store/memory/hypothesis-expiry.spec.ts`, `test/collab-store/mcp/memory-hypothesis-expiry-e2e.spec.ts`.
+- `src/collab-store/memory/pause-resume.ts` (CR-F02) : clés et identifiants de pause mémoire, `owner.request` système déposée par les alarmes (cycle `memory-alarms`), résolution de la pause courante et effets de reprise utilisés par `owner/decisions.ts`. Tests : `test/collab-store/memory/pause-resume.spec.ts`, `test/collab-store/mcp/memory-pause-resume-e2e.spec.ts`.
 - Branchement : `src/index.ts` (route `/owner`), `src/collab-store/mcp/{context,tools,handler,schemas}.ts` (identité appliquée aux outils `collab_*`).
 - Tests : `test/collab-store/owner/` (`identity`, `decisions`, `channel`, `tool-binding`, `no-agent-path`). Guide : `docs/collaboration/cc3/owner-setup.md`.
 

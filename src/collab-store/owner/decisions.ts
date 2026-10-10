@@ -14,6 +14,8 @@
 import { CollabStoreError, type StoredStoreEvent } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import type { OwnerProof } from './proof';
+import { currentPauseOf, isPauseRequestId, resumeGuard, resumeStatements, type PauseOccurrence } from '../memory/pause-resume';
+import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 
 export const OWNER_PARTICIPANT = 'owner';
 export const REGISTRY_CYCLE = 'owner-registry';
@@ -216,6 +218,8 @@ export async function ownerAppend(db: D1Database, input: {
         ].join(' ')).bind(input.cycleId, at, OWNER_PARTICIPANT, payloadJson, revision, input.key, 'owner-proof:' + input.proof.kind),
         db.prepare('UPDATE cycles SET revision = ?2 WHERE cycle_id = ?1 AND revision = ?3')
           .bind(input.cycleId, revision + 1, revision),
+        // CR-F04 (#96) : une décision owner avance la révision, donc les échéances du cycle.
+        expireDueHypotheses(db, input.cycleId),
         ...input.sideEffects(input.key),
         db.prepare('DELETE FROM collab_store_guard'),
       ]);
@@ -241,6 +245,13 @@ export async function ownerAppend(db: D1Database, input: {
  * (A02): a homonym filed later, in any cycle, never receives it. Replaying the
  * same form (same seq) is idempotent; a decision already bound to another seq
  * of this request_id is refused with ALREADY_DECIDED.
+ *
+ * CR-F02 (#93) : approuver une demande de reprise de pause mémoire
+ * (`mem-pause-…`) lève exactement cette pause DANS la transaction de la
+ * décision. L'identifiant doit désigner la pause courante d'un scope
+ * (recalculé côté serveur, jamais lu dans la demande) ; sinon
+ * MEMORY_PAUSE_NOT_CURRENT, rien n'est écrit. Un refus reste toujours possible
+ * et maintient la pause.
  */
 export async function recordOwnerDecision(db: D1Database, input: {
   request_id: string;
@@ -250,7 +261,7 @@ export async function recordOwnerDecision(db: D1Database, input: {
   request_seq?: number;
   cycle_id?: string;
   now?: () => Date;
-}): Promise<OwnerWriteResult & { decision: Decision }> {
+}): Promise<OwnerWriteResult & { decision: Decision; memory_resume?: PauseOccurrence }> {
   if (!REQUEST_ID_RE.test(input.request_id)) throw new CollabStoreError('INVALID_REQUEST_ID', 'Identifiant de demande invalide.');
   if (!DECISIONS.includes(input.decision as Decision)) throw new CollabStoreError('INVALID_DECISION', 'Décision : approve ou deny.');
   const decision = input.decision as Decision;
@@ -261,19 +272,38 @@ export async function recordOwnerDecision(db: D1Database, input: {
     throw new CollabStoreError('ALREADY_DECIDED', 'Identifiant déjà tranché (' + prior.decision + ') pour une autre demande'
       + (prior.request_seq ? ' (seq ' + prior.request_seq + ')' : '') + ' : rien n’est décidé pour la seq ' + request.seq + '.');
   }
+  // CR-F02 : la pause courante que cette approbation lève (null : pas une demande de pause).
+  // Un rejeu de la même décision (prior lié à cette seq) reste idempotent sans re-vérifier.
+  const resume = decision === 'approve' && !prior ? await pauseToResume(db, input.request_id) : null;
+  const decisionGuard = { sql: 'NOT EXISTS (SELECT 1 FROM owner_decisions WHERE request_id = ?4)', binds: [input.request_id] as unknown[] };
+  const pauseGuard = resume ? resumeGuard(resume, 5) : null;
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
-  const result = await ownerAppend(db, {
-    cycleId: request.cycle_id,
-    key: 'owner-decision:' + input.request_id,
-    payload: { action: 'decide', request_id: input.request_id, decision, request_seq: request.seq },
-    proof: input.proof,
-    extraGuard: { sql: 'NOT EXISTS (SELECT 1 FROM owner_decisions WHERE request_id = ?4)', binds: [input.request_id] },
-    sideEffects: key => [db.prepare([
-      'INSERT INTO owner_decisions (request_id, decision, access_subject, at, event_seq)',
-      'VALUES (?1, ?2, ?3, ?4, (SELECT seq FROM events WHERE idempotency_key = ?5))',
-    ].join(' ')).bind(input.request_id, decision, input.proof.kind + ':' + input.proof.subject, at, key)],
-    now: input.now,
-  });
+  let result: OwnerWriteResult;
+  try {
+    result = await ownerAppend(db, {
+      cycleId: request.cycle_id,
+      key: 'owner-decision:' + input.request_id,
+      payload: { action: 'decide', request_id: input.request_id, decision, request_seq: request.seq,
+        ...(resume ? { memory_resume: resume } : {}) },
+      proof: input.proof,
+      extraGuard: pauseGuard
+        ? { sql: decisionGuard.sql + ' AND ' + pauseGuard.sql, binds: [...decisionGuard.binds, ...pauseGuard.binds] }
+        : decisionGuard,
+      sideEffects: key => [db.prepare([
+        'INSERT INTO owner_decisions (request_id, decision, access_subject, at, event_seq)',
+        'VALUES (?1, ?2, ?3, ?4, (SELECT seq FROM events WHERE idempotency_key = ?5))',
+      ].join(' ')).bind(input.request_id, decision, input.proof.kind + ':' + input.proof.subject, at, key),
+      ...(resume ? resumeStatements(db, resume) : [])],
+      now: input.now,
+    });
+  } catch (error) {
+    // La pause a changé entre la lecture et la transaction (nouvelle occurrence,
+    // reprise concurrente) : la garde a tout annulé ; diagnostic typé.
+    if (resume && error instanceof CollabStoreError && error.code === 'OWNER_PRECONDITION_FAILED') {
+      await pauseToResume(db, input.request_id);
+    }
+    throw error;
+  }
   if (result.status === 'duplicate') {
     // The stored decision must be bound to this very request; otherwise a
     // concurrent decision of a homonym won and this one is refused.
@@ -285,7 +315,24 @@ export async function recordOwnerDecision(db: D1Database, input: {
     const stored = await decidedSeqOf(db, input.request_id);
     return { ...result, decision: (stored?.decision as Decision) ?? decision };
   }
-  return { ...result, decision };
+  return { ...result, decision, ...(resume ? { memory_resume: resume } : {}) };
+}
+
+/**
+ * CR-F02 : la pause courante désignée par une demande de reprise approuvée, ou
+ * null pour toute autre demande. Une demande `mem-pause-…` qui ne désigne
+ * aucune pause courante (autre scope, occurrence ancienne ou future, pause
+ * déjà levée) est refusée : MEMORY_PAUSE_NOT_CURRENT, rien n'est écrit.
+ */
+async function pauseToResume(db: D1Database, requestId: string): Promise<PauseOccurrence | null> {
+  if (!isPauseRequestId(requestId)) return null;
+  const pause = await currentPauseOf(db, requestId);
+  if (!pause) {
+    throw new CollabStoreError('MEMORY_PAUSE_NOT_CURRENT',
+      'Cette demande ne correspond à aucune pause mémoire en cours (autre scope, occurrence ancienne ou pause déjà levée) : '
+      + 'rien n’est décidé. Tranchez la demande de l’occurrence courante (cycle memory-alarms) ou refusez celle-ci.');
+  }
+  return pause;
 }
 
 function assertParticipantId(participantId: string): void {

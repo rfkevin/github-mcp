@@ -100,7 +100,10 @@ export async function handleOwnerRequest(
         request_seq: seqField ? Number(seqField) : undefined, cycle_id: field('cycle_id') || undefined,
       });
       message = { text: (result.status === 'duplicate' ? 'Déjà enregistré : ' : 'Décision enregistrée : ')
-        + result.decision + ' (seq ' + result.event.seq + ').', error: false };
+        + result.decision + ' (seq ' + result.event.seq + ').'
+        // CR-F02 : reprise mémoire appliquée dans la transaction de la décision.
+        + (result.memory_resume ? ' Activations mémoire reprises pour le scope ' + result.memory_resume.scope
+          + ' (occurrence ' + result.memory_resume.occurrence + ').' : ''), error: false };
     } else if (action === 'register') {
       const result = await registerParticipant(db, { participant_id: field('participant_id'), display_label: field('display_label'), proof, op });
       message = { text: 'Participant enregistré (seq ' + result.event.seq + ').', error: false };

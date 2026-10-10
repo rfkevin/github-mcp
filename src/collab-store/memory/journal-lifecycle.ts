@@ -157,6 +157,8 @@ export async function prepareMemoryEvent(
       expires_rev: optionalInt(memory, 'expires_rev', event.type, 1),
       owner_decision_ref: optionalString(memory, 'owner_decision_ref', event.type),
       cycle_rev: nextRevision,
+      // CR-F04 (#96) : l'échéance d'une hypothèse est une révision de CE cycle.
+      cycle_id: event.cycle_id,
     };
     return store.preparePropose(input);
   }
@@ -173,6 +175,8 @@ export async function prepareMemoryEvent(
       version,
       event.participant_id,
       event.cycle_id,
+      // CR-F04 : une hypothèse échue à cette révision n'est pas activée.
+      nextRevision,
     );
   }
   if (event.type === 'memory.consolidate') {
@@ -186,6 +190,14 @@ export async function prepareMemoryEvent(
       optionalString(memory, 'owner_decision_ref', event.type),
       // CRB-R1 : l'appelant ne consolide que son scope participant (garde store).
       event.participant_id,
+      // CR-F03 (#95) : une consolidation qui HAUSSE la confiance exige une preuve
+      // de registre NOUVELLE d'un pair distinct (peer_evidence_ref), sinon le
+      // refus est pré-batch : rien n'est écrit, ni journal ni mémoire.
+      optionalString(memory, 'peer_evidence_ref', event.type),
+      // CR-F04 (#96) : une consolidation restée hypothesis repart pour une
+      // fenêtre complète depuis CE cycle (renouvellement contrôlé).
+      event.cycle_id,
+      nextRevision,
     );
   }
   if (event.type === 'memory.retire') {
