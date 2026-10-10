@@ -47,13 +47,22 @@ async function fileOwnerRequest(cycle: string, requestId: string, summary: strin
   }
 }
 
-/** Real C5 channel: file the owner.request then record the approval (no direct INSERT). */
+/**
+ * Real C5 channel: file the owner.request then record the approval (no direct INSERT).
+ * CR-F02 : une alarme mémoire dépose elle-même la demande de reprise de sa pause
+ * (cycle memory-alarms) ; on tranche alors cette demande-là, par sa seq.
+ */
 async function approveViaC5(requestId: string, summary: string, op: string): Promise<void> {
-  await fileOwnerRequest('c4-owner-approvals', requestId, summary, op);
+  const filed = await bindings.COLLAB_DB_C2.prepare([
+    "SELECT seq FROM events WHERE type = 'owner.request' AND participant_id = 'system'",
+    "AND json_extract(payload_json, '$.request_id') = ?1 ORDER BY seq DESC LIMIT 1",
+  ].join(' ')).bind(requestId).first<{ seq: number }>();
+  if (!filed) await fileOwnerRequest('c4-owner-approvals', requestId, summary, op);
   const decision = await recordOwnerDecision(bindings.COLLAB_DB_C2, {
     request_id: requestId,
     decision: 'approve',
     proof: { kind: 'secret' as const, subject: 'owner-secret' },
+    ...(filed ? { request_seq: filed.seq } : {}),
   });
   if (decision.status !== 'applied' && decision.status !== 'duplicate') {
     throw new Error('owner decision failed: ' + decision.status);
@@ -633,7 +642,14 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     }
     expect(await mem.isActivationPaused('project:pause-t3')).toBe(true);
     const wrongRef = await pauseRequestId('', 1);
-    await approveViaC5(wrongRef, 'Approve clearing an unrelated pause subject.', 't3-wrong');
+    // CR-F02 : une approbation qui ne désigne aucune pause courante est refusée dès
+    // la décision (rien n'est écrit), et ne peut donc pas lever cette pause.
+    await expect(approveViaC5(wrongRef, 'Approve clearing an unrelated pause subject.', 't3-wrong')).rejects.toMatchObject({
+      code: 'MEMORY_PAUSE_NOT_CURRENT',
+    });
+    const decided = await bindings.COLLAB_DB_C2.prepare('SELECT COUNT(*) AS n FROM owner_decisions WHERE request_id = ?1')
+      .bind(wrongRef).first<{ n: number }>();
+    expect(decided?.n).toBe(0);
     await expect(mem.clearActivationPause(wrongRef, 'project:pause-t3')).rejects.toThrow(
       /does not target subject/,
     );
@@ -652,6 +668,12 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     const second = await proposeProtectedInvariant(mem, 'mem-t4-b', scope);
     await expect(mem.activate(second.id, 1, 'agent:b')).rejects.toThrow(/Activations paused for scope/);
     const firstRef = await mem.pauseClearRequestId(scope);
+    // CR-F02 : la pause INVARIANT_TOUCHED a déposé sa demande owner exacte (cause invariant).
+    const filed = await bindings.COLLAB_DB_C2.prepare([
+      "SELECT json_extract(payload_json, '$.reason') AS reason FROM events WHERE cycle_id = 'memory-alarms'",
+      "AND participant_id = 'system' AND json_extract(payload_json, '$.request_id') = ?1",
+    ].join(' ')).bind(firstRef).all<{ reason: string }>();
+    expect(filed.results).toEqual([{ reason: 'invariant' }]);
     await approveViaC5(firstRef, 'Approve clearing the pause occurrence of mem-t4.', 't4-one');
     await mem.clearActivationPause(firstRef, scope);
     await mem.activate(second.id, 1, 'agent:b');
