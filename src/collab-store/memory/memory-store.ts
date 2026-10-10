@@ -29,6 +29,7 @@ import {
   sha256Hex,
   type PauseReason,
 } from './pause-resume';
+import { expireDueHypotheses, expiresInCycle, isDueAt } from './hypothesis-expiry';
 
 // CR-F02 : clés et identifiants de pause vivent dans pause-resume.ts (partagés avec
 // le canal owner) ; ré-exportés ici pour la compatibilité de l'API publique.
@@ -56,6 +57,8 @@ export interface StoredMemory {
   uses: number;
   last_used_rev: number | null;
   expires_rev: number | null;
+  /** CR-F04 : cycle d'origine de expires_rev (NULL = pas d'expiration automatique). */
+  expires_cycle?: string | null;
 }
 
 export interface ProposeInput {
@@ -69,7 +72,10 @@ export interface ProposeInput {
   supersedes?: string;
   expires_rev?: number;
   owner_decision_ref?: string;
+  /** Révision du cycle d'origine APRÈS l'append qui propose (base de l'échéance). */
   cycle_rev?: number;
+  /** CR-F04 : cycle d'origine ; sans lui, aucune expiration automatique. */
+  cycle_id?: string;
 }
 
 /**
@@ -306,6 +312,16 @@ export class MemoryStore {
     if (confidence === 'hypothesis' && expiresRev == null && input.cycle_rev != null) {
       expiresRev = input.cycle_rev + HYPOTHESIS_EXPIRE_CYCLES;
     }
+    // CR-F04 (#96) : l'échéance est une révision du cycle qui propose ; ce
+    // cycle est mémorisé avec elle et seul lui la fait expirer. Une échéance
+    // déjà atteinte par la révision de cet append est refusée avant tout effet.
+    const expiresCycle = confidence === 'hypothesis' && expiresRev != null && input.cycle_id ? input.cycle_id : null;
+    if (expiresCycle && input.cycle_rev != null && expiresRev != null && expiresRev <= input.cycle_rev) {
+      throw new MemoryStoreError(
+        'MEMORY_HYPOTHESIS_EXPIRED',
+        `expires_rev ${expiresRev} is already reached by revision ${input.cycle_rev} of cycle ${expiresCycle}`,
+      );
+    }
     const entry: MemoryEntry = validateMemoryEntry({
       scope: input.scope,
       kind: input.kind,
@@ -345,7 +361,7 @@ export class MemoryStore {
         // id dans un autre scope, committée entre les pré-checks et ce batch,
         // roule tout en arrière ; le caller re-diagnostique MEMORY_SCOPE_MISMATCH.
         this.scopeIdentityGuard(id, entry.scope),
-        this.insertCandidate(entry, id, version, input.supersedes ?? null, expiresRev),
+        this.insertCandidate(entry, id, version, input.supersedes ?? null, expiresRev, expiresCycle),
       ],
       verifyIndex: 1,
       summary: { id, version, status: 'candidate' },
@@ -430,6 +446,7 @@ export class MemoryStore {
     version: number,
     reviewerPid: string,
     cycleId = 'default',
+    cycleRev?: number,
   ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const row = await this.get(id, version);
@@ -441,6 +458,8 @@ export class MemoryStore {
     // CR-D : une lignée enregistrée sous plusieurs scopes (données anciennes)
     // n'est jamais activée — l'activation superséderait une version d'un autre scope.
     await this.assertIdScope(id, row.scope, 'memory.review');
+    // CR-F04 : une hypothèse échue n'est jamais activée.
+    await this.assertNotExpired(row, cycleId, cycleRev);
     if (row.confidence === 'hypothesis' && PROTECTED_KINDS.has(row.kind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot activate as a rule');
     }
@@ -592,6 +611,8 @@ export class MemoryStore {
     ownerDecisionRef?: string,
     callerPid?: string,
     peerEvidenceRef?: string,
+    cycleId?: string,
+    cycleRev?: number,
   ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const active = await this.db
@@ -603,6 +624,8 @@ export class MemoryStore {
     assertParticipantScopeAllowed(active.scope, callerPid, 'memory.consolidate');
     // CR-D : jamais de consolidation d'une lignée enregistrée sous plusieurs scopes.
     await this.assertIdScope(id, active.scope, 'memory.consolidate');
+    // CR-F04 : une hypothèse échue ne se renouvelle pas — elle se re-propose.
+    await this.assertNotExpired(active, cycleId, cycleRev);
     const nextKind = (kind ?? active.kind) as MemoryKind;
     const conf = confidence ?? (active.confidence as MemoryConfidence);
     const nextVersion = active.version + 1;
@@ -637,12 +660,13 @@ export class MemoryStore {
       status: 'candidate',
       author_pid: authorPid,
     });
+    const expiry = this.renewedExpiry(active, conf, cycleId, cycleRev);
     return {
       statements: [
         this.db
           .prepare(`UPDATE memory_entries SET status = 'superseded' WHERE id = ?1 AND version = ?2 AND status = 'active'`)
           .bind(id, active.version),
-        this.insertCandidate(entry, id, nextVersion, `${id}@${active.version}`, null),
+        this.insertCandidate(entry, id, nextVersion, `${id}@${active.version}`, expiry.rev, expiry.cycle),
         // CR-B (CR-02) : garde transactionnelle d'effet — le batch du caller ne
         // passe que si l'ancienne version active est durablement superseded.
         this.statusEffectGuard(id, active.version, 'superseded'),
@@ -793,6 +817,9 @@ export class MemoryStore {
     }
     // CRD-R1 : jamais de promotion depuis une lignée enregistrée sous plusieurs scopes.
     await this.assertIdScope(id, row.scope, 'memory.promote');
+    // CR-F04 : une hypothèse échue n'est jamais promue (la copie promue, montée en
+    // observed, n'expirerait plus).
+    await this.assertNotExpired(row);
     if (reviewerPid === row.author_pid) {
       throw new MemoryStoreError('PEER_REQUIRED', 'scope promotion requires a distinct peer reviewer');
     }
@@ -1000,31 +1027,60 @@ export class MemoryStore {
     return refuteCount;
   }
 
-  async expireHypotheses(currentCycleRev: number): Promise<number> {
+  /**
+   * CR-F04 (#96) : rattrapage idempotent des hypothèses échues d'UN cycle,
+   * contre la révision courante de CE cycle uniquement — jamais une révision
+   * fournie par l'appelant ni celle d'un autre cycle. Le chemin normal n'en a
+   * pas besoin : chaque transaction qui avance une révision inclut déjà
+   * expireDueHypotheses. Renvoie le nombre de versions retirées.
+   */
+  async expireHypotheses(cycleId: string): Promise<number> {
     await ensureSchema(this.db);
-    const { results } = await this.db
-      .prepare(
-        `SELECT id, version FROM memory_entries
-         WHERE confidence = 'hypothesis' AND status IN ('active','candidate')
-           AND expires_rev IS NOT NULL AND expires_rev <= ?1`,
-      )
-      .bind(currentCycleRev)
-      .all<{ id: string; version: number }>();
-    let n = 0;
-    for (const row of results ?? []) {
-      await this.db
-        .prepare(`UPDATE memory_entries SET status = 'retired' WHERE id = ?1 AND version = ?2`)
-        .bind(row.id, row.version)
-        .run();
-      n += 1;
+    const result = await expireDueHypotheses(this.db, cycleId).run();
+    return result.meta?.changes ?? 0;
+  }
+
+  /** CR-F04 : refus typé d'une hypothèse échue dans son cycle d'origine. */
+  private async assertNotExpired(row: StoredMemory, eventCycle?: string, eventRev?: number): Promise<void> {
+    if (!expiresInCycle(row)) return;
+    // L'append en cours amène son cycle à eventRev : s'il est le cycle
+    // d'origine, c'est la révision qui juge l'échéance. Sinon, seule la
+    // révision courante du cycle d'origine compte (jamais celle de l'appelant).
+    const revision = eventCycle === row.expires_cycle && eventRev !== undefined
+      ? eventRev
+      : (await this.db.prepare('SELECT COALESCE((SELECT revision FROM cycles WHERE cycle_id = ?1), 0) AS revision')
+          .bind(row.expires_cycle).first<{ revision: number }>())?.revision ?? 0;
+    if (isDueAt(row, revision)) {
+      throw new MemoryStoreError(
+        'MEMORY_HYPOTHESIS_EXPIRED',
+        `Hypothesis ${row.id}@${row.version} expired at revision ${row.expires_rev} of its origin cycle`,
+      );
     }
-    return n;
+  }
+
+  /**
+   * CR-F04 (décision Kevin) : échéance de la version consolidée. Restée
+   * `hypothesis`, elle ouvre une fenêtre complète depuis le cycle qui consolide ;
+   * sans contexte de cycle (API interne), elle hérite de l'échéance active
+   * (ni prolongée, ni supprimée). Une hausse de confiance retire l'échéance.
+   */
+  private renewedExpiry(
+    active: StoredMemory,
+    confidence: MemoryConfidence,
+    cycleId?: string,
+    cycleRev?: number,
+  ): { rev: number | null; cycle: string | null } {
+    if (confidence !== 'hypothesis') return { rev: null, cycle: null };
+    if (cycleId !== undefined && cycleRev !== undefined) {
+      return { rev: cycleRev + HYPOTHESIS_EXPIRE_CYCLES, cycle: cycleId };
+    }
+    return { rev: active.expires_rev ?? null, cycle: active.expires_cycle ?? null };
   }
 
   /**
    * CR-B (CR-02) : INSERT candidate partagé par preparePropose et
-   * prepareSupersede — SQL unique, binds identiques (un supersede passe
-   * expires_rev = null : pas d'expiry sur les versions consolidées).
+   * prepareSupersede — SQL unique, binds identiques. CR-F04 : l'échéance
+   * (expires_rev) est toujours accompagnée de son cycle d'origine.
    */
   private insertCandidate(
     entry: MemoryEntry,
@@ -1032,12 +1088,13 @@ export class MemoryStore {
     version: number,
     supersedes: string | null,
     expiresRev: number | null,
+    expiresCycle: string | null,
   ): D1PreparedStatement {
     return this.db
       .prepare(
         `INSERT INTO memory_entries
-         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11)`,
+         (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, supersedes, uses, last_used_rev, expires_rev, token_cost, expires_cycle)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'candidate', ?8, '', ?9, 0, NULL, ?10, ?11, ?12)`,
       )
       .bind(
         id,
@@ -1053,6 +1110,7 @@ export class MemoryStore {
         // A03/F3 (review Sol): persist the canonical cost so the in-batch
         // budget guard measures exactly what estimateTokens measures.
         estimateTokens(entry.text),
+        expiresCycle,
       );
   }
 
