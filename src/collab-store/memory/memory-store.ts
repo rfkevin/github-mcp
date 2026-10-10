@@ -19,6 +19,20 @@ import { StateContractError } from '../../collab/contracts';
 // shared with the schema backfill); re-exported here for API compatibility.
 export { estimateTokens };
 import { ensureSchema } from '../store/schema';
+import {
+  PAUSE_REQUEST_PREFIX,
+  alarmRequestStatements,
+  baselineKey,
+  occurrenceKey,
+  pauseKey,
+  pauseRequestId,
+  sha256Hex,
+  type PauseReason,
+} from './pause-resume';
+
+// CR-F02 : clés et identifiants de pause vivent dans pause-resume.ts (partagés avec
+// le canal owner) ; ré-exportés ici pour la compatibilité de l'API publique.
+export { PAUSE_REQUEST_PREFIX, pauseRequestId };
 
 export class MemoryStoreError extends Error {
   constructor(readonly code: string, message: string) {
@@ -145,7 +159,6 @@ export const SUPERSEDE_REQUEST_PREFIX = 'mem-supersede-';
 export const RETIRE_REQUEST_PREFIX = 'mem-retire-';
 export const SCOPE_REQUEST_PREFIX = 'mem-scope-';
 export const CONFIDENCE_REQUEST_PREFIX = 'mem-conf-';
-export const PAUSE_REQUEST_PREFIX = 'mem-pause-';
 /** Protected memory ids stay short so request_id never exceeds 64 chars. */
 const MEMORY_ID_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
 
@@ -162,16 +175,6 @@ export function supersedeRequestId(id: string, nextVersion: number): string {
 /** Retire approvals are bound to the exact version being retired. */
 export function retireRequestId(id: string, version: number): string {
   return `${RETIRE_REQUEST_PREFIX}${id}-v${version}`;
-}
-
-async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** Pause-clearing approvals are bound to the scope's current pause occurrence. */
-export async function pauseRequestId(scope: string, occurrence: number): Promise<string> {
-  return PAUSE_REQUEST_PREFIX + (await sha256Hex(scope)).slice(0, 20) + '-' + occurrence;
 }
 
 /** Scope-promotion approvals bind id + resulting version + target scope. */
@@ -192,11 +195,8 @@ export async function promoteConfidenceRequestId(
   return CONFIDENCE_REQUEST_PREFIX + (await sha256Hex(`${id}:${version}:${confidence}`)).slice(0, 20);
 }
 
-const META_PAUSE = 'mem:pause';
-const META_OCC = 'mem:occ:';
 const META_ACT = 'mem:act:';
 const META_RET = 'mem:ret:';
-const META_BASE = 'mem:base:';
 
 export function scopeFamily(scope: string): string {
   if (scope === 'common') return 'common';
@@ -210,6 +210,12 @@ export interface MemoryAlarm {
   scope?: string;
   details?: Record<string, unknown>;
 }
+
+const ALARM_REASONS: Record<MemoryAlarm['code'], PauseReason> = {
+  INVARIANT_TOUCHED: 'invariant',
+  REFUTE_THRESHOLD: 'refute',
+  GROWTH_THRESHOLD: 'growth',
+};
 
 function newId(): string {
   return 'mem-' + crypto.randomUUID().replace(/-/g, '').slice(0, 20);
@@ -230,14 +236,14 @@ export class MemoryStore {
     if (scope) {
       const row = await this.db
         .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-        .bind(`${META_PAUSE}:${scope}`)
+        .bind(pauseKey(scope))
         .first<{ writes: number }>();
       return (row?.writes ?? 0) > 0;
     }
     // Any paused scope (for tests / diagnostics)
     const { results } = await this.db
       .prepare(`SELECT writes FROM quota_counters WHERE day LIKE ?1 AND writes > 0 LIMIT 1`)
-      .bind(`${META_PAUSE}:%`)
+      .bind('mem:pause:%')
       .all<{ writes: number }>();
     return (results?.length ?? 0) > 0;
   }
@@ -248,11 +254,16 @@ export class MemoryStore {
    */
   async pauseClearRequestId(scope: string): Promise<string> {
     await ensureSchema(this.db);
+    return pauseRequestId(scope, await this.occurrenceOf(scope));
+  }
+
+  /** Current pause occurrence of a scope (0 before any alarm). */
+  private async occurrenceOf(scope: string): Promise<number> {
     const row = await this.db
       .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-      .bind(`${META_OCC}${scope}`)
+      .bind(occurrenceKey(scope))
       .first<{ writes: number }>();
-    return pauseRequestId(scope, row?.writes ?? 0);
+    return row?.writes ?? 0;
   }
 
   /**
@@ -264,7 +275,7 @@ export class MemoryStore {
     await this.requireOwnerDecision(ownerDecisionRef, { exact: await this.pauseClearRequestId(scope) });
     await this.db
       .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 0)`)
-      .bind(`${META_PAUSE}:${scope}`)
+      .bind(pauseKey(scope))
       .run();
   }
 
@@ -444,9 +455,9 @@ export class MemoryStore {
     const capKey = `${META_ACT}${cycleId}:${row.scope}`;
     await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
     await this.assertBudgetAllows(row.scope, row.text);
-    const pauseKey = `${META_PAUSE}:${row.scope}`;
-    const baseKey = `${META_BASE}${row.scope}`;
-    const occKey = `${META_OCC}${row.scope}`;
+    const pausedKey = pauseKey(row.scope);
+    const baseKey = baselineKey(row.scope);
+    const occKey = occurrenceKey(row.scope);
     const budget = MEMORY_TOKEN_BUDGETS[scopeFamily(row.scope)] ?? 500;
     const newTokens = estimateTokens(row.text);
     const protectedKind = PROTECTED_KINDS.has(row.kind);
@@ -469,7 +480,7 @@ export class MemoryStore {
         '  AND COALESCE((SELECT writes FROM quota_counters WHERE day = ?4), 0) < ?5',
         `  AND COALESCE((SELECT SUM(COALESCE(token_cost, (length(text) + 3) / 4)) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8`,
         '  THEN 1 ELSE 0 END',
-      ].join(' ')).bind(id, version, pauseKey, capKey, MAX_ACTIVATIONS_PER_CYCLE, row.scope, newTokens, budget),
+      ].join(' ')).bind(id, version, pausedKey, capKey, MAX_ACTIVATIONS_PER_CYCLE, row.scope, newTokens, budget),
       // A03: the cap reservation lives inside the transaction — exactly one
       // increment per applied activation, rolled back with a failed one.
       this.db
@@ -511,16 +522,21 @@ export class MemoryStore {
         .bind(baseKey, row.scope),
       this.db
         .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, 1 WHERE ${growthExceeded}`)
-        .bind(pauseKey, row.scope, baseKey),
+        .bind(pausedKey, row.scope, baseKey),
       this.db.prepare(`${bumpOccurrence} WHERE ${growthExceeded}`).bind(occKey, row.scope, baseKey),
     );
     if (protectedKind) {
       // A03: INVARIANT_TOUCHED pause + occurrence, also inside the batch.
       statements.push(
-        this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`).bind(pauseKey),
+        this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`).bind(pausedKey),
         this.db.prepare(bumpOccurrence).bind(occKey),
       );
     }
+    // CR-F02 (#93) : l'alarme dépose, dans cette même transaction, l'owner.request
+    // exacte de l'occurrence qu'elle ouvre (croissance : conditionnelle ; invariant :
+    // certaine). Sans alarme, l'occurrence n'avance pas et rien n'est déposé.
+    statements.push(...await alarmRequestStatements(this.db, row.scope, await this.occurrenceOf(row.scope),
+      protectedKind ? 'invariant' : 'growth', Math.floor(Date.now() / 1000)));
     statements.push(this.db.prepare(`DELETE FROM collab_store_guard`));
     return {
       statements,
@@ -1083,7 +1099,7 @@ export class MemoryStore {
       .first<{ n: number }>();
     const baseRow = await this.db
       .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-      .bind(`${META_BASE}${scope}`)
+      .bind(baselineKey(scope))
       .first<{ writes: number }>();
     if (!baseRow) return null;
     const n = countRow?.n ?? 0;
@@ -1101,23 +1117,24 @@ export class MemoryStore {
 
   private async raiseAlarm(alarm: MemoryAlarm): Promise<void> {
     this.localAlarms.push(alarm);
-    const key = alarm.scope ? `${META_PAUSE}:${alarm.scope}` : META_PAUSE;
-    await this.db
-      .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`)
-      .bind(key)
-      .run();
-    if (alarm.scope) {
-      // Each pause event is a new occurrence; clearing must target it exactly.
-      const occKey = `${META_OCC}${alarm.scope}`;
-      const occRow = await this.db
-        .prepare(`SELECT writes FROM quota_counters WHERE day = ?1`)
-        .bind(occKey)
-        .first<{ writes: number }>();
-      await this.db
-        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`)
-        .bind(occKey, (occRow?.writes ?? 0) + 1)
-        .run();
+    const setPause = (key: string) =>
+      this.db.prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, 1)`).bind(key);
+    if (!alarm.scope) {
+      await setPause('mem:pause').run();
+      return;
     }
+    // Each pause event is a new occurrence; clearing must target it exactly.
+    // CR-F02 (#93) : pause, nouvelle occurrence et owner.request exacte de cette
+    // occurrence dans UNE transaction — jamais une pause sans demande de reprise.
+    const occurrenceBefore = await this.occurrenceOf(alarm.scope);
+    await this.db.batch([
+      setPause(pauseKey(alarm.scope)),
+      this.db
+        .prepare(`INSERT OR REPLACE INTO quota_counters (day, writes) VALUES (?1, ?2)`)
+        .bind(occurrenceKey(alarm.scope), occurrenceBefore + 1),
+      ...await alarmRequestStatements(this.db, alarm.scope, occurrenceBefore,
+        ALARM_REASONS[alarm.code], Math.floor(Date.now() / 1000)),
+    ]);
   }
 
   /**
