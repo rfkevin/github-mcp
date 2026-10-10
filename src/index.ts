@@ -1,4 +1,4 @@
-import OAuthProvider, { getOAuthApi, type OAuthHelpers, type OAuthProviderOptions } from '@cloudflare/workers-oauth-provider';
+import { OAuthAuthorizationServer, OAuthResourceServer, type OAuthHelpers } from '@cloudflare/workers-oauth-provider';
 import { assertConfigured, publicOrigin, type AppEnv, type AuthEnv } from './config';
 import { authHandler } from './auth/handler';
 import { mcpHandler } from './mcp/handler';
@@ -29,82 +29,84 @@ export default {
         { headers: { 'Cache-Control': 'no-store' } });
     }
     const writes = writesEnabled(env.GITHUB_WRITES_ENABLED);
+    const collabEnabled = collabStoreEnabled((env as CollabStoreEnv).COLLAB_STORE_ENABLED);
+    const collabReady = collabEnabled && Boolean((env as CollabStoreEnv).COLLAB_DB);
+    const githubResource = `${origin}/mcp`;
+    const collabResource = `${origin}/collab/mcp`;
     const scopes = [
-      'mcp:read',
-      'offline_access',
+      'mcp:read', 'offline_access',
       ...(checksConfig(env.GITHUB_CHECKS_CONFIG).length ? ['mcp:checks'] : []),
-      ...(writes ? ['mcp:write'] : []),
-      ...(writes ? ['mcp:integration'] : []),
+      ...(writes ? ['mcp:write', 'mcp:integration'] : []),
       ...(automationEnabled(env.GITHUB_AUTOMATION_ENABLED) ? ['mcp:automation'] : []),
-      // CC-3 C2 : 'collab:' n'est proposé que si le store est réellement monté.
-      ...(collabStoreEnabled((env as CollabStoreEnv).COLLAB_STORE_ENABLED) && (env as CollabStoreEnv).COLLAB_DB ? ['collab:'] : []),
+      ...(collabReady ? ['collab:'] : []),
     ];
-    const providerOptions: OAuthProviderOptions<AuthEnv> = {
-      apiRoute: '/mcp', apiHandler: mcpHandler, defaultHandler: authHandler,
-      authorizeEndpoint: '/authorize', tokenEndpoint: '/oauth/token', clientRegistrationEndpoint: '/oauth/register',
+    const requiredGitHubScopes = ['mcp:read',
+      ...(writes ? ['mcp:write'] : []),
+      ...(scopes.includes('mcp:checks') ? ['mcp:checks'] : []),
+    ];
+
+    // One authorization server owns /authorize, /callback, client registration and token
+    // exchange. Two OAuthProvider instances had incompatible resource registries on
+    // these shared endpoints (real Grok /collab/mcp request: invalid_target).
+    // Each resource server validates its own exact token audience; no cross-resource grant.
+    const authorizationServer = new OAuthAuthorizationServer<AppEnv>({
+      issuer: origin,
+      resources: [githubResource, ...(collabReady ? [collabResource] : [])],
+      defaultResource: githubResource, // Preserve historical clients without a resource parameter.
+      legacyGrantResource: githubResource, // Never migrate an old GitHub grant into collab.
+      authorizeEndpoint: `${origin}/authorize`,
+      tokenEndpoint: `${origin}/oauth/token`,
+      clientRegistrationEndpoint: `${origin}/oauth/register`,
       scopesSupported: scopes,
-      // mcp:checks est exigé seulement quand GITHUB_CHECKS_CONFIG est configuré : les clients
-      // le demandent alors dès la connexion (sans configuration manuelle des scopes).
-      requiredScopes: [
-        'mcp:read',
-        ...(writes ? ['mcp:write'] : []),
-        ...(scopes.includes('mcp:checks') ? ['mcp:checks'] : []),
-      ],
-      resourceMetadata: { resource: `${origin}/mcp`, authorization_servers: [origin] },
       clientIdMetadataDocumentEnabled: true,
-    };
-    const provider = new OAuthProvider<AuthEnv>(providerOptions);
-    // CC-3 C5 : canal owner (I7), servi hors des fournisseurs OAuth (aucun jeton n'y donne accès) ;
-    // non monté sans configuration complète. La liste des clients OAuth sert seulement à retrouver
-    // le client d'un pseudonyme unregistered:… lors d'une association.
-    if (new URL(request.url).pathname === OWNER_PATH) {
+    });
+    const oauth = authorizationServer.getOAuthApi(env);
+    const authEnv: AuthEnv = { ...env, OAUTH_PROVIDER: oauth };
+    const validateToken = () => (resource: string, token: string) =>
+      authorizationServer.validateToken(resource, token, env);
+    const github = new OAuthResourceServer<AuthEnv, { userId?: string }>({
+      resourceMetadata: { resource: githubResource, authorization_servers: [origin] },
+      requiredScopes: requiredGitHubScopes,
+      validateToken,
+      handler: mcpHandler,
+    });
+    const collab = collabReady ? new OAuthResourceServer<AuthEnv, { userId?: string }>({
+      resourceMetadata: { resource: collabResource, authorization_servers: [origin] },
+      requiredScopes: ['collab:'], // A client must not infer all GitHub scopes for the collab API.
+      validateToken,
+      handler: collabMcpHandler,
+    }) : null;
+
+    const pathname = new URL(request.url).pathname;
+    // Owner remains out of OAuth and never delegates owner rights to an MCP token.
+    if (pathname === OWNER_PATH) {
       const owner = await handleOwnerRequest(request, env as unknown as OwnerRouteEnv, origin, undefined,
-        () => listOAuthClientIds(getOAuthApi(providerOptions, env as AuthEnv)));
+        () => listOAuthClientIds(oauth));
       if (owner) return owner;
     }
-    // CC-3 C2 : second OAuthProvider, même Worker, resource RFC 8707 dédiée
-    // (${origin}/collab/mcp). Endpoints authorize/token/register partagés : une
-    // requête dont l'indicateur resource vise le store est routée vers ce
-    // provider (la lib valide resource contre resourceMetadata), sinon vers le
-    // provider GitHub. L'émission de jeton reste permissive : le refus typé sans
-    // le scope 'collab:' est enforced par collabMcpHandler (insufficientScope).
-    const pathname = new URL(request.url).pathname;
-    const collabResource = `${origin}/collab/mcp`;
-    const targetResource = await requestedResource(request, pathname);
-    if (collabStoreEnabled((env as CollabStoreEnv).COLLAB_STORE_ENABLED)
-      && (pathname === '/collab/mcp' || targetResource === collabResource)) {
-      if (!(env as CollabStoreEnv).COLLAB_DB) {
-        // CC-3 C6 (R4) : repli explicite en lecture seule, jamais d'écriture GitHub de substitution.
-        const fallback = storeFallback(parseFallbackState((env as CollabStoreEnv).COLLAB_FALLBACK_STATE));
-        return new Response('Store de collaboration non configuré (STORE_UNAVAILABLE). ' + fallback.instruction,
-          { status: 503, headers: { 'Cache-Control': 'no-store', 'Retry-After': '15', 'Content-Type': 'text/plain; charset=utf-8' } });
-      }
-      const collabProvider = new OAuthProvider<AuthEnv>({
-        apiRoute: '/collab/mcp', apiHandler: collabMcpHandler, defaultHandler: authHandler,
-        authorizeEndpoint: '/authorize', tokenEndpoint: '/oauth/token', clientRegistrationEndpoint: '/oauth/register',
-        scopesSupported: ['collab:', 'mcp:read', 'offline_access'], requiredScopes: [],
-        resourceMetadata: { resource: collabResource, authorization_servers: [origin] },
-        clientIdMetadataDocumentEnabled: true,
-      });
-      return collabProvider.fetch(request, env as AuthEnv, ctx);
+    // Our application owns authorization and upstream GitHub callback; the same
+    // helpers now restore either resource's grant at POST /authorize and /callback.
+    if (pathname === '/authorize' || pathname === '/callback') {
+      return authHandler.fetch(request, authEnv);
     }
-    return provider.fetch(request, env as AuthEnv, ctx);
+    if (pathname === '/mcp' || pathname.startsWith('/mcp/')
+      || pathname === '/.well-known/oauth-protected-resource'
+      || pathname === '/.well-known/oauth-protected-resource/mcp') {
+      return github.fetch(request, authEnv, ctx);
+    }
+    if (pathname === '/collab/mcp' && collabEnabled && !collabReady) {
+      // CC-3 C6 R4: explicit read-only fallback when D1 is unavailable.
+      const fallback = storeFallback(parseFallbackState((env as CollabStoreEnv).COLLAB_FALLBACK_STATE));
+      return new Response('Store de collaboration non configuré (STORE_UNAVAILABLE). ' + fallback.instruction,
+        { status: 503, headers: { 'Cache-Control': 'no-store', 'Retry-After': '15', 'Content-Type': 'text/plain; charset=utf-8' } });
+    }
+    if (collab && (pathname === '/collab/mcp' || pathname.startsWith('/collab/mcp/')
+      || pathname === '/.well-known/oauth-protected-resource/collab/mcp')) {
+      return collab.fetch(request, authEnv, ctx);
+    }
+    return authorizationServer.fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<AppEnv>;
-
-/** Indicateur resource (RFC 8707) d'une requête authorize/token, sinon null. */
-async function requestedResource(request: Request, pathname: string): Promise<string | null> {
-  if (pathname === '/authorize' && request.method === 'GET') {
-    return new URL(request.url).searchParams.get('resource');
-  }
-  if (pathname === '/oauth/token' && request.method === 'POST') {
-    try {
-      const value = (await request.clone().formData()).get('resource');
-      return typeof value === 'string' ? value : null;
-    } catch { return null; }
-  }
-  return null;
-}
 
 /** Identifiants des clients OAuth enregistrés (pagination bornée), pour le canal owner. */
 async function listOAuthClientIds(helpers: OAuthHelpers): Promise<string[]> {
