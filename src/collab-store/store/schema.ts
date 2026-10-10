@@ -169,6 +169,21 @@ export const STORE_MIGRATION_0002 =
 export const STORE_MIGRATION_0003_ALTER =
   'ALTER TABLE memory_entries ADD COLUMN token_cost INTEGER';
 
+/**
+ * Store-owned migration 0004 (CR-F04, github-mcp#96): memory_entries.expires_cycle.
+ * expires_rev is a revision of ONE cycle — the cycle whose append proposed (or
+ * renewed) the hypothesis — and means nothing against another cycle's
+ * revision. The origin cycle is persisted next to it so that expiry is only
+ * ever evaluated against that cycle. ALTER and index ship in one batch
+ * (atomic); the partial index serves the per-cycle expiry statement
+ * (expires_cycle = ?). Pre-0004 rows keep expires_cycle NULL: their origin
+ * cycle is unknown, so they are never expired automatically (no cross-cycle guess).
+ */
+export const STORE_MIGRATION_0004 = [
+  'ALTER TABLE memory_entries ADD COLUMN expires_cycle TEXT',
+  'CREATE INDEX IF NOT EXISTS idx_memory_hypothesis_expiry ON memory_entries(expires_cycle, expires_rev) WHERE expires_cycle IS NOT NULL',
+];
+
 const ENSURED = new WeakSet<object>();
 
 function runnableStatements(sql: string): string[] {
@@ -198,6 +213,9 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
   const memColumns = await db.prepare('PRAGMA table_info(memory_entries)').all<{ name: string }>();
   if (!memColumns.results.some(column => column.name === 'token_cost')) {
     await db.batch([db.prepare(STORE_MIGRATION_0003_ALTER)]);
+  }
+  if (!memColumns.results.some(column => column.name === 'expires_cycle')) {
+    await db.batch(STORE_MIGRATION_0004.map(statement => db.prepare(statement)));
   }
   // Exact backfill for pre-0003 rows (review Sol, F3): idempotent, only
   // NULL costs are touched. It is replayed at EVERY cold bootstrap, not
