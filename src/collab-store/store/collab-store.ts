@@ -17,6 +17,7 @@ import { sha256Hex } from './hash';
 import { DEFAULT_DAILY_WRITE_LIMIT } from './config';
 import { isMemoryEventType, prepareMemoryEvent } from '../memory/journal-lifecycle';
 import { redactEventsFor } from './visibility';
+import { revealProposalPayloads } from './sealed-reveal';
 
 export class CollabStoreError extends Error {
   constructor(readonly code: string, message: string) {
@@ -276,34 +277,9 @@ export class CollabStore {
     const { results } = await this.db.prepare(
       'SELECT * FROM events WHERE cycle_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3'
     ).bind(cycleId, sinceSeq, limit + 1).all<StoredStoreEvent>();
-    const revealed = await Promise.all(results.slice(0, limit).map(event => this.revealProposalPayload(event)));
+    const revealed = await revealProposalPayloads(this.db, cycleId, results.slice(0, limit));
     const events = await redactEventsFor(this.db, viewer, revealed);
     return { events, hasMore: results.length > limit };
-  }
-
-  private async revealProposalPayload(event: StoredStoreEvent): Promise<StoredStoreEvent> {
-    if (event.type !== 'proposal.submit') return event;
-    let metadata: Record<string, unknown>;
-    try {
-      metadata = JSON.parse(event.payload_json) as Record<string, unknown>;
-    } catch {
-      return event;
-    }
-    if (typeof metadata.sealed_id !== 'string') return event;
-    const row = await this.db.prepare(
-      'SELECT content, revealed_at FROM sealed_items WHERE id = ?1 AND cycle_id = ?2'
-    ).bind(metadata.sealed_id, event.cycle_id).first<{ content: string; revealed_at: number | null }>();
-    if (!row || row.revealed_at === null) return event;
-    const envelope = parseSealedEnvelope(row.content);
-    return {
-      ...event,
-      payload_json: JSON.stringify({
-        ...metadata,
-        content: envelope.content,
-        nonce: envelope.nonce,
-        revealed: true,
-      }),
-    };
   }
 
   async getContext(cycleId: string, participantId?: string): Promise<{
