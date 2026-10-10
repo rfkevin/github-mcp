@@ -1042,8 +1042,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
   // NOUVELLE, produite par un pair distinct de l'auteur. Chaque refus est
   // pré-batch : aucune version 2 n'est créée, la version active reste intacte.
 
-  /** Un fait observed proposé par agent:a puis activé par le pair distinct agent:b. */
-  async function observedFact(mem: MemoryStore, scope: string, refs: string[]): Promise<string> {
+  /** Un fait observed proposé par agent:a, SANS activation : la v1 reste candidate. */
+  async function proposedCandidate(mem: MemoryStore, scope: string, refs: string[]): Promise<string> {
     const p = await mem.propose({
       scope,
       kind: 'fact',
@@ -1052,8 +1052,14 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       confidence: 'observed',
       author_pid: 'agent:a',
     });
-    await mem.activate(p.id, 1, 'agent:b');
     return p.id;
+  }
+
+  /** Un fait observed proposé par agent:a puis activé par le pair distinct agent:b. */
+  async function observedFact(mem: MemoryStore, scope: string, refs: string[]): Promise<string> {
+    const id = await proposedCandidate(mem, scope, refs);
+    await mem.activate(id, 1, 'agent:b');
+    return id;
   }
 
   /** Hausse verified acceptée avec une preuve NOUVELLE d'un pair, puis activation. */
@@ -1065,61 +1071,51 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
   }
 
   /** Une hausse recyclant une preuve déjà utilisée par la lignée : refus pré-batch. */
-  const expectRaiseRefused = (mem: MemoryStore, id: string, refs: string[], presented: string, target: string = 'verified') =>
+  const expectRaiseRefused = (mem: MemoryStore, id: string, refs: string[], presented: string, target: MemoryConfidence = 'verified') =>
     expect(
       mem.supersede(id, 'agent:a', 'Raise recycling an already-used evidence.', refs, undefined, target, undefined, presented),
     ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
 
   it('CR-F03: a consolidate raising confidence requires a NEW peer ledger evidence (no recycling, no self-validation)', async () => {
     const mem = store();
-    const p = await mem.propose({
-      scope: 'project:crf3-raise',
-      kind: 'fact',
-      text: 'Observed fact awaiting a stronger confidence.',
-      evidence_refs: ['ev:crf3-v1'],
-      confidence: 'observed',
-      author_pid: 'agent:a',
-    });
-    await mem.activate(p.id, 1, 'agent:b');
+    const id = await observedFact(mem, 'project:crf3-raise', ['ev:crf3-v1']);
     // Raise without any peer evidence -> PEER_EVIDENCE_REQUIRED.
     await expect(
-      mem.supersede(p.id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified'),
+      mem.supersede(id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified'),
     ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
     // A self reference is not a peer evidence -> PEER_EVIDENCE_REQUIRED.
     await expect(
-      mem.supersede(p.id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified', undefined, 'self:agent:a'),
+      mem.supersede(id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified', undefined, 'self:agent:a'),
     ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
     // Unknown ledger row -> PEER_EVIDENCE_NOT_FOUND.
     await expect(
-      mem.supersede(p.id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified', undefined, 'ev:crf3-unknown'),
+      mem.supersede(id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified', undefined, 'ev:crf3-unknown'),
     ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_NOT_FOUND' });
     // Ledger row produced by the author himself -> PEER_EVIDENCE_SELF.
     await seedLedger('agent:a', 'ev:crf3-self');
     await expect(
-      mem.supersede(p.id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified', undefined, 'ev:crf3-self'),
+      mem.supersede(id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified', undefined, 'ev:crf3-self'),
     ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_SELF' });
     // Every refusal is pre-batch: no v2 row exists, the active version is untouched.
-    expect(await mem.get(p.id, 2)).toBeNull();
-    expect((await mem.get(p.id, 1))?.status).toBe('active');
+    expect(await mem.get(id, 2)).toBeNull();
+    expect((await mem.get(id, 1))?.status).toBe('active');
     // A NEW peer evidence validates the raise: v2 candidate, ledger ref persisted.
     await seedLedger('agent:b', 'ev:crf3-new-1');
     const v2 = await mem.supersede(
-      p.id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified', undefined, 'ev:crf3-new-1',
+      id, 'agent:a', 'Stronger claim.', ['ev:crf3-v1'], undefined, 'verified', undefined, 'ev:crf3-new-1',
     );
     expect(v2.version).toBe(2);
     expect(v2.status).toBe('candidate');
     expect(v2.confidence).toBe('verified');
     expect(JSON.parse(v2.evidence_refs || '[]')).toContain('ev:crf3-new-1');
-    expect((await mem.get(p.id, 1))?.status).toBe('superseded');
-    expect((await mem.activate(p.id, 2, 'agent:b')).status).toBe('active');
+    expect((await mem.get(id, 1))?.status).toBe('superseded');
+    expect((await mem.activate(id, 2, 'agent:b')).status).toBe('active');
     // Recycling the SAME evidence for another raise -> PEER_EVIDENCE_REQUIRED.
-    await expect(
-      mem.supersede(p.id, 'agent:a', 'Even stronger.', ['ev:crf3-v1'], undefined, 'owner_validated', undefined, 'ev:crf3-new-1'),
-    ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
+    await expectRaiseRefused(mem, id, ['ev:crf3-v1'], 'ev:crf3-new-1', 'owner_validated');
     // A different NEW peer evidence passes.
     await seedLedger('agent:b', 'ev:crf3-new-2');
     const v3 = await mem.supersede(
-      p.id, 'agent:a', 'Even stronger.', ['ev:crf3-v1'], undefined, 'owner_validated', undefined, 'ev:crf3-new-2',
+      id, 'agent:a', 'Even stronger.', ['ev:crf3-v1'], undefined, 'owner_validated', undefined, 'ev:crf3-new-2',
     );
     expect(v3.version).toBe(3);
     expect(v3.confidence).toBe('owner_validated');
@@ -1128,24 +1124,16 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
 
   it('CR-F03: unchanged-confidence consolidation and promoteConfidence stay intact', async () => {
     const mem = store();
-    const p = await mem.propose({
-      scope: 'project:crf3-unchanged',
-      kind: 'fact',
-      text: 'Observed fact consolidated at the same confidence.',
-      evidence_refs: ['ev:crf3-same'],
-      confidence: 'observed',
-      author_pid: 'agent:a',
-    });
-    await mem.activate(p.id, 1, 'agent:b');
+    const id = await observedFact(mem, 'project:crf3-unchanged', ['ev:crf3-same']);
     // No confidence -> no raise -> no peer evidence needed (ordinary consolidate).
-    const v2 = await mem.supersede(p.id, 'agent:a', 'Reworded, same confidence.', ['ev:crf3-same']);
+    const v2 = await mem.supersede(id, 'agent:a', 'Reworded, same confidence.', ['ev:crf3-same']);
     expect(v2.version).toBe(2);
     expect(v2.confidence).toBe('observed');
-    await mem.activate(p.id, 2, 'agent:c');
+    await mem.activate(id, 2, 'agent:c');
     // promoteConfidence still raises through its own validated ledger evidence:
     // the internal supersede re-validates the NEW ref (not yet in the active refs).
     await seedLedger('agent:b', 'ev:crf3-promo-1');
-    const up = await mem.promoteConfidence(p.id, 2, 'agent:b', 'ev:crf3-promo-1', 'verified');
+    const up = await mem.promoteConfidence(id, 2, 'agent:b', 'ev:crf3-promo-1', 'verified');
     expect(up.version).toBe(3);
     expect(up.confidence).toBe('verified');
     expect(JSON.parse(up.evidence_refs || '[]')).toContain('ev:crf3-promo-1');
@@ -1188,27 +1176,22 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
   });
   it('CR-F03 (Claude review #100, P2): promoteConfidence on a CANDIDATE cannot recycle an evidence already in the lineage', async () => {
     const mem = store();
-    const p = await mem.propose({
-      scope: 'project:crf3-candidate',
-      kind: 'fact',
-      text: 'Candidate promoted twice, the second time with the same evidence.',
-      evidence_refs: ['ev:crf3-c0'],
-      confidence: 'observed',
-      author_pid: 'agent:a',
-    });
+    // v1 reste CANDIDATE (proposedCandidate, sans activation) : le chemin
+    // UPDATE direct de promoteConfidence s’applique alors sans supersede.
+    const id = await proposedCandidate(mem, 'project:crf3-candidate', ['ev:crf3-c0']);
     // First promotion of the candidate (direct UPDATE path): NEW evidence,
     // the resolved ref is appended exactly once.
     await seedLedger('agent:b', 'ev:crf3-c1');
-    const up = await mem.promoteConfidence(p.id, 1, 'agent:b', 'ev:crf3-c1', 'verified');
+    const up = await mem.promoteConfidence(id, 1, 'agent:b', 'ev:crf3-c1', 'verified');
     expect(up.status).toBe('candidate');
     expect(up.confidence).toBe('verified');
     expect(JSON.parse(up.evidence_refs || '[]')).toEqual(['ev:crf3-c0', 'ev:crf3-c1']);
     // Second promotion recycling the SAME evidence: refused, nothing written
     // (no duplicated ref in the candidate row).
     await expect(
-      mem.promoteConfidence(p.id, 1, 'agent:b', 'ev:crf3-c1', 'owner_validated'),
+      mem.promoteConfidence(id, 1, 'agent:b', 'ev:crf3-c1', 'owner_validated'),
     ).rejects.toMatchObject({ code: 'PEER_EVIDENCE_REQUIRED' });
-    const row = (await mem.get(p.id, 1))!;
+    const row = (await mem.get(id, 1))!;
     expect(row.confidence).toBe('verified');
     expect(JSON.parse(row.evidence_refs || '[]')).toEqual(['ev:crf3-c0', 'ev:crf3-c1']);
   });

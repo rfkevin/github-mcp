@@ -1228,16 +1228,11 @@ export class MemoryStore {
     authorPid: string,
     id: string,
   ): Promise<string> {
-    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
-      throw new MemoryStoreError(
-        'PEER_EVIDENCE_REQUIRED',
-        'raising confidence requires a NEW peer ledger evidence_ref (peer_evidence_ref)',
-      );
-    }
-    const row = await this.findLedgerRow(peerEvidenceRef);
-    if (!row) {
-      throw new MemoryStoreError('PEER_EVIDENCE_NOT_FOUND', `No evidence_ledger row for ${peerEvidenceRef}`);
-    }
+    const row = await this.resolvePeerLedgerRow(
+      peerEvidenceRef,
+      authorPid,
+      'raising confidence requires a NEW peer ledger evidence_ref (peer_evidence_ref)',
+    );
     if (row.producer === authorPid) {
       throw new MemoryStoreError('PEER_EVIDENCE_SELF', 'ledger producer cannot be the memory author');
     }
@@ -1266,10 +1261,10 @@ export class MemoryStore {
 
   /**
    * Résout une ligne du registre evidence_ledger par son evidence_ref ou son
-   * alias `ledger:<seq>` ; null quand aucune ligne ne correspond. Partagé par
-   * requireRaiseEvidence et requirePeerLedgerEvidence — la duplication des
-   * deux résolveurs faisait échouer la porte qualité SonarCloud sur le nouveau
-   * code (Duplication on New Code > 3 %).
+   * alias `ledger:<seq>` ; null quand aucune ligne ne correspond. Résolution
+   * partagée via resolvePeerLedgerRow — la duplication des deux résolveurs
+   * faisait échouer la porte qualité SonarCloud sur le nouveau code
+   * (Duplication on New Code > 3 %).
    */
   private async findLedgerRow(
     peerEvidenceRef: string,
@@ -1288,6 +1283,28 @@ export class MemoryStore {
   }
 
   /**
+   * Garde d'entrée partagée des deux vérificateurs de preuve pair : ref non
+   * vide (jamais `self:<authorPid>`) qui résout une ligne du registre, ou
+   * PEER_EVIDENCE_REQUIRED / PEER_EVIDENCE_NOT_FOUND. Le message de refus
+   * reste propre à chaque appelant ; dédupliqué pour la porte qualité
+   * SonarCloud (Duplication on New Code > 3 %).
+   */
+  private async resolvePeerLedgerRow(
+    peerEvidenceRef: string | undefined,
+    authorPid: string,
+    requiredMessage: string,
+  ): Promise<{ seq: number; producer: string; evidence_ref: string }> {
+    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
+      throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', requiredMessage);
+    }
+    const row = await this.findLedgerRow(peerEvidenceRef);
+    if (!row) {
+      throw new MemoryStoreError('PEER_EVIDENCE_NOT_FOUND', `No evidence_ledger row for ${peerEvidenceRef}`);
+    }
+    return row;
+  }
+
+  /**
    * peerEvidenceRef must match evidence_ledger.evidence_ref or ledger:<seq>,
    * with producer === reviewerPid and producer ≠ authorPid.
    */
@@ -1296,16 +1313,7 @@ export class MemoryStore {
     reviewerPid: string,
     authorPid: string,
   ): Promise<string> {
-    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
-      throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', 'evidence_ref must be a ledger entry from peer');
-    }
-    const row = await this.findLedgerRow(peerEvidenceRef);
-    if (!row) {
-      throw new MemoryStoreError(
-        'PEER_EVIDENCE_NOT_FOUND',
-        `No evidence_ledger row for ${peerEvidenceRef}`,
-      );
-    }
+    const row = await this.resolvePeerLedgerRow(peerEvidenceRef, authorPid, 'evidence_ref must be a ledger entry from peer');
     if (row.producer !== reviewerPid) {
       throw new MemoryStoreError(
         'PEER_EVIDENCE_PRODUCER',

@@ -68,14 +68,19 @@ const snapshotOf = async (cycle: string, id: string) => ({
   rows: await rowsOf(id),
 });
 
+/** Alpha et beta enregistrés, cycle, scope et id uniques, et append par le vrai canal /collab/mcp. */
+async function scenario(prefix: string, secret: string, scopeTag: string) {
+  const { agent, uniq } = e2eScenario(db, prefix, secret);
+  const [alpha, beta] = [await agent('alpha'), await agent('beta')];
+  const cycle = uniq('cycle');
+  const append = (who: Agent, op: string, type: string, payload: Record<string, unknown>) =>
+    appendEvent(who, cycle, op, type, payload);
+  return { alpha, beta, cycle, scope: 'role:' + uniq(scopeTag), id: uniq('mem'), append };
+}
+
 describe("CC-3 CR-F03 — hausse de confiance d'une consolidation par preuve pair (HTTP)", () => {
   it('sans preuve, preuve recyclée ou preuve de l’auteur → refus sans journal/quota/révision ; preuve nouvelle → v2 candidate puis active', async () => {
-    const { agent, uniq } = e2eScenario(db, 'crf3', 'owner-secret-CRF3-0123456789abcdefghijklm');
-    const [alpha, beta] = [await agent('alpha'), await agent('beta')];
-    const cycle = uniq('cycle');
-    const scope = 'role:' + uniq('raise');
-    const id = uniq('mem');
-    const append = (who: Agent, op: string, type: string, payload: Record<string, unknown>) => appendEvent(who, cycle, op, type, payload);
+    const { alpha, beta, cycle, scope, id, append } = await scenario('crf3', 'owner-secret-CRF3-0123456789abcdefghijklm', 'raise');
 
     // v1 : proposition observée par alpha, revue par le pair distinct beta → active.
     expect((await append(alpha, 'p1', 'memory.propose', {
@@ -131,12 +136,7 @@ describe("CC-3 CR-F03 — hausse de confiance d'une consolidation par preuve pai
   });
 
   it('revue Claude #100 (P1) : une preuve retirée par une consolidation intermédiaire n’est pas « blanchie » — le recyclage reste refusé (HTTP)', async () => {
-    const { agent, uniq } = e2eScenario(db, 'crf3b', 'owner-secret-CRF3B-0123456789abcdefghijklm');
-    const [alpha, beta] = [await agent('alpha'), await agent('beta')];
-    const cycle = uniq('cycle');
-    const scope = 'role:' + uniq('wash');
-    const id = uniq('mem');
-    const append = (who: Agent, op: string, type: string, payload: Record<string, unknown>) => appendEvent(who, cycle, op, type, payload);
+    const { alpha, beta, cycle, scope, id, append } = await scenario('crf3b', 'owner-secret-CRF3B-0123456789abcdefghijklm', 'wash');
 
     // v1 : observed, revue par le pair distinct beta → active.
     expect((await append(alpha, 'p1', 'memory.propose', {
