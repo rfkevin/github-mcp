@@ -18,6 +18,7 @@ import { DEFAULT_DAILY_WRITE_LIMIT } from './config';
 import { isMemoryEventType, prepareMemoryEvent } from '../memory/journal-lifecycle';
 import { redactEventsFor } from './visibility';
 import { revealProposalPayloads } from './sealed-reveal';
+import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 
 export class CollabStoreError extends Error {
   constructor(readonly code: string, message: string) {
@@ -216,6 +217,10 @@ export class CollabStore {
     const statements: D1PreparedStatement[] = [
       ...journal,
       ...(memoryEffect ? memoryEffect.statements : []),
+      // CR-F04 (#96) : les hypothèses de CE cycle que la nouvelle révision
+      // rend échues passent retired dans la même transaction (après l'effet
+      // mémoire : l'index de vérification ci-dessus est inchangé).
+      expireDueHypotheses(this.db, event.cycle_id),
       this.db.prepare('DELETE FROM collab_store_guard'),
     ];
     let results: Array<{ meta?: { changes?: number } }>;
