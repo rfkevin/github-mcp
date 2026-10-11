@@ -3,6 +3,7 @@
  * Versioned rows: propose → activate (reviewer ≠ author) → supersede/retire.
  * Never in-place text rewrite; never silent delete.
  * Budgets, alarms, participant isolation, protected kinds, hypothesis expiry.
+ * X2/X5 (#107): bounded self-review of private scopes; P1 shared-write independence.
  */
 import {
   estimateTokens,
@@ -32,6 +33,12 @@ import {
   type PauseReason,
 } from './pause-resume';
 import { expireDueHypotheses, expiresInCycle, isDueAt } from './hypothesis-expiry';
+import {
+  assessSharedP1Write,
+  isSharedMemoryScope,
+  p1SnapshotGuard,
+  type JournalWriteContext,
+} from './p1-independence';
 
 // CR-F02 : clés et identifiants de pause vivent dans pause-resume.ts (partagés avec
 // le canal owner) ; ré-exportés ici pour la compatibilité de l'API publique.
@@ -102,9 +109,11 @@ export interface MemoryMutation {
  * CRB-R1 (revue Sol, github-mcp#79/6086862463) : les scopes `participant:<id>`
  * sont la mémoire privée d'un participant — consolidate et retire via le journal
  * public ne peuvent viser que le scope de l'appelant. Les scopes partagés
- * (common/project/role/task) restent collaboratifs ; la revue par un pair
- * distinct reste ouverte (activation C4). callerPid null = appel interne du
- * MemoryStore (wrappers supersede/retire) : garde désactivée, inchangée.
+ * (common/project/role/task) restent collaboratifs. X2 (#107) : la revue d'un
+ * scope participant est réservée à son propriétaire — un tiers ne voit pas une
+ * mémoire privée, il ne l'active pas ; l'auto-revue bornée de l'auteur passe
+ * par SELF_REVIEW_KINDS/SELF_REVIEW_CONFIDENCES. callerPid null = appel interne
+ * du MemoryStore (wrappers supersede/retire) : garde désactivée, inchangée.
  */
 function assertParticipantScopeAllowed(scope: string, callerPid: string | undefined, type: string): void {
   if (!callerPid) return;
@@ -142,6 +151,13 @@ export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
 
 /** invariant + decision (authority/safety proxy until dedicated kinds exist). */
 export const PROTECTED_KINDS = new Set(['invariant', 'decision']);
+/**
+ * X2 (#107) : auto-revue bornée — l'auteur peut activer lui-même une entrée de
+ * SON scope participant, uniquement pour ces kinds non protégés et à confiance
+ * hypothesis/observed (jamais une règle auto-activée, jamais verified+).
+ */
+export const SELF_REVIEW_KINDS = new Set(['observation', 'open_question', 'lesson', 'procedure']);
+export const SELF_REVIEW_CONFIDENCES = new Set(['hypothesis', 'observed']);
 export const HYPOTHESIS_EXPIRE_CYCLES = 3;
 /** Plan: alarm if >5 refutes → trigger on the 6th. */
 export const REFUTE_ALARM_THRESHOLD = 6;
@@ -295,7 +311,10 @@ export class MemoryStore {
    * mémoire, un refus n'écrit rien du tout (ni journal, ni mémoire). Toutes
    * les lectures sont read-only : rejouer cette méthode re-diagnostique.
    */
-  async preparePropose(input: ProposeInput): Promise<MemoryMutation> {
+  async preparePropose(
+    input: ProposeInput,
+    journal: JournalWriteContext | null = null,
+  ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     if (input.confidence === 'hypothesis' && PROTECTED_KINDS.has(input.kind)) {
       throw new MemoryStoreError(
@@ -351,6 +370,14 @@ export class MemoryStore {
         exact: proposeRequestId(protectedId, version),
       });
     }
+    // X5 (#107) : pendant P1 d'un cycle de travail ouvert, un propose de scope
+    // partagé visible à son packet est refusé avant tout effet (fail-closed).
+    const p1Guard = await p1SharedGuard(
+      this.db,
+      entry.scope,
+      'memory.propose',
+      journal ?? { cycleId: input.cycle_id ?? null, createsCycle: false },
+    );
     return {
       statements: [
         // CR-D : garde transactionnelle — une proposition concurrente du même
@@ -358,6 +385,8 @@ export class MemoryStore {
         // roule tout en arrière ; le caller re-diagnostique MEMORY_SCOPE_MISMATCH.
         this.scopeIdentityGuard(id, entry.scope),
         this.insertCandidate(entry, id, version, input.supersedes ?? null, expiresRev, expiresCycle),
+        // X5 : garde transactionnelle d'instantané P1 (course fail-closed).
+        ...(p1Guard ? [p1Guard] : []),
       ],
       verifyIndex: 1,
       summary: { id, version, status: 'candidate' },
@@ -443,6 +472,7 @@ export class MemoryStore {
     reviewerPid: string,
     cycleId = 'default',
     cycleRev?: number,
+    journal: JournalWriteContext | null = null,
   ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const row = await this.get(id, version);
@@ -459,7 +489,17 @@ export class MemoryStore {
     if (row.confidence === 'hypothesis' && PROTECTED_KINDS.has(row.kind)) {
       throw new MemoryStoreError('HYPOTHESIS_NOT_RULE', 'hypothesis cannot activate as a rule');
     }
-    validateMemoryActivation(row.author_pid, reviewerPid);
+    // X2 (#107) : la revue d'un scope participant est réservée à son
+    // propriétaire (un tiers reste aveugle) ; l'auto-revue bornée de l'auteur
+    // (SELF_REVIEW_KINDS/SELF_REVIEW_CONFIDENCES) trace reviewer_pid = author_pid,
+    // toute autre revue exige un pair distinct (invariant C4 inchangé).
+    assertParticipantScopeAllowed(row.scope, reviewerPid, 'memory.review');
+    const selfReview =
+      reviewerPid === row.author_pid &&
+      row.scope === `participant:${row.author_pid}` &&
+      SELF_REVIEW_KINDS.has(row.kind) &&
+      SELF_REVIEW_CONFIDENCES.has(row.confidence);
+    if (!selfReview) validateMemoryActivation(row.author_pid, reviewerPid);
     if (row.evidence_refs === '[]' || !row.evidence_refs) {
       throw new StateContractError(
         'MEMORY_EVIDENCE_REQUIRED',
@@ -470,6 +510,14 @@ export class MemoryStore {
     const capKey = `${META_ACT}${cycleId}:${row.scope}`;
     await this.assertCycleCap(capKey, MAX_ACTIVATIONS_PER_CYCLE, 'ACTIVATION_CAP');
     await this.assertBudgetAllows(row.scope, row.text);
+    // X5 (#107) : l'activation rend visible un contenu partagé — refusée sous
+    // P1 d'un cycle de travail dont le packet voit le scope (fail-closed).
+    const p1Guard = await p1SharedGuard(
+      this.db,
+      row.scope,
+      'memory.review',
+      journal ?? { cycleId, createsCycle: false },
+    );
     const pausedKey = pauseKey(row.scope);
     const baseKey = baselineKey(row.scope);
     const occKey = occurrenceKey(row.scope);
@@ -501,6 +549,9 @@ export class MemoryStore {
       this.db
         .prepare(`INSERT INTO quota_counters (day, writes) VALUES (?1, 1) ON CONFLICT(day) DO UPDATE SET writes = writes + 1`)
         .bind(capKey),
+      // X5 : garde transactionnelle d'instantané P1, avant l'effet — un
+      // changement concurrent des cycles P1 roule tout en arrière.
+      ...(p1Guard ? [p1Guard] : []),
     ];
     // A03/I4 (pre-test Claude): supersede ANY other active version of this
     // id inside the transaction, not just the priorActive read before the
@@ -609,6 +660,7 @@ export class MemoryStore {
     peerEvidenceRef?: string,
     cycleId?: string,
     cycleRev?: number,
+    journal: JournalWriteContext | null = null,
   ): Promise<MemoryMutation> {
     await ensureSchema(this.db);
     const active = await this.db
@@ -657,6 +709,14 @@ export class MemoryStore {
       author_pid: authorPid,
     });
     const expiry = this.renewedExpiry(active, conf, cycleId, cycleRev);
+    // X5 (#107) : une consolidation partagée rend un nouveau contenu visible —
+    // refusée sous P1 d'un cycle de travail exposé (fail-closed).
+    const p1Guard = await p1SharedGuard(
+      this.db,
+      active.scope,
+      'memory.consolidate',
+      journal ?? { cycleId: cycleId ?? null, createsCycle: false },
+    );
     return {
       statements: [
         this.db
@@ -668,6 +728,8 @@ export class MemoryStore {
         this.statusEffectGuard(id, active.version, 'superseded'),
         // CR-D : au commit, l'id n'a toujours qu'un scope.
         this.scopeIdentityGuard(id, active.scope),
+        // X5 : garde transactionnelle d'instantané P1 (course fail-closed).
+        ...(p1Guard ? [p1Guard] : []),
       ],
       verifyIndex: 1,
       summary: { id, version: nextVersion, status: 'candidate' },
@@ -1403,4 +1465,27 @@ const CONFIDENCE_RANK: Record<MemoryConfidence, number> = {
 
 function confidenceRank(c: MemoryConfidence): number {
   return CONFIDENCE_RANK[c] ?? -1;
+}
+
+/**
+ * X5 (#107) : garde P1 d'un scope mémoire — null si le scope est privé (jamais
+ * gardé), refus pré-batch MEMORY_P1_SHARED_MUTATION si un cycle de travail P1
+ * ouvert voit le scope, sinon garde transactionnelle d'instantané à joindre à
+ * la fin des statements du batch du caller (course fail-closed).
+ */
+async function p1SharedGuard(
+  db: D1Database,
+  scope: string,
+  type: string,
+  journal: JournalWriteContext | null,
+): Promise<D1PreparedStatement | null> {
+  if (!isSharedMemoryScope(scope)) return null;
+  const assessment = await assessSharedP1Write(db, scope, journal);
+  if (assessment.blocked) {
+    throw new MemoryStoreError(
+      'MEMORY_P1_SHARED_MUTATION',
+      `${type}: shared memory scope ${scope} is visible to an open P1 work cycle (X5).`,
+    );
+  }
+  return p1SnapshotGuard(db, assessment.snapshot);
 }
