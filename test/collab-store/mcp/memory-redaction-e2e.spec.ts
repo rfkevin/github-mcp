@@ -44,10 +44,12 @@ describe('CC-3 CR-C — mémoire privée absente des lectures du journal (HTTP)'
     expect((await append(beta, cycle, rev, 'prop', 'proposal.submit', { content: 'PROPOSITION-SCELLEE-C07' })).structuredContent.status)
       .toBe('applied');
     rev += 1;
+    // X5 (#107, revue Claude B1) : le cycle de ce test naît sans phase_definitions —
+    // un cycle errant ne gèle jamais une écriture commune (chemin réel).
 
     // C01 — alpha propose dans son scope privé (texte, preuve et session sentinelles).
     const proposed = await append(alpha, cycle, rev, 'mem', 'memory.propose', { memory: { id: memId, scope: `participant:${alpha.pid}`,
-      kind: 'fact', text: PRIVATE_TEXT, evidence_refs: [PRIVATE_REF], confidence: 'observed' } },
+      kind: 'observation', text: PRIVATE_TEXT, evidence_refs: [PRIVATE_REF], confidence: 'observed' } },
     { session_id: PRIVATE_SESSION, evidence_ref: PRIVATE_REF });
     expect(proposed.structuredContent).toMatchObject({ status: 'applied', memory: { id: memId, version: 1, status: 'candidate' } });
     rev += 1;
@@ -101,7 +103,7 @@ describe('CC-3 CR-C — mémoire privée absente des lectures du journal (HTTP)'
     const own = await alpha.call('collab_get_delta', { cycle, since_seq: 0 });
     expect(JSON.stringify(own)).toContain(PRIVATE_TEXT);
     const replay = await append(alpha, cycle, rev, 'mem', 'memory.propose', { memory: { id: memId, scope: `participant:${alpha.pid}`,
-      kind: 'fact', text: PRIVATE_TEXT, evidence_refs: [PRIVATE_REF], confidence: 'observed' } },
+      kind: 'observation', text: PRIVATE_TEXT, evidence_refs: [PRIVATE_REF], confidence: 'observed' } },
     { session_id: PRIVATE_SESSION, evidence_ref: PRIVATE_REF });
     expect(replay.structuredContent).toMatchObject({ status: 'duplicate', event: { seq: proposeSeq } });
     const conflict = await append(alpha, cycle, rev, 'mem', 'memory.propose', { memory: { id: memId, scope: `participant:${alpha.pid}`,
@@ -114,14 +116,20 @@ describe('CC-3 CR-C — mémoire privée absente des lectures du journal (HTTP)'
     expect(code(hijack)).toBe('PARTICIPANT_MISMATCH');
     expectNoSentinel(hijack);
 
-    // C06 — revue par un pair, consolidation (nouvelle sentinelle), revue v2, retrait ; beta relit tout.
-    expect((await append(gamma, cycle, rev, 'rev1', 'memory.review', { memory: { id: memId, version: 1 } }))
+    // C06 — X2 : candidat self-review (observation/observed) — seul le propriétaire du
+    // scope revue ; le pair est refusé sans écriture. Consolidation (nouvelle sentinelle),
+    // revue v2, retrait ; beta relit tout.
+    expect(code(await append(gamma, cycle, rev, 'rev1-ghost', 'memory.review', { memory: { id: memId, version: 1 } })))
+      .toBe('MEMORY_SCOPE_FORBIDDEN');
+    expect((await append(alpha, cycle, rev, 'rev1', 'memory.review', { memory: { id: memId, version: 1 } }))
       .structuredContent.status).toBe('applied');
     rev += 1;
     expect((await append(alpha, cycle, rev, 'cons', 'memory.consolidate', { memory: { id: memId, text: CONSOLIDATED_TEXT,
       evidence_refs: [CONSOLIDATED_REF] } })).structuredContent).toMatchObject({ status: 'applied', memory: { version: 2 } });
     rev += 1;
-    expect((await append(gamma, cycle, rev, 'rev2', 'memory.review', { memory: { id: memId, version: 2 } }))
+    expect(code(await append(gamma, cycle, rev, 'rev2-ghost', 'memory.review', { memory: { id: memId, version: 2 } })))
+      .toBe('MEMORY_SCOPE_FORBIDDEN');
+    expect((await append(alpha, cycle, rev, 'rev2', 'memory.review', { memory: { id: memId, version: 2 } }))
       .structuredContent.status).toBe('applied');
     rev += 1;
     expect((await append(alpha, cycle, rev, 'retire', 'memory.retire', { memory: { id: memId, version: 2 } }))
@@ -136,11 +144,11 @@ describe('CC-3 CR-C — mémoire privée absente des lectures du journal (HTTP)'
     // Versions et tombstone visibles comme métadonnées.
     expect(privateEvents.map(event => JSON.parse(event.payload_json).memory)).toEqual([
       { id: memId }, { id: memId, version: 1 }, { id: memId }, { id: memId, version: 2 }, { id: memId, version: 2 }]);
-    // Le reviewer gamma voit ses propres revues telles qu'écrites, pas le texte d'alpha.
+    // X2 : gamma n'a aucune revue appliquée (ses tentatives sont refusées sans écriture).
     const gammaView = await gamma.call('collab_get_delta', { cycle, since_seq: 0 });
     expectNoSentinel(gammaView);
     expect(events(gammaView).filter(event => event.participant_id === gamma.pid).map(event => JSON.parse(event.payload_json)))
-      .toEqual([{ memory: { id: memId, version: 1 } }, { memory: { id: memId, version: 2 } }]);
+      .toEqual([]);
     expectNoSentinel(await stranger.call('collab_get_delta', { cycle, since_seq: 0 }));
     // Alpha garde la lecture complète de son historique.
     const alphaView = JSON.stringify(await alpha.call('collab_get_delta', { cycle, since_seq: 0 }));

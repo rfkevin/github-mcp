@@ -22,9 +22,12 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 par le journal public (HTTP
     const cycle = uniq('cycle');
     const scope = 'participant:' + alpha.pid;
     const mid = uniq('mem');
+    const mid2 = uniq('mem2');
     const text = 'le store sert la memoire C4 via le journal';
     const text2 = 'consolide : le lifecycle memoire suit le journal';
+    const textObs = 'observation bornee : le proprietaire auto-revue (X2)';
     const proposeJson = JSON.stringify({ memory: { id: mid, scope, kind: 'fact', text, evidence_refs: ['ev:crb-1'], confidence: 'observed' } });
+    const propose2Json = JSON.stringify({ memory: { id: mid2, scope, kind: 'observation', text: textObs, evidence_refs: ['ev:crb-1b'], confidence: 'observed' } });
 
     // 1. Ouverture du cycle par checkpoint (rev 0 -> 1).
     expect((await alpha.call('collab_append_event', { cycle, expected_rev: 0, op_id: 'alpha:' + cycle + ':open:1',
@@ -46,76 +49,91 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 par le journal public (HTTP
       type: 'memory.review', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid, version: 1 } }) })))
       .toBe('MEMORY_SELF_ACTIVATION');
 
-    // 5. beta (pair distinct) active la memoire (rev 2 -> 3).
-    const review = await beta.call('collab_append_event', { cycle, expected_rev: 2, op_id: 'beta:' + cycle + ':review:1',
-      type: 'memory.review', participant_id: beta.pid, payload_json: JSON.stringify({ memory: { id: mid, version: 1 } }) });
-    expect(review.structuredContent).toMatchObject({ status: 'applied', revision: 3, memory: { id: mid, version: 1, status: 'active' } });
+    // 5. X2 : un pair n'active jamais la memoire privee d'un autre (FORBIDDEN,
+    // revision inchangee) ; le proprietaire propose une observation bornee puis
+    // l'auto-revue (rev 2 -> 4) : mid (fact) reste candidate a jamais.
+    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 2, op_id: 'beta:' + cycle + ':review:1',
+      type: 'memory.review', participant_id: beta.pid, payload_json: JSON.stringify({ memory: { id: mid, version: 1 } }) })))
+      .toBe('MEMORY_SCOPE_FORBIDDEN');
+    const propose2 = await alpha.call('collab_append_event', { cycle, expected_rev: 2, op_id: 'alpha:' + cycle + ':propose2:1',
+      type: 'memory.propose', participant_id: alpha.pid, payload_json: propose2Json });
+    expect(propose2.structuredContent).toMatchObject({ status: 'applied', revision: 3, memory: { id: mid2, version: 1, status: 'candidate' } });
+    const review = await alpha.call('collab_append_event', { cycle, expected_rev: 3, op_id: 'alpha:' + cycle + ':selfreview:1',
+      type: 'memory.review', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid2, version: 1 } }) });
+    expect(review.structuredContent).toMatchObject({ status: 'applied', revision: 4, memory: { id: mid2, version: 1, status: 'active' } });
 
     // 6. get_context : la memoire active est dans le packet d'alpha, pas dans celui de beta (isolation C5).
     const ctxAlpha = await alpha.call('collab_get_context', { cycle });
     expect((ctxAlpha.structuredContent.packet as { memory: Array<Record<string, unknown>> }).memory)
-      .toEqual(expect.arrayContaining([expect.objectContaining({ id: mid, version: 1, scope })]));
+      .toEqual(expect.arrayContaining([expect.objectContaining({ id: mid2, version: 1, scope })]));
     const ctxBeta = await beta.call('collab_get_context', { cycle });
-    expect(JSON.stringify((ctxBeta.structuredContent.packet as { memory: unknown }).memory)).not.toContain(mid);
+    expect(JSON.stringify((ctxBeta.structuredContent.packet as { memory: unknown }).memory)).not.toContain(mid2);
 
     // 7. collab_export memory-md : alpha voit son scope participant, beta non.
     const expAlpha = await alpha.call('collab_export', { cycle, format: 'memory-md' });
-    expect(expAlpha.structuredContent.content as string).toContain(mid);
-    expect(expAlpha.structuredContent.content as string).toContain(text);
+    expect(expAlpha.structuredContent.content as string).toContain(mid2);
+    expect(expAlpha.structuredContent.content as string).toContain(textObs);
     const expBeta = await beta.call('collab_export', { cycle, format: 'memory-md' });
-    expect(expBeta.structuredContent.content as string).not.toContain(mid);
+    expect(expBeta.structuredContent.content as string).not.toContain(mid2);
 
-    // 8. CRB-R1 (revue Sol) : participant:<alpha> est prive — ni beta (consolidate) ni gamma
-    // (injection propose) n y touchent (refus pre-batch, revision inchangee) ; seul
-    // alpha consolide (rev 3 -> 4) : v1 superseded, v2 candidate.
-    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 3, op_id: 'beta:' + cycle + ':consolidate:1',
+    // 8. CRB-R1/X2 : participant:<alpha> est prive — ni beta (consolidate) ni gamma
+    // (injection propose) n'y touchent (refus pre-batch, revision inchangee) ; seul
+    // alpha consolide sa v2 (rev 4 -> 5) : v1 superseded, v2 candidate.
+    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'beta:' + cycle + ':consolidate:1',
       type: 'memory.consolidate', participant_id: beta.pid,
-      payload_json: JSON.stringify({ memory: { id: mid, text: text2, evidence_refs: ['ev:crb-2'] } }) }))).toBe('MEMORY_SCOPE_FORBIDDEN');
+      payload_json: JSON.stringify({ memory: { id: mid2, text: text2, evidence_refs: ['ev:crb-2'] } }) }))).toBe('MEMORY_SCOPE_FORBIDDEN');
     const injectId = uniq('inject');
-    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 3, op_id: 'gamma:' + cycle + ':inject:1',
+    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'gamma:' + cycle + ':inject:1',
       type: 'memory.propose', participant_id: gamma.pid,
       payload_json: JSON.stringify({ memory: { id: injectId, scope, kind: 'fact', text: 'injection interdite', evidence_refs: ['ev:crb-x'] } }) })))
       .toBe('MEMORY_SCOPE_FORBIDDEN');
-    const consolidate = await alpha.call('collab_append_event', { cycle, expected_rev: 3, op_id: 'alpha:' + cycle + ':consolidate:1',
+    const consolidate = await alpha.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'alpha:' + cycle + ':consolidate:1',
       type: 'memory.consolidate', participant_id: alpha.pid,
-      payload_json: JSON.stringify({ memory: { id: mid, text: text2, evidence_refs: ['ev:crb-2'] } }) });
-    expect(consolidate.structuredContent).toMatchObject({ status: 'applied', revision: 4, memory: { id: mid, version: 2, status: 'candidate' } });
+      payload_json: JSON.stringify({ memory: { id: mid2, kind: 'observation', text: text2, evidence_refs: ['ev:crb-2'] } }) });
+    expect(consolidate.structuredContent).toMatchObject({ status: 'applied', revision: 5, memory: { id: mid2, version: 2, status: 'candidate' } });
 
     // 9. Consolidation sans evidence_refs (par le proprietaire) : payload invalide, rien ecrit.
-    expect(code(await alpha.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'alpha:' + cycle + ':consolidate:2',
+    expect(code(await alpha.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'alpha:' + cycle + ':consolidate:2',
       type: 'memory.consolidate', participant_id: alpha.pid,
-      payload_json: JSON.stringify({ memory: { id: mid, text: 'sans preuve' } }) }))).toBe('INVALID_MEMORY_PAYLOAD');
+      payload_json: JSON.stringify({ memory: { id: mid2, text: 'sans preuve' } }) }))).toBe('INVALID_MEMORY_PAYLOAD');
 
-    // 10. beta (pair distinct — revoir n est pas administrer, CRB-R1) reve v2 (rev 4 -> 5).
-    const review2 = await beta.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'beta:' + cycle + ':review:2',
-      type: 'memory.review', participant_id: beta.pid, payload_json: JSON.stringify({ memory: { id: mid, version: 2 } }) });
-    expect(review2.structuredContent).toMatchObject({ status: 'applied', revision: 5, memory: { id: mid, version: 2, status: 'active' } });
+    // 10. X2 : le pair ne reve pas non plus ; le proprietaire auto-revue sa v2 (rev 5 -> 6).
+    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'beta:' + cycle + ':review:2',
+      type: 'memory.review', participant_id: beta.pid, payload_json: JSON.stringify({ memory: { id: mid2, version: 2 } }) })))
+      .toBe('MEMORY_SCOPE_FORBIDDEN');
+    const review2 = await alpha.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'alpha:' + cycle + ':selfreview2:1',
+      type: 'memory.review', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid2, version: 2 } }) });
+    expect(review2.structuredContent).toMatchObject({ status: 'applied', revision: 6, memory: { id: mid2, version: 2, status: 'active' } });
 
     // 11. CRB-R1 : gamma ne peut pas retirer la memoire privee d alpha ; alpha retire
-    // (rev 5 -> 6) : tombstone durable, l'export ne contient plus la memoire.
-    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'gamma:' + cycle + ':retire:1',
-      type: 'memory.retire', participant_id: gamma.pid, payload_json: JSON.stringify({ memory: { id: mid } }) }))).toBe('MEMORY_SCOPE_FORBIDDEN');
-    const retire = await alpha.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'alpha:' + cycle + ':retire:1',
-      type: 'memory.retire', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid } }) });
-    expect(retire.structuredContent).toMatchObject({ status: 'applied', revision: 6, memory: { id: mid, version: 2, status: 'retired' } });
+    // (rev 6 -> 7) : tombstone durable, l'export ne contient plus la memoire.
+    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 6, op_id: 'gamma:' + cycle + ':retire:1',
+      type: 'memory.retire', participant_id: gamma.pid, payload_json: JSON.stringify({ memory: { id: mid2 } }) }))).toBe('MEMORY_SCOPE_FORBIDDEN');
+    const retire = await alpha.call('collab_append_event', { cycle, expected_rev: 6, op_id: 'alpha:' + cycle + ':retire:1',
+      type: 'memory.retire', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid2 } }) });
+    expect(retire.structuredContent).toMatchObject({ status: 'applied', revision: 7, memory: { id: mid2, version: 2, status: 'retired' } });
     const expAfter = await alpha.call('collab_export', { cycle, format: 'memory-md' });
-    expect(expAfter.structuredContent.content as string).not.toContain(mid);
+    expect(expAfter.structuredContent.content as string).not.toContain(mid2);
 
     // 12. Etat durable (lectures SQL uniquement) : lifecycle complet au couple journal/memoire.
     await ensureSchema(db);
     const rows = await db.prepare('SELECT version, status, supersedes FROM memory_entries WHERE id = ?1 ORDER BY version')
-      .bind(mid).all<{ version: number; status: string; supersedes: string | null }>();
+      .bind(mid2).all<{ version: number; status: string; supersedes: string | null }>();
     expect(rows.results.map((r) => ({ v: r.version, s: r.status }))).toEqual([{ v: 1, s: 'superseded' }, { v: 2, s: 'retired' }]);
-    expect(rows.results[1].supersedes).toBe(mid + '@1');
+    expect(rows.results[1].supersedes).toBe(mid2 + '@1');
+    // X2 : la premiere memoire (fact, hors auto-revue) reste candidate a jamais.
+    const factRows = await db.prepare('SELECT version, status FROM memory_entries WHERE id = ?1 ORDER BY version')
+      .bind(mid).all<{ version: number; status: string }>();
+    expect(factRows.results).toEqual([{ version: 1, status: 'candidate' }]);
     const cycleRow = await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(cycle).first<{ revision: number }>();
-    expect(cycleRow?.revision).toBe(6);
-    // L'injection CRB-R1 de gamma n a jamais ecrit de ligne memoire.
+    expect(cycleRow?.revision).toBe(7);
+    // L'injection CRB-R1 de gamma n'a jamais ecrit de ligne memoire.
     const injected = await db.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE id = ?1').bind(injectId).first<{ n: number }>();
     expect(injected?.n).toBe(0);
 
     // 13. Client non enregistre : memory.propose refuse avant tout effet (UNREGISTERED_CLIENT).
     const strangerId = uniq('memstranger');
-    expect(code(await stranger.call('collab_append_event', { cycle, expected_rev: 6, op_id: 'stranger:' + cycle + ':propose:1',
+    expect(code(await stranger.call('collab_append_event', { cycle, expected_rev: 7, op_id: 'stranger:' + cycle + ':propose:1',
       type: 'memory.propose', participant_id: stranger.pseudonym,
       payload_json: JSON.stringify({ memory: { id: strangerId, scope: 'common', kind: 'fact', text: 'insertion interdite', evidence_refs: ['ev:x'] } }) })))
       .toBe('UNREGISTERED_CLIENT');

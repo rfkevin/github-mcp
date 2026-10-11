@@ -2,6 +2,11 @@ import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { ensureContextSchema } from './schema';
 import { resolveContextTarget, type ResolveContextInput, type ResolvedTask } from './resolution';
+import { toProjectScopeKey } from '../contracts/memory';
+
+// X2/X5 : toProjectScopeKey vit dans contracts/memory.ts (définition canonique,
+// partagée avec memory-store.ts) ; re-exportée ici pour la compatibilité de l'API.
+export { toProjectScopeKey };
 
 export const DEFAULT_PACKET_BUDGET = 6000;
 export const OPEN_QUESTIONS_BUDGET = 300;
@@ -62,27 +67,6 @@ function effectiveBudget(options: PacketOptions): number {
     return Math.min(DEFAULT_PACKET_BUDGET, options.approvedBudgetTokens);
   }
   return Math.min(DEFAULT_PACKET_BUDGET, quarter, options.approvedBudgetTokens ?? Number.MAX_SAFE_INTEGER);
-}
-
-/** I6 — empreinte FNV-1a 64 bits du project exact (owner/repo), hex 16 chars. */
-function fnv1a64Hex(value: string): string {
-  const bytes = new TextEncoder().encode(value);
-  let hash = 0xcbf29ce484222325n;
-  for (let i = 0; i < bytes.length; i++) {
-    hash ^= BigInt(bytes[i]);
-    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
-  }
-  return hash.toString(16).padStart(16, '0');
-}
-
-/** I6 (review Sol F5) : clé projet collision-résistante, compatible C4 project:[A-Za-z0-9_-]{1,64}. */
-export function toProjectScopeKey(project: string | null | undefined): string | null {
-  if (!project || !project.trim()) return null;
-  const value = project.trim();
-  if (/^[A-Za-z0-9_-]{1,64}$/.test(value)) return value;
-  const slug = value.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 43);
-  const key = slug + '-' + fnv1a64Hex(value);
-  return key.length <= 64 ? key : key.slice(0, 64);
 }
 
 /** I6 — common, participant:<caller>, role:<role>, task:<task>, project:<id C4>. */

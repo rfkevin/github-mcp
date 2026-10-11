@@ -102,9 +102,11 @@ describe('CC-3 CR-D — lifecycle légitime dans le scope d’origine', () => {
     // Scope dédié : l'alarme de croissance C4 compte les actives du scope (données des autres cas).
     const scope = 'participant:agent:same';
     await propose(id, scope);
-    await mem().activate(id, 1, 'agent:b');
+    // X2 (#107) : la revue d'un scope participant est réservée à son propriétaire
+    // (agent:same), pair distinct de l'auteur — la revue par le pair reste légitime.
+    await mem().activate(id, 1, 'agent:same');
     await mem().supersede(id, 'agent:a', 'v2 consolidee', ['ev:v2']);
-    await mem().activate(id, 2, 'agent:b');
+    await mem().activate(id, 2, 'agent:same');
     await mem().retire(id, 2);
     expect((await propose(id, scope)).version).toBe(3);
     expect(await lineage(id)).toEqual([
@@ -135,8 +137,10 @@ describe('CC-3 CR-D — promotion de scope (revue GPT-6 CRD-R1/CRD-R2)', () => {
 
   it('CRD-R1 : une autre version hors scope apparue au commit annule la promotion', async () => {
     const id = 'crd-promote-commit';
-    await propose(id, 'participant:agent:p', 'agent:p');
-    await mem().activate(id, 1, 'agent:b');
+    // X2 : self-review bornée — l'auteur propose une observation et l'active lui-même.
+    await mem().propose({ id, scope: 'participant:agent:p', kind: 'observation', text: 'texte participant:agent:p',
+      evidence_refs: ['ev:crd'], confidence: 'observed', author_pid: 'agent:p' });
+    await mem().activate(id, 1, 'agent:p');
     const prepared = await mem().preparePromoteScope(id, 1, 'agent:b', 'project:crd');
     await seed(id, 2, 'common', 'candidate', 'agent:z');
     await expect(db.batch(prepared.statements)).rejects.toThrow();
@@ -146,8 +150,10 @@ describe('CC-3 CR-D — promotion de scope (revue GPT-6 CRD-R1/CRD-R2)', () => {
 
   it('CRD-R2 : deux promotions préparées avant le premier commit → une seule copie, perdant refusé', async () => {
     const id = 'crd-promote-race';
-    await propose(id, 'participant:agent:q', 'agent:q');
-    await mem().activate(id, 1, 'agent:b');
+    // X2 : self-review bornée — l'auteur propose une observation et l'active lui-même.
+    await mem().propose({ id, scope: 'participant:agent:q', kind: 'observation', text: 'texte participant:agent:q',
+      evidence_refs: ['ev:crd'], confidence: 'observed', author_pid: 'agent:q' });
+    await mem().activate(id, 1, 'agent:q');
     // Les deux appels lisent la source active avant tout commit (course reproduite pas à pas).
     const first = await mem().preparePromoteScope(id, 1, 'agent:b', 'project:crd-a');
     const second = await mem().preparePromoteScope(id, 1, 'agent:c', 'project:crd-b');

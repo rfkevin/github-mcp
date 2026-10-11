@@ -267,7 +267,7 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 dispatche par appendEvent (
     expect(retire).toMatchObject({ status: 'applied', memory: { id, version: 1, status: 'retired' } });
   });
 
-  it('CRB-R1 : scopes participant prives — propose/consolidate/retire reserves au proprietaire, revue pair preservee', async () => {
+  it('CRB-R1/X2 : scopes participant prives — propose/consolidate/retire au proprietaire, auto-revue bornee', async () => {
     const cycle = uniq('cyc');
     const own = 'participant:agent:x';
     const other = 'participant:agent:y';
@@ -283,26 +283,36 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 dispatche par appendEvent (
     expect(await state(cycle)).toEqual(before);
     expect(await countRows(id)).toBe(0);
 
-    // Chemins legitimes : le proprietaire propose, un pair distinct reve (revoir n est pas administrer).
+    // Chemin legitime : le proprietaire propose une observation bornee (X2) ; un tiers
+    // ne reve JAMAIS la memoire privee d autrui (X2 : FORBIDDEN pre-batch, rien ecrit).
     expect((await append({ cycle, type: 'memory.propose', participant: x, op: 'own',
-      payload: { memory: { id, scope: own, kind: 'fact', text: 'memoire personnelle', evidence_refs: ['ev:1'] } } })).status).toBe('applied');
-    expect((await append({ cycle, type: 'memory.review', participant: y, op: 'rev',
+      payload: { memory: { id, scope: own, kind: 'observation', text: 'memoire personnelle', confidence: 'observed', evidence_refs: ['ev:1'] } } })).status).toBe('applied');
+    const mid = await state(cycle);
+    expect(await refuse({ cycle, type: 'memory.review', participant: y, op: 'rev-y',
+      payload: { memory: { id, version: 1 } } })).toBe('MEMORY_SCOPE_FORBIDDEN');
+    expect(await state(cycle)).toEqual(mid);
+    // Auto-revue bornee X2 : l auteur active sa proposition, reviewer_pid = author_pid.
+    expect((await append({ cycle, type: 'memory.review', participant: x, op: 'rev',
       payload: { memory: { id, version: 1 } } })).status).toBe('applied');
+    expect((await row(id, 1))?.reviewer_pid).toBe(x);
 
     // consolidate et retire restent au proprietaire : refus du pair, aucun etat change.
-    const mid = await state(cycle);
+    const afterSelf = await state(cycle);
     expect(await refuse({ cycle, type: 'memory.consolidate', participant: y, op: 'sup-y',
       payload: { memory: { id, text: 'consolidation interdite', evidence_refs: ['ev:2'] } } })).toBe('MEMORY_SCOPE_FORBIDDEN');
     expect(await refuse({ cycle, type: 'memory.retire', participant: y, op: 'ret-y',
       payload: { memory: { id } } })).toBe('MEMORY_SCOPE_FORBIDDEN');
-    expect(await state(cycle)).toEqual(mid);
+    expect(await state(cycle)).toEqual(afterSelf);
     expect(await countRows(id)).toBe(1);
 
     // Le proprietaire consolide puis retire ; v2 remplace v1 : pas de pause de croissance.
     expect((await append({ cycle, type: 'memory.consolidate', participant: x, op: 'sup',
       payload: { memory: { id, text: 'consolidation du proprietaire', evidence_refs: ['ev:2'] } } })))
       .toMatchObject({ status: 'applied', memory: { id, version: 2, status: 'candidate' } });
-    expect((await append({ cycle, type: 'memory.review', participant: y, op: 'rev2',
+    // La v2 herite observation/observed : le pair est toujours refuse, l auteur s auto-revue.
+    expect(await refuse({ cycle, type: 'memory.review', participant: y, op: 'rev2-y',
+      payload: { memory: { id, version: 2 } } })).toBe('MEMORY_SCOPE_FORBIDDEN');
+    expect((await append({ cycle, type: 'memory.review', participant: x, op: 'rev2',
       payload: { memory: { id, version: 2 } } })).status).toBe('applied');
     expect(await new MemoryStore(db).isActivationPaused(own)).toBe(false);
     expect((await append({ cycle, type: 'memory.retire', participant: x, op: 'ret',

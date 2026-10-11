@@ -9,15 +9,19 @@
  * refusé n'écrit rien du tout — ni journal, ni mémoire.
  *
  * Identité serveur (C5/I8) : l'auteur est le participant dérivé du jeton de
- * l'appelant ; memory.review exige un reviewer distinct de l'auteur ; les
- * kinds protégés (invariant, decision) exigent une décision owner liée au
- * sujet exact (C4). Toutes les pré-vérifications sont read-only : la façade
- * peut être rejouée pour re-diagnostiquer un échec sur l'état durable.
+ * l'appelant ; memory.review exige un reviewer distinct de l'auteur, hors
+ * auto-revue bornée du propriétaire d'un scope participant (X2) ; les kinds
+ * protégés (invariant, decision) exigent une décision owner liée au sujet
+ * exact (C4) ; une écriture mémoire partagée visible d'un cycle de travail P1
+ * ouvert est refusée avant batch (X5). Toutes les pré-vérifications sont
+ * read-only : la façade peut être rejouée pour re-diagnostiquer un échec sur
+ * l'état durable.
  *
  * Pas d'import depuis store/collab-store ici (le store importe ce module) :
  * les erreurs typées restent MemoryStoreError / StateContractError.
  */
 import { MemoryStore, MemoryStoreError, type MemoryMutation, type ProposeInput } from './memory-store';
+import type { JournalWriteContext } from './p1-independence';
 import type { StoreEvent } from '../contracts';
 import type { MemoryConfidence, MemoryKind } from '../contracts/memory';
 
@@ -113,9 +117,11 @@ function optionalInt(memory: Record<string, unknown>, key: string, type: string,
  * CRB-R1 (revue Sol, github-mcp#79/6086862463) : les scopes `participant:<id>`
  * sont la mémoire privée d'un participant — memory.propose ne peut viser que le
  * scope de l'appelant (MEMORY_SCOPE_FORBIDDEN sinon, avant tout batch : un
- * refus n'écrit rien du tout). La revue par un pair distinct reste ouverte
- * (activation C4) et les scopes partagés (common/project/role/task) restent
- * collaboratifs. Délégation ou dérogation : owner.request (C5).
+ * refus n'écrit rien du tout). X2 (#107) : la revue d'un scope participant est
+ * réservée à son propriétaire ; l'auto-revue bornée (observation, open_question,
+ * lesson, procedure à confiance hypothesis/observed) trace reviewer = auteur,
+ * tout tiers reste aveugle. Les scopes partagés (common/project/role/task)
+ * restent collaboratifs. Délégation ou dérogation : owner.request (C5).
  */
 function assertScopeOwnership(scope: string, participantId: string, type: string): void {
   if (scope.startsWith('participant:') && scope !== `participant:${participantId}`) {
@@ -139,6 +145,13 @@ export async function prepareMemoryEvent(
 ): Promise<MemoryMutation> {
   const memory = memoryPayload(event);
   const store = new MemoryStore(db);
+  // X5 (#107, revue Claude B1) : contexte conservé pour compat API — un cycle
+  // naissant (expected_rev = 0) n'a pas encore de phase_definitions (FK), il ne
+  // compte jamais comme cycle de travail.
+  const journalWrite: JournalWriteContext = {
+    cycleId: event.cycle_id,
+    createsCycle: event.expected_rev === 0,
+  };
   if (event.type === 'memory.propose') {
     // CRB-R1 (revue Sol) : le scope participant visé doit être celui de l'appelant.
     const scope = requiredString(memory, 'scope', event.type);
@@ -160,7 +173,7 @@ export async function prepareMemoryEvent(
       // CR-F04 (#96) : l'échéance d'une hypothèse est une révision de CE cycle.
       cycle_id: event.cycle_id,
     };
-    return store.preparePropose(input);
+    return store.preparePropose(input, journalWrite);
   }
   if (event.type === 'memory.review') {
     const version = optionalInt(memory, 'version', event.type, 1);
@@ -177,6 +190,8 @@ export async function prepareMemoryEvent(
       event.cycle_id,
       // CR-F04 : une hypothèse échue à cette révision n'est pas activée.
       nextRevision,
+      // X5 (#107) : contexte d'écriture du journal (jamais créateur de cycle).
+      journalWrite,
     );
   }
   if (event.type === 'memory.consolidate') {
@@ -198,6 +213,8 @@ export async function prepareMemoryEvent(
       // fenêtre complète depuis CE cycle (renouvellement contrôlé).
       event.cycle_id,
       nextRevision,
+      // X5 (#107) : contexte d'écriture du journal (jamais créateur de cycle).
+      journalWrite,
     );
   }
   if (event.type === 'memory.retire') {
