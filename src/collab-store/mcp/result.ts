@@ -4,12 +4,25 @@
  * une erreur non typée devient STORE_UNAVAILABLE avec son repli (C6, R4).
  */
 import { StateContractError } from '../../collab/contracts';
-import { CollabStoreError } from '../store/collab-store';
+import { CollabStoreError, STORED_EVENT_COLUMNS, type StoredStoreEvent } from '../store/collab-store';
 import { MemoryStoreError } from '../memory/memory-store';
 import { storeFallback, type StoreFallback } from '../export/fallback';
 
 export type ToolPayload = { content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown> };
 export type ToolErrorResult = { isError: true; content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown> };
+
+/**
+ * Projection d'un événement sur ses seules colonnes publiques, à la frontière
+ * MCP. Défense en profondeur avec les lectures explicites du store : une ligne
+ * lue ailleurs par SELECT *, ou une colonne ajoutée par une future migration,
+ * ne peut pas faire rejeter la réponse par un client strict ni exposer un
+ * champ interne (model_meta).
+ */
+export function toEventOutput(event: StoredStoreEvent): StoredStoreEvent {
+  const output: Record<string, unknown> = {};
+  for (const key of STORED_EVENT_COLUMNS) output[key] = event[key];
+  return output as unknown as StoredStoreEvent;
+}
 
 export function collabSuccess(value: Record<string, unknown>): ToolPayload {
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value };

@@ -9,7 +9,7 @@ import { ownerChannelConfig, type OwnerChannelEnv } from './config';
 import { defaultJwksResolver, verifyOwnerProof, type JwksResolver } from './proof';
 import { listPendingPage, listRegistry, mapClient, recordOwnerDecision, registerParticipant, unmapClient } from './decisions';
 import { OWNER_PAGE_CSP, dashboardPage, loginPage } from './page';
-import { unregisteredParticipantId } from '../identity';
+import { sightedClientIds, unregisteredParticipantId } from '../identity';
 import { importStateSnapshot, listImportedStates } from './state-import';
 import { parseExportTarget } from '../export/state-import-plan';
 import { installPhaseDefinitions } from './phase-install';
@@ -109,11 +109,11 @@ export async function handleOwnerRequest(
       const result = await registerParticipant(db, { participant_id: field('participant_id'), display_label: field('display_label'), proof, op });
       message = { text: 'Participant enregistré (seq ' + result.event.seq + ').', error: false };
     } else if (action === 'map') {
-      const clientId = await resolveClientReference(field('oauth_client_id'), listClientIds);
+      const clientId = await resolveClientReference(field('oauth_client_id'), listClientIds, db);
       const result = await mapClient(db, { oauth_client_id: clientId, participant_id: field('participant_id'), proof, op });
       message = { text: 'Client associé (seq ' + result.event.seq + ').', error: false };
     } else if (action === 'unmap') {
-      const result = await unmapClient(db, { oauth_client_id: await resolveClientReference(field('oauth_client_id'), listClientIds), proof, op });
+      const result = await unmapClient(db, { oauth_client_id: await resolveClientReference(field('oauth_client_id'), listClientIds, db), proof, op });
       message = { text: 'Association retirée (seq ' + result.event.seq + ').', error: false };
     } else if (action === 'import_state') {
       const result = await importStateSnapshot(db, {
@@ -153,12 +153,29 @@ export async function handleOwnerRequest(
 /**
  * Accepts a raw OAuth client id or the pseudonym `unregistered:…` shown in an
  * agent's owner.request, and returns the raw client id to map.
+ *
+ * A pseudonym resolves only to a client id the server knows by itself: a
+ * client authenticated on /collab/mcp (client sightings, the only source for
+ * CIMD clients) or a registered OAuth client (listClients). Every candidate is
+ * re-hashed, so a row that does not hash to the pseudonym is ignored; a
+ * pseudonym matching no client, or more than one, is refused (UNKNOWN_CLIENT).
  */
-export async function resolveClientReference(reference: string, listClientIds: () => Promise<string[]>): Promise<string> {
+export async function resolveClientReference(
+  reference: string,
+  listClientIds: () => Promise<string[]>,
+  db?: D1Database,
+): Promise<string> {
   const value = reference.trim();
   if (!value.startsWith('unregistered:')) return value;
-  for (const clientId of await listClientIds()) {
-    if (await unregisteredParticipantId(clientId) === value) return clientId;
-  }
-  throw new CollabStoreError('UNKNOWN_CLIENT', 'Aucun client OAuth enregistré ne correspond à ce pseudonyme.');
+  const matching = async (ids: string[]) => {
+    const found = new Set<string>();
+    for (const clientId of ids) if (await unregisteredParticipantId(clientId) === value) found.add(clientId);
+    return [...found];
+  };
+  let matches = db ? await matching(await sightedClientIds(db, value)) : [];
+  if (matches.length === 0) matches = await matching(await listClientIds());
+  if (matches.length === 1) return matches[0];
+  throw new CollabStoreError('UNKNOWN_CLIENT', matches.length === 0
+    ? 'Aucun client OAuth authentifié ou enregistré ne correspond à ce pseudonyme : le client doit d’abord appeler /collab/mcp avec son jeton.'
+    : 'Pseudonyme ambigu : associez le client par son identifiant OAuth brut.');
 }

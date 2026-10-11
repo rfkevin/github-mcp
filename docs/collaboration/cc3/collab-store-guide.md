@@ -51,10 +51,11 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 ### `collab_get_delta`
 - **Entrée** : `cycle`, `since_seq` (0 = depuis le début), `limit` (1 à 1000, 200 par défaut).
 - **Sortie** : événements de séquence `> since_seq`, et `hasMore`.
+- **Champs d’un événement** : exactement `seq`, `cycle_id`, `at`, `type`, `participant_id`, `session_id`, `role`, `payload_json`, `expected_rev`, `idempotency_key`, `evidence_ref`. Le schéma publié est strict (`additionalProperties: false`) ; les colonnes internes du journal (`model_meta`) ne sont jamais renvoyées. Même forme pour `event` de `collab_append_event` (applied ou duplicate), le `delta` de `collab_get_context` et le `delta` d’une erreur `STALE`.
 - **Usage** : réutilisez la plus grande `seq` reçue comme curseur.
 - **Annotations** : lecture seule.
 - **Contenu scellé** : avec C3, le contenu des propositions P1 non révélées est masqué (`sealed_id` et `content_hash` seulement).
-- **Mémoire privée (CR-C)** : un événement `memory.*` qui touche le scope `participant:<x>` d’un autre participant est rendu masqué selon votre identité serveur : `payload_json` = `{"memory":{"id":…,"version":…},"redacted":"private_scope"}` (version seulement si l’auteur l’a fournie), `session_id`, `role`, `evidence_ref` et `model_meta` vides. `seq`, `type`, `participant_id`, `expected_rev` et `idempotency_key` sont conservés : curseurs et preuves d’idempotence intacts. Vous voyez toujours vos propres événements tels qu’écrits, et le propriétaire du scope voit tout son historique. Client non enregistré : aucun scope privé. Fail-closed : scope indéterminable (payload illisible, id inconnu) ou id présent dans un scope privé d’autrui → masqué. Même règle pour le `delta` de `collab_get_context` et le `delta` d’une erreur `STALE`. Le journal stocké n’est pas modifié.
+- **Mémoire privée (CR-C)** : un événement `memory.*` qui touche le scope `participant:<x>` d’un autre participant est rendu masqué selon votre identité serveur : `payload_json` = `{"memory":{"id":…,"version":…},"redacted":"private_scope"}` (version seulement si l’auteur l’a fournie), `session_id`, `role` et `evidence_ref` vides. `seq`, `type`, `participant_id`, `expected_rev` et `idempotency_key` sont conservés : curseurs et preuves d’idempotence intacts. Vous voyez toujours vos propres événements tels qu’écrits, et le propriétaire du scope voit tout son historique. Client non enregistré : aucun scope privé. Fail-closed : scope indéterminable (payload illisible, id inconnu) ou id présent dans un scope privé d’autrui → masqué. Même règle pour le `delta` de `collab_get_context` et le `delta` d’une erreur `STALE`. Le journal stocké n’est pas modifié.
 
 ### `collab_append_event`
 - **Entrée** : `cycle`, `expected_rev` (0 = création), `op_id` au format `{client}:{cycle}:{op}:{n}` (n numérique), `type`, `participant_id`, `payload_json`, et en option `session_id`, `role`, `evidence_ref`. Le segment `{cycle}` de l’`op_id` doit désigner le cycle visé (`INVALID_OP_ID` sinon).
@@ -186,7 +187,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVALID_DECISION` | C5 | Décision autre que `approve` ou `deny` | — |
 | `INVALID_LABEL` | C5 | Libellé vide ou trop long | 1 à 80 caractères |
 | `INVALID_CLIENT_ID` | C5 | Identifiant de client OAuth invalide | — |
-| `UNKNOWN_CLIENT` | C5 | Aucun client OAuth ne correspond au pseudonyme `unregistered:…` | Vérifier le pseudonyme dans la demande |
+| `UNKNOWN_CLIENT` | C5 | Aucun client OAuth authentifié sur `/collab/mcp` ou enregistré ne correspond au pseudonyme `unregistered:…` (ou pseudonyme ambigu) | Vérifier le pseudonyme ; le client doit d’abord appeler `/collab/mcp`, ou associer l’identifiant brut |
 | `OWNER_PRECONDITION_FAILED` | C5 | Condition de la décision non remplie (participant inactif, demande déjà tranchée) | Relire `/owner` |
 | `STORE_NOT_CONFIGURED` | C2 | `COLLAB_DB` non lié : store désactivé (fail-closed, HTTP 503) | Opération K3 |
 | `STORE_UNAVAILABLE` | C6 | Store indisponible ou erreur non typée ; champ `fallback` | Lire via `github_collab_context`, aucune écriture GitHub de substitution, réessayer plus tard |

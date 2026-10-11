@@ -7,7 +7,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { CollabToolContext } from './context';
 import { outputSchemas } from './schemas';
-import { collabFailure as failure, collabSuccess } from './result';
+import { collabFailure as failure, collabSuccess, toEventOutput } from './result';
 import { CollabStoreError, type AppendOutcome } from '../store/collab-store';
 import type { StoreEventType } from '../contracts';
 import { authorizeAppend, authorizePhaseAdvance } from '../identity';
@@ -69,7 +69,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
         approvedBudgetTokens: input.approved_budget_tokens,
         lastSeenSeq: input.last_seen_seq ?? 0,
       });
-      let delta: { events: unknown[]; hasMore: boolean } | undefined;
+      let delta: Awaited<ReturnType<typeof context.store.getDelta>> | undefined;
       if (input.include_delta) {
         delta = await context.store.getDelta(
           resolved.cycle_id,
@@ -93,7 +93,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
           excluded_memory_ids: packet.excluded_memory_ids,
           budget: packet.budget,
         },
-        ...(delta ? { delta } : {}),
+        ...(delta ? { delta: { events: delta.events.map(toEventOutput), hasMore: delta.hasMore } } : {}),
       });
     } catch (error) {
       return collabFailure(error, 'Contexte de cycle indisponible.');
@@ -141,7 +141,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       const identity = await context.identity();
       const viewer = identity.status === 'registered' ? identity.participant_id : null;
       const { events, hasMore } = await context.store.getDelta(cycle, since_seq, limit, viewer);
-      return collabSuccess({ cycle_id: cycle, events, hasMore });
+      return collabSuccess({ cycle_id: cycle, events: events.map(toEventOutput), hasMore });
     } catch (error) {
       return collabFailure(error, 'Delta indisponible.');
     }
@@ -186,19 +186,19 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       return collabSuccess({
         status: 'applied',
         revision: outcome.revision,
-        event: outcome.event,
+        event: toEventOutput(outcome.event),
         // CR-B (CR-02) : effet memory_entries d'un événement memory.* applied.
         ...(outcome.memory ? { memory: outcome.memory } : {}),
       });
     }
     if (outcome.status === 'duplicate') {
-      return collabSuccess({ status: 'duplicate', event: outcome.event });
+      return collabSuccess({ status: 'duplicate', event: toEventOutput(outcome.event) });
     }
     if (outcome.status === 'stale') {
       return collabFailure(
         new CollabStoreError('STALE', 'Conflit de révision : rejouez le delta puis réessayez à currentRevision.'),
         'Conflit de révision.',
-        { currentRevision: outcome.currentRevision, delta: outcome.delta },
+        { currentRevision: outcome.currentRevision, delta: outcome.delta.map(toEventOutput) },
       );
     }
     return collabFailure(

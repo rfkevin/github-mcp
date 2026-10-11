@@ -60,6 +60,19 @@ export interface StoredStoreEvent {
   evidence_ref: string;
 }
 
+/**
+ * Public columns of an event row: exactly the fields of StoredStoreEvent.
+ * Store reads list them explicitly instead of SELECT *: an internal column
+ * added by a store migration (model_meta, 0002) must never reach a caller,
+ * since strict MCP clients reject any property absent from the published
+ * output schema (additionalProperties: false).
+ */
+export const STORED_EVENT_COLUMNS = [
+  'seq', 'cycle_id', 'at', 'type', 'participant_id', 'session_id', 'role',
+  'payload_json', 'expected_rev', 'idempotency_key', 'evidence_ref',
+] as const satisfies ReadonlyArray<keyof StoredStoreEvent>;
+const EVENT_SELECT = 'SELECT ' + STORED_EVENT_COLUMNS.join(', ') + ' FROM events';
+
 export type AppendOutcome =
   | { status: 'applied'; revision: number; event: StoredStoreEvent; memory?: { id: string; version: number; status: string } }
   | { status: 'duplicate'; event: StoredStoreEvent }
@@ -280,7 +293,7 @@ export class CollabStore {
   async getDelta(cycleId: string, sinceSeq: number, limit = 200, viewer: string | null = null): Promise<{ events: StoredStoreEvent[]; hasMore: boolean }> {
     await ensureSchema(this.db);
     const { results } = await this.db.prepare(
-      'SELECT * FROM events WHERE cycle_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3'
+      EVENT_SELECT + ' WHERE cycle_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3'
     ).bind(cycleId, sinceSeq, limit + 1).all<StoredStoreEvent>();
     const revealed = await revealProposalPayloads(this.db, cycleId, results.slice(0, limit));
     const events = await redactEventsFor(this.db, viewer, revealed);
@@ -319,7 +332,7 @@ export class CollabStore {
     // Events applied after revision R = events excluding the first R by seq:
     // the anchor is the R-th event (OFFSET R - 1); R = 0 means the whole journal.
     const { results } = await this.db.prepare([
-      'SELECT * FROM events WHERE cycle_id = ?1 AND (',
+      EVENT_SELECT + ' WHERE cycle_id = ?1 AND (',
       '  ?2 = 0 OR seq > COALESCE(',
       '    (SELECT seq FROM events WHERE cycle_id = ?1 ORDER BY seq LIMIT 1 OFFSET (?2 - 1)), 0))',
       ' ORDER BY seq',
@@ -328,7 +341,7 @@ export class CollabStore {
   }
 
   private async eventByKey(key: string): Promise<StoredStoreEvent | null> {
-    return this.db.prepare('SELECT * FROM events WHERE idempotency_key = ?1').bind(key).first<StoredStoreEvent>();
+    return this.db.prepare(EVENT_SELECT + ' WHERE idempotency_key = ?1').bind(key).first<StoredStoreEvent>();
   }
 
   /**

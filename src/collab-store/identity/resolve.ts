@@ -8,6 +8,7 @@
  * file `owner.request`, nothing else (plan CC-PLAN-3/v1.1 §3.2).
  */
 import { ensureSchema } from '../store/schema';
+import { recordClientSighting } from './client-sightings';
 
 export type ParticipantIdentity =
   | { status: 'registered'; participant_id: string; display_label: string; client_id: string }
@@ -34,4 +35,24 @@ export async function resolveParticipant(db: D1Database, clientId: string): Prom
     return { status: 'unregistered', participant_id: await unregisteredParticipantId(clientId), client_id: clientId };
   }
   return { status: 'registered', participant_id: row.participant_id, display_label: row.display_label, client_id: clientId };
+}
+
+/**
+ * Identity of the client carried by a VALIDATED token (/collab/mcp tool
+ * context only). An unmapped client is recorded as sighted so that the owner
+ * can map it by its pseudonym, including CIMD clients that listClients()
+ * never returns. Mapped clients write nothing. Best effort: a failed record
+ * never blocks the caller's read; the owner would then see UNKNOWN_CLIENT.
+ */
+export async function resolveTokenParticipant(db: D1Database, clientId: string): Promise<ParticipantIdentity> {
+  const identity = await resolveParticipant(db, clientId);
+  if (identity.status === 'unregistered' && identity.client_id) {
+    try {
+      await recordClientSighting(db, identity.client_id, identity.participant_id);
+    } catch (error) {
+      console.warn(JSON.stringify({ service: 'collab-identity', outcome: 'client_sighting_failed',
+        name: error instanceof Error ? error.name : typeof error }));
+    }
+  }
+  return identity;
 }

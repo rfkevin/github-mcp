@@ -49,7 +49,9 @@ Chaque action du registre est aussi journalisée comme `owner.decision` dans le 
 - Un client non associé est `unregistered` : lecture, et dépôt de `owner.request` seulement (`UNREGISTERED_CLIENT` sinon). C'est par une demande `owner.request` qu'un nouvel agent demande son association.
 - `owner.decision` reste refusé à tous les agents (`OWNER_DECISION_FORBIDDEN`), quel que soit leur statut.
 
-Pour associer un nouvel agent : il dépose une demande `owner.request` sous son pseudonyme `unregistered:…` (dérivé de son client OAuth, non réversible). Sur `/owner`, enregistrez son participant, puis collez ce pseudonyme dans le champ « Client OAuth » : le Worker retrouve le client correspondant parmi les clients OAuth enregistrés. L'identifiant brut fonctionne aussi.
+Pour associer un nouvel agent : il dépose une demande `owner.request` sous son pseudonyme `unregistered:…` (dérivé de son client OAuth, non réversible). Sur `/owner`, enregistrez son participant, puis collez ce pseudonyme dans le champ « Client OAuth » : le Worker retrouve le client correspondant parmi les clients déjà authentifiés sur `/collab/mcp` puis parmi les clients OAuth enregistrés. L'identifiant brut fonctionne aussi.
+
+Clients CIMD (identifiant = URL publique de métadonnées, par exemple Claude `https://claude.ai/oauth/mcp-oauth-client-metadata` ou ChatGPT `https://chatgpt.com/oauth/client.json`) : la bibliothèque OAuth ne les enregistre jamais, ils n'apparaissent donc pas dans la liste des clients. Le Worker retient l'identifiant porté par un **jeton validé** lors du premier appel non associé à `/collab/mcp` (table interne `oauth_client_sightings`) ; c'est ce qui permet d'associer leur pseudonyme. Rien de ce que l'agent déclare (champ `participant_id`, contenu d'une demande, libellé) n'y entre, et cette trace n'accorde aucune identité : seule l'association faite ici en donne une. Un pseudonyme qui ne correspond à aucun client authentifié ou enregistré est refusé (`UNKNOWN_CLIENT`) : demandez à l'agent d'appeler d'abord `collab_get_context`. Limite connue : toutes les sessions qui partagent un même identifiant CIMD reçoivent la même identité.
 
 ## Limites connues (V1)
 
