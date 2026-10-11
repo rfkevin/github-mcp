@@ -145,8 +145,9 @@ export async function prepareMemoryEvent(
 ): Promise<MemoryMutation> {
   const memory = memoryPayload(event);
   const store = new MemoryStore(db);
-  // X5 (#107) : contexte d'écriture du journal — l'append qui CRÉE le cycle
-  // (expected_rev = 0) participe au diagnostic P1 (cycle naissant exposé).
+  // X5 (#107, revue Claude B1) : contexte conservé pour compat API — un cycle
+  // naissant (expected_rev = 0) n'a pas encore de phase_definitions (FK), il ne
+  // compte jamais comme cycle de travail.
   const journalWrite: JournalWriteContext = {
     cycleId: event.cycle_id,
     createsCycle: event.expected_rev === 0,

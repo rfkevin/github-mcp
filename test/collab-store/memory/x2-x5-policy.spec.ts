@@ -38,6 +38,10 @@ async function seedP1WorkCycle(cycle: string, project: string, task?: string): P
   await db.prepare("INSERT INTO cycles (cycle_id, project, phase, revision) VALUES (?1, ?2, 'P1', 1)")
     .bind(cycle, project)
     .run();
+  // B1 (revue Claude, PR #108) : un cycle de travail porte des phase_definitions (K-phases).
+  await db.prepare("INSERT INTO phase_definitions (cycle_id, phase) VALUES (?1, 'P1')")
+    .bind(cycle)
+    .run();
   if (task) {
     await db.prepare(
       "INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid) VALUES (?1, ?2, 'agent:x2x5-o', 'agent:x2x5-r', 'agent:x2x5-t')",
@@ -157,16 +161,28 @@ describe('CC-3 X2 — auto-revue bornée du propriétaire d’un scope participa
 });
 
 describe('CC-3 X5 — indépendance P1 des cycles de travail (github-mcp#107)', () => {
-  it('propose commun sur un cycle naissant P1 → MEMORY_P1_SHARED_MUTATION, rien écrit', async () => {
+  it('propose commun sur un cycle naissant P1 sans phase_definitions : applique (B1)', async () => {
     const cycle = uniq('cycle');
     const id = uniq('mem');
-    const before = await journalState(cycle);
-    expect(await refuse({ cycle, type: 'memory.propose', participant: 'agent:x2x5-alpha', op: 'p',
-      payload: { memory: { id, scope: 'common', kind: 'fact', text: 'commune interdite',
-        evidence_refs: ['ev:x5-naissant'], confidence: 'observed' } } }))
-      .toBe('MEMORY_P1_SHARED_MUTATION');
-    expect(await journalState(cycle)).toEqual(before);
-    expect(await memoryRowCount(id)).toBe(0);
+    const outcome = await append({ cycle, type: 'memory.propose', participant: 'agent:x2x5-alpha', op: 'p',
+      payload: { memory: { id, scope: 'common', kind: 'fact', text: 'commune sur cycle naissant',
+        evidence_refs: ['ev:x5-naissant'], confidence: 'observed' } } });
+    expect(outcome.status).toBe('applied');
+    expect(await journalState(cycle)).toEqual({ revision: 1, events: 1 });
+    expect(await memoryRowCount(id)).toBe(1);
+  });
+
+  it('B1 : un cycle errant (checkpoint, rev 0, sans phase_definitions) ne gèle pas les écritures communes', async () => {
+    const stray = uniq('stray');
+    expect((await append({ cycle: stray, type: 'checkpoint', participant: 'agent:x2x5-alpha', op: 'c',
+      payload: { note: 'cycle errant' } })).status).toBe('applied');
+    expect(await journalState(stray)).toEqual({ revision: 1, events: 1 });
+    const w = uniq('work');
+    const id = uniq('mem');
+    expect((await append({ cycle: w, type: 'memory.propose', participant: 'agent:x2x5-alpha', op: 'p',
+      payload: { memory: { id, scope: 'common', kind: 'fact', text: 'commune non gelée par un cycle errant',
+        evidence_refs: ['ev:x5-stray'], confidence: 'observed' } } })).status).toBe('applied');
+    expect(await memoryRowCount(id)).toBe(1);
   });
 
   it('cycles système P1 exclus + rejeu duplicate + garde transactionnelle (preparePropose → P1 → batch refuse → P2 → batch OK)', async () => {
@@ -239,5 +255,31 @@ describe('CC-3 X5 — indépendance P1 des cycles de travail (github-mcp#107)', 
       payload: { memory: { id: uniq('priv'), scope: 'participant:agent:x2x5-alpha', kind: 'observation',
         text: 'privée X2', evidence_refs: ['ev:priv'], confidence: 'observed' } } })).status).toBe('applied');
     expect(await journalState(b)).toEqual({ revision: 10, events: 10 });
+  });
+
+  it('B2 : permutation à effectif constant, la garde empreinte annule le batch', async () => {
+    await ensureSchema(db);
+    const a = uniq('perm-a');
+    const b = uniq('perm-b');
+    await seedP1WorkCycle(a, 'pa');
+    await db.prepare("INSERT INTO cycles (cycle_id, project, phase, revision) VALUES (?1, 'pb', 'P1', 1)").bind(b).run();
+    // Diagnostic : project:pb n'est visible d'aucun cycle de travail (a couvre pa,
+    // b n'a pas de phase_definitions) — la proposition est préparée non bloquée.
+    const id = uniq('mem');
+    const prepared = await store().preparePropose({ id, scope: 'project:pb', kind: 'fact',
+      text: 'projet pb en course', evidence_refs: ['ev:x5-perm'], confidence: 'observed', author_pid: 'agent:x2x5-alpha' });
+    // Course concurrente à effectif constant : a passe en P2 pendant que b
+    // reçoit ses phase_definitions (un seul cycle P1 ouvert avant et après).
+    await db.prepare("UPDATE cycles SET phase = 'P2' WHERE cycle_id = ?1").bind(a).run();
+    await db.prepare("INSERT INTO phase_definitions (cycle_id, phase) VALUES (?1, 'P1')").bind(b).run();
+    // L'empreinte a changé (a#pa# vers b#pb#) : le batch est annulé, rien n'est écrit.
+    await expect(db.batch(prepared.statements)).rejects.toThrow();
+    expect(await memoryRowCount(id)).toBe(0);
+    // Re-diagnostic : b est un cycle de travail, project:pb est désormais bloquée.
+    const id2 = uniq('mem');
+    expect(await refuse({ cycle: uniq('dst'), type: 'memory.propose', participant: 'agent:x2x5-alpha', op: 'p',
+      payload: { memory: { id: id2, scope: 'project:pb', kind: 'fact', text: 'projet pb bloqué après permutation',
+        evidence_refs: ['ev:x5-perm2'], confidence: 'observed' } } }))
+      .toBe('MEMORY_P1_SHARED_MUTATION');
   });
 });

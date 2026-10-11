@@ -44,10 +44,8 @@ describe('CC-3 CR-C — mémoire privée absente des lectures du journal (HTTP)'
     expect((await append(beta, cycle, rev, 'prop', 'proposal.submit', { content: 'PROPOSITION-SCELLEE-C07' })).structuredContent.status)
       .toBe('applied');
     rev += 1;
-
-    // X5 (#107) : une écriture de portée partagée (common) exige un cycle de décision —
-    // bascule directe du cycle en P2 (le journal reste la seule porte de la mémoire).
-    await db.prepare("UPDATE cycles SET phase = 'P2' WHERE cycle_id = ?1").bind(cycle).run();
+    // X5 (#107, revue Claude B1) : le cycle de ce test naît sans phase_definitions —
+    // un cycle errant ne gèle jamais une écriture commune (chemin réel).
 
     // C01 — alpha propose dans son scope privé (texte, preuve et session sentinelles).
     const proposed = await append(alpha, cycle, rev, 'mem', 'memory.propose', { memory: { id: memId, scope: `participant:${alpha.pid}`,

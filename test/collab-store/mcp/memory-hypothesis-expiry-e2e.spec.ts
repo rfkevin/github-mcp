@@ -56,9 +56,6 @@ describe('CC-3 CR-F04 — expiration des hypothèses par le journal (HTTP)', () 
     const [a, b] = [uniq('cycle-a'), uniq('cycle-b')];
     const scope = 'common';
     const h = uniq('hyp');
-    // X5 (#107) : les écritures de portée partagée exigent des cycles de décision (P2, révision 0).
-    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision) VALUES (?1, 'P2', 0)").bind(a).run();
-    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision) VALUES (?1, 'P2', 0)").bind(b).run();
 
     // A rev 1 : proposition (échéance = 1 + 3 = 4, dans A) ; A rev 2 : revue par un pair.
     expect((await append(alpha, a, 'memory.propose', hypothesis(h, scope, 'hypothèse partagée inter-cycles'))).structuredContent)
@@ -91,9 +88,6 @@ describe('CC-3 CR-F04 — expiration des hypothèses par le journal (HTTP)', () 
     const [a, b] = [uniq('cycle-a'), uniq('cycle-b')];
     const scope = 'common';
     const h = uniq('hyp');
-    // X5 (#107) : les écritures de portée partagée exigent des cycles de décision (P2, révision 0).
-    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision) VALUES (?1, 'P2', 0)").bind(a).run();
-    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision) VALUES (?1, 'P2', 0)").bind(b).run();
     await append(alpha, a, 'memory.propose', hypothesis(h, scope, 'hypothèse à renouveler'));     // A rev 1 → échéance 4
     await append(beta, a, 'memory.review', { memory: { id: h, version: 1 } });                    // A rev 2
     await advanceTo(alpha, b, 7);

@@ -1470,7 +1470,7 @@ function confidenceRank(c: MemoryConfidence): number {
 /**
  * X5 (#107) : garde P1 d'un scope mémoire — null si le scope est privé (jamais
  * gardé), refus pré-batch MEMORY_P1_SHARED_MUTATION si un cycle de travail P1
- * ouvert voit le scope, sinon garde transactionnelle d'instantané à joindre à
+ * ouvert voit le scope, sinon garde transactionnelle d'empreinte à joindre à
  * la fin des statements du batch du caller (course fail-closed).
  */
 async function p1SharedGuard(

@@ -45,9 +45,8 @@ async function fileOwnerRequest(cycle: string, requestId: string, summary: strin
   if (outcome.status !== 'applied' && outcome.status !== 'duplicate') {
     throw new Error('owner.request append failed: ' + outcome.status);
   }
-  // X5 (#107) : le cycle qui porte un owner.request est un cycle de décision —
-  // jamais un cycle de travail P1 dont le packet exposerait une écriture partagée.
-  await bindings.COLLAB_DB_C2.prepare(`UPDATE cycles SET phase = 'P2' WHERE cycle_id = ?1`).bind(cycle).run();
+  // X5 (#107, revue Claude B1) : le cycle qui porte un owner.request n'a pas de
+  // phase_definitions — il ne compte jamais comme cycle de travail P1.
 }
 
 /**

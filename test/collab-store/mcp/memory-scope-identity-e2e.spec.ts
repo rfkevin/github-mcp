@@ -147,11 +147,8 @@ describe('CC-3 CR-D — scope immuable d’un id mémoire (HTTP, D01–D07)', ()
     const [alpha, beta, gamma] = [await agent('alpha'), await agent('beta'), await agent('gamma')];
     const cycle = uniq('cycle');
     const id = uniq('common');
-    // X5 (#107) : une écriture commune exige qu'aucun cycle de travail P1 ouvert ne l'expose.
-    // Balayage des cycles de travail restés P1 (les cycles système en sont exclus) ; le
-    // cycle de CE test naît P2 (révision 0) : jamais de packet P1 exposé.
-    await db.prepare("UPDATE cycles SET phase = 'P2' WHERE phase = 'P1' AND status = 'open' AND cycle_id NOT IN ('memory-alarms', 'owner-registry')").run();
-    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision) VALUES (?1, 'P2', 0)").bind(cycle).run();
+    // X5 (#107, revue Claude B1) : le cycle de ce test naît par l'append lui-même, sans
+    // phase_definitions - un cycle errant ne gèle jamais une écriture commune (chemin réel).
     const quotaStart = (await snapshot(cycle, id)).quota;
     expect((await append(beta, cycle, 'p1', 'memory.propose', fact(id, 'common', 'commune v1'))).structuredContent.status).toBe('applied');
     expect((await append(gamma, cycle, 'r1', 'memory.review', { id, version: 1 })).structuredContent.status).toBe('applied');
