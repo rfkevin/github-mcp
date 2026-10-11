@@ -13,8 +13,12 @@ export type ToolResult = { isError?: boolean; structuredContent: Record<string, 
 export const toolCode = (result: ToolResult): string | undefined =>
   (result.structuredContent.error as { code: string } | undefined)?.code;
 
+/** Outil tel que publié par tools/list : schémas JSON réellement vus par les clients MCP. */
+export type ListedTool = { name: string; outputSchema?: Record<string, unknown> };
+
 export interface E2eClient {
   call: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
+  listTools: () => Promise<ListedTool[]>;
   pseudonym: string;
 }
 
@@ -41,22 +45,21 @@ export function e2eScenario(db: D1Database, prefix: string, secret: string) {
   let rpcId = 10;
   let seq = 0;
   const uniq = (label: string) => `${prefix}-${label}-${Date.now().toString(36)}-${++seq}`;
-  async function client(): Promise<E2eClient> {
-    const session = await fixture.mcpSession(
-      'mcp:read collab: offline_access',
-      'http://localhost:4321/callback',
-      fixture.ORIGIN + '/collab/mcp',
-    );
-    const call = async (name: string, args: Record<string, unknown>) =>
+  /** Client MCP sur /collab/mcp pour des en-têtes de session déjà authentifiés (DCR ou CIMD). */
+  async function clientFor(headers: Record<string, string>): Promise<E2eClient> {
+    const rpc = async (method: string, params: Record<string, unknown>) =>
       fixture.rpcResult(
         await (
           await fixture.send('/collab/mcp', {
             method: 'POST',
-            headers: session.headers,
-            body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'tools/call', params: { name, arguments: args } }),
+            headers,
+            body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
           })
         ).text(),
-      ) as ToolResult;
+      );
+    const call = async (name: string, args: Record<string, unknown>) =>
+      await rpc('tools/call', { name, arguments: args }) as ToolResult;
+    const listTools = async () => (await rpc('tools/list', {})).tools as ListedTool[];
     const probe = await call('collab_append_event', {
       cycle: probeCycle,
       expected_rev: 0,
@@ -66,14 +69,22 @@ export function e2eScenario(db: D1Database, prefix: string, secret: string) {
       payload_json: '{}',
     });
     const pseudonym = (probe.structuredContent.error as { message: string }).message.match(/unregistered:[0-9a-f]{16}/)![0];
-    return { call, pseudonym };
+    return { call, listTools, pseudonym };
+  }
+  async function client(): Promise<E2eClient> {
+    const session = await fixture.mcpSession(
+      'mcp:read collab: offline_access',
+      'http://localhost:4321/callback',
+      fixture.ORIGIN + '/collab/mcp',
+    );
+    return clientFor(session.headers);
   }
   async function agent(label: string): Promise<E2eClient & { pid: string }> {
-    const { call, pseudonym } = await client();
+    const base = await client();
     const pid = uniq(label);
     expect((await owner({ action: 'register', participant_id: pid, display_label: label })).status).toBe(200);
-    expect((await owner({ action: 'map', oauth_client_id: pseudonym, participant_id: pid })).status).toBe(200);
-    return { call, pid, pseudonym };
+    expect((await owner({ action: 'map', oauth_client_id: base.pseudonym, participant_id: pid })).status).toBe(200);
+    return { ...base, pid };
   }
-  return { owner, client, agent, uniq };
+  return { fixture, owner, client, clientFor, agent, uniq };
 }

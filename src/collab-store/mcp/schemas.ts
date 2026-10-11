@@ -4,7 +4,11 @@
  */
 import { z } from 'zod';
 
-const storedEvent = {
+/**
+ * Événement public du journal (STORED_EVENT_COLUMNS côté store). Publié strict
+ * (additionalProperties: false) : toute sortie passe par toEventOutput().
+ */
+export const storedEvent = {
   seq: z.number(),
   cycle_id: z.string(),
   at: z.number(),
