@@ -46,10 +46,13 @@ describe('CC-3 CR-D — scope immuable d’un id mémoire (HTTP, D01–D07)', ()
     const id = uniq('mem');
     const privateScope = `participant:${alpha.pid}`;
 
-    // D01 — parcours légitime : alpha propose v1 privée, gamma (pair) l'active.
-    expect((await append(alpha, cycle, 'p1', 'memory.propose', fact(id, privateScope, 'v1 privee alpha'))).structuredContent)
+    // D01 — parcours légitime (X2) : alpha propose v1 privée en observation bornée ;
+    // un pair ne l'active jamais (FORBIDDEN), le propriétaire s'auto-revue.
+    expect((await append(alpha, cycle, 'p1', 'memory.propose',
+      { id, scope: privateScope, kind: 'observation', text: 'v1 privee alpha', evidence_refs: ['ev:crd-15'], confidence: 'observed' })).structuredContent)
       .toMatchObject({ status: 'applied', memory: { id, version: 1, status: 'candidate' } });
-    expect((await append(gamma, cycle, 'r1', 'memory.review', { id, version: 1 })).structuredContent)
+    expect(code(await append(gamma, cycle, 'r1-ghost', 'memory.review', { id, version: 1 }))).toBe('MEMORY_SCOPE_FORBIDDEN');
+    expect((await append(alpha, cycle, 'r1', 'memory.review', { id, version: 1 })).structuredContent)
       .toMatchObject({ status: 'applied', memory: { id, version: 1, status: 'active' } });
 
     // D02 — alpha consolide (v2 candidate, v1 superseded) ; beta propose le même id en common :
@@ -64,9 +67,10 @@ describe('CC-3 CR-D — scope immuable d’un id mémoire (HTTP, D01–D07)', ()
       { version: 2, scope: privateScope, status: 'candidate' },
     ]);
 
-    // D03 — gamma active v2 ; aucune v3 hors scope n'existe : delta ne peut ni l'activer
-    // (MEMORY_NOT_FOUND, pas de faux applied) ni réclamer l'id actif dans un autre scope.
-    expect((await append(gamma, cycle, 'r2', 'memory.review', { id, version: 2 })).structuredContent)
+    // D03 — X2 : le propriétaire auto-revue v2 ; aucune v3 hors scope n'existe : delta
+    // ne peut ni l'activer (MEMORY_NOT_FOUND, pas de faux applied) ni réclamer l'id actif
+    // dans un autre scope.
+    expect((await append(alpha, cycle, 'r2', 'memory.review', { id, version: 2 })).structuredContent)
       .toMatchObject({ status: 'applied', memory: { id, version: 2, status: 'active' } });
     const beforeD03 = await snapshot(cycle, id);
     expect(code(await append(delta, cycle, 'r3', 'memory.review', { id, version: 3 }))).toBe('MEMORY_NOT_FOUND');
@@ -82,7 +86,8 @@ describe('CC-3 CR-D — scope immuable d’un id mémoire (HTTP, D01–D07)', ()
     expect(await snapshot(cycle, id)).toEqual(beforeD04);
 
     // D05 — après retrait, alpha re-propose le même id DANS LE MÊME scope : version suivante (contrat existant).
-    expect((await append(alpha, cycle, 'p5', 'memory.propose', fact(id, privateScope, 'v3 privee alpha'))).structuredContent)
+    expect((await append(alpha, cycle, 'p5', 'memory.propose',
+      { id, scope: privateScope, kind: 'observation', text: 'v3 privee alpha', evidence_refs: ['ev:crd-15'], confidence: 'observed' })).structuredContent)
       .toMatchObject({ status: 'applied', memory: { id, version: 3, status: 'candidate' } });
     expect(await rows(id)).toEqual([
       { version: 1, scope: privateScope, status: 'superseded' },
@@ -142,6 +147,11 @@ describe('CC-3 CR-D — scope immuable d’un id mémoire (HTTP, D01–D07)', ()
     const [alpha, beta, gamma] = [await agent('alpha'), await agent('beta'), await agent('gamma')];
     const cycle = uniq('cycle');
     const id = uniq('common');
+    // X5 (#107) : une écriture commune exige qu'aucun cycle de travail P1 ouvert ne l'expose.
+    // Balayage des cycles de travail restés P1 (les cycles système en sont exclus) ; le
+    // cycle de CE test naît P2 (révision 0) : jamais de packet P1 exposé.
+    await db.prepare("UPDATE cycles SET phase = 'P2' WHERE phase = 'P1' AND status = 'open' AND cycle_id NOT IN ('memory-alarms', 'owner-registry')").run();
+    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision) VALUES (?1, 'P2', 0)").bind(cycle).run();
     const quotaStart = (await snapshot(cycle, id)).quota;
     expect((await append(beta, cycle, 'p1', 'memory.propose', fact(id, 'common', 'commune v1'))).structuredContent.status).toBe('applied');
     expect((await append(gamma, cycle, 'r1', 'memory.review', { id, version: 1 })).structuredContent.status).toBe('applied');

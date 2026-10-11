@@ -45,6 +45,9 @@ async function fileOwnerRequest(cycle: string, requestId: string, summary: strin
   if (outcome.status !== 'applied' && outcome.status !== 'duplicate') {
     throw new Error('owner.request append failed: ' + outcome.status);
   }
+  // X5 (#107) : le cycle qui porte un owner.request est un cycle de décision —
+  // jamais un cycle de travail P1 dont le packet exposerait une écriture partagée.
+  await bindings.COLLAB_DB_C2.prepare(`UPDATE cycles SET phase = 'P2' WHERE cycle_id = ?1`).bind(cycle).run();
 }
 
 /**
@@ -75,6 +78,7 @@ async function proposeProtectedInvariant(
   id: string,
   scope: string,
   confidence: MemoryConfidence = 'verified',
+  author: string = 'agent:a',
 ): Promise<StoredMemory> {
   const ref = proposeRequestId(id, 1);
   await approveViaC5(ref, `Approve invariant ${id} (C4 §4 mutation tests).`, 'prop-' + id);
@@ -85,7 +89,7 @@ async function proposeProtectedInvariant(
     text: `Protected invariant ${id} for §4 mutation tests.`,
     evidence_refs: ['plan:4'],
     confidence,
-    author_pid: 'agent:a',
+    author_pid: author,
     owner_decision_ref: ref,
   });
 }
@@ -97,9 +101,10 @@ async function ensureActive(
   version: number,
   scope: string,
   tag: string,
+  reviewer: string = 'agent:b',
 ): Promise<void> {
   try {
-    await mem.activate(id, version, 'agent:b');
+    await mem.activate(id, version, reviewer);
   } catch {
     /* protected activation pauses the scope */
   }
@@ -107,7 +112,7 @@ async function ensureActive(
     const ref = await mem.pauseClearRequestId(scope);
     await approveViaC5(ref, `Clear ${scope} pause (${tag}).`, 'pause-' + tag);
     await mem.clearActivationPause(ref, scope);
-    await mem.activate(id, version, 'agent:b');
+    await mem.activate(id, version, reviewer);
   }
 }
 
@@ -194,7 +199,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       evidence_refs: ['self'],
       author_pid: 'agent:b',
     });
-    await mem.activate(priv.id, 1, 'agent:a');
+    // X2 (#107) : la revue d'un scope participant est réservée à son propriétaire.
+    await mem.activate(priv.id, 1, 'agent:b');
     const forA = await mem.listActiveFor('agent:a', ['participant:agent:b', 'common']);
     expect(forA.some((r) => r.id === priv.id)).toBe(false);
     const forB = await mem.listActiveFor('agent:b', ['participant:agent:b']);
@@ -213,7 +219,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         author_pid: 'agent:z',
       });
       try {
-        await mem.activate(p.id, 1, 'agent:y');
+      await mem.activate(p.id, 1, 'agent:z');
       } catch (err) {
         if (err instanceof MemoryStoreError && err.code === 'MEMORY_BUDGET_EXCEEDED') {
           blocked = true;
@@ -247,9 +253,9 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(p.expires_rev).toBe(13);
     expect(p.expires_cycle).toBe('crf4-unit-origin');
     // Another cycle far ahead never expires it (the old global sweep did).
-    await db.prepare("INSERT INTO cycles (cycle_id, revision) VALUES ('crf4-unit-other', 50)").run();
+    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision) VALUES ('crf4-unit-other', 'P2', 50)").run();
     expect(await mem.expireHypotheses('crf4-unit-other')).toBe(0);
-    await db.prepare("INSERT INTO cycles (cycle_id, revision) VALUES ('crf4-unit-origin', 12)").run();
+    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision) VALUES ('crf4-unit-origin', 'P2', 12)").run();
     expect(await mem.expireHypotheses('crf4-unit-origin')).toBe(0);
     expect((await mem.get(p.id, 1))?.status).toBe('candidate');
     await db.prepare("UPDATE cycles SET revision = 13 WHERE cycle_id = 'crf4-unit-origin'").run();
@@ -293,7 +299,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       evidence_refs: ['self:a'],
       author_pid: 'agent:a',
     });
-    await mem.activate(p.id, 1, 'agent:b');
+    // X2 : auto-revue bornée (observation/hypothesis) — reviewer = author = propriétaire.
+    await mem.activate(p.id, 1, 'agent:a');
     await expect(
       mem.promoteConfidence(p.id, 1, 'agent:a', 'peer:fake', 'observed'),
     ).rejects.toThrow(/distinct|PEER/);
@@ -399,7 +406,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       author_pid: 'agent:a',
       confidence: 'observed',
     });
-    await mem.activate(p.id, 1, 'agent:b');
+    // X2 : auto-revue bornée (lesson/observed) — reviewer = author = propriétaire.
+    await mem.activate(p.id, 1, 'agent:a');
     await expect(mem.promoteScope(p.id, 1, 'agent:a', 'project:cc3')).rejects.toThrow(/distinct/);
     await expect(mem.promoteScope(p.id, 1, 'agent:b', 'task:t1')).rejects.toThrow(/SCOPE_TARGET|role|project|common/);
     const lifted = await mem.promoteScope(p.id, 1, 'agent:b', 'project:cc3');
@@ -528,8 +536,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
 
   it('promoteScope of a protected kind requires an owner decision bound to the occurrence', async () => {
     const mem = store();
-    const p = await proposeProtectedInvariant(mem, 'mem-prot-scope', 'participant:agent:a');
-    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'scope');
+    const p = await proposeProtectedInvariant(mem, 'mem-prot-scope', 'participant:agent:a', 'verified', 'agent:crd');
+    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'scope', 'agent:a');
     await expect(mem.promoteScope(p.id, 1, 'agent:b', 'project:cc4')).rejects.toThrow(
       /PROTECTED_KIND_OWNER_REQUIRED|required/,
     );
@@ -551,8 +559,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
 
   it('CRD-R2 (revue GPT-6) : une approbation owner de promotion ne sert qu’une fois, même en course', async () => {
     const mem = store();
-    const p = await proposeProtectedInvariant(mem, 'mem-prot-race', 'participant:agent:a');
-    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'scope-race');
+    const p = await proposeProtectedInvariant(mem, 'mem-prot-race', 'participant:agent:a', 'verified', 'agent:crd');
+    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'scope-race', 'agent:a');
     const ref = await promoteScopeRequestId(p.id, 2, 'project:cc5');
     await approveViaC5(ref, 'Approve lifting mem-prot-race to project:cc5 once.', 'scope-race-ok');
     // Deux promotions préparées avec la même approbation avant le premier commit.
@@ -568,7 +576,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
 
   it('promoteConfidence of a protected kind requires an owner decision (candidate and active)', async () => {
     const mem = store();
-    const p = await proposeProtectedInvariant(mem, 'mem-prot-conf', 'participant:agent:a', 'observed');
+    const p = await proposeProtectedInvariant(mem, 'mem-prot-conf', 'participant:agent:a', 'observed', 'agent:crd');
     // candidate path: no decision -> rejected; occurrence-bound decision -> allowed
     await seedLedger('agent:b', 'ev-prot-conf-1');
     await expect(mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-prot-conf-1', 'verified')).rejects.toThrow(
@@ -580,7 +588,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(upCand.confidence).toBe('verified');
     expect(upCand.status).toBe('candidate');
     // active path: supersede-bound decision; the candidate-bound one must not leak
-    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'conf');
+    await ensureActive(mem, p.id, 1, 'participant:agent:a', 'conf', 'agent:a');
     await seedLedger('agent:b', 'ev-prot-conf-2');
     await expect(
       mem.promoteConfidence(p.id, 1, 'agent:b', 'ev-prot-conf-2', 'owner_validated', candRef),
@@ -855,7 +863,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         evidence_refs: [`e-budget-${i}`],
         author_pid: 'agent:aa03',
       });
-      await mem.activate(p.id, 1, 'agent:bb03', cycle);
+      await mem.activate(p.id, 1, 'agent:aa03', cycle);
     }
     const a = await mem.propose({
       scope,
@@ -872,8 +880,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       author_pid: 'agent:aa03',
     });
     const { winner, loserError } = await raceTwo(
-      mem.activate(a.id, 1, 'agent:bb03', cycle),
-      mem.activate(b.id, 1, 'agent:cc03', cycle),
+      mem.activate(a.id, 1, 'agent:aa03', cycle),
+      mem.activate(b.id, 1, 'agent:aa03', cycle),
     );
     expect(loserError.code).toBe('MEMORY_BUDGET_EXCEEDED');
     await expectWinnerActiveLoserCandidate(mem, a, b, winner);
@@ -907,7 +915,7 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         evidence_refs: [`e-uni-${i}`],
         author_pid: 'agent:uni03',
       });
-      await mem.activate(p.id, 1, 'agent:rev03', cycle);
+      await mem.activate(p.id, 1, 'agent:uni03', cycle);
     }
     // Two 60-token candidates (120 emoji = 240 UTF-16 units): each passes the
     // JS pre-check alone (420 + 60 <= 500), together they exceed the budget
@@ -928,8 +936,8 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
       author_pid: 'agent:uni03',
     });
     const { winner, loserError } = await raceTwo(
-      mem.activate(a.id, 1, 'agent:rev03', cycle),
-      mem.activate(b.id, 1, 'agent:rev04', cycle),
+      mem.activate(a.id, 1, 'agent:uni03', cycle),
+      mem.activate(b.id, 1, 'agent:uni03', cycle),
     );
     expect(loserError.code).toBe('MEMORY_BUDGET_EXCEEDED');
     await expectWinnerActiveLoserCandidate(mem, a, b, winner);
