@@ -148,6 +148,19 @@ export const STORE_INTERNAL_SCHEMA = [
 ];
 
 /**
+ * Identity-internal table (never part of the canonical schema): OAuth clients
+ * whose VALIDATED token reached /collab/mcp while unmapped. A CIMD client
+ * (client_id = public metadata URL) is fetched on demand and never stored by
+ * the OAuth library, so listClients() cannot resolve its pseudonym on /owner;
+ * this table can. Written only from the token's client id
+ * (identity/client-sightings.ts), never from a value sent by a caller.
+ */
+export const IDENTITY_INTERNAL_SCHEMA = [
+  'CREATE TABLE IF NOT EXISTS oauth_client_sightings (oauth_client_id TEXT PRIMARY KEY, pseudonym TEXT NOT NULL, first_seen INTEGER NOT NULL)',
+  'CREATE INDEX IF NOT EXISTS idx_oauth_client_sightings_pseudonym ON oauth_client_sightings(pseudonym)',
+];
+
+/**
  * Store-owned migration 0002 (C1 review reco #2): events.model_meta is listed in
  * plan CC-PLAN-3/v1.1 §3.2 but was absent from the frozen C1 schema.
  */
@@ -203,6 +216,7 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
   await db.batch([
     ...runnableStatements(CANONICAL_SCHEMA_SQL).map(statement => db.prepare(statement)),
     ...STORE_INTERNAL_SCHEMA.map(statement => db.prepare(statement)),
+    ...IDENTITY_INTERNAL_SCHEMA.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.

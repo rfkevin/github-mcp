@@ -4,7 +4,7 @@
  */
 import { CollabStore, CollabStoreError, type StoreOptions } from '../store/collab-store';
 import { collabDailyWriteLimit, type CollabStoreEnv } from '../store/config';
-import { resolveParticipant, type ParticipantIdentity } from '../identity';
+import { resolveTokenParticipant, type ParticipantIdentity } from '../identity';
 import { parseFallbackState, storeFallback, type StoreFallback } from '../export/fallback';
 
 export interface CollabToolContext {
@@ -35,5 +35,6 @@ export function createCollabToolContext(
   const db = env.COLLAB_DB;
   let resolved: Promise<ParticipantIdentity> | undefined;
   return { actor, store, scopes, db, fallback: storeFallback(parseFallbackState(env.COLLAB_FALLBACK_STATE)),
-    identity: () => (resolved ??= resolveParticipant(db, clientId)) };
+    // clientId vient du jeton validé (handler.ts) : seul chemin qui enregistre un client observé.
+    identity: () => (resolved ??= resolveTokenParticipant(db, clientId)) };
 }

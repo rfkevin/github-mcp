@@ -187,7 +187,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVALID_DECISION` | C5 | Décision autre que `approve` ou `deny` | — |
 | `INVALID_LABEL` | C5 | Libellé vide ou trop long | 1 à 80 caractères |
 | `INVALID_CLIENT_ID` | C5 | Identifiant de client OAuth invalide | — |
-| `UNKNOWN_CLIENT` | C5 | Aucun client OAuth ne correspond au pseudonyme `unregistered:…` | Vérifier le pseudonyme dans la demande |
+| `UNKNOWN_CLIENT` | C5 | Aucun client OAuth authentifié sur `/collab/mcp` ou enregistré ne correspond au pseudonyme `unregistered:…` (ou pseudonyme ambigu) | Vérifier le pseudonyme ; le client doit d’abord appeler `/collab/mcp`, ou associer l’identifiant brut |
 | `OWNER_PRECONDITION_FAILED` | C5 | Condition de la décision non remplie (participant inactif, demande déjà tranchée) | Relire `/owner` |
 | `STORE_NOT_CONFIGURED` | C2 | `COLLAB_DB` non lié : store désactivé (fail-closed, HTTP 503) | Opération K3 |
 | `STORE_UNAVAILABLE` | C6 | Store indisponible ou erreur non typée ; champ `fallback` | Lire via `github_collab_context`, aucune écriture GitHub de substitution, réessayer plus tard |
