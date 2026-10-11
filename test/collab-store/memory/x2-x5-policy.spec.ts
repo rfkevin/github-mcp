@@ -178,8 +178,8 @@ describe('CC-3 X5 — indépendance P1 des cycles de travail (github-mcp#107)', 
       evidence_refs: ['ev:x5-sys'], confidence: 'observed', author_pid: 'agent:x2x5-alpha' };
     expect((await append({ cycle: w, type: 'memory.propose', participant: 'agent:x2x5-alpha', op: 'p',
       payload: { memory: proposePayload } })).status).toBe('applied');
-    expect(await refuse({ cycle: w, type: 'memory.propose', participant: 'agent:x2x5-alpha', op: 'p',
-      payload: { memory: proposePayload } })).toBe('duplicate');
+    expect((await append({ cycle: w, type: 'memory.propose', participant: 'agent:x2x5-alpha', op: 'p',
+      payload: { memory: proposePayload } })).status).toBe('duplicate');
     const raceId = uniq('race');
     const prepared = await store().preparePropose({ id: raceId, scope: 'common', kind: 'fact',
       text: 'commune en course', evidence_refs: ['ev:x5-race'], confidence: 'observed', author_pid: 'agent:x2x5-alpha' });
@@ -214,8 +214,8 @@ describe('CC-3 X5 — indépendance P1 des cycles de travail (github-mcp#107)', 
     await seedP1WorkCycle(a, 'proj-a', 'x2x5-task');
     const before = await journalState(b);
     const blockedScopes = ['common', 'project:proj-a', 'task:x2x5-task', 'role:owner'];
-    for (const scope of blockedScopes) {
-      expect(await refuse({ cycle: b, type: 'memory.propose', participant: alpha, op: 'blk-' + scope,
+    for (const [index, scope] of blockedScopes.entries()) {
+      expect(await refuse({ cycle: b, type: 'memory.propose', participant: alpha, op: 'blk-' + index,
         payload: { memory: { id: uniq('blk'), scope, kind: 'fact', text: 'bloqué ' + scope,
           evidence_refs: ['ev:x5-blk'], confidence: 'observed' } } }))
         .toBe('MEMORY_P1_SHARED_MUTATION');
@@ -226,8 +226,8 @@ describe('CC-3 X5 — indépendance P1 des cycles de travail (github-mcp#107)', 
       payload: { memory: { id: c1, text: 'c1 v2', evidence_refs: ['ev:c1b'] } } })).toBe('MEMORY_P1_SHARED_MUTATION');
     expect(await journalState(b)).toEqual(before);
     const acceptedScopes = ['project:x2x5-other', 'task:absente', 'role:xyz'];
-    for (const scope of acceptedScopes) {
-      expect((await append({ cycle: b, type: 'memory.propose', participant: alpha, op: 'ok-' + scope,
+    for (const [index, scope] of acceptedScopes.entries()) {
+      expect((await append({ cycle: b, type: 'memory.propose', participant: alpha, op: 'ok-' + index,
         payload: { memory: { id: uniq('ok'), scope, kind: 'fact', text: 'accepté ' + scope,
           evidence_refs: ['ev:x5-ok'], confidence: 'observed' } } })).status).toBe('applied');
     }
