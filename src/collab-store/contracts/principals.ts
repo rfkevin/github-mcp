@@ -59,7 +59,7 @@ export function validateAttestationKind(kind: unknown): AttestationKind {
       'attestation_kind',
     );
   }
-  return kind;
+  return kind as AttestationKind;
 }
 
 export function validateCapabilitySet(set: unknown): CapabilitySet {
@@ -81,9 +81,9 @@ export function validateCapabilitySet(set: unknown): CapabilitySet {
     }
   }
   for (const field of CAPABILITY_CEILING_FIELDS) {
-    const value = record[field];
+    const value: unknown = record[field];
     if (value === undefined) continue;
-    if (!Number.isSafeInteger(value) || value < 0) {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
       throw new StateContractError(
         'INVALID_CAPABILITY_SET',
         'capability_set.' + field + ' must be an integer >= 0',
