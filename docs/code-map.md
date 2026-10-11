@@ -112,3 +112,13 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `src/collab-store/owner/state-import.ts` : import d’un état fusionné, décision owner `import_state` (seul `owner/` écrit `owner.decision`).
 - Branchement : `src/collab-store/mcp/{tools,schemas,result,context,handler}.ts` (outil `collab_export`, repli explicite), `src/collab-store/owner/{handler,page,decisions}.ts` (formulaire d’import), `src/index.ts` (503 avec repli).
 - Tests : `test/collab-store/export/` (`document`, `roundtrip`, `tool`, `docs-coverage`). Guide : `docs/collaboration/cc3/collab-store-guide.md`.
+
+
+## CC-4 A0 — durcissement du store avant automatisation (#110)
+
+- `src/collab-store/contracts/phases.ts` : grammaire stricte de l'op_id `{client}:{cycle}:{op}:{n}` (`parseOpId`, exactement quatre segments, aucun deux-points interne), `task_id` optionnel d'une sortie attendue (`INVALID_PHASE_OUTPUT_TASK`).
+- `src/collab-store/contracts/principals.ts` : contrat §3.1 principal/endpoint/session — kinds d'attestation, capacités deny-by-default, `provesDistinctPrincipals` (un CIMD partagé ne prouve pas des participants distincts) ; codes `INVALID_ATTESTATION_KIND`, `INVALID_CAPABILITY_SET`, `INVALID_ENDPOINT_REGISTRATION`, `INVALID_SESSION_BINDING`.
+- `src/collab-store/phases/entry-seq.ts` : frontière de ronde CR-F01 partagée avec le store sans cycle d'imports ; `store/collab-store.ts` : garde une-proposition-par-participant-et-par-ronde (pré-check + clause CAS `NOT EXISTS`, `PROPOSAL_ALREADY_SUBMITTED`) et égalités op_id cycle/client jugées après le rejeu.
+- `src/collab-store/context/resolution.ts` : découverte du cycle sans issue ni cycle (`NO_ACTIVE_CYCLE`, `AMBIGUOUS_CYCLE`, filtre `task`) — jamais de choix implicite (défaut du trial C7).
+- `src/collab-store/store/schema.ts` : migration 0005 — tables internes `endpoints` (UNIQUE principal + attestation) et `session_bindings` (PK session + endpoint), hors schéma canonique gelé.
+- Tests : `test/collab-store/contracts/{a0-op-id,principals}.spec.ts`, `test/collab-store/store/proposal-guard.spec.ts`, `test/collab-store/phases/expected-outputs-task.spec.ts`, `test/collab-store/context/discovery.spec.ts` ; adaptations : A01 `collab-store.spec.ts`, STALE `collab-tools.spec.ts`, op_id = pid dans `memory-lifecycle-e2e`/`phase-bootstrap-e2e`/`tool-binding`/`no-agent-path`.

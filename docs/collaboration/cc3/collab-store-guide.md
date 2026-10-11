@@ -45,7 +45,8 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Sortie** : phase, statut et révision du cycle, tâches, `caller`, `resolved`, `packet` (rôle, mémoire I6, budget) et `delta` optionnel.
 - **Mémoire (I6)** : le packet n’inclut que `common`, `participant:<caller>`, `role:<rôle courant>`, `task:<tâche courante>` et `project:<id>` (contrat C4 : `project:[A-Za-z0-9_-]{1,64}`) quand applicables. Les scopes `task:other` / `role:other` / `project:other` ne fuitent pas.
 - **Annotations** : lecture seule.
-- **Erreurs** : `UNKNOWN_CYCLE`, `STORE_UNAVAILABLE`, `CONTEXT_TARGET_REQUIRED`, `AMBIGUOUS_TASK`, `AMBIGUOUS_ISSUE`, `UNKNOWN_ISSUE`, `INVALID_ISSUE_REF`, `PACKET_BUDGET_TOO_SMALL`.
+- **Erreurs** : `UNKNOWN_CYCLE`, `STORE_UNAVAILABLE`, `AMBIGUOUS_TASK`, `AMBIGUOUS_ISSUE`, `UNKNOWN_ISSUE`, `INVALID_ISSUE_REF`, `PACKET_BUDGET_TOO_SMALL`.
+- **Découverte du cycle (A0)** : sans `issue` ni `cycle`, le cycle est découvert — le participant doit tenir un rôle dans exactement un cycle ouvert (ou dans la tâche nommée par `task`). Aucun → `NO_ACTIVE_CYCLE` ; plusieurs → `AMBIGUOUS_CYCLE` (liste des cycles dans le message). Jamais de choix implicite (défaut du trial C7 corrigé).
 - **Services C3** : packet complet par rôle et résolution `issue → cycle → tâche`. Les issues d’un cycle sont indexées par l’import d’état (section 4).
 
 ### `collab_get_delta`
@@ -58,8 +59,9 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Mémoire privée (CR-C)** : un événement `memory.*` qui touche le scope `participant:<x>` d’un autre participant est rendu masqué selon votre identité serveur : `payload_json` = `{"memory":{"id":…,"version":…},"redacted":"private_scope"}` (version seulement si l’auteur l’a fournie), `session_id`, `role` et `evidence_ref` vides. `seq`, `type`, `participant_id`, `expected_rev` et `idempotency_key` sont conservés : curseurs et preuves d’idempotence intacts. Vous voyez toujours vos propres événements tels qu’écrits, et le propriétaire du scope voit tout son historique. Client non enregistré : aucun scope privé. Fail-closed : scope indéterminable (payload illisible, id inconnu) ou id présent dans un scope privé d’autrui → masqué. Même règle pour le `delta` de `collab_get_context` et le `delta` d’une erreur `STALE`. Le journal stocké n’est pas modifié.
 
 ### `collab_append_event`
-- **Entrée** : `cycle`, `expected_rev` (0 = création), `op_id` au format `{client}:{cycle}:{op}:{n}` (n numérique), `type`, `participant_id`, `payload_json`, et en option `session_id`, `role`, `evidence_ref`. Le segment `{cycle}` de l’`op_id` doit désigner le cycle visé (`INVALID_OP_ID` sinon).
+- **Entrée** : `cycle`, `expected_rev` (0 = création), `op_id` au format strict `{client}:{cycle}:{op}:{n}` — exactement quatre segments, aucun `:` interne, `n` numérique (`INVALID_OP_ID` sinon, avant toute écriture ; un rejeu du même `op_id` reste `duplicate`, jugé avant ces égalités) —, `type`, `participant_id`, `payload_json`, et en option `session_id`, `role`, `evidence_ref`. Le segment `{cycle}` doit désigner le cycle visé ; le segment `{client}` doit être le participant serveur quand son id peut figurer dans un segment sans `:` — les ids legacy avec `:` (`agent:a`, pseudonymes `unregistered:…`) en sont exemptés, l’exemption est documentée et verrouillée par les tests.
 - **Types acceptés** : `task.claim`, `task.status`, `task.handoff`, `checkpoint`, `evidence.add`, `objection.open`, `objection.resolve`, `proposal.submit`, `phase.request`, `owner.request`, `memory.propose`, `memory.review`, `memory.consolidate`, `memory.retire`, `manual_op.log`. `owner.decision` est refusé (`OWNER_DECISION_FORBIDDEN`).
+- **Une sortie par participant et par ronde (A0)** : un seul `proposal.submit` par participant dans la même ronde d’une phase (depuis la dernière (re)entrée dans cette phase, CR-F01). Un second — réponse perdue ou pas (cas réel GPT-6, seq 95/96 du cycle cc4-design) — est refusé `PROPOSAL_ALREADY_SUBMITTED` ; le rejeu du même `op_id` reste `duplicate`. Quand une définition de phase lie une sortie attendue à un `task_id`, l’événement doit porter `payload.task` = ce `task_id` et son auteur tenir le rôle attendu sur CETTE tâche ; sans `task_id`, le rôle sur une tâche du cycle suffit (limite legacy documentée).
 - **Tâches (permissions F1)** :
   - `task.claim` attend `{ "task": { task_id, owner_pid, reviewer_pid, tester_pid, owned_paths[], next_action } }`. Les trois rôles doivent être distincts (D12, `DUPLICATE_TASK_ROLE`) et enregistrés actifs (K6, `UNREGISTERED_PARTICIPANT`) ; la première affectation est faite par l’`owner_pid` lui-même, une réaffectation par l’owner courant uniquement (`TASK_FORBIDDEN`).
   - `task.status` attend `{ "task": { task_id, status } }`, émis par l’owner, le reviewer ou le testeur de la tâche (`TASK_FORBIDDEN`).
@@ -77,7 +79,7 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
   - `applied`, avec la nouvelle révision, l’événement et, pour un événement `memory.*`, son effet dans le champ `memory` ;
   - `duplicate`, avec l’événement original ; — le rejeu doit porter la même requête octet par octet : l'ordre des clés JSON compte, une intention réordonnée donne `IDEMPOTENCY_CONFLICT` ;
   - `IDEMPOTENCY_CONFLICT` quand l’`op_id` rejoué porte une autre intention (type, auteur, contenu) : incrémentez le compteur `n` ;
-  - `STALE`, avec `currentRevision` et `delta` à rejouer avant de réessayer (delta rendu pour l’appelant : mémoire privée d’autrui masquée, CR-C) ;
+  - `STALE`, avec `currentRevision` et `delta` à rejouer avant de réessayer ; le message nomme `currentRevision = <n>` et l’`expected_rev` fourni, lisible sans décoder le delta (A0) ; delta rendu pour l’appelant : mémoire privée d’autrui masquée, CR-C ;
   - `QUOTA_EXHAUSTED` quand le quota quotidien est atteint (5000 par défaut, `COLLAB_DAILY_WRITE_LIMIT`).
 
 ### `collab_export`
@@ -100,6 +102,10 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Règle** : transition autorisée (P1→P2→P3→P4→P5→P6, plus un retour d’un cran), définition et conditions d’entrée de la cible, rejeu de la même intention détecté **avant** `STALE`.
 - **Définitions de phase** : installées par Kevin sur `/owner` (opération K-phases). Sans elles, `PHASE_DEFINITION_MISSING`.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `PHASE_ADVANCE_FORBIDDEN`, `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
+
+### Contrat principal / endpoint / session (A0, plan CC-4 §3.1)
+
+Contrat et schéma seuls — aucune exécution d’agent dans ce lot. Quatre kinds d’attestation (`oauth_client`, `github_oidc`, `provider_adapter`, `chat_cimd`) ; un endpoint porte un statut (`probe_required`, `active`, `retired`) et un jeu de capacités **deny-by-default** : un champ absent ou vide n’autorise rien, pas de joker, plafonds entiers ≥ 0, champs inconnus rejetés. **Un CIMD partagé ne prouve pas des participants distincts** : même principal, même endpoint, même couple (kind, ref) ou même session → pas de preuve de principals distincts (`provesDistinctPrincipals`). Schéma : tables internes `endpoints` (UNIQUE principal + attestation) et `session_bindings` (PK session + endpoint), migration 0005, jamais dans le schéma canonique gelé. Codes : `INVALID_ATTESTATION_KIND`, `INVALID_CAPABILITY_SET`, `INVALID_ENDPOINT_REGISTRATION`, `INVALID_SESSION_BINDING`.
 
 ## 4. Cycle de vie de l’état : import, travail, export, fusion
 
@@ -204,7 +210,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVALID_PARTICIPANT_ID` | C1/C5 | Identifiant de participant invalide ou réservé (`owner`, `system`, `unregistered:*`) | — |
 | `INVALID_EXPECTED_REV` | C1 | `expected_rev` négatif ou non entier | — |
 | `INVALID_IDEMPOTENCY_KEY` | C1 | Clé d’idempotence dérivée invalide | Respecter le format d’`op_id` |
-| `INVALID_OP_ID` | C1/F1 | `op_id` hors format `{client}:{cycle}:{op}:{n}`, ou segment cycle ≠ cycle visé | Corriger le segment cycle |
+| `INVALID_OP_ID` | C1/F1/A0 | `op_id` hors format strict `{client}:{cycle}:{op}:{n}` (exactement quatre segments, aucun `:` interne), segment cycle ≠ cycle visé, ou segment client ≠ participant serveur (ids avec `:` exemptés) | Corriger le segment cycle ou client ; le rejeu du même `op_id` reste `duplicate` |
 | `INVALID_EVENT_FIELD` | C1 | Champ obligatoire vide | — |
 | `EVENT_FIELD_TOO_LONG` | C1 | Champ trop long (`payload_json` ≤ 64 Kio) | — |
 | `INVALID_PAYLOAD_JSON` | C1 | `payload_json` n’est pas du JSON | — |
@@ -221,6 +227,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `UNREGISTERED_PARTICIPANT` | F1 | Rôle de tâche sans participant enregistré actif sur `/owner` (K6) | Enregistrer le participant |
 | `IDEMPOTENCY_CONFLICT` | F1 | `op_id` rejoué avec une intention différente | Incrémenter le compteur `n` de l’op_id |
 | `UNKNOWN_CYCLE` | C2 | Cycle inconnu | Vérifier l’identifiant |
+| `PROPOSAL_ALREADY_SUBMITTED` | A0 | Un second `proposal.submit` du même participant dans la même ronde de la phase (pré-check + clause CAS transactionnelle) | Une seule proposition par participant et par ronde ; rejeu du même `op_id` → `duplicate` |
 
 ### 7.3 Phases, contexte et scellement (C3)
 
@@ -230,6 +237,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVALID_PHASE_CONDITIONS` | C1 | Conditions d’entrée ou de sortie invalides | — |
 | `INVALID_PHASE_OUTPUT` | C1 | Sortie attendue invalide | — |
 | `INVALID_PHASE_OUTPUTS` | C1 | Liste des sorties attendues invalide | — |
+| `INVALID_PHASE_OUTPUT_TASK` | A0 | `task_id` d’une sortie attendue invalide | `[a-z0-9][a-z0-9_-]{0,63}` |
 | `INVALID_CONTENT_HASH` | C1 | Empreinte de contenu scellé invalide | — |
 | `INVALID_PROPOSAL_PAYLOAD` | C3 | `proposal.submit` en P1 sans `payload_json.content` | Fournir `content` |
 | `INVALID_SEALED_ENVELOPE` | C3 | Enveloppe scellée illisible | Signaler (incident) |
@@ -240,13 +248,18 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `PHASE_OUTPUTS_INCOMPLETE` | C3 | Sorties attendues non produites par des participants distincts | Compléter |
 | `PHASE_EXIT_CONDITIONS_UNMET` | C3 | Conditions de sortie non remplies | — |
 | `POLICY_NOT_AUTHORIZED` | C3 | Politique d’avance non autorisée pour cette phase | `phase.request` |
-| `CONTEXT_TARGET_REQUIRED` | C3 | Ni issue ni cycle fourni | — |
+| `NO_ACTIVE_CYCLE` | A0 | Sans issue ni cycle : aucun cycle ouvert où le participant tient un rôle | Fournir `issue` ou `cycle` |
+| `AMBIGUOUS_CYCLE` | A0 | Sans issue ni cycle : plusieurs cycles ouverts avec un rôle (liste dans le message) | Fournir `issue`, `cycle` ou filtrer par `task` |
 | `UNKNOWN_ISSUE` | C3 | Aucun cycle pour cette issue | — |
 | `AMBIGUOUS_ISSUE` | C3 | Même numéro d’issue dans plusieurs dépôts | Préciser `repository` ou `repo#n` |
 | `INVALID_ISSUE_REF` | C3 | Référence d’issue illisible | — |
 | `INVALID_ISSUE_REPOSITORY` | C3 | Dépôt requis pour indexer une issue | — |
 | `AMBIGUOUS_TASK` | C3 | Plusieurs tâches possibles (fail-closed) | Préciser `task` |
 | `PACKET_BUDGET_TOO_SMALL` | C3 | Le packet minimal dépasse le budget | Signaler |
+| `INVALID_ATTESTATION_KIND` | A0 | Kind d’attestation hors `oauth_client`, `github_oidc`, `provider_adapter`, `chat_cimd` | Corriger le kind |
+| `INVALID_CAPABILITY_SET` | A0 | Jeu de capacités invalide (liste vide, champ inconnu, plafond négatif) — deny-by-default | Corriger le capability_set |
+| `INVALID_ENDPOINT_REGISTRATION` | A0 | Enregistrement d’endpoint invalide (ids, attestation_ref, statut) | Corriger l’enregistrement |
+| `INVALID_SESSION_BINDING` | A0 | Liaison session/endpoint invalide | Corriger les ids |
 
 ### 7.4 Mémoire et registre de preuves (C1, C4)
 
