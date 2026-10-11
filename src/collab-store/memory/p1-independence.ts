@@ -148,17 +148,4 @@ export function p1SnapshotGuard(db: D1Database, snapshot: P1Snapshot): D1Prepare
       '  THEN 1 ELSE 0 END',
     ].join(' '))
     .bind(MEMORY_ALARM_CYCLE, REGISTRY_CYCLE, JSON.stringify(snapshot.keys));
-}*/
-export function p1SnapshotGuard(db: D1Database, snapshot: P1Snapshot): D1PreparedStatement {
-  return db
-    .prepare([
-      'INSERT INTO collab_store_guard (ok)',
-      'SELECT CASE WHEN',
-      "  (SELECT COUNT(*) FROM cycles WHERE phase = 'P1' AND status = 'open' AND cycle_id NOT IN (?1, ?2)) = ?3",
-      '  AND (SELECT COUNT(*) FROM tasks WHERE cycle_id IN (',
-      "    SELECT cycle_id FROM cycles WHERE phase = 'P1' AND status = 'open' AND cycle_id NOT IN (?1, ?2)",
-      '  )) = ?4',
-      '  THEN 1 ELSE 0 END',
-    ].join(' '))
-    .bind(MEMORY_ALARM_CYCLE, REGISTRY_CYCLE, snapshot.cycles, snapshot.tasks);
 }
