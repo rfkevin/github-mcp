@@ -137,9 +137,6 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 par le journal public (HTTP
       type: 'memory.propose', participant_id: stranger.pseudonym,
       payload_json: JSON.stringify({ memory: { id: strangerId, scope: 'common', kind: 'fact', text: 'insertion interdite', evidence_refs: ['ev:x'] } }) })))
       .toBe('UNREGISTERED_CLIENT');
-      type: 'memory.propose', participant_id: stranger.pseudonym,
-      payload_json: JSON.stringify({ memory: { id: strangerId, scope: 'common', kind: 'fact', text: 'insertion interdite', evidence_refs: ['ev:x'] } }) })))
-      .toBe('UNREGISTERED_CLIENT');
     const ghost = await db.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE id = ?1').bind(strangerId).first<{ n: number }>();
     expect(ghost?.n).toBe(0);
   });

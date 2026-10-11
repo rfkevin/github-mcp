@@ -148,7 +148,7 @@ describe('CC-3 X2 — auto-revue bornée du propriétaire d’un scope participa
   it('X2 : une lignée ancienne pair-revue reste lisible, reviewer_pid conservé', async () => {
     await ensureSchema(db);
     await db.prepare(
-      "INSERT INTO memory_entries (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, uses) VALUES ('x2x5-legacy', 1, 'participant:agent:x2a-legacy', 'fact', 'lignée ancienne pair-revue', '["ev:legacy"]', 'observed', 'active', 'agent:x2a-legacy', 'agent:x2a-pair', 4)",
+      "INSERT INTO memory_entries (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, uses) VALUES ('x2x5-legacy', 1, 'participant:agent:x2a-legacy', 'fact', 'lignée ancienne pair-revue', '[\"ev:legacy"]', 'observed', 'active', 'agent:x2a-legacy', 'agent:x2a-pair', 4)",
     ).run();
     const rows = await store().listActiveFor('agent:x2a-legacy', ['participant:agent:x2a-legacy']);
     expect(rows.some((r) => r.id === 'x2x5-legacy')).toBe(true);
