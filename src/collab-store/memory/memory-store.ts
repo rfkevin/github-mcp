@@ -6,6 +6,7 @@
  */
 import {
   estimateTokens,
+  scopeFamily,
   validateMemoryActivation,
   validateMemoryEntry,
   type MemoryConfidence,
@@ -15,9 +16,10 @@ import {
 } from '../contracts/memory';
 import { StateContractError } from '../../collab/contracts';
 
-// estimateTokens now lives in contracts/memory.ts (single canonical metric,
-// shared with the schema backfill); re-exported here for API compatibility.
-export { estimateTokens };
+// estimateTokens and scopeFamily now live in contracts/memory.ts (single
+// canonical metric and scope taxonomy, shared with the packet builder);
+// re-exported here for API compatibility.
+export { estimateTokens, scopeFamily };
 import { ensureSchema } from '../store/schema';
 import {
   PAUSE_REQUEST_PREFIX,
@@ -203,12 +205,6 @@ export async function promoteConfidenceRequestId(
 
 const META_ACT = 'mem:act:';
 const META_RET = 'mem:ret:';
-
-export function scopeFamily(scope: string): string {
-  if (scope === 'common') return 'common';
-  const i = scope.indexOf(':');
-  return i === -1 ? scope : scope.slice(0, i);
-}
 
 export interface MemoryAlarm {
   code: 'INVARIANT_TOUCHED' | 'REFUTE_THRESHOLD' | 'GROWTH_THRESHOLD';
