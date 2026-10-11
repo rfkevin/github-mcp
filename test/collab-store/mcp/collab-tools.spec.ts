@@ -112,6 +112,8 @@ describe('CC-3 C2 — outils collab_* (registre local)', () => {
     const error = (result.structuredContent.error as { code: string; retryable: boolean });
     expect(error.code).toBe('STALE');
     expect(error.retryable).toBe(false);
+    // CC-4 A0 (point 2) : le message STALE rend currentRevision lisible.
+    expect((result.structuredContent.error as { message: string }).message).toContain('currentRevision = 0');
     expect(result.structuredContent.currentRevision).toBe(0);
     expect(result.structuredContent.delta).toEqual([]);
   });

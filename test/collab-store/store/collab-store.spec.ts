@@ -321,7 +321,8 @@ describe('CC-3 F1 — A01 ids scellés anti-collision', () => {
     const clientB = 'f1' + 'k'.repeat(46) + 'bbb';
     const first = await store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: 'agent:a', expected_rev: 0,
       payload_json: JSON.stringify({ content: 'un' }), op_id: clientA + ':' + cycle + ':prop:1' });
-    const second = await store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: 'agent:a', expected_rev: 1,
+    // CC-4 A0 (point 5) : une seule proposition par participant et par ronde — le second submit vient d'un participant distinct.
+    const second = await store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: 'agent:b', expected_rev: 1,
       payload_json: JSON.stringify({ content: 'deux' }), op_id: clientB + ':' + cycle + ':prop:1' });
     expect(first.status).toBe('applied');
     expect(second.status).toBe('applied');
