@@ -29,7 +29,7 @@ function endpoint(principal: string, overrides: Record<string, unknown> = {}): E
     endpoint_id: uniq('ep'),
     principal_id: principal,
     attestation_kind: 'github_oidc',
-    attestation_ref: 'repo:rfkevin/github-mcp:env:production',
+    attestation_ref: 'attestation-' + uniq('att'),
     status: 'probe_required',
     capability_set: { tools: ['collab_append_event'] },
     ...overrides,

@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { resolveContextTarget } from '../../../src/collab-store/context';
-import { ensureSchema } from '../../../src/collab-store/store/schema';
+import { insertCycleRow, insertTaskRow } from '../a0-helpers';
 
 // CC-4 A0 (point 3, github-mcp#110) — découverte du cycle pour une reprise
 // générique (« Collaboration 3, reprends », défaut constaté au trial C7) :
@@ -14,13 +14,8 @@ let counter = 0;
 const uniq = (label: string) => 'a0d-' + label + '-' + (++counter);
 
 async function seedCycleWithTask(cycle: string, pid: string, taskId: string, status = 'open'): Promise<void> {
-  await ensureSchema(db);
-  await db.prepare("INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, ?2)")
-    .bind(cycle, status).run();
-  await db.prepare([
-    'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
-    "VALUES (?1, ?2, ?3, 'a0d-reviewer', 'a0d-tester', 'in_progress', '[]', '', '', 1)",
-  ].join(' ')).bind(taskId, cycle, pid).run();
+  await insertCycleRow(db, cycle, 'P1', status);
+  await insertTaskRow(db, { taskId, cycle, owner: pid, reviewer: 'a0d-reviewer', tester: 'a0d-tester' });
 }
 
 describe('CC-4 A0 (point 3) — découverte du cycle quand ni issue ni cycle fournis', () => {

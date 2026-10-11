@@ -407,7 +407,7 @@ describe('CC-3 F1 — A08 permissions des tâches', () => {
     const ghostOwner = uniq('ghost');
     await expect(store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: ghostOwner, expected_rev: 0,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: ghostOwner, reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
-      op_id: 't:' + cycle + ':claim:1' })).rejects.toMatchObject({ code: 'UNREGISTERED_PARTICIPANT' });
+      op_id: ghostOwner + ':' + cycle + ':claim:1' })).rejects.toMatchObject({ code: 'UNREGISTERED_PARTICIPANT' });
     const rows = await bindings.COLLAB_DB_C2.prepare('SELECT COUNT(*) AS n FROM tasks WHERE cycle_id = ?1').bind(cycle).first<{ n: number }>();
     expect(rows?.n).toBe(0);
     const claim = await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,

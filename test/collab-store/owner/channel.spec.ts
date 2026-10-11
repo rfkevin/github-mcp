@@ -137,7 +137,7 @@ describe('CC-3 C5 — parcours complet : nouvel agent, demande, association par 
     expect(mapped.status).toBe(200);
     expect(await mapped.text()).toContain('Client associé');
 
-    const written = await append({ cycle: cycleId, expected_rev: 1, op_id: `a:${cycleId}:cp:1`, type: 'checkpoint',
+    const written = await append({ cycle: cycleId, expected_rev: 1, op_id: `${pid}:${cycleId}:cp:1`, type: 'checkpoint',
       participant_id: pid, payload_json: '{}' });
     expect(written.structuredContent.status).toBe('applied');
     const unknown = await post(fixture, { action: 'map', oauth_client_id: 'unregistered:0000000000000000', participant_id: pid, owner_secret: SECRET });
