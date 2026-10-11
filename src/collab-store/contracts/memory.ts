@@ -132,3 +132,35 @@ export function validateLedgerEntry(entry: LedgerEntry): LedgerEntry {
   }
   return entry;
 }
+
+/**
+ * I6 — empreinte FNV-1a 64 bits du project exact (owner/repo), hex 16 chars.
+ * Canonical (X2/X5) : la définition vit ici, partagée par context/packet.ts et
+ * memory/memory-store.ts (qui la re-exportent pour la compatibilité de l'API).
+ */
+export function fnv1a64Hex(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let hash = 0xcbf29ce484222325n;
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= BigInt(bytes[i]);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+/** I6 (review Sol F5) : clé projet collision-résistante, compatible C4 project:[A-Za-z0-9_-]{1,64}. */
+export function toProjectScopeKey(project: string | null | undefined): string | null {
+  if (!project || !project.trim()) return null;
+  const value = project.trim();
+  if (/^[A-Za-z0-9_-]{1,64}$/.test(value)) return value;
+  const slug = value.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 43);
+  const key = slug + '-' + fnv1a64Hex(value);
+  return key.length <= 64 ? key : key.slice(0, 64);
+}
+
+/** Famille de scope : `common`, `project`, `role`, `participant`, `task`. */
+export function scopeFamily(scope: string): string {
+  if (scope === 'common') return 'common';
+  const i = scope.indexOf(':');
+  return i === -1 ? scope : scope.slice(0, i);
+}
