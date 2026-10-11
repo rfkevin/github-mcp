@@ -2,6 +2,7 @@ import { assertPhase, type Phase } from '../../collab/contracts';
 import { validatePhaseDefinition, type PhaseDefinition } from '../contracts';
 import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
+import { phaseEntrySeq } from './entry-seq';
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 
 export interface PhaseFacts {
@@ -27,38 +28,50 @@ async function definition(db: D1Database, cycleId: string, phase: string): Promi
   });
 }
 
-/**
- * CR-F01 — seq of the most recent phase.advance that *entered* this phase.
- * Events with seq <= this value belong to a prior visit and must not satisfy
- * the current round's expected_outputs. 0 = first visit (no prior entry event).
- */
-async function phaseEntrySeq(db: D1Database, cycleId: string, phase: string): Promise<number> {
-  const row = await db.prepare([
-    'SELECT MAX(seq) AS n FROM events',
-    "WHERE cycle_id = ?1 AND type = 'phase.advance'",
-    'AND json_valid(payload_json)',
-    "AND json_extract(payload_json, '$.to') = ?2",
-  ].join(' ')).bind(cycleId, phase).first<{ n: number | null }>();
-  return row?.n ?? 0;
-}
+// phaseEntrySeq (CR-F01) vit dans ./entry-seq : partagé avec le store (CC-4 A0,
+// garde « une sortie par ronde ») sans importer le moteur ni créer de cycle
+// d'imports.
 
 async function outputsSatisfied(db: D1Database, def: PhaseDefinition): Promise<boolean> {
   // CR-F01: only count contributions from the *current* visit to this phase.
   const entrySeq = await phaseEntrySeq(db, def.cycle_id, def.phase);
   for (const expected of def.expected_outputs) {
-    const count = await db.prepare([
+    // CC-4 A0 (point 5) : task_id optionnel lie la sortie à SA tâche —
+    // l'événement doit porter payload.task = task_id et son auteur tenir le
+    // rôle attendu sur CETTE tâche (pas seulement un rôle quelque part dans
+    // le cycle : la policy P2 ne devait pas compter n'importe quel evidence.add).
+    const lines = [
       'SELECT COUNT(DISTINCT e.participant_id) AS n',
       'FROM events e',
       'WHERE e.cycle_id = ?1 AND e.type = ?2',
       'AND e.seq > ?4',
-      'AND EXISTS (',
-      '  SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND (',
-      "    ((?3 = 'author' OR ?3 = 'owner') AND t.owner_pid = e.participant_id)",
-      "    OR (?3 = 'reviewer' AND t.reviewer_pid = e.participant_id)",
-      "    OR (?3 = 'tester' AND t.tester_pid = e.participant_id)",
-      '  )',
-      ')',
-    ].join(' ')).bind(def.cycle_id, expected.kind, expected.role, entrySeq).first<{ n: number }>();
+    ];
+    const params: unknown[] = [def.cycle_id, expected.kind, expected.role, entrySeq];
+    if (expected.task_id) {
+      lines.push(
+        'AND json_valid(e.payload_json)',
+        "AND json_extract(e.payload_json, '$.task') = ?5",
+        'AND EXISTS (',
+        '  SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND t.task_id = ?5 AND (',
+        "    ((?3 = 'author' OR ?3 = 'owner') AND t.owner_pid = e.participant_id)",
+        "    OR (?3 = 'reviewer' AND t.reviewer_pid = e.participant_id)",
+        "    OR (?3 = 'tester' AND t.tester_pid = e.participant_id)",
+        '  )',
+        ')',
+      );
+      params.push(expected.task_id);
+    } else {
+      lines.push(
+        'AND EXISTS (',
+        '  SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND (',
+        "    ((?3 = 'author' OR ?3 = 'owner') AND t.owner_pid = e.participant_id)",
+        "    OR (?3 = 'reviewer' AND t.reviewer_pid = e.participant_id)",
+        "    OR (?3 = 'tester' AND t.tester_pid = e.participant_id)",
+        '  )',
+        ')',
+      );
+    }
+    const count = await db.prepare(lines.join(' ')).bind(...params).first<{ n: number }>();
     if ((count?.n ?? 0) < expected.count) return false;
   }
   return true;

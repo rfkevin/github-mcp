@@ -5,11 +5,15 @@
  */
 import { StateContractError, assertPhase, type Phase } from '../../collab/contracts';
 
+/** CC-4 A0 (point 5) : task_id d'une sortie attendue. */
+const TASK_OUTPUT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
 export interface PhaseDefinition {
   cycle_id: string;
   phase: Phase;
   entry_conditions: string[];
-  expected_outputs: Array<{ role: string; kind: string; count: number }>;
+  // CC-4 A0 (point 5) : task_id optionnel lie la sortie attendue à SA tâche.
+  expected_outputs: Array<{ role: string; kind: string; count: number; task_id?: string }>;
   exit_conditions: string[];
   auto_advance: 'none' | string;
 }
@@ -29,6 +33,14 @@ export function validatePhaseDefinition(def: PhaseDefinition): PhaseDefinition {
       throw new StateContractError(
         'INVALID_PHASE_OUTPUT',
         'each expected output needs role, kind and count >= 1',
+        'expected_outputs',
+      );
+    }
+    // CC-4 A0 (point 5) : task_id optionnel, validé quand présent.
+    if (out.task_id !== undefined && !TASK_OUTPUT_ID_RE.test(out.task_id)) {
+      throw new StateContractError(
+        'INVALID_PHASE_OUTPUT_TASK',
+        'expected_outputs task_id must match [a-z0-9][a-z0-9_-]{0,63}',
         'expected_outputs',
       );
     }
@@ -55,21 +67,38 @@ export function validateSealedProposal(item: SealedProposal): SealedProposal {
 }
 
 /**
- * op_id policy (§3.2): `{client}:{cycle}:{op}:{n}` — client = oauth client id
- * (short), op = short op name (no dots; e.g. `task-claim` for `task.claim`),
- * n = client-side monotonic counter.
- * Deterministic: a retry reuses the same key; a new op bumps n.
+ * op_id policy (§3.2, durcie CC-4 A0 point 1): `{client}:{cycle}:{op}:{n}` —
+ * EXACTLY four segments, no ':' inside any segment. client = the server
+ * participant id, cycle = the targeted cycle id, op = short op name (no dots;
+ * e.g. `task-claim` for `task.claim`), n = client-side monotonic counter.
+ * Deterministic: a retry reuses the same key; a new op bumps n. The loose
+ * grammar accepted real-world ids like `op:op:vibe:cc4-design:p2-review:1`
+ * (seq 103/104 du cycle cc4-design) and `op:vibe:…` — now a hard INVALID_OP_ID.
  */
-const OP_ID_RE = /^[A-Za-z0-9:_-]{1,64}:[A-Za-z0-9:_-]{1,64}:[A-Za-z0-9_-]{1,64}:[0-9]{1,10}$/;
+const OP_ID_RE = /^([A-Za-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64}):([0-9]{1,10})$/;
 
-export function validateOpId(opId: string): string {
-  if (!OP_ID_RE.test(opId ?? '')) {
+export interface ParsedOpId {
+  client: string;
+  cycle: string;
+  op: string;
+  n: string;
+}
+
+/** Parse a strictly valid op_id; throws StateContractError('INVALID_OP_ID') otherwise. */
+export function parseOpId(opId: string): ParsedOpId {
+  const match = OP_ID_RE.exec(opId ?? '');
+  if (!match) {
     throw new StateContractError(
       'INVALID_OP_ID',
-      'op_id must match {client}:{cycle}:{op}:{n} (deterministic per client+op)',
+      'op_id must match {client}:{cycle}:{op}:{n} — exactly four segments, no extra ":"',
       'op_id',
     );
   }
+  return { client: match[1], cycle: match[2], op: match[3], n: match[4] };
+}
+
+export function validateOpId(opId: string): string {
+  parseOpId(opId);
   return opId;
 }
 

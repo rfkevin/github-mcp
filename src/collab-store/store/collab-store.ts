@@ -10,7 +10,8 @@
  * exactly at expected_rev and (3) the daily quota is open. Never
  * last-write-wins: a stale writer changes nothing.
  */
-import { opIdToIdempotencyKey, validateAgentEvent, validateTaskAssignment, type StoreEvent, type StoreEventType } from '../contracts';
+import { opIdToIdempotencyKey, parseOpId, validateAgentEvent, validateTaskAssignment, type StoreEvent, type StoreEventType } from '../contracts';
+import { phaseEntrySeq } from '../phases/entry-seq';
 import { createSealedEnvelope, parseSealedEnvelope } from '../phases/sealed-envelope';
 import { ensureSchema } from './schema';
 import { sha256Hex } from './hash';
@@ -113,17 +114,10 @@ export class CollabStore {
   }
 
   async appendEvent(input: AppendEventInput): Promise<AppendOutcome> {
+    // CC-4 A0 (point 1) : grammaire stricte appliquée par opIdToIdempotencyKey
+    // (StateContractError INVALID_OP_ID) — les ids réels relâchés comme
+    // « op:op:vibe:cc4-design:p2-review:1 » (seq 103/104) sont refusés ici.
     const key = opIdToIdempotencyKey(input.op_id);
-    // A05 (F1): the op_id cycle segment must be the target cycle. The client
-    // segment may contain ':' but the cycle never does: parse from the right.
-    const segments = input.op_id.split(':');
-    const opCycle = segments[segments.length - 3] || '';
-    if (opCycle !== input.cycle_id) {
-      throw new CollabStoreError(
-        'INVALID_OP_ID',
-        'op_id doit porter le segment cycle de la requête ({client}:{cycle}:{op}:{n}) : attendu « ' + input.cycle_id + ' », reçu « ' + opCycle + ' »',
-      );
-    }
     const event: StoreEvent = {
       cycle_id: input.cycle_id,
       type: input.type,
@@ -149,11 +143,44 @@ export class CollabStore {
     const replayed = await this.replayOutcome(key, intentFingerprint);
     if (replayed) return replayed;
 
+    // CC-4 A0 (point 1) : égalités du contrat op_id, jugées APRÈS le rejeu
+    // (une réponse perdue rejouée reste duplicate). Le segment cycle vise
+    // TOUJOURS ce cycle ; le segment client est le participant serveur quand
+    // celui-ci peut figurer dans un segment sans ':' — les pseudonymes
+    // « unregistered:… » et les ids legacy avec ':' (ex. « agent:a ») en sont
+    // exemptés (exemption documentée dans le guide, verrouillée par les tests).
+    const parsedOpId = parseOpId(input.op_id);
+    if (parsedOpId.cycle !== event.cycle_id) {
+      throw new CollabStoreError(
+        'INVALID_OP_ID',
+        'op_id doit porter le segment cycle de la requête ({client}:{cycle}:{op}:{n}) : attendu « ' + event.cycle_id + ' », reçu « ' + parsedOpId.cycle + ' »',
+      );
+    }
+    if (!event.participant_id.includes(':') && parsedOpId.client !== event.participant_id) {
+      throw new CollabStoreError(
+        'INVALID_OP_ID',
+        'op_id doit porter le segment client du participant serveur ({client}:{cycle}:{op}:{n}) : attendu « ' + event.participant_id + ' », reçu « ' + parsedOpId.client + ' »',
+      );
+    }
+
     let sealedInsert: D1PreparedStatement | null = null;
+    let proposalRound: { phase: string; entrySeq: number } | null = null;
     if (event.type === 'proposal.submit') {
       const cycle = await this.db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1')
         .bind(event.cycle_id).first<{ phase: string }>();
       const phase = cycle?.phase ?? (event.expected_rev === 0 ? 'P1' : '');
+      // CC-4 A0 (point 5) : une seule sortie requise par participant et par
+      // phase — le 2e proposal.submit du même participant dans la MÊME ronde
+      // (depuis la dernière (re)entrée dans cette phase, CR-F01) est refusé,
+      // réponse perdue ou pas (cas réel GPT-6, seq 95/96 du cycle cc4-design).
+      const entrySeq = await phaseEntrySeq(this.db, event.cycle_id, phase);
+      proposalRound = { phase, entrySeq };
+      if (await this.currentRoundProposal(event.cycle_id, event.participant_id, entrySeq)) {
+        throw new CollabStoreError(
+          'PROPOSAL_ALREADY_SUBMITTED',
+          'Une seule proposition par participant et par ronde : ' + event.participant_id + ' a déjà soumis une proposition en ' + phase + ' (ronde courante).',
+        );
+      }
       if (phase === 'P1') {
         let payload: Record<string, unknown>;
         try {
@@ -196,16 +223,32 @@ export class CollabStore {
     const memoryEffect = isMemoryEventType(event.type)
       ? await prepareMemoryEvent(this.db, event, nextRevision)
       : null;
+    // CC-4 A0 (point 5) : pour proposal.submit, la garde CAS vérifie AUSSI
+    // en transaction qu'aucune proposition du participant n'existe dans la
+    // ronde courante — le pré-check ci-dessus est read-only, deux appels
+    // concurrents peuvent le passer ; seul le batch tranche (fail-closed).
+    const proposalClause = proposalRound
+      ? [
+        "             AND NOT EXISTS (SELECT 1 FROM events WHERE cycle_id = ?6 AND type = 'proposal.submit'",
+        '                              AND participant_id = ?7 AND seq > ?8)',
+      ]
+      : [];
+    const guardParams: Array<string | number> = [
+      key, event.cycle_id, event.expected_rev, day, this.dailyWriteLimit,
+      ...(proposalRound ? [event.cycle_id, event.participant_id, proposalRound.entrySeq] : []),
+    ];
     const journal: D1PreparedStatement[] = [
       // Transactional CAS guard: the whole batch rolls back unless the key is
-      // new AND the cycle is exactly at expected_rev AND the quota is open.
+      // new AND the cycle is exactly at expected_rev AND the quota is open
+      // AND (proposal.submit) no proposal from this participant in this round.
       this.db.prepare([
         'INSERT INTO collab_store_guard (ok)',
         'SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM events WHERE idempotency_key = ?1)',
         '             AND COALESCE((SELECT revision FROM cycles WHERE cycle_id = ?2), 0) = ?3',
         '             AND COALESCE((SELECT writes FROM quota_counters WHERE day = ?4), 0) < ?5',
+        ...proposalClause,
         '       THEN 1 ELSE 0 END',
-      ].join(' ')).bind(key, event.cycle_id, event.expected_rev, day, this.dailyWriteLimit),
+      ].join(' ')).bind(...guardParams),
       this.db.prepare(
         'INSERT INTO quota_counters (day, writes) VALUES (?1, 1) ON CONFLICT(day) DO UPDATE SET writes = writes + 1'
       ).bind(day),
@@ -255,6 +298,20 @@ export class CollabStore {
         // serveur, déjà autorisée) : aucune mémoire privée d'autrui.
         const delta = await this.deltaSinceRevision(event.cycle_id, event.expected_rev);
         return { status: 'stale', currentRevision, delta: await redactEventsFor(this.db, event.participant_id, delta) };
+      }
+      // CC-4 A0 (point 5) : un proposal.submit concurrent a pu gagner la ronde
+      // entre le pré-check read-only et le batch — re-diagnostiquer depuis
+      // l'état durable avant toute autre cause.
+      if (event.type === 'proposal.submit') {
+        const cycle = await this.db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1')
+          .bind(event.cycle_id).first<{ phase: string }>();
+        const phase = cycle?.phase ?? (event.expected_rev === 0 ? 'P1' : '');
+        if (await this.currentRoundProposal(event.cycle_id, event.participant_id, await phaseEntrySeq(this.db, event.cycle_id, phase))) {
+          throw new CollabStoreError(
+            'PROPOSAL_ALREADY_SUBMITTED',
+            'Une seule proposition par participant et par ronde : ' + event.participant_id + ' a déjà soumis une proposition en ' + phase + ' (ronde courante).',
+          );
+        }
       }
       // CR-B (CR-02) : le batch a roulé en arrière au complet (garde CAS ou
       // garde d'effet mémoire) ; re-préparer le lifecycle sur l'état durable
@@ -491,6 +548,18 @@ export class CollabStore {
         );
       }
     }
+  }
+
+  /**
+   * CC-4 A0 (point 5) : une proposition du participant existe-t-elle dans la
+   * ronde courante de la phase (événements de seq > entrySeq) ?
+   */
+  private async currentRoundProposal(cycleId: string, participantId: string, entrySeq: number): Promise<boolean> {
+    const row = await this.db.prepare([
+      "SELECT 1 FROM events WHERE cycle_id = ?1 AND type = 'proposal.submit'",
+      'AND participant_id = ?2 AND seq > ?3 LIMIT 1',
+    ].join(' ')).bind(cycleId, participantId, entrySeq).first();
+    return !!row;
   }
 
   /**

@@ -28,7 +28,39 @@ export interface ResolveContextInput {
 
 async function resolveCycleId(db: D1Database, input: ResolveContextInput): Promise<string> {
   if (input.cycle) return input.cycle;
-  if (!input.issue) throw new CollabStoreError('CONTEXT_TARGET_REQUIRED', 'Fournissez issue ou cycle.');
+  if (!input.issue) {
+    // CC-4 A0 (point 3) — découverte du cycle pour une reprise générique
+    // (« Collaboration 3, reprends », défaut vu au trial C7) : sans issue ni
+    // cycle explicites, le participant doit tenir un rôle dans exactement UN
+    // cycle ouvert (ou dans la tâche nommée). Sinon l'échec est explicite —
+    // jamais un choix implicite.
+    await ensureContextSchema(db);
+    const lines = [
+      'SELECT DISTINCT t.cycle_id FROM tasks t JOIN cycles c ON c.cycle_id = t.cycle_id',
+      "WHERE c.status = 'open'",
+      'AND (t.owner_pid = ?1 OR t.reviewer_pid = ?1 OR t.tester_pid = ?1)',
+    ];
+    const params: unknown[] = [input.participant_id];
+    if (input.task) {
+      lines.push('AND t.task_id = ?2');
+      params.push(input.task);
+    }
+    lines.push('ORDER BY t.cycle_id');
+    const { results } = await db.prepare(lines.join(' ')).bind(...params).all<{ cycle_id: string }>();
+    if (results.length === 0) {
+      throw new CollabStoreError(
+        'NO_ACTIVE_CYCLE',
+        'Aucun cycle ouvert où « ' + input.participant_id + ' » tient un rôle. Fournissez issue ou cycle.',
+      );
+    }
+    if (results.length > 1) {
+      throw new CollabStoreError(
+        'AMBIGUOUS_CYCLE',
+        'Cycles ouverts ambigus pour « ' + input.participant_id + ' » : ' + results.map(row => row.cycle_id).join(', ') + '. Fournissez issue ou cycle.',
+      );
+    }
+    return results[0].cycle_id;
+  }
   await ensureContextSchema(db);
   const issueRef = normalizeIssueRef(input.issue);
   const repository = issueRef.repository ?? input.repository;
