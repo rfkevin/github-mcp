@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { CollabStoreError } from '../../../src/collab-store/store/collab-store';
-import { opIdClientFor, parseOpId, validateOpId } from '../../../src/collab-store/contracts';
+import { MAX_OP_ID_LENGTH, opIdClientFor, opIdToIdempotencyKey, parseOpId, validateOpId } from '../../../src/collab-store/contracts';
 import { StateContractError } from '../../../src/collab/contracts';
 import { countEvents, expectRejected, makeDatedStore } from '../a0-helpers';
 
@@ -92,6 +92,28 @@ describe('CC-4 A0 (point 1) — op_id strict {client}:{cycle}:{op}:{n}', () => {
     // Rejeu prioritaire : la même clé rejouée par un autre auteur reste un conflit d'intention, sans écriture.
     await expectRejected(() => store.appendEvent({ ...squat, expected_rev: 1 }), CollabStoreError, 'IDEMPOTENCY_CONFLICT', 'rejeu par un autre auteur');
     expect(await countEvents(db, cycle)).toBe(1);
+  });
+
+  it('review GPT-6 R3 : deux op_id de 256 caractères partageant 253 caractères ne collisionnent plus (refus, jamais de troncature)', async () => {
+    const client = 'c'.repeat(128);
+    const cycle = 'y'.repeat(64);
+    const prefix = client + ':' + cycle + ':' + 'o'.repeat(52) + ':';
+    expect(prefix.length).toBe(247);
+    const a = prefix + '1'.repeat(9);
+    const b = prefix + '1'.repeat(8) + '2';
+    expect(a.length).toBe(256);
+    expect(a.slice(0, 253)).toBe(b.slice(0, 253));
+    for (const opId of [a, b]) {
+      expect(() => opIdToIdempotencyKey(opId)).toThrow(StateContractError);
+      await expectRejected(() => makeDatedStore(db).appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: client,
+        expected_rev: 0, payload_json: '{}', op_id: opId }), StateContractError, 'INVALID_OP_ID', 'op_id > 253');
+    }
+    expect(await countEvents(db, cycle)).toBe(0);
+    // Limite exacte : 253 accepté, clé = « op: » + op_id intégral (256), aucune troncature.
+    const atLimit = prefix + '123456';
+    expect(atLimit.length).toBe(MAX_OP_ID_LENGTH);
+    expect(opIdToIdempotencyKey(atLimit)).toBe('op:' + atLimit);
+    expect(() => validateOpId(atLimit + '7')).toThrow(StateContractError);
   });
 
   it('opIdClientFor : un id contenant « . » n’est pas représentable (injectivité)', async () => {

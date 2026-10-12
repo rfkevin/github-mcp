@@ -92,6 +92,15 @@ export function opIdClientFor(participantId: string): string {
   return participantId.split(':').join('.');
 }
 
+/**
+ * Review GPT-6 R3 (github-mcp#111) — longueur maximale d'un op_id : 253, pour
+ * que la clé d'idempotence `op:<op_id>` tienne dans 256 caractères SANS
+ * troncature. Avec le segment client élargi à 128 (R1), un op_id peut dépasser
+ * 253 : il est refusé (INVALID_OP_ID), jamais tronqué — deux op_id distincts
+ * ne peuvent plus produire la même clé.
+ */
+export const MAX_OP_ID_LENGTH = 253;
+
 export interface ParsedOpId {
   client: string;
   cycle: string;
@@ -101,6 +110,13 @@ export interface ParsedOpId {
 
 /** Parse a strictly valid op_id; throws StateContractError('INVALID_OP_ID') otherwise. */
 export function parseOpId(opId: string): ParsedOpId {
+  if (typeof opId === 'string' && opId.length > MAX_OP_ID_LENGTH) {
+    throw new StateContractError(
+      'INVALID_OP_ID',
+      'op_id must be at most ' + MAX_OP_ID_LENGTH + ' characters (idempotency key op:<op_id> is never truncated)',
+      'op_id',
+    );
+  }
   const match = OP_ID_RE.exec(opId ?? '');
   if (!match) {
     throw new StateContractError(
@@ -117,7 +133,7 @@ export function validateOpId(opId: string): string {
   return opId;
 }
 
-/** Derive the idempotency key from an op_id (1:1, stable). */
+/** Derive the idempotency key from an op_id (1:1, stable, never truncated — R3). */
 export function opIdToIdempotencyKey(opId: string): string {
-  return `op:${validateOpId(opId)}`.slice(0, 256);
+  return `op:${validateOpId(opId)}`;
 }
