@@ -78,10 +78,14 @@ interface StoreTaskRow {
 
 type ImportRow = { seq: number; expected_rev: number; payload_json: string };
 
-/** Latest owner import of the cycle (?1 = cycle, ?2 = idempotency key prefix). */
+/**
+ * Latest owner import of the cycle (?1 = cycle, ?2 = idempotency key prefix).
+ * Prefix test by substr, never LIKE: D1 caps a LIKE pattern at 50 bytes and a
+ * 64-character cycle id makes the prefix longer than that.
+ */
 const LATEST_IMPORT_SQL = [
   "SELECT seq, expected_rev, payload_json FROM events WHERE cycle_id = ?1 AND type = 'owner.decision'",
-  "AND participant_id = 'owner' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1",
+  "AND participant_id = 'owner' AND substr(idempotency_key, 1, length(?2)) = ?2 ORDER BY seq DESC LIMIT 1",
 ].join(' ');
 
 async function importedFromRow(row: ImportRow): Promise<ImportedState> {
@@ -107,7 +111,7 @@ async function importedFromRow(row: ImportRow): Promise<ImportedState> {
 
 export async function loadImportedState(db: D1Database, cycleId: string): Promise<ImportedState | null> {
   await ensureSchema(db);
-  const row = await db.prepare(LATEST_IMPORT_SQL).bind(cycleId, STATE_IMPORT_KEY_PREFIX + cycleId + ':%').first<ImportRow>();
+  const row = await db.prepare(LATEST_IMPORT_SQL).bind(cycleId, STATE_IMPORT_KEY_PREFIX + cycleId + ':').first<ImportRow>();
   return row ? importedFromRow(row) : null;
 }
 
@@ -135,11 +139,11 @@ interface ExportSnapshot {
  */
 async function readExportSnapshot(db: D1Database, cycleId: string): Promise<ExportSnapshot> {
   await ensureSchema(db);
-  const importKey = STATE_IMPORT_KEY_PREFIX + cycleId + ':%';
+  const importKey = STATE_IMPORT_KEY_PREFIX + cycleId + ':';
   const importSeq = "(SELECT seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND participant_id = 'owner'"
-    + ' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1)';
+    + ' AND substr(idempotency_key, 1, length(?2)) = ?2 ORDER BY seq DESC LIMIT 1)';
   const importRev = "(SELECT expected_rev + 1 FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND participant_id = 'owner'"
-    + ' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1)';
+    + ' AND substr(idempotency_key, 1, length(?2)) = ?2 ORDER BY seq DESC LIMIT 1)';
   const afterImport = "SELECT * FROM events WHERE cycle_id = ?1 AND seq > COALESCE(" + importSeq + ', 0)'
     + " AND type IN ('owner.decision', 'evidence.add')";
   const rendered = RENDERED_EVENT_TYPES.map(type => "'" + type + "'").join(', ');

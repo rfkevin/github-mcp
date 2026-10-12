@@ -43,13 +43,13 @@ export function bindingPayload(binding: OwnerRequestBinding): Record<string, unk
  * Garde transactionnelle (ownerAppend : ?1 clé, ?2 cycle, ?3 révision, puis ?4…) :
  * demande non tranchée ET dernier acte du même type inchangé.
  */
-export function bindingGuard(binding: OwnerRequestBinding, previousKeyPattern: string): { sql: string; binds: unknown[] } {
+export function bindingGuard(binding: OwnerRequestBinding, previousKeyPrefix: string): { sql: string; binds: unknown[] } {
   return {
     sql: [
       'NOT EXISTS (SELECT 1 FROM owner_decisions WHERE request_id = ?4)',
-      "AND COALESCE((SELECT MAX(seq) FROM events WHERE cycle_id = ?2 AND type = 'owner.decision' AND idempotency_key LIKE ?5), 0) = ?6",
+      "AND COALESCE((SELECT MAX(seq) FROM events WHERE cycle_id = ?2 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?5)) = ?5), 0) = ?6",
     ].join(' '),
-    binds: [binding.request_id, previousKeyPattern, binding.expected_previous_seq ?? 0],
+    binds: [binding.request_id, previousKeyPrefix, binding.expected_previous_seq ?? 0],
   };
 }
 
