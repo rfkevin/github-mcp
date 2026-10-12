@@ -19,6 +19,12 @@ import { ownerAppend, REGISTRY_CYCLE, type OwnerWriteResult } from './decisions'
 import type { OwnerProof } from './proof';
 
 export const HALT_FLAG = 'halt';
+/**
+ * Prédicat SQL « arrêt d'urgence posé », à placer DANS la garde transactionnelle
+ * de toute écriture automatique : le pré-check hors lot ne suffit pas (un halt
+ * posé entre le pré-check et le lot doit annuler le lot — revue #115 R1).
+ */
+export const HALT_ACTIVE_SQL = "EXISTS (SELECT 1 FROM owner_flags WHERE name = 'halt' AND value = '1')";
 export const GLOBAL_BUDGET_SCOPE = 'global';
 const RESERVATION_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$/;
 const SCOPE_RE = /^[a-z0-9][a-z0-9:_-]{0,127}$/i;
@@ -108,7 +114,7 @@ export async function reserveBudget(db: D1Database, input: {
       db.prepare('INSERT INTO budget_envelopes (scope, updated_at) VALUES (?1, ?2) ON CONFLICT(scope) DO NOTHING').bind(scope, at),
       db.prepare([
         'INSERT INTO collab_store_guard (ok)',
-        "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM owner_flags WHERE name = 'halt' AND value = '1')",
+        'SELECT CASE WHEN NOT ' + HALT_ACTIVE_SQL,
         '  AND (SELECT limit_cents - reserved_cents - spent_cents FROM budget_envelopes WHERE scope = ?1) >= ?2',
         '  THEN 1 ELSE 0 END',
       ].join(' ')).bind(scope, input.cents),
@@ -118,9 +124,20 @@ export async function reserveBudget(db: D1Database, input: {
         .bind(input.reservation_id, scope, input.cents, at),
       db.prepare('DELETE FROM collab_store_guard'),
     ]);
-  } catch {
+  } catch (error) {
+    // Revue #115 R2 : une livraison concurrente du même reservation_id a pu gagner
+    // (PK) — on juge d'abord l'état durable, jamais un faux manque de budget.
+    const winner = await db.prepare('SELECT scope, reserved_cents FROM budget_reservations WHERE reservation_id = ?1')
+      .bind(input.reservation_id).first<{ scope: string; reserved_cents: number }>();
+    if (winner) {
+      if (winner.scope !== scope || winner.reserved_cents !== input.cents) {
+        throw new CollabStoreError('IDEMPOTENCY_CONFLICT', 'Réservation déjà enregistrée avec un autre montant ou scope.');
+      }
+      return { status: 'duplicate', envelope: await budgetEnvelope(db, scope) };
+    }
     await assertAutomationRunning(db);
     const envelope = await budgetEnvelope(db, scope);
+    if (envelope.remaining_cents >= input.cents) throw error;
     throw new CollabStoreError('BUDGET_INSUFFICIENT', 'Enveloppe « ' + scope + ' » insuffisante : reste ' + envelope.remaining_cents
       + ' centimes, réserve demandée ' + input.cents + '. Aucune dépense sans enveloppe approuvée par le propriétaire.');
   }

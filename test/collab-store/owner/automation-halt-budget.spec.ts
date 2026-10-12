@@ -44,6 +44,25 @@ describe('CC-4 A2 — arrêt d’urgence', () => {
     const advanced = await advanceGuarded(db, { cycle_id: cycle, expected_revision: before.revision, next_phase: 'P2' });
     expect(advanced.status).toBe('applied');
   });
+
+  it('TOCTOU (revue #115 R1) : halt posé après le pré-check mais avant le lot → lot annulé, aucune phase.advance', async () => {
+    const cycle = uniq('toctou');
+    await installPhaseDefinitions(db, { cycle_id: cycle, definitions: JSON.stringify([{ phase: 'P1', auto_advance: 'a2-toctou' }, { phase: 'P2' }]), proof });
+    const before = (await db.prepare('SELECT revision, phase FROM cycles WHERE cycle_id = ?1').bind(cycle)
+      .first<{ revision: number; phase: string }>())!;
+    let posed = false;
+    // Le hook de conditions s'exécute après assertAutomationRunning et avant le batch d'advanceByPolicy.
+    const conditionsSatisfied = async () => {
+      if (!posed) { posed = true; await setAutomationHalt(db, { halted: true, proof, op: uniq('toctou-halt') }); }
+      return true;
+    };
+    expect(await codeOf(advanceGuarded(db, { cycle_id: cycle, expected_revision: before.revision, next_phase: 'P2', conditionsSatisfied })))
+      .toBe('AUTOMATION_HALTED');
+    expect(posed).toBe(true);
+    expect(await db.prepare('SELECT revision, phase FROM cycles WHERE cycle_id = ?1').bind(cycle).first()).toEqual(before);
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type = 'phase.advance'").bind(cycle)
+      .first<{ n: number }>()).toEqual({ n: 0 });
+  });
 });
 
 describe('CC-4 A2 — enveloppe budgétaire (0 € par défaut, fail-closed)', () => {
@@ -73,5 +92,30 @@ describe('CC-4 A2 — enveloppe budgétaire (0 € par défaut, fail-closed)', (
     expect((await settleBudget(db, { reservation_id: first, actual_cents: 40 })).status).toBe('duplicate');
     expect(await codeOf(settleBudget(db, { reservation_id: first, actual_cents: 30 }))).toBe('IDEMPOTENCY_CONFLICT');
     expect((await reserveBudget(db, { reservation_id: uniq('inv'), cents: 60, scope })).envelope.remaining_cents).toBe(0);
+  });
+
+  it('livraisons concurrentes (revue #115 R2) : même id → reserved + duplicate ; même id, autre montant → IDEMPOTENCY_CONFLICT', async () => {
+    const scope = uniq('scope');
+    await ensureSchema(db);
+    await db.prepare('INSERT INTO budget_envelopes (scope, limit_cents, updated_at) VALUES (?1, 100, 0)').bind(scope).run();
+    const same = uniq('same');
+    const pair = await Promise.all([
+      reserveBudget(db, { reservation_id: same, cents: 30, scope }),
+      reserveBudget(db, { reservation_id: same, cents: 30, scope }),
+    ]);
+    expect(pair.map(r => r.status).sort()).toEqual(['duplicate', 'reserved']);
+    expect(await budgetEnvelope(db, scope)).toMatchObject({ reserved_cents: 30, remaining_cents: 70 });
+
+    const clash = uniq('clash');
+    const settled = await Promise.allSettled([
+      reserveBudget(db, { reservation_id: clash, cents: 10, scope }),
+      reserveBudget(db, { reservation_id: clash, cents: 20, scope }),
+    ]);
+    expect(settled.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(rejected.map(r => (r.reason as { code: string }).code)).toEqual(['IDEMPOTENCY_CONFLICT']);
+    const row = await db.prepare('SELECT reserved_cents FROM budget_reservations WHERE reservation_id = ?1').bind(clash)
+      .first<{ reserved_cents: number }>();
+    expect((await budgetEnvelope(db, scope)).reserved_cents).toBe(30 + row!.reserved_cents);
   });
 });
