@@ -107,6 +107,12 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 
 Contrat et schéma seuls — aucune exécution d’agent dans ce lot. Quatre kinds d’attestation (`oauth_client`, `github_oidc`, `provider_adapter`, `chat_cimd`) ; un endpoint porte un statut (`probe_required`, `active`, `retired`) et un jeu de capacités **deny-by-default** : un champ absent ou vide n’autorise rien, pas de joker, plafonds entiers ≥ 0, champs inconnus rejetés. **Un CIMD partagé ne prouve pas des participants distincts** : même principal, même endpoint, même couple (kind, ref) ou même session → pas de preuve de principals distincts (`provesDistinctPrincipals`). Schéma : tables internes `endpoints` (UNIQUE principal + attestation) et `session_bindings` (PK session + endpoint), migration 0005, jamais dans le schéma canonique gelé. Codes : `INVALID_ATTESTATION_KIND`, `INVALID_CAPABILITY_SET`, `INVALID_ENDPOINT_REGISTRATION`, `INVALID_SESSION_BINDING`.
 
+### Registre invocation/outbox (A1, interne)
+
+A1 ajoute les tables internes `invocations` et `invocation_attempts` (migration 0006), sans nouvel outil agent et sans fournisseur externe. Le chemin interne `appendActionableEvent` écrit l’événement source **et** l’intention outbox dans le même batch CAS D1. `wake_key` est le SHA-256 de `(cycle, task, role, principal, reason, source_revision)` et porte une contrainte UNIQUE ; `payload_hash` couvre aussi endpoint, input hash, événement source, cible et preuves. Une livraison répétée du même wake rend la même invocation ; un payload différent sous ce wake échoue `INVOCATION_PAYLOAD_CONFLICT`.
+
+Les états sont `queued → leased → running → succeeded|failed|expired`. Le bail appartient à l’invocation, jamais à `task.claim` ni à la révision globale. Un bail expiré devient `expired` et peut être repris ; une deuxième expiration/erreur consécutive place l’invocation en `failed`. Le simulateur A1 relit toujours D1 avant de louer : une réponse perdue après `succeeded` ne crée donc pas de tentative supplémentaire. Les résultats persistent principal, endpoint, rôle, tâche/cycle, hashes entrée/sortie, cible, tentatives, timestamps, compteurs d’usage et preuves ; le coût A1 reste toujours 0. Aucun paquet d’entrée brut n’est stocké. Les adaptateurs fournisseurs et le budget payant appartiennent aux lots suivants.
+
 ## 4. Cycle de vie de l’état : import, travail, export, fusion
 
 ```
@@ -228,6 +234,11 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `IDEMPOTENCY_CONFLICT` | F1 | `op_id` rejoué avec une intention différente | Incrémenter le compteur `n` de l’op_id |
 | `UNKNOWN_CYCLE` | C2 | Cycle inconnu | Vérifier l’identifiant |
 | `PROPOSAL_ALREADY_SUBMITTED` | A0 | Un second `proposal.submit` du même participant dans la même ronde de la phase (pré-check + clause CAS transactionnelle) | Une seule proposition par participant et par ronde ; rejeu du même `op_id` → `duplicate` |
+| `INVALID_INVOCATION` | A1 | Contrat d’invocation, usage, bail ou source_revision invalide | Corriger l’intention ; `source_revision` doit être la révision créée par l’événement actionnable |
+| `INVOCATION_PAYLOAD_CONFLICT` | A1 | Même `wake_key` mais payload/provenance différents | Relire l’invocation existante ; ne pas transformer le conflit en retry |
+| `INVOCATION_INCONSISTENT` | A1 | Journal et registre invocation ne correspondent plus | Incident store : arrêter l’automatisation et diagnostiquer |
+| `INVOCATION_UNKNOWN` | A1 | `wake_key` inconnu | Relire l’outbox avant de tenter un bail |
+| `INVOCATION_LEASE_LOST` | A1 | Bail absent, expiré ou détenu par un autre worker | Relire l’état ; réconcilier avant toute nouvelle tentative |
 
 ### 7.3 Phases, contexte et scellement (C3)
 

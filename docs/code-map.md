@@ -122,3 +122,11 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `src/collab-store/context/resolution.ts` : découverte du cycle sans issue ni cycle (`NO_ACTIVE_CYCLE`, `AMBIGUOUS_CYCLE`, filtre `task`) — jamais de choix implicite (défaut du trial C7).
 - `src/collab-store/store/schema.ts` : migration 0005 — tables internes `endpoints` (UNIQUE principal + attestation) et `session_bindings` (PK session + endpoint), hors schéma canonique gelé.
 - Tests : `test/collab-store/contracts/{a0-op-id,principals}.spec.ts`, `test/collab-store/store/proposal-guard.spec.ts`, `test/collab-store/phases/expected-outputs-task.spec.ts`, `test/collab-store/context/discovery.spec.ts` ; adaptations : A01 `collab-store.spec.ts`, STALE `collab-tools.spec.ts`, op_id = pid dans `memory-lifecycle-e2e`/`phase-bootstrap-e2e`/`tool-binding`/`no-agent-path`.
+
+## CC-4 A1 — cœur invocation/outbox (#112)
+
+- `src/collab-store/invocations/contracts.ts` : wake_key déterministe, hash d'entrée/payload, provenance et compteurs d'usage ; aucun input brut persisté.
+- `src/collab-store/invocations/{repository,service,simulated}.ts` : outbox D1, baux/reprise/réconciliation, arrêt après deux échecs consécutifs et exécuteur simulé sans fournisseur.
+- `src/collab-store/invocations/schema.ts` : migration interne 0006 (`invocations`, `invocation_attempts`, garde transactionnelle), hors schéma canonique gelé.
+- `src/collab-store/store/collab-store.ts` : `appendActionableEvent` joint événement source et intention outbox au même batch CAS ; déduplication par wake_key avant retry.
+- Tests : `test/collab-store/invocations/{enqueue,lease,simulated}.spec.ts` + `helpers.ts`.
