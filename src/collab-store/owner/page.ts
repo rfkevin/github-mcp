@@ -3,7 +3,8 @@
  * every password field is rendered empty.
  */
 import type { OwnerChannelConfig } from './config';
-import type { PendingPage, PendingRequest } from './decisions';
+import type { DescribedPendingPage, PendingWithExecutable } from './executable';
+import type { BudgetEnvelope } from './automation';
 import type { ImportedStateSummary } from './state-import';
 
 export const OWNER_PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
@@ -21,6 +22,10 @@ const STYLE = [
   'form.inline{display:inline}input,button,textarea{font:inherit}input[type=text],input[type=password],textarea{width:100%;box-sizing:border-box;padding:6px}',
   'textarea{min-height:180px;font-family:ui-monospace,monospace;font-size:13px}',
   'fieldset{border:1px solid #d8e2df;border-radius:8px;margin:0 0 12px;padding:10px 12px}',
+  'pre{white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto;font-size:12px;background:rgba(127,127,127,.08);padding:6px;border-radius:6px}',
+  'dl{margin:6px 0}dt{font-weight:600}dd{margin:0 0 6px}',
+  '.halt{padding:10px 12px;border-radius:8px;background:#f8e1df;font-weight:600}',
+  '@media (prefers-color-scheme:dark){.halt{background:#3a1d1a}}',
 ].join('');
 
 export function escapeHtml(value: string): string {
@@ -50,19 +55,23 @@ export function loginPage(config: OwnerChannelConfig, message = ''): string {
 
 export interface DashboardData {
   /** F2/A06 : une page de demandes non tranchées, filtrées avant pagination. */
-  pending: PendingPage;
+  pending: DescribedPendingPage;
   participants: Array<{ participant_id: string; display_label: string; status: string }>;
   clients: Array<{ oauth_client_id: string; participant_id: string; approved_event_seq: number | null }>;
   /** CC-3 C6 : dernier état CC-STATE-1 importé par cycle. */
   imports?: ImportedStateSummary[];
   message?: { text: string; error: boolean };
+  /** CC-4 A2 : arrêt d'urgence posé. */
+  halted?: boolean;
+  /** CC-4 A2 : enveloppe budgétaire globale (0 € par défaut). */
+  budget?: BudgetEnvelope;
 }
 
 export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): string {
   const secret = secretField(config);
   const rows = data.pending.items.map(item => '<tr><td><code>' + escapeHtml(item.request_id || '—') + '</code><br>'
     + escapeHtml(item.type) + ' · ' + escapeHtml(item.cycle_id) + ' · seq ' + item.seq + '</td>'
-    + '<td>' + escapeHtml(item.participant_id) + '</td><td>' + escapeHtml(item.summary) + '</td><td>'
+    + '<td>' + escapeHtml(item.participant_id) + '</td><td>' + escapeHtml(item.summary) + executableDetail(item) + '</td><td>'
     + decisionCell(item, secret) + '</td></tr>').join('');
   const participants = data.participants.map(item => '<tr><td><code>' + escapeHtml(item.participant_id) + '</code></td><td>'
     + escapeHtml(item.display_label) + '</td><td>' + escapeHtml(item.status) + '</td></tr>').join('');
@@ -72,6 +81,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + '<p class="note">Chaque action est enregistrée comme événement owner.decision avec sa preuve (' + config.mode + ').'
     + (config.mode === 'secret' ? ' Le secret est redemandé à chaque action et n’est jamais conservé.' : '') + '</p>'
     + (data.message ? '<p class="msg' + (data.message.error ? ' err' : '') + '">' + escapeHtml(data.message.text) + '</p>' : '')
+    + automationSection(data.halted ?? false, data.budget, secret)
     + '<h2>Demandes en attente (' + data.pending.total + ')</h2>'
     + (rows ? '<table><tr><th>Demande</th><th>Participant</th><th>Résumé</th><th>Décision</th></tr>' + rows + '</table>'
       : '<p class="note">Aucune demande en attente.</p>')
@@ -104,8 +114,11 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
  * cycle) ; le serveur refuse si elle ne correspond plus. Une demande bloquée
  * (identifiant déjà tranché pour une autre seq) ou invalide n'a pas de bouton.
  */
-function decisionCell(item: PendingRequest, secret: string): string {
+function decisionCell(item: PendingWithExecutable, secret: string): string {
   if (item.state === 'invalid') return '<em>Identifiant de demande invalide : non décidable.</em>';
+  const exec = item.executable;
+  // CC-4 A2 : une demande exécutable invalide ou expirée ne peut qu'être refusée.
+  const approvable = !exec || (!exec.invalid && !exec.expired);
   if (item.state === 'blocked') {
     return '<em>Identifiant déjà tranché' + (item.decided_seq ? ' pour la seq ' + item.decided_seq : '')
       + ' : l’agent doit redéposer sous un nouvel identifiant.</em>';
@@ -113,8 +126,50 @@ function decisionCell(item: PendingRequest, secret: string): string {
   return '<form method="post" action="/owner"><input type="hidden" name="action" value="decide">'
     + '<input type="hidden" name="request_id" value="' + escapeHtml(item.request_id) + '">'
     + '<input type="hidden" name="request_seq" value="' + item.seq + '">'
-    + '<input type="hidden" name="cycle_id" value="' + escapeHtml(item.cycle_id) + '">' + secret
-    + '<button name="decision" value="approve">Approuver</button> <button name="decision" value="deny">Refuser</button></form>';
+    + '<input type="hidden" name="cycle_id" value="' + escapeHtml(item.cycle_id) + '">'
+    + (exec?.payload_sha256 ? '<input type="hidden" name="payload_sha256" value="' + escapeHtml(exec.payload_sha256) + '">' : '') + secret
+    + (approvable ? '<button name="decision" value="approve">Approuver</button> ' : '')
+    + '<button name="decision" value="deny">Refuser</button></form>';
+}
+
+const ACTION_LABELS: Record<string, string> = { install_phases: 'Installer les définitions de phase', import_state: 'Importer l’état CC-STATE-1' };
+
+/** CC-4 A2 : ce qui sera exécuté exactement, pourquoi, risque, retour arrière, empreinte. */
+function executableDetail(item: PendingWithExecutable): string {
+  const exec = item.executable;
+  if (!exec) return '';
+  if (exec.invalid) return '<p class="msg err">Demande exécutable invalide : ' + escapeHtml(exec.invalid) + ' Refusez-la.</p>';
+  const expiry = exec.expires_at ? new Date(exec.expires_at * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'aucune';
+  return '<dl>'
+    + '<dt>Action exécutée à l’approbation</dt><dd>' + escapeHtml(ACTION_LABELS[exec.action ?? ''] ?? String(exec.action))
+    + ' — cycle <code>' + escapeHtml(exec.cycle_id ?? '') + '</code></dd>'
+    + '<dt>Pourquoi</dt><dd>' + escapeHtml(exec.reason ?? '') + '</dd>'
+    + '<dt>Risque</dt><dd>' + escapeHtml(exec.risk ?? '') + '</dd>'
+    + '<dt>Retour arrière</dt><dd>' + escapeHtml(exec.rollback ?? '') + '</dd>'
+    + '<dt>Précondition</dt><dd>dernier acte du même type au seq ' + (exec.previous_seq ?? 'aucun') + '</dd>'
+    + '<dt>Coût maximal</dt><dd>' + ((exec.max_cost_cents ?? 0) / 100).toFixed(2) + ' €</dd>'
+    + '<dt>Expiration</dt><dd>' + escapeHtml(expiry) + (exec.expired ? ' — <strong>expirée, non approuvable</strong>' : '') + '</dd>'
+    + '<dt>Empreinte sha256</dt><dd><code>' + escapeHtml(exec.payload_sha256 ?? '') + '</code></dd>'
+    + '</dl><pre>' + escapeHtml(exec.preview ?? '') + '</pre>';
+}
+
+function euros(cents: number): string {
+  return (cents / 100).toFixed(2) + ' €';
+}
+
+/** CC-4 A2 : arrêt d'urgence et enveloppe budgétaire globale. */
+function automationSection(halted: boolean, budget: BudgetEnvelope | undefined, secret: string): string {
+  const status = halted
+    ? '<p class="halt">Arrêt d’urgence posé : aucune action automatique ne démarre (avance de phase par policy, réservation budgétaire, invocation). L’état est conservé.</p>'
+    : '<p class="note">Automatisation active. L’arrêt d’urgence bloque toute nouvelle action automatique sans rien effacer.</p>';
+  const button = '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="' + (halted ? 'resume' : 'halt') + '">'
+    + secret + '<p><button type="submit">' + (halted ? 'Reprendre l’automatisation' : 'Arrêt d’urgence') + '</button></p></form></fieldset>';
+  const money = budget
+    ? '<table><tr><th>Plafond</th><th>Réservé</th><th>Dépensé</th><th>Restant</th></tr><tr><td>' + euros(budget.limit_cents) + '</td><td>'
+      + euros(budget.reserved_cents) + '</td><td>' + euros(budget.spent_cents) + '</td><td>' + euros(budget.remaining_cents) + '</td></tr></table>'
+      + '<p class="note">Enveloppe ' + escapeHtml(budget.scope) + ' : 0 € par défaut (Free d’abord). Toute dépense exige une enveloppe approuvée par le propriétaire.</p>'
+    : '';
+  return '<h2>Automatisation</h2>' + status + button + '<h2>Budget</h2>' + money;
 }
 
 function importSection(imports: ImportedStateSummary[], secret: string): string {

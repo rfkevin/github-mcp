@@ -20,6 +20,7 @@ import { CollabStoreError, type StoredStoreEvent } from '../store/collab-store';
 import { sha256Hex } from '../store/hash';
 import { ensureSchema } from '../store/schema';
 import { ownerAppend, type OwnerWriteResult } from './decisions';
+import { bindingGuard, bindingPayload, bindingStatements, bindingKey, assertBindingPrecondition, type OwnerRequestBinding } from './binding';
 import type { OwnerProof } from './proof';
 
 export const PHASE_INSTALL_KEY_PREFIX = 'owner:phases:';
@@ -101,6 +102,8 @@ export async function installPhaseDefinitions(db: D1Database, input: {
   definitions: string;
   proof: OwnerProof;
   now?: () => Date;
+  /** CC-4 A2 : exécution d'une demande owner approuvée (empreinte et précondition vérifiées, décision dans le même lot). */
+  binding?: OwnerRequestBinding;
 }): Promise<PhaseInstallResult> {
   await ensureSchema(db);
   const cycleId = input.cycle_id.trim();
@@ -110,19 +113,26 @@ export async function installPhaseDefinitions(db: D1Database, input: {
   const previous = await db.prepare(
     "SELECT * FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1",
   ).bind(cycleId, PHASE_INSTALL_KEY_PREFIX + cycleId + ':%').first<StoredStoreEvent>();
-  if (previous && (JSON.parse(previous.payload_json) as { definitions_sha256?: string }).definitions_sha256 === digest) {
+  const binding = input.binding;
+  if (binding) {
+    assertBindingPrecondition(binding, previous?.seq ?? null);
+  } else if (previous && (JSON.parse(previous.payload_json) as { definitions_sha256?: string }).definitions_sha256 === digest) {
     return { status: 'duplicate', event: previous, definitions_sha256: digest, phases: summary };
   }
   // The previous install seq is part of the key: a double submit is a duplicate,
   // while re-installing an older set after a newer one is a new owner act.
-  const key = PHASE_INSTALL_KEY_PREFIX + cycleId + ':' + (previous?.seq ?? 0) + ':' + digest.slice(0, 32);
+  const key = binding
+    ? bindingKey(PHASE_INSTALL_KEY_PREFIX + cycleId, binding)
+    : PHASE_INSTALL_KEY_PREFIX + cycleId + ':' + (previous?.seq ?? 0) + ':' + digest.slice(0, 32);
   const result = await ownerAppend(db, {
     cycleId,
     key,
     payload: { action: 'install_phases', cycle_id: cycleId, definitions_sha256: digest, previous_install_seq: previous?.seq ?? null,
-      definitions: definitions.map(({ cycle_id: _cycle, ...def }) => def) },
+      definitions: definitions.map(({ cycle_id: _cycle, ...def }) => def), ...(binding ? bindingPayload(binding) : {}) },
     proof: input.proof,
-    sideEffects: () => [
+    ...(binding ? { extraGuard: bindingGuard(binding, PHASE_INSTALL_KEY_PREFIX + cycleId + ':%') } : {}),
+    sideEffects: eventKey => [
+      ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
       db.prepare('DELETE FROM phase_definitions WHERE cycle_id = ?1').bind(cycleId),
       ...definitions.map(def => db.prepare([
         'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',

@@ -9,6 +9,7 @@ import { assertPhase } from '../../collab/contracts';
 import { CollabStoreError } from '../store/collab-store';
 import { advanceByPolicy, inspectPhase } from './engine';
 import { ensureSchema } from '../store/schema';
+import { assertAutomationRunning } from '../owner/automation';
 
 const ALLOWED: Record<string, readonly string[]> = {
   P1: ['P2'],
@@ -70,6 +71,10 @@ export async function advanceGuarded(db: D1Database, input: {
   if (replay) {
     return { status: 'duplicate', revision: input.expected_revision + 1, event_seq: replay.seq };
   }
+
+  // CC-4 A2 : l'avance par policy est une action automatique — refusée tant que
+  // l'arrêt d'urgence owner est posé (le rejeu d'une avance déjà faite reste un duplicate).
+  await assertAutomationRunning(db);
 
   const facts = await inspectPhase(db, input.cycle_id);
   assertAllowedTransition(facts.phase, input.next_phase);

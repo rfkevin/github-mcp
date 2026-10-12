@@ -227,6 +227,35 @@ export const STORE_MIGRATION_0005 = [
   ].join(' '),
 ];
 
+/**
+ * Store-owned migration 0006 (CC-4 A2, plan §6.5/§7) : drapeaux owner (arrêt
+ * d'urgence) et contrat d'enveloppe budgétaire. Tables internes, jamais dans
+ * le schéma canonique gelé. Écrites uniquement par le canal owner (drapeaux,
+ * enveloppes) et par owner/automation.ts (réservations, sous garde CAS).
+ */
+export const STORE_MIGRATION_0006 = [
+  'CREATE TABLE IF NOT EXISTS owner_flags (name TEXT PRIMARY KEY, value TEXT NOT NULL, event_seq INTEGER, updated_at INTEGER NOT NULL)',
+  [
+    'CREATE TABLE IF NOT EXISTS budget_envelopes (',
+    '  scope TEXT PRIMARY KEY,',
+    '  limit_cents INTEGER NOT NULL DEFAULT 0 CHECK (limit_cents >= 0),',
+    '  reserved_cents INTEGER NOT NULL DEFAULT 0 CHECK (reserved_cents >= 0),',
+    '  spent_cents INTEGER NOT NULL DEFAULT 0 CHECK (spent_cents >= 0),',
+    '  updated_at INTEGER NOT NULL',
+    ')',
+  ].join(' '),
+  [
+    'CREATE TABLE IF NOT EXISTS budget_reservations (',
+    '  reservation_id TEXT PRIMARY KEY,',
+    '  scope TEXT NOT NULL,',
+    '  reserved_cents INTEGER NOT NULL CHECK (reserved_cents >= 0),',
+    '  actual_cents INTEGER,',
+    "  status TEXT NOT NULL CHECK (status IN ('reserved', 'settled')),",
+    '  created_at INTEGER NOT NULL',
+    ')',
+  ].join(' '),
+];
+
 const ENSURED = new WeakSet<object>();
 
 function runnableStatements(sql: string): string[] {
@@ -249,6 +278,8 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     ...IDENTITY_INTERNAL_SCHEMA.map(statement => db.prepare(statement)),
     // CC-4 A0 (0005, §3.1) : contrat principal/endpoint/session — schéma seul.
     ...STORE_MIGRATION_0005.map(statement => db.prepare(statement)),
+    // CC-4 A2 (0006) : arrêt d'urgence et enveloppes budgétaires.
+    ...STORE_MIGRATION_0006.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.
