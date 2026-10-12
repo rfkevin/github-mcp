@@ -11,6 +11,7 @@
  */
 
 import { estimateTokens } from '../contracts/memory';
+import { INVOCATION_SCHEMA_0006 } from '../invocations/schema';
 
 export const CANONICAL_SCHEMA_SQL = [
   '-- CC-3 C1 — 0001_init.sql : portable standard SQL (D1 + stock SQLite).',
@@ -249,6 +250,8 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     ...IDENTITY_INTERNAL_SCHEMA.map(statement => db.prepare(statement)),
     // CC-4 A0 (0005, §3.1) : contrat principal/endpoint/session — schéma seul.
     ...STORE_MIGRATION_0005.map(statement => db.prepare(statement)),
+    // CC-4 A1 (0006) : registre invocation/outbox + attempts + garde de bail.
+    ...INVOCATION_SCHEMA_0006.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.
