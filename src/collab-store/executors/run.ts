@@ -1,0 +1,204 @@
+/**
+ * CC-4 A3 — exécution par l'API gratuite : sonde owner et dispatch d'une
+ * invocation A1.
+ *
+ * Garde-fous, dans l'ordre :
+ * 1. arrêt d'urgence (A2) ;
+ * 2. endpoint inscrit par le propriétaire, actif (sonde réussie), lié au
+ *    principal de l'invocation, attestation `provider_adapter` ;
+ * 3. capacités deny-by-default : `llm.generate`, fournisseur `workers-ai`,
+ *    plafond de jetons explicite ;
+ * 4. paquet d'entrée identique à l'empreinte enregistrée par A1 ;
+ * 5. plafond quotidien d'appels par endpoint (bien sous le quota gratuit) ;
+ * 6. bail A1 + réserve budgétaire 0 € (chemin gratuit), solde à la clôture.
+ * Le texte produit n'est pas persisté : seule son empreinte l'est (A1 §3.3).
+ */
+import { CollabStoreError } from '../store/collab-store';
+import { ensureSchema } from '../store/schema';
+import { sha256Hex } from '../store/hash';
+import { assertAutomationRunning } from '../owner/automation';
+import { ownerAppend, REGISTRY_CYCLE, type OwnerWriteResult } from '../owner/decisions';
+import type { OwnerProof } from '../owner/proof';
+import { InvocationService, type InvocationRecord } from '../invocations';
+import { createWorkersAiAdapter, WORKERS_AI_PROVIDER, type LlmAdapter, type WorkersAiBinding } from './adapter';
+import { loadEndpoint, PROBE_KEY_PREFIX, type StoredEndpoint } from './registry';
+
+export const DEFAULT_DAILY_CAP = 50;
+export const LLM_TOOL = 'llm.generate';
+const PROBE_MAX_TOKENS = 32;
+const PROBE_CONTROL = 'Tu es une sonde technique. Réponds exactement par une seule ligne : CC4-PROBE-OK suivi du nonce présent dans les données. Rien d’autre.';
+
+export type AdapterFactory = (endpoint: StoredEndpoint) => LlmAdapter;
+
+/** Fabrique par défaut : Workers AI via le binding du Worker. */
+export function workersAiFactory(ai: WorkersAiBinding | undefined): AdapterFactory {
+  return endpoint => {
+    if (!ai) throw new CollabStoreError('EXECUTOR_UNAVAILABLE', 'Binding Workers AI absent de cet environnement.');
+    return createWorkersAiAdapter(ai, endpoint.attestation_ref);
+  };
+}
+
+export function parseDailyCap(value: string | undefined): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 1000 ? parsed : DEFAULT_DAILY_CAP;
+}
+
+/** Consomme une unité du plafond quotidien de l'endpoint (garde dans le lot) ; au-delà : EXECUTOR_DAILY_CAP, rien d'écrit. */
+export async function consumeDailyCap(db: D1Database, endpointId: string, cap: number, now: Date): Promise<number> {
+  const key = 'exec:' + endpointId + ':' + now.toISOString().slice(0, 10);
+  try {
+    await db.batch([
+      db.prepare('INSERT INTO quota_counters (day, writes) VALUES (?1, 0) ON CONFLICT(day) DO NOTHING').bind(key),
+      db.prepare('INSERT INTO collab_store_guard (ok) SELECT CASE WHEN (SELECT writes FROM quota_counters WHERE day = ?1) < ?2 THEN 1 ELSE 0 END')
+        .bind(key, cap),
+      db.prepare('UPDATE quota_counters SET writes = writes + 1 WHERE day = ?1').bind(key),
+      db.prepare('DELETE FROM collab_store_guard'),
+    ]);
+  } catch {
+    throw new CollabStoreError('EXECUTOR_DAILY_CAP', 'Plafond quotidien de ' + cap + ' appels atteint pour ' + endpointId + ' : réessayez demain.');
+  }
+  const row = await db.prepare('SELECT writes FROM quota_counters WHERE day = ?1').bind(key).first<{ writes: number }>();
+  return row?.writes ?? cap;
+}
+
+function errorCode(error: unknown): string {
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === 'string' ? code : 'EXECUTOR_ERROR';
+}
+
+/**
+ * Sonde owner (bouton /owner) : un appel réel, paquet fixe défini par le
+ * serveur, résultat (provenance, latence, usage, empreinte) enregistré comme
+ * owner.decision. C'est la seule preuve qui permet ensuite d'activer l'endpoint.
+ */
+export async function probeEndpoint(db: D1Database, factory: AdapterFactory, input: {
+  endpoint_id: string;
+  proof: OwnerProof;
+  op: string;
+  daily_cap?: number;
+  now?: () => Date;
+}): Promise<OwnerWriteResult & { ok: boolean; error?: string }> {
+  await ensureSchema(db);
+  const key = PROBE_KEY_PREFIX + input.endpoint_id + ':' + input.op;
+  const replay = await db.prepare('SELECT * FROM events WHERE idempotency_key = ?1').bind(key).first<OwnerWriteResult['event']>();
+  if (replay) {
+    const payload = JSON.parse(replay.payload_json) as { ok?: boolean };
+    return { status: 'duplicate', event: replay, ok: payload.ok === true };
+  }
+  await assertAutomationRunning(db);
+  const endpoint = await loadEndpoint(db, input.endpoint_id);
+  if (!endpoint || endpoint.status === 'retired' || endpoint.attestation_kind !== 'provider_adapter') {
+    throw new CollabStoreError('ENDPOINT_NOT_PROBEABLE', 'Endpoint ' + input.endpoint_id + ' introuvable, retiré ou non provider_adapter.');
+  }
+  const adapter = factory(endpoint);
+  const now = input.now?.() ?? new Date();
+  await consumeDailyCap(db, endpoint.endpoint_id, input.daily_cap ?? DEFAULT_DAILY_CAP, now);
+  const nonce = crypto.randomUUID().slice(0, 8);
+  const started = Date.now();
+  let ok = false;
+  let error: string | undefined;
+  let usage = { input_tokens: 0, output_tokens: 0 };
+  let outputSha = '';
+  try {
+    const result = await adapter.generate({ control: PROBE_CONTROL, data: 'nonce: ' + nonce, max_tokens: PROBE_MAX_TOKENS });
+    usage = result.usage;
+    outputSha = await sha256Hex(result.text);
+    ok = result.text.includes('CC4-PROBE-OK') && result.text.includes(nonce);
+    if (!ok) error = 'PROBE_OUTPUT_MISMATCH';
+  } catch (caught) {
+    error = errorCode(caught);
+  }
+  const written = await ownerAppend(db, {
+    cycleId: REGISTRY_CYCLE,
+    key,
+    payload: {
+      action: 'endpoint_probe', endpoint_id: endpoint.endpoint_id, principal_id: endpoint.principal_id,
+      attestation_ref: endpoint.attestation_ref, provider: adapter.provider, model: adapter.model,
+      ok, latency_ms: Date.now() - started, usage, output_sha256: outputSha, ...(error ? { error } : {}),
+    },
+    proof: input.proof,
+    sideEffects: () => [],
+    now: input.now,
+  });
+  return { ...written, ok, ...(error ? { error } : {}) };
+}
+
+export interface DispatchOutcome {
+  status: 'succeeded' | 'attempt_failed' | 'busy' | 'terminal';
+  invocation: InvocationRecord;
+  /** Texte produit (jamais persisté ; seule son empreinte l'est). */
+  output?: string;
+  error?: string;
+}
+
+function capabilityDenied(message: string): CollabStoreError {
+  return new CollabStoreError('EXECUTOR_CAPABILITY_DENIED', message);
+}
+
+/** Capacités deny-by-default de l'endpoint pour un appel LLM gratuit. */
+export function assertLlmCapabilities(endpoint: StoredEndpoint, maxTokens: number): void {
+  const caps = endpoint.capability_set;
+  if (!caps.tools?.includes(LLM_TOOL)) throw capabilityDenied('Capacité ' + LLM_TOOL + ' absente pour ' + endpoint.endpoint_id + '.');
+  if (!caps.network_providers?.includes(WORKERS_AI_PROVIDER)) {
+    throw capabilityDenied('Fournisseur ' + WORKERS_AI_PROVIDER + ' non autorisé pour ' + endpoint.endpoint_id + '.');
+  }
+  if (caps.token_ceiling === undefined || maxTokens > caps.token_ceiling) {
+    throw capabilityDenied('max_tokens ' + maxTokens + ' au-delà du plafond ' + (caps.token_ceiling ?? 'absent') + '.');
+  }
+}
+
+/**
+ * Exécute une invocation A1 sur son endpoint par l'API gratuite. Les
+ * instructions de contrôle (`control`) viennent du code serveur, jamais d'un
+ * agent ; `input_packet` doit être exactement celui enregistré (empreinte).
+ */
+export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFactory, input: {
+  wake_key: string;
+  worker_id: string;
+  control: string;
+  input_packet: string;
+  max_tokens: number;
+  lease_seconds?: number;
+  daily_cap?: number;
+  budget_scope?: string;
+  now?: () => Date;
+}): Promise<DispatchOutcome> {
+  await ensureSchema(db);
+  const service = new InvocationService(db, { now: input.now });
+  const invocation = await service.getByWakeKey(input.wake_key);
+  if (!invocation) throw new CollabStoreError('INVOCATION_UNKNOWN', 'wake_key inconnu.');
+  if (invocation.state === 'succeeded' || invocation.state === 'failed') return { status: 'terminal', invocation };
+  if (invocation.state === 'leased' || invocation.state === 'running') return { status: 'busy', invocation };
+  await assertAutomationRunning(db);
+  const endpoint = await loadEndpoint(db, invocation.endpoint_id);
+  if (!endpoint || endpoint.status !== 'active' || endpoint.attestation_kind !== 'provider_adapter') {
+    throw new CollabStoreError('ENDPOINT_NOT_ACTIVE', 'Endpoint ' + invocation.endpoint_id + ' absent, non actif ou non provider_adapter.');
+  }
+  if (endpoint.principal_id !== invocation.principal_id) {
+    throw new CollabStoreError('ENDPOINT_PRINCIPAL_MISMATCH',
+      'L’endpoint ' + endpoint.endpoint_id + ' appartient à ' + endpoint.principal_id + ', pas à ' + invocation.principal_id + '.');
+  }
+  assertLlmCapabilities(endpoint, input.max_tokens);
+  if (await sha256Hex(input.input_packet) !== invocation.input_hash) {
+    throw new CollabStoreError('INVOCATION_INPUT_MISMATCH', 'Le paquet fourni ne correspond pas à l’empreinte enregistrée de l’invocation.');
+  }
+  const adapter = factory(endpoint);
+  await consumeDailyCap(db, endpoint.endpoint_id, input.daily_cap ?? DEFAULT_DAILY_CAP, input.now?.() ?? new Date());
+  const lease = await service.lease(input.wake_key, input.worker_id, input.lease_seconds ?? 120,
+    { max_cost_cents: 0, scope: input.budget_scope });
+  if (lease.status !== 'leased') return { status: lease.status, invocation: lease.invocation };
+  await service.markRunning(input.wake_key, input.worker_id);
+  const evidence = ['provider:' + adapter.provider, 'model:' + adapter.model];
+  let result;
+  try {
+    result = await adapter.generate({ control: input.control, data: input.input_packet, max_tokens: input.max_tokens });
+  } catch (caught) {
+    // Seul l'échec du fournisseur devient une tentative échouée ; une erreur du store remonte telle quelle.
+    const code = errorCode(caught);
+    const failed = await service.fail(input.wake_key, input.worker_id, code, { operations: 1 }, evidence, 0);
+    return { status: 'attempt_failed', invocation: failed, error: code };
+  }
+  const done = await service.succeed(input.wake_key, input.worker_id, result.text,
+    { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens, operations: 1 }, evidence, 0);
+  return { status: 'succeeded', invocation: done, output: result.text };
+}
