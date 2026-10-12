@@ -26,9 +26,9 @@ describe('CC-3 CR-A — amorçage owner des phases et garde d’identité de col
     const cycle = uniq('cycle');
 
     // 1. Création du cycle et d'une tâche par les agents eux-mêmes (MCP).
-    expect((await alpha.call('collab_append_event', { cycle, expected_rev: 0, op_id: `alpha:${cycle}:open:1`,
+    expect((await alpha.call('collab_append_event', { cycle, expected_rev: 0, op_id: `${alpha.pid}:${cycle}:open:1`,
       type: 'checkpoint', participant_id: alpha.pid, payload_json: '{"note":"ouverture"}' })).structuredContent.status).toBe('applied');
-    expect((await alpha.call('collab_append_event', { cycle, expected_rev: 1, op_id: `alpha:${cycle}:claim:1`,
+    expect((await alpha.call('collab_append_event', { cycle, expected_rev: 1, op_id: `${alpha.pid}:${cycle}:claim:1`,
       type: 'task.claim', participant_id: alpha.pid, payload_json: JSON.stringify({ task: { task_id: 'T1', owner_pid: alpha.pid,
         reviewer_pid: beta.pid, tester_pid: gamma.pid, status: 'in_progress', owned_paths: ['docs/'], next_action: 'P1' } }) }))
       .structuredContent.status).toBe('applied');

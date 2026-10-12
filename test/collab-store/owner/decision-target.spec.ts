@@ -19,7 +19,7 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 /** Files an owner.request through the real store and returns its immutable seq. */
 async function file(store: CollabStore, cycleId: string, requestId: string, summary = 'demande'): Promise<number> {
   const outcome = await store.appendEvent({ cycle_id: cycleId, type: 'owner.request', participant_id: 'agent:a',
-    expected_rev: await store.currentRevision(cycleId), op_id: `t:${cycleId}:req:${++n}`,
+    expected_rev: await store.currentRevision(cycleId), op_id: `agent.a:${cycleId}:req:${++n}`,
     payload_json: JSON.stringify({ request_id: requestId, summary }) });
   expect(outcome.status).toBe('applied');
   return (outcome as { event: { seq: number } }).event.seq;
@@ -87,7 +87,7 @@ describe('CC-3 F2 / A02 — la décision vise la demande affichée', () => {
     expect(await codeOf(recordOwnerDecision(db, { request_id: requestId, request_seq: seq, cycle_id: uniq('wrong'), decision: 'approve', proof })))
       .toBe('REQUEST_MISMATCH');
     const checkpoint = await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a',
-      expected_rev: await store.currentRevision(cycle), op_id: `t:${cycle}:cp:${++n}`, payload_json: '{}' });
+      expected_rev: await store.currentRevision(cycle), op_id: `agent.a:${cycle}:cp:${++n}`, payload_json: '{}' });
     const checkpointSeq = (checkpoint as { event: { seq: number } }).event.seq;
     expect(await codeOf(recordOwnerDecision(db, { request_id: requestId, request_seq: checkpointSeq, decision: 'approve', proof }))).toBe('UNKNOWN_REQUEST');
     expect(await codeOf(recordOwnerDecision(db, { request_id: requestId, request_seq: 0, decision: 'approve', proof }))).toBe('INVALID_REQUEST_ID');
@@ -179,7 +179,7 @@ describe('CC-3 F2 / A06 — aucune demande en attente masquée', () => {
     const store = new CollabStore(db);
     const cycle = uniq('invalid');
     const outcome = await store.appendEvent({ cycle_id: cycle, type: 'owner.request', participant_id: 'agent:a',
-      expected_rev: 0, op_id: `t:${cycle}:req:${++n}`, payload_json: JSON.stringify({ request_id: 'bad id!', summary: 's' }) });
+      expected_rev: 0, op_id: `agent.a:${cycle}:req:${++n}`, payload_json: JSON.stringify({ request_id: 'bad id!', summary: 's' }) });
     const seq = (outcome as { event: { seq: number } }).event.seq;
     expect((await allPending()).items.find(item => item.seq === seq)).toMatchObject({ state: 'invalid' });
   });

@@ -123,7 +123,7 @@ describe('CC-3 — association owner des clients OAuth CIMD', () => {
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })).status).toBe(401);
     // Un client non associé peut déclarer n'importe quel client_id dans une demande : ce n'est pas une preuve.
     const cycle = scenario.uniq('cycle');
-    expect((await stranger.call('collab_append_event', { cycle, expected_rev: 0, op_id: `s:${cycle}:req:1`, type: 'owner.request',
+    expect((await stranger.call('collab_append_event', { cycle, expected_rev: 0, op_id: `${stranger.pseudonym.replace(":", ".")}:${cycle}:req:1`, type: 'owner.request',
       participant_id: stranger.pseudonym, payload_json: JSON.stringify({ request_id: 'join', client_id: declared }) }))
       .structuredContent.status).toBe('applied');
 

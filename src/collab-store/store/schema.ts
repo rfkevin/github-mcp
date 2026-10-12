@@ -197,6 +197,36 @@ export const STORE_MIGRATION_0004 = [
   'CREATE INDEX IF NOT EXISTS idx_memory_hypothesis_expiry ON memory_entries(expires_cycle, expires_rev) WHERE expires_cycle IS NOT NULL',
 ];
 
+/**
+ * Store-owned migration 0005 (CC-4 A0, plan §3.1) : stockage du contrat
+ * principal/endpoint/session — schéma seul, aucune exécution d'agent dans ce
+ * lot. Tables internes au store (jamais dans le schéma canonique gelé
+ * 0001_init.sql), portables (CREATE IF NOT EXISTS, aucune option moteur) et
+ * créées dans le batch initial d'ensureSchema : une base neuve les obtient
+ * d'emblée, une base existante au premier appel.
+ */
+export const STORE_MIGRATION_0005 = [
+  [
+    'CREATE TABLE IF NOT EXISTS endpoints (',
+    '  endpoint_id TEXT PRIMARY KEY,',
+    '  principal_id TEXT NOT NULL,',
+    '  attestation_kind TEXT NOT NULL,',
+    '  attestation_ref TEXT NOT NULL,',
+    '  status TEXT NOT NULL,',
+    "  capability_set TEXT NOT NULL DEFAULT '',",
+    '  registered_at INTEGER NOT NULL,',
+    '  UNIQUE (principal_id, attestation_kind, attestation_ref)',
+    ')',
+  ].join(' '),
+  [
+    'CREATE TABLE IF NOT EXISTS session_bindings (',
+    '  session_id TEXT NOT NULL,',
+    '  endpoint_id TEXT NOT NULL REFERENCES endpoints(endpoint_id),',
+    '  PRIMARY KEY (session_id, endpoint_id)',
+    ')',
+  ].join(' '),
+];
+
 const ENSURED = new WeakSet<object>();
 
 function runnableStatements(sql: string): string[] {
@@ -217,6 +247,8 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     ...runnableStatements(CANONICAL_SCHEMA_SQL).map(statement => db.prepare(statement)),
     ...STORE_INTERNAL_SCHEMA.map(statement => db.prepare(statement)),
     ...IDENTITY_INTERNAL_SCHEMA.map(statement => db.prepare(statement)),
+    // CC-4 A0 (0005, §3.1) : contrat principal/endpoint/session — schéma seul.
+    ...STORE_MIGRATION_0005.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.

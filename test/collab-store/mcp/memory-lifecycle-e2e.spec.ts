@@ -30,35 +30,35 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 par le journal public (HTTP
     const propose2Json = JSON.stringify({ memory: { id: mid2, scope, kind: 'observation', text: textObs, evidence_refs: ['ev:crb-1b'], confidence: 'observed' } });
 
     // 1. Ouverture du cycle par checkpoint (rev 0 -> 1).
-    expect((await alpha.call('collab_append_event', { cycle, expected_rev: 0, op_id: 'alpha:' + cycle + ':open:1',
+    expect((await alpha.call('collab_append_event', { cycle, expected_rev: 0, op_id: alpha.pid + ':' + cycle + ':open:1', // CC-4 A0 : segment client = pid du participant serveur
       type: 'checkpoint', participant_id: alpha.pid, payload_json: '{"note":"ouverture du cycle CR-B"}' })).structuredContent.status).toBe('applied');
 
     // 2. alpha propose (rev 1 -> 2) : l'applied porte son effet memoire.
-    const propose = await alpha.call('collab_append_event', { cycle, expected_rev: 1, op_id: 'alpha:' + cycle + ':propose:1',
+    const propose = await alpha.call('collab_append_event', { cycle, expected_rev: 1, op_id: alpha.pid + ':' + cycle + ':propose:1',
       type: 'memory.propose', participant_id: alpha.pid, payload_json: proposeJson });
     expect(propose.structuredContent).toMatchObject({ status: 'applied', revision: 2, memory: { id: mid, version: 1, status: 'candidate' } });
 
     // 3. Rejeu du meme op_id : duplicate, une seule ligne memoire, pas de champ memory.
-    const replay = await alpha.call('collab_append_event', { cycle, expected_rev: 1, op_id: 'alpha:' + cycle + ':propose:1',
+    const replay = await alpha.call('collab_append_event', { cycle, expected_rev: 1, op_id: alpha.pid + ':' + cycle + ':propose:1',
       type: 'memory.propose', participant_id: alpha.pid, payload_json: proposeJson });
     expect(replay.structuredContent.status).toBe('duplicate');
     expect('memory' in replay.structuredContent).toBe(false);
 
     // 4. Auto-revue refusee : reviewer distinct de l'auteur, revision inchangee.
-    expect(code(await alpha.call('collab_append_event', { cycle, expected_rev: 2, op_id: 'alpha:' + cycle + ':review:1',
+    expect(code(await alpha.call('collab_append_event', { cycle, expected_rev: 2, op_id: alpha.pid + ':' + cycle + ':review:1',
       type: 'memory.review', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid, version: 1 } }) })))
       .toBe('MEMORY_SELF_ACTIVATION');
 
     // 5. X2 : un pair n'active jamais la memoire privee d'un autre (FORBIDDEN,
     // revision inchangee) ; le proprietaire propose une observation bornee puis
     // l'auto-revue (rev 2 -> 4) : mid (fact) reste candidate a jamais.
-    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 2, op_id: 'beta:' + cycle + ':review:1',
+    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 2, op_id: beta.pid + ':' + cycle + ':review:1',
       type: 'memory.review', participant_id: beta.pid, payload_json: JSON.stringify({ memory: { id: mid, version: 1 } }) })))
       .toBe('MEMORY_SCOPE_FORBIDDEN');
-    const propose2 = await alpha.call('collab_append_event', { cycle, expected_rev: 2, op_id: 'alpha:' + cycle + ':propose2:1',
+    const propose2 = await alpha.call('collab_append_event', { cycle, expected_rev: 2, op_id: alpha.pid + ':' + cycle + ':propose2:1',
       type: 'memory.propose', participant_id: alpha.pid, payload_json: propose2Json });
     expect(propose2.structuredContent).toMatchObject({ status: 'applied', revision: 3, memory: { id: mid2, version: 1, status: 'candidate' } });
-    const review = await alpha.call('collab_append_event', { cycle, expected_rev: 3, op_id: 'alpha:' + cycle + ':selfreview:1',
+    const review = await alpha.call('collab_append_event', { cycle, expected_rev: 3, op_id: alpha.pid + ':' + cycle + ':selfreview:1',
       type: 'memory.review', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid2, version: 1 } }) });
     expect(review.structuredContent).toMatchObject({ status: 'applied', revision: 4, memory: { id: mid2, version: 1, status: 'active' } });
 
@@ -79,37 +79,37 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 par le journal public (HTTP
     // 8. CRB-R1/X2 : participant:<alpha> est prive — ni beta (consolidate) ni gamma
     // (injection propose) n'y touchent (refus pre-batch, revision inchangee) ; seul
     // alpha consolide sa v2 (rev 4 -> 5) : v1 superseded, v2 candidate.
-    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'beta:' + cycle + ':consolidate:1',
+    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 4, op_id: beta.pid + ':' + cycle + ':consolidate:1',
       type: 'memory.consolidate', participant_id: beta.pid,
       payload_json: JSON.stringify({ memory: { id: mid2, text: text2, evidence_refs: ['ev:crb-2'] } }) }))).toBe('MEMORY_SCOPE_FORBIDDEN');
     const injectId = uniq('inject');
-    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'gamma:' + cycle + ':inject:1',
+    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 4, op_id: gamma.pid + ':' + cycle + ':inject:1',
       type: 'memory.propose', participant_id: gamma.pid,
       payload_json: JSON.stringify({ memory: { id: injectId, scope, kind: 'fact', text: 'injection interdite', evidence_refs: ['ev:crb-x'] } }) })))
       .toBe('MEMORY_SCOPE_FORBIDDEN');
-    const consolidate = await alpha.call('collab_append_event', { cycle, expected_rev: 4, op_id: 'alpha:' + cycle + ':consolidate:1',
+    const consolidate = await alpha.call('collab_append_event', { cycle, expected_rev: 4, op_id: alpha.pid + ':' + cycle + ':consolidate:1',
       type: 'memory.consolidate', participant_id: alpha.pid,
       payload_json: JSON.stringify({ memory: { id: mid2, kind: 'observation', text: text2, evidence_refs: ['ev:crb-2'] } }) });
     expect(consolidate.structuredContent).toMatchObject({ status: 'applied', revision: 5, memory: { id: mid2, version: 2, status: 'candidate' } });
 
     // 9. Consolidation sans evidence_refs (par le proprietaire) : payload invalide, rien ecrit.
-    expect(code(await alpha.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'alpha:' + cycle + ':consolidate:2',
+    expect(code(await alpha.call('collab_append_event', { cycle, expected_rev: 5, op_id: alpha.pid + ':' + cycle + ':consolidate:2',
       type: 'memory.consolidate', participant_id: alpha.pid,
       payload_json: JSON.stringify({ memory: { id: mid2, text: 'sans preuve' } }) }))).toBe('INVALID_MEMORY_PAYLOAD');
 
     // 10. X2 : le pair ne reve pas non plus ; le proprietaire auto-revue sa v2 (rev 5 -> 6).
-    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'beta:' + cycle + ':review:2',
+    expect(code(await beta.call('collab_append_event', { cycle, expected_rev: 5, op_id: beta.pid + ':' + cycle + ':review:2',
       type: 'memory.review', participant_id: beta.pid, payload_json: JSON.stringify({ memory: { id: mid2, version: 2 } }) })))
       .toBe('MEMORY_SCOPE_FORBIDDEN');
-    const review2 = await alpha.call('collab_append_event', { cycle, expected_rev: 5, op_id: 'alpha:' + cycle + ':selfreview2:1',
+    const review2 = await alpha.call('collab_append_event', { cycle, expected_rev: 5, op_id: alpha.pid + ':' + cycle + ':selfreview2:1',
       type: 'memory.review', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid2, version: 2 } }) });
     expect(review2.structuredContent).toMatchObject({ status: 'applied', revision: 6, memory: { id: mid2, version: 2, status: 'active' } });
 
     // 11. CRB-R1 : gamma ne peut pas retirer la memoire privee d alpha ; alpha retire
     // (rev 6 -> 7) : tombstone durable, l'export ne contient plus la memoire.
-    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 6, op_id: 'gamma:' + cycle + ':retire:1',
+    expect(code(await gamma.call('collab_append_event', { cycle, expected_rev: 6, op_id: gamma.pid + ':' + cycle + ':retire:1',
       type: 'memory.retire', participant_id: gamma.pid, payload_json: JSON.stringify({ memory: { id: mid2 } }) }))).toBe('MEMORY_SCOPE_FORBIDDEN');
-    const retire = await alpha.call('collab_append_event', { cycle, expected_rev: 6, op_id: 'alpha:' + cycle + ':retire:1',
+    const retire = await alpha.call('collab_append_event', { cycle, expected_rev: 6, op_id: alpha.pid + ':' + cycle + ':retire:1',
       type: 'memory.retire', participant_id: alpha.pid, payload_json: JSON.stringify({ memory: { id: mid2 } }) });
     expect(retire.structuredContent).toMatchObject({ status: 'applied', revision: 7, memory: { id: mid2, version: 2, status: 'retired' } });
     const expAfter = await alpha.call('collab_export', { cycle, format: 'memory-md' });

@@ -39,16 +39,16 @@ describe('CC-3 C5 — identité appliquée par les outils collab_*', () => {
     await mapClient(db, { oauth_client_id: client, participant_id: pid, proof, op: uniq('op') });
     const handlers = tools(client);
     const cycle = uniq('cycle');
-    const own = await handlers.get('collab_append_event')!({ cycle, expected_rev: 0, op_id: `x:${cycle}:cp:1`,
+    const own = await handlers.get('collab_append_event')!({ cycle, expected_rev: 0, op_id: `${pid}:${cycle}:cp:1`,
       type: 'checkpoint', participant_id: pid, payload_json: '{}' });
     expect(own.structuredContent.status).toBe('applied');
-    const other = await handlers.get('collab_append_event')!({ cycle, expected_rev: 1, op_id: `x:${cycle}:cp:2`,
+    const other = await handlers.get('collab_append_event')!({ cycle, expected_rev: 1, op_id: `${pid}:${cycle}:cp:2`,
       type: 'checkpoint', participant_id: 'agent:a', payload_json: '{}' });
     expect(other.isError).toBe(true);
     expect(errorCode(other)).toBe('PARTICIPANT_MISMATCH');
     const context = await handlers.get('collab_get_context')!({ cycle });
     expect(context.structuredContent).toMatchObject({ participant_id: pid, caller: { participant_id: pid, status: 'registered' } });
-    const forged = await handlers.get('collab_append_event')!({ cycle, expected_rev: 1, op_id: `x:${cycle}:forge:1`,
+    const forged = await handlers.get('collab_append_event')!({ cycle, expected_rev: 1, op_id: `${pid}:${cycle}:forge:1`,
       type: 'owner.decision', participant_id: pid, payload_json: '{"request_id":"r","decision":"approve"}' });
     expect(errorCode(forged)).toBe('OWNER_DECISION_FORBIDDEN');
   });
@@ -62,10 +62,10 @@ describe('CC-3 C5 — identité appliquée par les outils collab_*', () => {
     expect(errorCode(probe)).toBe('PARTICIPANT_MISMATCH');
     const self = (probe.structuredContent.error as { message: string }).message.match(/unregistered:[0-9a-f]{16}/)?.[0];
     expect(self).toBeTruthy();
-    const request = await handlers.get('collab_append_event')!({ cycle, expected_rev: 0, op_id: `x:${cycle}:req:1`,
+    const request = await handlers.get('collab_append_event')!({ cycle, expected_rev: 0, op_id: `${self!.replace(':', '.')}:${cycle}:req:1`,
       type: 'owner.request', participant_id: self, payload_json: '{"request_id":"r1","summary":"accès"}' });
     expect(request.structuredContent.status).toBe('applied');
-    const claim = await handlers.get('collab_append_event')!({ cycle, expected_rev: 1, op_id: `x:${cycle}:cp:1`,
+    const claim = await handlers.get('collab_append_event')!({ cycle, expected_rev: 1, op_id: `${self!.replace(':', '.')}:${cycle}:cp:1`,
       type: 'checkpoint', participant_id: self, payload_json: '{}' });
     expect(errorCode(claim)).toBe('UNREGISTERED_CLIENT');
     const context = await handlers.get('collab_get_context')!({ cycle });

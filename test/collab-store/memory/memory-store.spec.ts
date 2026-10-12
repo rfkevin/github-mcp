@@ -40,7 +40,7 @@ async function fileOwnerRequest(cycle: string, requestId: string, summary: strin
     participant_id: 'agent:a',
     expected_rev: await cs.currentRevision(cycle),
     payload_json: JSON.stringify({ request_id: requestId, summary }),
-    op_id: 'agent-a:' + cycle + ':' + op + ':1',
+    op_id: 'agent.a:' + cycle + ':' + op + ':1',
   });
   if (outcome.status !== 'applied' && outcome.status !== 'duplicate') {
     throw new Error('owner.request append failed: ' + outcome.status);

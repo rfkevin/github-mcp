@@ -7,7 +7,8 @@ import { validateEventType, type StoreEvent } from './events';
 
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const PARTICIPANT_RE = /^[a-z0-9][a-z0-9:_-]{0,127}$/i;
-const IDEMPOTENCY_RE = /^[A-Za-z0-9:_-]{8,256}$/;
+// Review GPT-6 R1 : '.' admis (segment client canonique d'un participant à ':').
+const IDEMPOTENCY_RE = /^[A-Za-z0-9:._-]{8,256}$/;
 
 function nonEmpty(value: unknown, field: string, max = 4096): string {
   if (typeof value !== 'string' || !value.trim()) {
@@ -50,7 +51,7 @@ export function validateAgentEvent(event: StoreEvent): StoreEvent {
   if (!IDEMPOTENCY_RE.test(key)) {
     throw new StateContractError(
       'INVALID_IDEMPOTENCY_KEY',
-      'idempotency_key must be 8-256 chars of [A-Za-z0-9:_-], derived per policy',
+      'idempotency_key must be 8-256 chars of [A-Za-z0-9:._-], derived per policy',
       'idempotency_key',
     );
   }

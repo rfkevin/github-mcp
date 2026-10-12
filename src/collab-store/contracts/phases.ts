@@ -4,12 +4,14 @@
  * (F1) and duplicates are detectable (DUPLICATE_IDEMPOTENCY_KEY).
  */
 import { StateContractError, assertPhase, type Phase } from '../../collab/contracts';
+import { TASK_ID_RE } from './tasks';
 
 export interface PhaseDefinition {
   cycle_id: string;
   phase: Phase;
   entry_conditions: string[];
-  expected_outputs: Array<{ role: string; kind: string; count: number }>;
+  // CC-4 A0 (point 5) : task_id optionnel lie la sortie attendue à SA tâche.
+  expected_outputs: Array<{ role: string; kind: string; count: number; task_id?: string }>;
   exit_conditions: string[];
   auto_advance: 'none' | string;
 }
@@ -29,6 +31,16 @@ export function validatePhaseDefinition(def: PhaseDefinition): PhaseDefinition {
       throw new StateContractError(
         'INVALID_PHASE_OUTPUT',
         'each expected output needs role, kind and count >= 1',
+        'expected_outputs',
+      );
+    }
+    // CC-4 A0 (point 5) : task_id optionnel, validé quand présent.
+    // Review GPT-6 R2 : même grammaire que les tâches du store (insensible à la
+    // casse : C7, F6-A10, T1…), une seule source de vérité (contracts/tasks.ts).
+    if (out.task_id !== undefined && !TASK_ID_RE.test(out.task_id)) {
+      throw new StateContractError(
+        'INVALID_PHASE_OUTPUT_TASK',
+        'expected_outputs task_id must be a valid task id ([a-z0-9][a-z0-9_-]{0,63}, case-insensitive)',
         'expected_outputs',
       );
     }
@@ -55,25 +67,73 @@ export function validateSealedProposal(item: SealedProposal): SealedProposal {
 }
 
 /**
- * op_id policy (§3.2): `{client}:{cycle}:{op}:{n}` — client = oauth client id
- * (short), op = short op name (no dots; e.g. `task-claim` for `task.claim`),
- * n = client-side monotonic counter.
- * Deterministic: a retry reuses the same key; a new op bumps n.
+ * op_id policy (§3.2, durcie CC-4 A0 point 1): `{client}:{cycle}:{op}:{n}` —
+ * EXACTLY four segments, no ':' inside any segment. client = the server
+ * participant id in canonical form (opIdClientFor: ':' → '.'), cycle = the targeted cycle id, op = short op name (no dots;
+ * e.g. `task-claim` for `task.claim`), n = client-side monotonic counter.
+ * Deterministic: a retry reuses the same key; a new op bumps n. The loose
+ * grammar accepted real-world ids like `op:op:vibe:cc4-design:p2-review:1`
+ * (seq 103/104 du cycle cc4-design) and `op:vibe:…` — now a hard INVALID_OP_ID.
  */
-const OP_ID_RE = /^[A-Za-z0-9:_-]{1,64}:[A-Za-z0-9:_-]{1,64}:[A-Za-z0-9_-]{1,64}:[0-9]{1,10}$/;
+const OP_ID_RE = /^([A-Za-z0-9_.-]{1,128}):([A-Za-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64}):([0-9]{1,10})$/;
 
-export function validateOpId(opId: string): string {
-  if (!OP_ID_RE.test(opId ?? '')) {
+/**
+ * Review GPT-6 R1 (github-mcp#111) — segment client canonique, vérifié pour
+ * TOUS les participants : l'id serveur avec chaque ':' remplacé par '.'
+ * (« unregistered:0123abcd… » → « unregistered.0123abcd… », « agent:a » →
+ * « agent.a »). Injectif : un participant ne peut contenir de '.' (PID_RE,
+ * contracts/tasks.ts), donc aucune identité ne peut prendre le namespace
+ * d'idempotence d'une autre (squat → IDEMPOTENCY_CONFLICT du vrai titulaire).
+ */
+export function opIdClientFor(participantId: string): string {
+  if (typeof participantId !== 'string' || !participantId || participantId.includes('.')) {
+    throw new StateContractError('INVALID_OP_ID', 'participant id cannot be represented in an op_id client segment', 'op_id');
+  }
+  return participantId.split(':').join('.');
+}
+
+/**
+ * Review GPT-6 R3 (github-mcp#111) — longueur maximale d'un op_id : 253, pour
+ * que la clé d'idempotence `op:<op_id>` tienne dans 256 caractères SANS
+ * troncature. Avec le segment client élargi à 128 (R1), un op_id peut dépasser
+ * 253 : il est refusé (INVALID_OP_ID), jamais tronqué — deux op_id distincts
+ * ne peuvent plus produire la même clé.
+ */
+export const MAX_OP_ID_LENGTH = 253;
+
+export interface ParsedOpId {
+  client: string;
+  cycle: string;
+  op: string;
+  n: string;
+}
+
+/** Parse a strictly valid op_id; throws StateContractError('INVALID_OP_ID') otherwise. */
+export function parseOpId(opId: string): ParsedOpId {
+  if (typeof opId === 'string' && opId.length > MAX_OP_ID_LENGTH) {
     throw new StateContractError(
       'INVALID_OP_ID',
-      'op_id must match {client}:{cycle}:{op}:{n} (deterministic per client+op)',
+      'op_id must be at most ' + MAX_OP_ID_LENGTH + ' characters (idempotency key op:<op_id> is never truncated)',
       'op_id',
     );
   }
+  const match = OP_ID_RE.exec(opId ?? '');
+  if (!match) {
+    throw new StateContractError(
+      'INVALID_OP_ID',
+      'op_id must match {client}:{cycle}:{op}:{n} — exactly four segments, no extra ":"',
+      'op_id',
+    );
+  }
+  return { client: match[1], cycle: match[2], op: match[3], n: match[4] };
+}
+
+export function validateOpId(opId: string): string {
+  parseOpId(opId);
   return opId;
 }
 
-/** Derive the idempotency key from an op_id (1:1, stable). */
+/** Derive the idempotency key from an op_id (1:1, stable, never truncated — R3). */
 export function opIdToIdempotencyKey(opId: string): string {
-  return `op:${validateOpId(opId)}`.slice(0, 256);
+  return `op:${validateOpId(opId)}`;
 }

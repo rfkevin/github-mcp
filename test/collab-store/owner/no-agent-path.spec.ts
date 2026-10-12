@@ -42,7 +42,7 @@ describe('CC-3 C5 — aucun chemin agent vers owner.decision', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'collab_append_event', arguments: args } }),
     })).text()) as { isError?: boolean; structuredContent: { error: { code: string; message: string } } };
     const base = { cycle: 'c5-forge', expected_rev: 0, type: 'owner.decision', payload_json: '{"request_id":"x","decision":"approve"}' };
-    const asOwner = await append({ ...base, op_id: 'c:c5-forge:x:1', participant_id: 'owner' });
+    const asOwner = await append({ ...base, op_id: 'owner:c5-forge:x:1', participant_id: 'owner' });
     expect(asOwner.structuredContent.error.code).toBe('PARTICIPANT_MISMATCH');
     const self = asOwner.structuredContent.error.message.match(/unregistered:[0-9a-f]{16}/)![0];
     const asSelf = await append({ ...base, op_id: 'c:c5-forge:x:2', participant_id: self });

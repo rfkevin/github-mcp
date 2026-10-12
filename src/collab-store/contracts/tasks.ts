@@ -8,7 +8,7 @@ import {
   type AgentRole,
 } from '../../collab/contracts';
 
-const TASK_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+export const TASK_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const PID_RE = /^[a-z0-9][a-z0-9:_-]{0,127}$/i;
 
 export interface TaskAssignment {

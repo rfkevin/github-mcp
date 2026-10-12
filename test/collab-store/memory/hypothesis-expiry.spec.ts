@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { CollabStore, type AppendOutcome } from '../../../src/collab-store/store/collab-store';
-import type { StoreEventType } from '../../../src/collab-store/contracts';
+import { opIdClientFor, type StoreEventType } from '../../../src/collab-store/contracts';
 import { MemoryStore } from '../../../src/collab-store/memory/memory-store';
 import { expireDueHypotheses } from '../../../src/collab-store/memory/hypothesis-expiry';
 import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
@@ -31,7 +31,7 @@ async function append(cycle: string, type: StoreEventType, participant: string, 
     participant_id: participant,
     expected_rev: await collab.currentRevision(cycle),
     payload_json: JSON.stringify(payload),
-    op_id: 'u:' + cycle + ':' + uniq('op') + ':1',
+    op_id: opIdClientFor(participant) + ':' + cycle + ':' + uniq('op') + ':1',
   });
 }
 

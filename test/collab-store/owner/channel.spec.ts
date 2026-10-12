@@ -65,7 +65,7 @@ describe('CC-3 C5 — canal owner, mode secret', () => {
     const cycleId = uniq('cycle');
     const requestId = uniq('hidden-request');
     await store.appendEvent({ cycle_id: cycleId, type: 'owner.request', participant_id: 'agent:a', expected_rev: 0,
-      op_id: `t:${cycleId}:req:1`, payload_json: JSON.stringify({ request_id: requestId, summary: 's' }) });
+      op_id: `agent.a:${cycleId}:req:1`, payload_json: JSON.stringify({ request_id: requestId, summary: 's' }) });
     const response = await fixtureWith().send('/owner');
     expect(response.status).toBe(200);
     const body = await response.text();
@@ -85,7 +85,7 @@ describe('CC-3 C5 — canal owner, mode secret', () => {
     const cycleId = uniq('cycle');
     const requestId = uniq('req');
     await store.appendEvent({ cycle_id: cycleId, type: 'owner.request', participant_id: 'agent:a', expected_rev: 0,
-      op_id: `t:${cycleId}:req:1`, payload_json: JSON.stringify({ request_id: requestId, summary: 'valider la gate' }) });
+      op_id: `agent.a:${cycleId}:req:1`, payload_json: JSON.stringify({ request_id: requestId, summary: 'valider la gate' }) });
 
     const view = await post(fixture, { action: 'view', owner_secret: SECRET });
     expect(view.status).toBe(200);
@@ -127,7 +127,7 @@ describe('CC-3 C5 — parcours complet : nouvel agent, demande, association par 
     const probe = await append({ cycle: cycleId, expected_rev: 0, op_id: `a:${cycleId}:probe:1`, type: 'owner.request',
       participant_id: 'agent:a', payload_json: '{}' });
     const pseudonym = (probe.structuredContent.error as { message: string }).message.match(/unregistered:[0-9a-f]{16}/)![0];
-    const request = await append({ cycle: cycleId, expected_rev: 0, op_id: `a:${cycleId}:req:1`, type: 'owner.request',
+    const request = await append({ cycle: cycleId, expected_rev: 0, op_id: `${pseudonym.replace(":", ".")}:${cycleId}:req:1`, type: 'owner.request',
       participant_id: pseudonym, payload_json: JSON.stringify({ request_id: 'join-e2e', summary: 'Associer ce client' }) });
     expect(request.structuredContent.status).toBe('applied');
 
@@ -137,7 +137,7 @@ describe('CC-3 C5 — parcours complet : nouvel agent, demande, association par 
     expect(mapped.status).toBe(200);
     expect(await mapped.text()).toContain('Client associé');
 
-    const written = await append({ cycle: cycleId, expected_rev: 1, op_id: `a:${cycleId}:cp:1`, type: 'checkpoint',
+    const written = await append({ cycle: cycleId, expected_rev: 1, op_id: `${pid}:${cycleId}:cp:1`, type: 'checkpoint',
       participant_id: pid, payload_json: '{}' });
     expect(written.structuredContent.status).toBe('applied');
     const unknown = await post(fixture, { action: 'map', oauth_client_id: 'unregistered:0000000000000000', participant_id: pid, owner_secret: SECRET });

@@ -82,7 +82,10 @@ export function normalizePhaseDefinitions(cycleId: string, source: string): Phas
       phase: phase as Phase,
       entry_conditions: strings(item.entry_conditions, 'entry_conditions', phase),
       exit_conditions: strings(item.exit_conditions, 'exit_conditions', phase),
-      expected_outputs: outputs.map(out => ({ role: String(out?.role ?? ''), kind: String(out?.kind ?? ''), count: Number(out?.count) })),
+      // CC-4 A0 (point 5) : conserver task_id optionnel — sans cette ligne il
+      // serait silencieusement perdu à l'install et la sortie attendue ne
+      // serait plus liée à sa tâche.
+      expected_outputs: outputs.map(out => ({ role: String(out?.role ?? ''), kind: String(out?.kind ?? ''), count: Number(out?.count), ...(typeof out?.task_id === 'string' ? { task_id: out.task_id } : {}) })),
       auto_advance: autoAdvance,
     });
   });
