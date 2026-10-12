@@ -50,6 +50,9 @@
           "id": "beacde27f03846ebad15861eebe50c36"
         }
       ],
+      "ai": {
+        "binding": "AI"
+      },
       "d1_databases": [
         {
           "binding": "COLLAB_DB",

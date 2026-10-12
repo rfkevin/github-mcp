@@ -135,3 +135,10 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 
 - `src/collab-store/owner/executable.ts`, `binding.ts`, `automation.ts` (CC-4 A2) : demandes owner exécutables (empreinte du payload canonique, précondition, expiration ; l’acte et la décision forment un seul `owner.decision`), arrêt d’urgence (`owner_flags`) et contrat d’enveloppe budgétaire (`budget_envelopes`, `budget_reservations`, migration 0007). Tests : `test/collab-store/owner/executable-requests.spec.ts`, `automation-halt-budget.spec.ts`.
 - `src/collab-store/invocations/service.ts`, `simulated.ts` (A2 × A1, revue #115 R3/R4) : l’arrêt d’urgence garde `lease` et `markRunning` dans le lot ; réserve du pire cas dans le lot du lease (`reserveStatements`), solde dans le lot de clôture ou d’expiration (`settleStatements`). Tests : `test/collab-store/invocations/budget-halt.spec.ts`.
+
+## CC-4 A3 — exécuteur par API gratuite
+
+- `src/collab-store/executors/adapter.ts` : adaptateur Workers AI (binding `AI`, aucune clé), modèles payants refusés, enveloppe de données non fiables, délai, lecture des deux formats de réponse.
+- `src/collab-store/executors/registry.ts` : endpoints (table A0 `endpoints`) inscrits et activés par demande owner `register_endpoint` seulement ; activation conditionnée à une sonde réussie ; matrice §4.1.
+- `src/collab-store/executors/run.ts` : sonde owner (`probeEndpoint`), plafond quotidien, `dispatchFreeInvocation` (capacités deny-by-default, empreinte du paquet, bail A1, réserve 0 €).
+- `/owner` : section « Exécuteurs » et action `probe_endpoint` (`owner/handler.ts`, `owner/page.ts`). Tests : `test/collab-store/executors/free-api.spec.ts`.
