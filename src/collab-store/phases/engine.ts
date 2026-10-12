@@ -4,6 +4,7 @@ import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { phaseEntrySeq } from './entry-seq';
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
+import { assertAutomationRunning, HALT_ACTIVE_SQL } from '../owner/automation';
 
 export interface PhaseFacts {
   definition: PhaseDefinition;
@@ -120,7 +121,10 @@ export async function advanceByPolicy(db: D1Database, input: {
       db.prepare([
         'INSERT INTO collab_store_guard (ok)',
         'SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM events WHERE idempotency_key = ?1)',
-        'AND COALESCE((SELECT revision FROM cycles WHERE cycle_id = ?2), 0) = ?3 THEN 1 ELSE 0 END',
+        'AND COALESCE((SELECT revision FROM cycles WHERE cycle_id = ?2), 0) = ?3',
+        // CC-4 A2 (revue #115 R1) : l'avance par policy est automatique — un arrêt
+        // d'urgence posé après le pré-check annule le lot (garde dans la transaction).
+        'AND NOT ' + HALT_ACTIVE_SQL + ' THEN 1 ELSE 0 END',
       ].join(' ')).bind(key, input.cycle_id, input.expected_revision),
       db.prepare([
         'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
@@ -148,6 +152,7 @@ export async function advanceByPolicy(db: D1Database, input: {
   } catch (error) {
     const winner = await db.prepare('SELECT seq FROM events WHERE idempotency_key = ?1').bind(key).first<{ seq: number }>();
     if (winner) return { status: 'duplicate', revision: input.expected_revision + 1, event_seq: winner.seq };
+    await assertAutomationRunning(db);
     const current = await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(input.cycle_id).first<{ revision: number }>();
     if ((current?.revision ?? 0) !== input.expected_revision) {
       throw new CollabStoreError('STALE', 'Le cycle a avancé pendant la transition.');

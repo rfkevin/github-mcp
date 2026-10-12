@@ -178,6 +178,40 @@ Toute erreur non typée du store (D1 indisponible, binding absent) répond `STOR
 | K-fallback | Facultatif : définir `COLLAB_FALLBACK_STATE` sur l’environnement (non secret) | Avec K4 | facultatif |
 | K-decide | Trancher les `owner.request` et `phase.request` sur `/owner` (approuver ou refuser). Chaque bouton vise la demande affichée (cycle et `seq`). Toutes les demandes non tranchées sont listées, des plus récentes aux plus anciennes, avec leur total et le bouton « Demandes plus anciennes ». Aucune n’est masquée, y compris celles qui sont non décidables (identifiant invalide ou déjà tranché) | En continu | — |
 | K-rotate | Changer le secret owner au moindre soupçon d’exposition : l’ancien secret est refusé immédiatement | Au besoin | — |
+| K-approve (A2) | Approuver ou refuser une **demande exécutable** préparée par un agent (installation de phases, import d’état) : `/owner` affiche ce qui sera exécuté, pourquoi, le risque, le retour arrière, la précondition, l’expiration et l’empreinte ; Approuver exécute exactement ce payload, avec la décision dans le même événement. Rien à coller | En continu | — |
+| K-halt (A2) | « Arrêt d’urgence » sur `/owner` : bloque toute action automatique (avance de phase par policy, réservation budgétaire, invocation) sans rien effacer ; « Reprendre l’automatisation » la relance | Au besoin | — |
+
+### 6.1 Demandes owner exécutables (CC-4 A2)
+
+Un agent prépare l’acte au lieu de demander à Kevin de le coller. Il dépose un `owner.request` dont le `payload_json` contient :
+
+- `request_id`, `summary` ;
+- `action` : `install_phases` ou `import_state` ;
+- `params` :
+  - `install_phases` : `{cycle_id, definitions}`, où `definitions` est le JSON des définitions sous forme de chaîne ;
+  - `import_state` : `{cycle_id, markdown, owner_label?, target?: {repository, path, ref}}`, l’état faisant au plus 60 000 caractères ;
+- `payload_sha256` = sha256 du JSON canonique de `{action, params}` (clés triées récursivement, sans espaces) ;
+- `preconditions.previous_seq` : seq du dernier acte du même type sur le cycle cible au moment du dépôt, ou `null` ;
+- `reason`, `risk`, `rollback` (texte requis) ;
+- en option, `expires_at` (secondes Unix) et `max_cost_cents`.
+
+**Quand Kevin approuve :**
+- l’empreinte est recalculée et doit être égale à celle affichée dans le formulaire ;
+- la demande ne doit pas avoir expiré ;
+- la précondition est revérifiée **dans la transaction**.
+
+L’acte est alors écrit comme **un seul** `owner.decision`, qui porte `request_id`, `request_seq` et `payload_sha256`, avec la ligne `owner_decisions` insérée dans le même lot. Au moindre écart, rien n’est écrit. Refuser, ne pas répondre ou laisser expirer ne change rien ; il n’y a jamais d’approbation par expiration. Une double soumission du formulaire est idempotente.
+
+### 6.2 Arrêt d’urgence et budget (CC-4 A2)
+
+- **Arrêt d’urgence :** drapeau `halt`, posé ou levé seulement sur `/owner` (`owner.decision` sur le cycle `owner-registry`). Tant qu’il est posé, renvoient `AUTOMATION_HALTED` :
+  - l’avance de phase par policy (`collab_phase_advance`) ;
+  - le démarrage d’une invocation (`InvocationService.lease`, puis `markRunning`) ;
+  - toute réservation budgétaire.
+
+  Le drapeau est revérifié **dans la garde du lot** qui écrit, pas seulement avant : un arrêt posé entre le contrôle et l’écriture annule le lot. Une tentative déjà en cours peut encore être soldée ; l’état est conservé.
+- **Enveloppe budgétaire :** un plafond en centimes par scope, **0 € par défaut**. Relever un plafond est un acte owner (demande préparée, lot ultérieur) ; aucun chemin agent n’écrit le plafond.
+- **Branchement sur les invocations (A1) :** `lease(wake, worker, secondes, { max_cost_cents, scope })` réserve le pire cas **dans le même lot** que le bail, sous l’identifiant `inv:<invocation_id>:<tentative>` (une réserve par tentative). Sans place dans l’enveloppe → `BUDGET_INSUFFICIENT`, aucune tentative ne démarre et rien n’est écrit. `succeed` / `fail` soldent le coût réel (≤ réserve, sinon `BUDGET_OVERRUN`) dans le lot qui clôt la tentative. Un bail expiré en cours d’exécution compte le pire cas réservé ; un bail jamais exécuté est soldé à 0. Le chemin gratuit ou simulé réserve 0 ; un rejeu ou une réponse perdue ne réserve ni ne dépense deux fois.
 
 Merges vers `main`/`master`, dérogations, promotion et production restent humains (I9). Aucune politique ne peut les automatiser.
 
@@ -201,7 +235,16 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVALID_LABEL` | C5 | Libellé vide ou trop long | 1 à 80 caractères |
 | `INVALID_CLIENT_ID` | C5 | Identifiant de client OAuth invalide | — |
 | `UNKNOWN_CLIENT` | C5 | Aucun client OAuth authentifié sur `/collab/mcp` ou enregistré ne correspond au pseudonyme `unregistered:…` (ou pseudonyme ambigu) | Vérifier le pseudonyme ; le client doit d’abord appeler `/collab/mcp`, ou associer l’identifiant brut |
-| `OWNER_PRECONDITION_FAILED` | C5 | Condition de la décision non remplie (participant inactif, demande déjà tranchée) | Relire `/owner` |
+| `OWNER_PRECONDITION_FAILED` | C5/A2 | Condition de la décision non remplie (participant inactif, demande déjà tranchée, ou demande exécutable dont la précondition n’est plus vraie : acte du même type survenu depuis le dépôt) — rien n’est exécuté | Relire `/owner` ; l’agent redépose une demande à jour |
+| `EXECUTABLE_REQUEST_INVALID` | A2 | Demande exécutable mal formée ou empreinte déclarée ≠ payload : non approuvable | La refuser ; l’agent redépose une demande valide |
+| `REQUEST_EXPIRED` | A2 | Demande exécutable expirée (`expires_at` dépassé) : rien n’est exécuté | L’agent redépose une demande à jour |
+| `AUTOMATION_HALTED` | A2 | Arrêt d’urgence posé sur `/owner` : aucune action automatique ne démarre, l’état est conservé | Attendre que Kevin reprenne l’automatisation |
+| `BUDGET_INSUFFICIENT` | A2 | Réserve supérieure au reste de l’enveloppe (0 € par défaut) : rien n’est écrit | Rester sur un chemin gratuit, ou préparer une demande d’enveloppe pour Kevin |
+| `BUDGET_OVERRUN` | A2 | Coût réel déclaré supérieur à la réserve au solde | Corriger la mesure ; réserver le pire cas avant l’appel |
+| `INVALID_BUDGET_AMOUNT` | A2 | Montant non entier ou négatif (centimes) | Entier ≥ 0 |
+| `INVALID_BUDGET_SCOPE` | A2 | Scope budgétaire invalide | `[a-z0-9][a-z0-9:_-]{0,127}` |
+| `INVALID_RESERVATION_ID` | A2 | Identifiant de réservation invalide | 1 à 256 caractères `[A-Za-z0-9:._-]` |
+| `UNKNOWN_RESERVATION` | A2 | Solde d’une réservation inconnue | Vérifier l’identifiant |
 | `STORE_NOT_CONFIGURED` | C2 | `COLLAB_DB` non lié : store désactivé (fail-closed, HTTP 503) | Opération K3 |
 | `STORE_UNAVAILABLE` | C6 | Store indisponible ou erreur non typée ; champ `fallback` | Lire via `github_collab_context`, aucune écriture GitHub de substitution, réessayer plus tard |
 

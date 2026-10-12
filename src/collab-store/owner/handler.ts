@@ -7,7 +7,9 @@ import { CollabStoreError } from '../store/collab-store';
 import { StateContractError } from '../../collab/contracts';
 import { ownerChannelConfig, type OwnerChannelEnv } from './config';
 import { defaultJwksResolver, verifyOwnerProof, type JwksResolver } from './proof';
-import { listPendingPage, listRegistry, mapClient, recordOwnerDecision, registerParticipant, unmapClient } from './decisions';
+import { listPendingPage, listRegistry, mapClient, registerParticipant, unmapClient } from './decisions';
+import { decideOwnerRequest, describePending } from './executable';
+import { budgetEnvelope, isAutomationHalted, setAutomationHalt } from './automation';
 import { OWNER_PAGE_CSP, dashboardPage, loginPage } from './page';
 import { sightedClientIds, unregisteredParticipantId } from '../identity';
 import { importStateSnapshot, listImportedStates } from './state-import';
@@ -43,7 +45,18 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases'] as const;
+const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume'] as const;
+
+/** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
+async function dashboardData(db: D1Database, before?: number) {
+  return {
+    pending: await describePending(await listPendingPage(db, { before })),
+    ...await listRegistry(db),
+    imports: await listImportedStates(db),
+    halted: await isAutomationHalted(db),
+    budget: await budgetEnvelope(db),
+  };
+}
 
 /** null when the channel is not configured: the caller lets the request fall through (404). */
 export async function handleOwnerRequest(
@@ -62,7 +75,7 @@ export async function handleOwnerRequest(
     const proof = await verifyOwnerProof(request, config, null, jwks);
     if (!proof) return denied('proof_invalid');
     audit('view', 'ok');
-    return html(dashboardPage(config, { pending: await listPendingPage(db), ...await listRegistry(db), imports: await listImportedStates(db) }));
+    return html(dashboardPage(config, await dashboardData(db)));
   }
   if (request.method !== 'POST') {
     return new Response('Méthode non autorisée.', { status: 405, headers: { Allow: 'GET, POST', 'Cache-Control': 'no-store' } });
@@ -96,12 +109,15 @@ export async function handleOwnerRequest(
     if (action === 'decide') {
       // F2/A02 : la décision vise la demande affichée (seq immuable), jamais une homonyme arrivée depuis.
       const seqField = field('request_seq').trim();
-      const result = await recordOwnerDecision(db, {
+      // CC-4 A2 : une demande exécutable approuvée est exécutée à l'identique (empreinte affichée), sinon décision seule.
+      const result = await decideOwnerRequest(db, {
         request_id: field('request_id'), decision: field('decision'), proof,
         request_seq: seqField ? Number(seqField) : undefined, cycle_id: field('cycle_id') || undefined,
+        payload_sha256: field('payload_sha256') || undefined,
       });
       message = { text: (result.status === 'duplicate' ? 'Déjà enregistré : ' : 'Décision enregistrée : ')
         + result.decision + ' (seq ' + result.event.seq + ').'
+        + (result.executed ? ' Exécuté : ' + result.executed.action + ' sur ' + result.executed.cycle_id + ' — ' + result.executed.detail + '.' : '')
         // CR-F02 : reprise mémoire appliquée dans la transaction de la décision.
         + (result.memory_resume ? ' Activations mémoire reprises pour le scope ' + result.memory_resume.scope
           + ' (occurrence ' + result.memory_resume.occurrence + ').' : ''), error: false };
@@ -128,6 +144,10 @@ export async function handleOwnerRequest(
         + (result.issue_refs.length ? ', issues indexées : ' + result.issue_refs.join(', ') : '')
         + (result.reassigned_issues.length ? '. Issues reprises à un autre cycle : ' + result.reassigned_issues.join(', ') : '')
         + (result.dropped_tasks.length ? '. Tâches retirées du store : ' + result.dropped_tasks.join(', ') : '') + '.', error: false };
+    } else if (action === 'halt' || action === 'resume') {
+      // CC-4 A2 : arrêt d'urgence de toute action automatique (état conservé).
+      const result = await setAutomationHalt(db, { halted: action === 'halt', proof, op });
+      message = { text: (action === 'halt' ? 'Arrêt d’urgence posé' : 'Automatisation reprise') + ' (seq ' + result.event.seq + ').', error: false };
     } else if (action === 'install_phases') {
       // CR-A / CR-03 : amorçage owner des définitions de phase (vide = P1–P6, auto_advance none).
       const result = await installPhaseDefinitions(db, { cycle_id: field('cycle_id'), definitions: field('phases'), proof });
@@ -146,8 +166,7 @@ export async function handleOwnerRequest(
   }
   // F2/A06 : pagination des demandes après filtrage ; `before` vient du bouton « plus anciennes ».
   const before = action === 'view' && /^[1-9][0-9]{0,15}$/.test(field('before')) ? Number(field('before')) : undefined;
-  return html(dashboardPage(config, { pending: await listPendingPage(db, { before }), ...await listRegistry(db), imports: await listImportedStates(db), message }),
-    message?.error ? 409 : 200);
+  return html(dashboardPage(config, { ...await dashboardData(db, before), message }), message?.error ? 409 : 200);
 }
 
 /**

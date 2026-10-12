@@ -49,6 +49,8 @@ export interface PendingRequest {
   at: number;
   state: 'pending' | 'blocked' | 'invalid';
   decided_seq?: number | null;
+  /** CC-4 A2 : payload brut, lu par owner/executable.ts pour afficher une demande exécutable (jamais rendu tel quel). */
+  payload_json?: string;
 }
 
 export interface PendingPage {
@@ -109,7 +111,7 @@ export async function listPendingPage(db: D1Database, options: { limit?: number;
     const state = !parsed.valid ? 'invalid' : row.decided_id !== null ? 'blocked' : 'pending';
     return {
       request_id: parsed.request_id, summary: parsed.summary, cycle_id: row.cycle_id, type: row.type,
-      participant_id: row.participant_id, seq: row.seq, at: row.at, state,
+      participant_id: row.participant_id, seq: row.seq, at: row.at, state, payload_json: row.payload_json,
       ...(state === 'blocked' ? { decided_seq: row.decided_seq ?? null } : {}),
     };
   });
@@ -144,7 +146,7 @@ async function decidedSeqOf(db: D1Database, requestId: string): Promise<{ decisi
  *   this request_id across the whole log (no recent window, A06); several →
  *   AMBIGUOUS_REQUEST, the caller must name the seq.
  */
-async function resolveRequestTarget(db: D1Database, input: { request_id: string; request_seq?: number; cycle_id?: string }): Promise<StoredStoreEvent> {
+export async function resolveRequestTarget(db: D1Database, input: { request_id: string; request_seq?: number; cycle_id?: string }): Promise<StoredStoreEvent> {
   if (input.request_seq !== undefined) {
     if (!Number.isSafeInteger(input.request_seq) || input.request_seq <= 0) {
       throw new CollabStoreError('INVALID_REQUEST_ID', 'Numéro de demande (seq) invalide.');
@@ -171,6 +173,28 @@ async function resolveRequestTarget(db: D1Database, input: { request_id: string;
     throw new CollabStoreError('UNKNOWN_REQUEST', 'Aucune demande en attente avec cet identifiant.');
   }
   return results[0];
+}
+
+/**
+ * CC-4 A2 : décision déjà enregistrée pour un request_id, avec la seq de demande
+ * qu'elle tranche et son événement (décision simple ou acte exécuté lié).
+ */
+export async function decidedRequestOf(db: D1Database, requestId: string): Promise<{
+  decision: string; request_seq: number | null; event: StoredStoreEvent | null;
+} | null> {
+  const row = await db.prepare('SELECT decision, event_seq FROM owner_decisions WHERE request_id = ?1')
+    .bind(requestId).first<{ decision: string; event_seq: number | null }>();
+  if (!row) return null;
+  const event = row.event_seq === null ? null
+    : await db.prepare('SELECT * FROM events WHERE seq = ?1').bind(row.event_seq).first<StoredStoreEvent>();
+  let requestSeq: number | null = null;
+  try {
+    const bound = event ? (JSON.parse(event.payload_json) as { request_seq?: unknown }).request_seq : null;
+    requestSeq = typeof bound === 'number' ? bound : null;
+  } catch {
+    requestSeq = null;
+  }
+  return { decision: row.decision, request_seq: requestSeq, event: event ?? null };
 }
 
 async function eventByKey(db: D1Database, key: string): Promise<StoredStoreEvent | null> {

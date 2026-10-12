@@ -17,6 +17,7 @@ import { loadLabelDirectory, DEFAULT_OWNER_LABEL } from '../export/labels';
 import { planStateImport, type ExportTarget } from '../export/state-import-plan';
 import { STATE_IMPORT_KEY_PREFIX } from '../export/state-export';
 import { ownerAppend, type OwnerWriteResult } from './decisions';
+import { bindingGuard, bindingPayload, bindingStatements, bindingKey, assertBindingPrecondition, type OwnerRequestBinding } from './binding';
 import type { OwnerProof } from './proof';
 
 const MAX_TASKS = 200;
@@ -40,6 +41,8 @@ export async function importStateSnapshot(db: D1Database, input: {
   owner_label?: string;
   target?: ExportTarget | null;
   now?: () => Date;
+  /** CC-4 A2 : exécution d'une demande owner approuvée (empreinte et précondition vérifiées, décision dans le même lot). */
+  binding?: OwnerRequestBinding;
 }): Promise<StateImportResult> {
   await ensureSchema(db);
   // C3 owns cycle_issue_refs_v2; the import indexes the state's issues there in the same batch.
@@ -58,7 +61,9 @@ export async function importStateSnapshot(db: D1Database, input: {
   const previous = await db.prepare(
     "SELECT * FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1"
   ).bind(plan.cycle_id, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':%').first<StoredStoreEvent>();
-  if (previous && (JSON.parse(previous.payload_json) as { content_sha256?: string }).content_sha256 === plan.content_sha256) {
+  const binding = input.binding;
+  if (binding) assertBindingPrecondition(binding, previous?.seq ?? null);
+  if (!binding && previous && (JSON.parse(previous.payload_json) as { content_sha256?: string }).content_sha256 === plan.content_sha256) {
     // Same file as the current base: re-importing would only reset the store's later work.
     return { status: 'duplicate', event: previous, state_revision: plan.state_revision,
       content_sha256: plan.content_sha256, tasks: plan.tasks.length, dropped_tasks: [],
@@ -76,7 +81,9 @@ export async function importStateSnapshot(db: D1Database, input: {
 
   // The previous import seq is part of the key: a double submit is a duplicate,
   // while re-importing an older file after a newer one is a new owner act.
-  const key = STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':' + (previous?.seq ?? 0) + ':' + plan.content_sha256.slice(0, 32);
+  const key = binding
+    ? bindingKey(STATE_IMPORT_KEY_PREFIX + plan.cycle_id, binding)
+    : STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':' + (previous?.seq ?? 0) + ':' + plan.content_sha256.slice(0, 32);
   const result = await ownerAppend(db, {
     cycleId: plan.cycle_id,
     key,
@@ -91,9 +98,12 @@ export async function importStateSnapshot(db: D1Database, input: {
       issue_refs: plan.issue_refs,
       previous_import_seq: previous?.seq ?? null,
       content: plan.content,
+      ...(binding ? bindingPayload(binding) : {}),
     },
     proof: input.proof,
-    sideEffects: () => [
+    ...(binding ? { extraGuard: bindingGuard(binding, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':%') } : {}),
+    sideEffects: eventKey => [
+      ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
       db.prepare("UPDATE cycles SET phase = ?2, project = CASE WHEN project = '' THEN ?3 ELSE project END WHERE cycle_id = ?1")
         .bind(plan.cycle_id, plan.phase, plan.target?.repository ?? ''),
       db.prepare('DELETE FROM tasks WHERE cycle_id = ?1').bind(plan.cycle_id),

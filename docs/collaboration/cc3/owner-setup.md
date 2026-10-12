@@ -37,6 +37,15 @@ Le Worker vérifie lui-même le JWT : une requête qui contournerait Access (aut
 ## Ce que fait la page
 
 - **Demandes en attente** : événements `owner.request` et `phase.request` déposés par les agents avec un `request_id` dans `payload_json`, sans décision. *Approuver* ou *Refuser* écrit un événement `owner.decision` dans le cycle de la demande et une ligne `owner_decisions` (décision, preuve, numéro d'événement), dans une seule transaction CAS. Une demande ne se tranche qu'une fois.
+- **Demandes exécutables (CC-4 A2)** : quand un agent a préparé l'acte lui-même (installation de phases ou import d'état), la demande affiche :
+  - ce qui sera exécuté, avec un aperçu du contenu ;
+  - pourquoi, le risque, le retour arrière ;
+  - la précondition, le coût maximal et l'expiration ;
+  - l'empreinte sha256.
+
+  *Approuver* exécute exactement ce payload. L'acte et la décision forment un seul événement. Au moindre écart (empreinte, précondition, expiration), rien n'est écrit et la page affiche la raison. Il n'y a rien à coller : seul le secret est demandé. Une demande invalide ou expirée ne peut qu'être refusée. Voir le guide, §6.1.
+- **Automatisation** : le bouton *Arrêt d'urgence* bloque toute action automatique (avance de phase par policy, réservation budgétaire, invocation) sans rien effacer ; *Reprendre l'automatisation* la relance. Chaque changement est un `owner.decision` du cycle `owner-registry`.
+- **Budget** : enveloppe globale (plafond, réservé, dépensé, restant), à 0 € par défaut. Aucune dépense n'est possible sans enveloppe approuvée.
 - **Participants** : enregistrer un identifiant (`[A-Za-z0-9][A-Za-z0-9:_-]*`, hors `owner`, `system`, `unregistered:*`) et son libellé. Le libellé sert uniquement à l'affichage (I8).
 - **Clients OAuth associés** : associer l'identifiant de client OAuth d'un agent à son participant (K6). Le retrait de l'association rend le client « unregistered » dès son appel suivant.
 
