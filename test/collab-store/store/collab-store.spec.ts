@@ -50,12 +50,12 @@ describe('CC-3 C2 — S1 concurrence (CAS par expected_rev)', () => {
     const cycle = uniq('s1');
     const created = await store.appendEvent({
       cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a',
-      expected_rev: 0, payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1',
+      expected_rev: 0, payload_json: '{"n":1}', op_id: 'agent.a:' + cycle + ':cp:1',
     });
     expect(created.status).toBe('applied');
     const [a, b] = await Promise.all([
-      store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 1, payload_json: '{"n":2}', op_id: 't:' + cycle + ':cp:2' }),
-      store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:b', expected_rev: 1, payload_json: '{"n":3}', op_id: 't:' + cycle + ':cp:3' }),
+      store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 1, payload_json: '{"n":2}', op_id: 'agent.a:' + cycle + ':cp:2' }),
+      store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:b', expected_rev: 1, payload_json: '{"n":3}', op_id: 'agent.b:' + cycle + ':cp:3' }),
     ]);
     const outcomes = [a, b].sort((x, y) => (x.status === 'applied' ? -1 : y.status === 'applied' ? 1 : 0));
     expect(outcomes[0].status).toBe('applied');
@@ -72,7 +72,7 @@ describe('CC-3 C2 — S2 atomicité du batch', () => {
     await ensureSchema(bindings.COLLAB_DB_C2);
     const store = makeStore();
     const cycle = uniq('s2');
-    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' });
+    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 'agent.a:' + cycle + ':cp:1' });
     const insert = "INSERT INTO events (cycle_id, at, type, participant_id, payload_json, expected_rev, idempotency_key) VALUES (?1, 1, 'note', 'agent:x', '{}', 1, 'dup-key-s2')";
     await expect(bindings.COLLAB_DB_C2.batch([
       bindings.COLLAB_DB_C2.prepare('INSERT INTO collab_store_guard (ok) SELECT 1'),
@@ -95,12 +95,12 @@ describe('CC-3 C2 — S3 rejeu (le journal est la vérité)', () => {
     await store.appendEvent({
       cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
       payload_json: JSON.stringify({ task: { task_id: 'c2task', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c', next_action: 'implement' } }),
-      op_id: 't:' + cycle + ':claim:1',
+      op_id: 'agent.a:' + cycle + ':claim:1',
     });
     await store.appendEvent({
       cycle_id: cycle, type: 'task.status', participant_id: 'agent:b', expected_rev: 1,
       payload_json: JSON.stringify({ task: { task_id: 'c2task', status: 'review' } }),
-      op_id: 't:' + cycle + ':status:2',
+      op_id: 'agent.b:' + cycle + ':status:2',
     });
     const { results } = await bindings.COLLAB_DB_C2.prepare('SELECT * FROM events WHERE cycle_id = ?1 ORDER BY seq').bind(cycle).all();
     expect(results).toHaveLength(2);
@@ -123,7 +123,7 @@ describe('CC-3 C2 — idempotence, quota, stale', () => {
   it('un op_id rejoué renvoie l\'événement original sans seconde écriture', async () => {
     const store = makeStore();
     const cycle = uniq('dup');
-    const input = { cycle_id: cycle, type: 'checkpoint' as const, participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' };
+    const input = { cycle_id: cycle, type: 'checkpoint' as const, participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 'agent.a:' + cycle + ':cp:1' };
     const first = await store.appendEvent(input);
     expect(first.status).toBe('applied');
     const retry = await store.appendEvent(input);
@@ -136,9 +136,9 @@ describe('CC-3 C2 — idempotence, quota, stale', () => {
   it('quota épuisé : erreur explicite, aucune écriture', async () => {
     const store = makeStore(2);
     const cycle = uniq('quota');
-    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' });
-    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 1, payload_json: '{"n":2}', op_id: 't:' + cycle + ':cp:2' });
-    const third = await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 2, payload_json: '{"n":3}', op_id: 't:' + cycle + ':cp:3' });
+    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 'agent.a:' + cycle + ':cp:1' });
+    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 1, payload_json: '{"n":2}', op_id: 'agent.a:' + cycle + ':cp:2' });
+    const third = await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 2, payload_json: '{"n":3}', op_id: 'agent.a:' + cycle + ':cp:3' });
     expect(third.status).toBe('quota_exhausted');
     const events = await bindings.COLLAB_DB_C2.prepare('SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1').bind(cycle).first<{ n: number }>();
     expect(events?.n).toBe(2);
@@ -147,8 +147,8 @@ describe('CC-3 C2 — idempotence, quota, stale', () => {
   it('création attendue 0 sur un cycle existant : STALE, jamais last-write-wins', async () => {
     const store = makeStore();
     const cycle = uniq('stale0');
-    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' });
-    const outcome = await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":2}', op_id: 't:' + cycle + ':cp:2' });
+    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":1}', op_id: 'agent.a:' + cycle + ':cp:1' });
+    const outcome = await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"n":2}', op_id: 'agent.a:' + cycle + ':cp:2' });
     expect(outcome.status).toBe('stale');
     expect((outcome as { currentRevision: number }).currentRevision).toBe(1);
   });
@@ -159,7 +159,7 @@ describe('CC-3 C2 — refus contractuels (fail-closed)', () => {
     const store = makeStore();
     const cycle = uniq('owner');
     try {
-      await store.appendEvent({ cycle_id: cycle, type: 'owner.decision', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"d":1}', op_id: 't:' + cycle + ':own:1' });
+      await store.appendEvent({ cycle_id: cycle, type: 'owner.decision', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"d":1}', op_id: 'agent.a:' + cycle + ':own:1' });
       expect.unreachable('owner.decision doit être refusé');
     } catch (error) {
       expect(error).toBeInstanceOf(StateContractError);
@@ -174,7 +174,7 @@ describe('CC-3 C2 — refus contractuels (fail-closed)', () => {
       await store.appendEvent({
         cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
         payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:a', tester_pid: 'agent:b' } }),
-        op_id: 't:' + cycle + ':claim:1',
+        op_id: 'agent.a:' + cycle + ':claim:1',
       });
       expect.unreachable('D12 doit être refusé à l\'écriture');
     } catch (error) {
@@ -190,7 +190,7 @@ describe('CC-3 C2 — refus contractuels (fail-closed)', () => {
       await store.appendEvent({
         cycle_id: cycle, type: 'task.status', participant_id: 'agent:a', expected_rev: 0,
         payload_json: JSON.stringify({ task: { task_id: 'ghost', status: 'review' } }),
-        op_id: 't:' + cycle + ':status:1',
+        op_id: 'agent.a:' + cycle + ':status:1',
       });
       expect.unreachable('tâche inconnue');
     } catch (error) {
@@ -206,13 +206,13 @@ describe('CC-3 C2 — refus contractuels (fail-closed)', () => {
     await store.appendEvent({
       cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
-      op_id: 't:' + cycle + ':claim:1',
+      op_id: 'agent.a:' + cycle + ':claim:1',
     });
     try {
       await store.appendEvent({
         cycle_id: cycle, type: 'task.status', participant_id: 'agent:a', expected_rev: 1,
         payload_json: JSON.stringify({ task: { task_id: 't1', status: 'vaporized' } }),
-        op_id: 't:' + cycle + ':status:2',
+        op_id: 'agent.a:' + cycle + ':status:2',
       });
       expect.unreachable('statut invalide');
     } catch (error) {
@@ -230,9 +230,9 @@ describe('CC-3 C2 — lectures', () => {
     await store.appendEvent({
       cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
       payload_json: JSON.stringify({ task: { task_id: 'mine', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
-      op_id: 't:' + cycle + ':claim:1',
+      op_id: 'agent.a:' + cycle + ':claim:1',
     });
-    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 1, payload_json: '{"n":2}', op_id: 't:' + cycle + ':cp:2' });
+    await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 1, payload_json: '{"n":2}', op_id: 'agent.a:' + cycle + ':cp:2' });
     const delta = await store.getDelta(cycle, 0, 10);
     expect(delta.events).toHaveLength(2);
     expect(delta.hasMore).toBe(false);
@@ -248,7 +248,7 @@ describe('CC-3 F1 — A05 op_id lié à l\'intention et au cycle', () => {
     const cycle = uniq('a05');
     try {
       await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0,
-        payload_json: '{"n":1}', op_id: 't:autre-cycle:cp:1' });
+        payload_json: '{"n":1}', op_id: 'agent.a:autre-cycle:cp:1' });
       expect.unreachable('le segment cycle erroné doit être refusé');
     } catch (error) {
       expect(error).toBeInstanceOf(CollabStoreError);
@@ -260,10 +260,10 @@ describe('CC-3 F1 — A05 op_id lié à l\'intention et au cycle', () => {
     const store = makeStore();
     const cycle = uniq('a05c');
     await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0,
-      payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' });
+      payload_json: '{"n":1}', op_id: 'agent.a:' + cycle + ':cp:1' });
     try {
       await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 1,
-        payload_json: '{"n":2}', op_id: 't:' + cycle + ':cp:1' });
+        payload_json: '{"n":2}', op_id: 'agent.a:' + cycle + ':cp:1' });
       expect.unreachable('une intention différente sous le même op_id doit être refusée');
     } catch (error) {
       expect(error).toBeInstanceOf(CollabStoreError);
@@ -277,16 +277,16 @@ describe('CC-3 F1 — A05 op_id lié à l\'intention et au cycle', () => {
     const store = makeStore();
     const cycle = uniq('a05a');
     await store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0,
-      payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' });
+      payload_json: '{"n":1}', op_id: 'agent.a:' + cycle + ':cp:1' });
     await expect(store.appendEvent({ cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:b', expected_rev: 1,
-      payload_json: '{"n":1}', op_id: 't:' + cycle + ':cp:1' })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+      payload_json: '{"n":1}', op_id: 'agent.a:' + cycle + ':cp:1' })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
   });
 
   it('rejeu d\'une proposition scellée identique : duplicate via l\'empreinte de l\'enveloppe', async () => {
     const store = makeStore();
     const cycle = uniq('a05s');
     const input = { cycle_id: cycle, type: 'proposal.submit' as const, participant_id: 'agent:a', expected_rev: 0,
-      payload_json: JSON.stringify({ content: 'plan-a' }), op_id: 't:' + cycle + ':prop:1' };
+      payload_json: JSON.stringify({ content: 'plan-a' }), op_id: 'agent.a:' + cycle + ':prop:1' };
     const first = await store.appendEvent(input);
     expect(first.status).toBe('applied');
     const retry = await store.appendEvent(input);
@@ -300,10 +300,10 @@ describe('CC-3 F1 — A05 op_id lié à l\'intention et au cycle', () => {
     const store = makeStore();
     const cycle = uniq('a05p');
     await store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: 'agent:a', expected_rev: 0,
-      payload_json: JSON.stringify({ content: 'plan-a' }), op_id: 't:' + cycle + ':prop:1' });
+      payload_json: JSON.stringify({ content: 'plan-a' }), op_id: 'agent.a:' + cycle + ':prop:1' });
     try {
       await store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: 'agent:a', expected_rev: 1,
-        payload_json: JSON.stringify({ content: 'plan-b' }), op_id: 't:' + cycle + ':prop:1' });
+        payload_json: JSON.stringify({ content: 'plan-b' }), op_id: 'agent.a:' + cycle + ':prop:1' });
       expect.unreachable('une proposition différente sous le même op_id doit être refusée');
     } catch (error) {
       expect(codeOf(error)).toBe('IDEMPOTENCY_CONFLICT');
@@ -319,10 +319,12 @@ describe('CC-3 F1 — A01 ids scellés anti-collision', () => {
     const cycle = uniq('a01');
     const clientA = 'f1' + 'k'.repeat(46) + 'aaa';
     const clientB = 'f1' + 'k'.repeat(46) + 'bbb';
-    const first = await store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: 'agent:a', expected_rev: 0,
+    // CC-4 A0 (review GPT-6 R1) : le segment client est le participant serveur — les deux
+    // participants portent donc eux-mêmes les ids longs de même préfixe.
+    const first = await store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: clientA, expected_rev: 0,
       payload_json: JSON.stringify({ content: 'un' }), op_id: clientA + ':' + cycle + ':prop:1' });
     // CC-4 A0 (point 5) : une seule proposition par participant et par ronde — le second submit vient d'un participant distinct.
-    const second = await store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: 'agent:b', expected_rev: 1,
+    const second = await store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: clientB, expected_rev: 1,
       payload_json: JSON.stringify({ content: 'deux' }), op_id: clientB + ':' + cycle + ':prop:1' });
     expect(first.status).toBe('applied');
     expect(second.status).toBe('applied');
@@ -341,7 +343,7 @@ describe('CC-3 F1 — A08 permissions des tâches', () => {
     try {
       await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
         payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:b', reviewer_pid: 'agent:c', tester_pid: 'agent:d' } }),
-        op_id: 't:' + cycle + ':claim:1' });
+        op_id: 'agent.a:' + cycle + ':claim:1' });
       expect.unreachable('le claim initial par un tiers doit être refusé');
     } catch (error) {
       expect(error).toBeInstanceOf(CollabStoreError);
@@ -357,14 +359,14 @@ describe('CC-3 F1 — A08 permissions des tâches', () => {
     await seedParticipants('agent:a', 'agent:b', 'agent:c', 'agent:e');
     const first = await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
-      op_id: 't:' + cycle + ':claim:1' });
+      op_id: 'agent.a:' + cycle + ':claim:1' });
     expect(first.status).toBe('applied');
     await expect(store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:b', expected_rev: 1,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:e', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
-      op_id: 't:' + cycle + ':claim:2' })).rejects.toMatchObject({ code: 'TASK_FORBIDDEN' });
+      op_id: 'agent.b:' + cycle + ':claim:2' })).rejects.toMatchObject({ code: 'TASK_FORBIDDEN' });
     const reassign = await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 1,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:e', reviewer_pid: 'agent:b', tester_pid: 'agent:c', next_action: 'reprise' } }),
-      op_id: 't:' + cycle + ':claim:3' });
+      op_id: 'agent.a:' + cycle + ':claim:3' });
     expect(reassign.status).toBe('applied');
     const task = await bindings.COLLAB_DB_C2.prepare('SELECT owner_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2').bind(cycle, 't1').first<{ owner_pid: string }>();
     expect(task?.owner_pid).toBe('agent:e');
@@ -376,13 +378,13 @@ describe('CC-3 F1 — A08 permissions des tâches', () => {
     await seedParticipants('agent:a', 'agent:b', 'agent:c', 'agent:d');
     await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
-      op_id: 't:' + cycle + ':claim:1' });
+      op_id: 'agent.a:' + cycle + ':claim:1' });
     await expect(store.appendEvent({ cycle_id: cycle, type: 'task.status', participant_id: 'agent:d', expected_rev: 1,
       payload_json: JSON.stringify({ task: { task_id: 't1', status: 'review' } }),
-      op_id: 't:' + cycle + ':status:1' })).rejects.toMatchObject({ code: 'TASK_FORBIDDEN' });
+      op_id: 'agent.d:' + cycle + ':status:1' })).rejects.toMatchObject({ code: 'TASK_FORBIDDEN' });
     const byReviewer = await store.appendEvent({ cycle_id: cycle, type: 'task.status', participant_id: 'agent:b', expected_rev: 1,
       payload_json: JSON.stringify({ task: { task_id: 't1', status: 'review' } }),
-      op_id: 't:' + cycle + ':status:2' });
+      op_id: 'agent.b:' + cycle + ':status:2' });
     expect(byReviewer.status).toBe('applied');
   });
 
@@ -392,10 +394,10 @@ describe('CC-3 F1 — A08 permissions des tâches', () => {
     await seedParticipants('agent:a', 'agent:b', 'agent:c', 'agent:e');
     await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
-      op_id: 't:' + cycle + ':claim:1' });
+      op_id: 'agent.a:' + cycle + ':claim:1' });
     await expect(store.appendEvent({ cycle_id: cycle, type: 'task.handoff', participant_id: 'agent:b', expected_rev: 1,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:e', next_action: 'suite' } }),
-      op_id: 't:' + cycle + ':handoff:1' })).rejects.toMatchObject({ code: 'TASK_FORBIDDEN' });
+      op_id: 'agent.b:' + cycle + ':handoff:1' })).rejects.toMatchObject({ code: 'TASK_FORBIDDEN' });
     const task = await bindings.COLLAB_DB_C2.prepare('SELECT owner_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2').bind(cycle, 't1').first<{ owner_pid: string }>();
     expect(task?.owner_pid).toBe('agent:a');
   });
@@ -412,12 +414,12 @@ describe('CC-3 F1 — A08 permissions des tâches', () => {
     expect(rows?.n).toBe(0);
     const claim = await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
-      op_id: 't:' + cycle + ':claim:2' });
+      op_id: 'agent.a:' + cycle + ':claim:2' });
     expect(claim.status).toBe('applied');
     const ghostNewOwner = uniq('ghost');
     await expect(store.appendEvent({ cycle_id: cycle, type: 'task.handoff', participant_id: 'agent:a', expected_rev: 1,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: ghostNewOwner, next_action: 'suite' } }),
-      op_id: 't:' + cycle + ':handoff:1' })).rejects.toMatchObject({ code: 'UNREGISTERED_PARTICIPANT' });
+      op_id: 'agent.a:' + cycle + ':handoff:1' })).rejects.toMatchObject({ code: 'UNREGISTERED_PARTICIPANT' });
     const task = await bindings.COLLAB_DB_C2.prepare('SELECT owner_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2').bind(cycle, 't1').first<{ owner_pid: string }>();
     expect(task?.owner_pid).toBe('agent:a');
   });
@@ -433,8 +435,8 @@ describe('CC-3 F1 — rejeux après réponse perdue (review Claude)', () => {
     await seedParticipants('agent:a', 'agent:b', 'agent:c', 'agent:e');
     await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
-      op_id: 't:' + cycle + ':claim:1' });
-    const op_id = 't:' + cycle + ':' + request.opSuffix;
+      op_id: 'agent.a:' + cycle + ':claim:1' });
+    const op_id = 'agent.a:' + cycle + ':' + request.opSuffix;
     const first = await store.appendEvent({ cycle_id: cycle, type: request.type, participant_id: 'agent:a', expected_rev: 1,
       payload_json: request.payload_json, op_id });
     expect(first.status).toBe('applied');
