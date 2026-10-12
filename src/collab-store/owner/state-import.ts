@@ -59,8 +59,8 @@ export async function importStateSnapshot(db: D1Database, input: {
     throw new CollabStoreError('IMPORT_TOO_MANY_TASKS', 'Au plus ' + MAX_TASKS + ' tâches par import.');
   }
   const previous = await db.prepare(
-    "SELECT * FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1"
-  ).bind(plan.cycle_id, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':%').first<StoredStoreEvent>();
+    "SELECT * FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?2)) = ?2 ORDER BY seq DESC LIMIT 1"
+  ).bind(plan.cycle_id, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':').first<StoredStoreEvent>();
   const binding = input.binding;
   if (binding) assertBindingPrecondition(binding, previous?.seq ?? null);
   if (!binding && previous && (JSON.parse(previous.payload_json) as { content_sha256?: string }).content_sha256 === plan.content_sha256) {
@@ -101,7 +101,7 @@ export async function importStateSnapshot(db: D1Database, input: {
       ...(binding ? bindingPayload(binding) : {}),
     },
     proof: input.proof,
-    ...(binding ? { extraGuard: bindingGuard(binding, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':%') } : {}),
+    ...(binding ? { extraGuard: bindingGuard(binding, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':') } : {}),
     sideEffects: eventKey => [
       ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
       db.prepare("UPDATE cycles SET phase = ?2, project = CASE WHEN project = '' THEN ?3 ELSE project END WHERE cycle_id = ?1")
@@ -145,9 +145,9 @@ export interface ImportedStateSummary {
 export async function listImportedStates(db: D1Database, limit = 20): Promise<ImportedStateSummary[]> {
   await ensureSchema(db);
   const { results } = await db.prepare([
-    "SELECT seq, cycle_id, at, payload_json FROM events WHERE type = 'owner.decision' AND idempotency_key LIKE ?1",
+    "SELECT seq, cycle_id, at, payload_json FROM events WHERE type = 'owner.decision' AND substr(idempotency_key, 1, length(?1)) = ?1",
     'ORDER BY seq DESC LIMIT ?2',
-  ].join(' ')).bind(STATE_IMPORT_KEY_PREFIX + '%', 200).all<Pick<StoredStoreEvent, 'seq' | 'cycle_id' | 'at' | 'payload_json'>>();
+  ].join(' ')).bind(STATE_IMPORT_KEY_PREFIX, 200).all<Pick<StoredStoreEvent, 'seq' | 'cycle_id' | 'at' | 'payload_json'>>();
   const seen = new Set<string>();
   const summaries: ImportedStateSummary[] = [];
   for (const row of results) {

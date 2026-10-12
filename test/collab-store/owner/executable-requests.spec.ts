@@ -6,6 +6,8 @@ import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { opIdClientFor } from '../../../src/collab-store/contracts';
 import { listPendingPage } from '../../../src/collab-store/owner/decisions';
 import { installPhaseDefinitions } from '../../../src/collab-store/owner/phase-install';
+import { importStateSnapshot, listImportedStates } from '../../../src/collab-store/owner/state-import';
+import { loadImportedState } from '../../../src/collab-store/export/state-export';
 import {
   decideOwnerRequest, describePending, executablePayloadSha256, latestOwnerActSeq, parseOwnerRequest,
 } from '../../../src/collab-store/owner/executable';
@@ -173,6 +175,37 @@ describe('CC-4 A2 — demandes owner exécutables (import_state)', () => {
     expect(tasks?.n).toBeGreaterThan(0);
     expect(JSON.parse(result.event.payload_json)).toMatchObject({ action: 'import_state', request_id: req.requestId, request_seq: req.seq });
     expect(await decisionRow(req.requestId)).toEqual({ decision: 'approve', event_seq: result.event.seq });
+  });
+});
+
+describe('Cycles longs : préfixes d’actes owner sans LIKE (D1 limite un motif LIKE à 50 octets)', () => {
+  // Identifiant de cycle au maximum autorisé (64 caractères) : préfixe d'acte > 50 octets.
+  const longCycle = (label: string) => (uniq(label) + '-' + 'x'.repeat(64)).slice(0, 64);
+
+  it('install_phases : doublon reconnu, précondition lue, demande exécutable approuvée sur un cycle de 64 caractères', async () => {
+    const target = longCycle('long-phases');
+    expect(target).toHaveLength(64);
+    const first = await installPhaseDefinitions(db, { cycle_id: target, definitions: JSON.stringify([{ phase: 'P1' }]), proof });
+    expect(first.status).toBe('applied');
+    expect((await installPhaseDefinitions(db, { cycle_id: target, definitions: JSON.stringify([{ phase: 'P1' }]), proof })).status)
+      .toBe('duplicate');
+    expect(await latestOwnerActSeq(db, 'install_phases', target)).toBe(first.event.seq);
+
+    const req = await fileExecutable(target, 'install_phases', { cycle_id: target, definitions: PHASES });
+    const result = await decideOwnerRequest(db, { request_id: req.requestId, decision: 'approve', proof, request_seq: req.seq,
+      payload_sha256: req.sha });
+    expect(result).toMatchObject({ status: 'applied', executed: { action: 'install_phases', cycle_id: target } });
+    expect(await latestOwnerActSeq(db, 'install_phases', target)).toBe(result.event.seq);
+  });
+
+  it('import_state : import, relecture de la base importée et liste /owner sur un cycle de 64 caractères', async () => {
+    await registerCc3(db, uniq('reg-long'));
+    const target = longCycle('long-import');
+    const imported = await importStateSnapshot(db, { cycle_id: target, markdown: stateR6, proof });
+    expect(imported.status).toBe('applied');
+    expect((await loadImportedState(db, target))?.event_seq).toBe(imported.event.seq);
+    expect((await importStateSnapshot(db, { cycle_id: target, markdown: stateR6, proof })).status).toBe('duplicate');
+    expect((await listImportedStates(db)).some(row => row.cycle_id === target)).toBe(true);
   });
 });
 

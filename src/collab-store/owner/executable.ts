@@ -153,8 +153,8 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
 /** seq du dernier acte du même type sur le cycle (précondition à indiquer dans une demande). */
 export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction, cycleId: string): Promise<number | null> {
   await ensureSchema(db);
-  const prefix = (action === 'install_phases' ? PHASE_INSTALL_KEY_PREFIX : STATE_IMPORT_KEY_PREFIX) + cycleId + ':%';
-  const row = await db.prepare("SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND idempotency_key LIKE ?2")
+  const prefix = (action === 'install_phases' ? PHASE_INSTALL_KEY_PREFIX : STATE_IMPORT_KEY_PREFIX) + cycleId + ':';
+  const row = await db.prepare("SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?2)) = ?2")
     .bind(cycleId, prefix).first<{ seq: number | null }>();
   return row?.seq ?? null;
 }

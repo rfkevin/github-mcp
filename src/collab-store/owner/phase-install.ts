@@ -111,8 +111,8 @@ export async function installPhaseDefinitions(db: D1Database, input: {
   const digest = await sha256Hex(canonical(definitions));
   const summary = definitions.map(def => ({ phase: def.phase, auto_advance: def.auto_advance }));
   const previous = await db.prepare(
-    "SELECT * FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND idempotency_key LIKE ?2 ORDER BY seq DESC LIMIT 1",
-  ).bind(cycleId, PHASE_INSTALL_KEY_PREFIX + cycleId + ':%').first<StoredStoreEvent>();
+    "SELECT * FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?2)) = ?2 ORDER BY seq DESC LIMIT 1",
+  ).bind(cycleId, PHASE_INSTALL_KEY_PREFIX + cycleId + ':').first<StoredStoreEvent>();
   const binding = input.binding;
   if (binding) {
     assertBindingPrecondition(binding, previous?.seq ?? null);
@@ -130,7 +130,7 @@ export async function installPhaseDefinitions(db: D1Database, input: {
     payload: { action: 'install_phases', cycle_id: cycleId, definitions_sha256: digest, previous_install_seq: previous?.seq ?? null,
       definitions: definitions.map(({ cycle_id: _cycle, ...def }) => def), ...(binding ? bindingPayload(binding) : {}) },
     proof: input.proof,
-    ...(binding ? { extraGuard: bindingGuard(binding, PHASE_INSTALL_KEY_PREFIX + cycleId + ':%') } : {}),
+    ...(binding ? { extraGuard: bindingGuard(binding, PHASE_INSTALL_KEY_PREFIX + cycleId + ':') } : {}),
     sideEffects: eventKey => [
       ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
       db.prepare('DELETE FROM phase_definitions WHERE cycle_id = ?1').bind(cycleId),
