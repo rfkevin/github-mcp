@@ -22,6 +22,9 @@ describe('CC-4 A1 — transactional invocation outbox', () => {
     const second = await store.appendActionableEvent(sourceEvent(cycle, 2), intent);
     expect(first.status).toBe('applied');
     expect(second.status).toBe('duplicate');
+    if (first.status !== 'applied' || second.status !== 'duplicate') {
+      throw new Error('unexpected append outcomes');
+    }
     expect(first.invocation?.invocation_id).toBe(second.invocation?.invocation_id);
     expect(first.invocation?.wake_key).toMatch(/^[0-9a-f]{64}$/);
     expect(await counts(cycle)).toEqual({ events: 1, invocations: 1 });
