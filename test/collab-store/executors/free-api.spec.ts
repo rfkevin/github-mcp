@@ -10,7 +10,7 @@ import {
   createWorkersAiAdapter, dispatchFreeInvocation, envelope, loadEndpoint, parseWorkersAiRef, probeEndpoint,
   readWorkersAiOutput, registerEndpoint, workersAiFactory, type WorkersAiBinding,
 } from '../../../src/collab-store/executors';
-import { invocationReservationId } from '../../../src/collab-store/invocations';
+import { InvocationService, invocationReservationId } from '../../../src/collab-store/invocations';
 import { enqueue, uniqueCycle } from '../invocations/helpers';
 import { createOAuthFixture } from '../../oauth/helpers';
 
@@ -21,7 +21,7 @@ import { createOAuthFixture } from '../../oauth/helpers';
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const haltDb = (env as unknown as { COLLAB_DB_C6_RESTORE: D1Database }).COLLAB_DB_C6_RESTORE;
 const proof = { kind: 'secret' as const, subject: 'owner-secret' };
-const MODEL_REF = 'workers-ai:@cf/meta/llama-3.1-8b-instruct';
+const MODEL_REF = 'workers-ai:@cf/zai-org/glm-4.7-flash';
 const CONTROL = 'Résume les données en une phrase.';
 let n = 0;
 const uniq = (label: string) => `a3-${label}-${Date.now().toString(36)}-${++n}`;
@@ -92,12 +92,37 @@ async function activeEndpoint(target: D1Database, endpointId: string, capabiliti
   expect((await loadEndpoint(target, endpointId))?.status).toBe('active');
 }
 
+/** Invocation A1 actionnable, assignée à l'endpoint et au principal donnés. */
+async function invocationFor(target: D1Database, endpointId: string, principal = principalOf(endpointId), input = '{"packet":"a3"}') {
+  const store = new CollabStore(target, { dailyWriteLimit: 100_000 });
+  const cycle = uniqueCycle('a3-dispatch');
+  const result = await store.appendActionableEvent(
+    { cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"action":"wake"}',
+      op_id: 'agent.a:' + cycle + ':wake:1' },
+    { cycle_id: cycle, task_id: 't1', role: 'author', principal_id: principal, endpoint_id: endpointId, reason: 'task_actionable',
+      source_revision: 1, input_packet: input, evidence_refs: ['github-mcp#a3'] },
+  );
+  if (result.status !== 'applied' || !result.invocation) throw new Error('invocation non créée');
+  return result.invocation;
+}
+
 describe('CC-4 A3 — adaptateur Workers AI', () => {
   it('référence : workers-ai seulement, modèle bien formé, modèles payants refusés', () => {
-    expect(parseWorkersAiRef(MODEL_REF)).toBe('@cf/meta/llama-3.1-8b-instruct');
+    expect(parseWorkersAiRef(MODEL_REF)).toBe('@cf/zai-org/glm-4.7-flash');
     expect(() => parseWorkersAiRef('openai:gpt-x')).toThrow(expect.objectContaining({ code: 'EXECUTOR_UNSUPPORTED' }));
     expect(() => parseWorkersAiRef('workers-ai:llama')).toThrow(expect.objectContaining({ code: 'EXECUTOR_UNSUPPORTED' }));
     expect(() => parseWorkersAiRef('workers-ai:@cf/zai-org/glm-5.3')).toThrow(expect.objectContaining({ code: 'EXECUTOR_PAID_MODEL' }));
+    // Revue #117 R2 : modèle déprécié le 2026-05-30, hors liste gratuite vérifiée.
+    expect(() => parseWorkersAiRef('workers-ai:@cf/meta/llama-3.1-8b-instruct')).toThrow(expect.objectContaining({ code: 'EXECUTOR_UNSUPPORTED' }));
+  });
+
+  it('neurons : borne haute avant l’appel, réel d’après l’usage (tarif glm-4.7-flash relevé)', () => {
+    const adapter = createWorkersAiAdapter({ run: async () => ({}) }, MODEL_REF);
+    const call = { control: CONTROL, data: 'x'.repeat(1000), max_tokens: 256 };
+    // ≥ (1000 octets de données) × 5 500 / 1 M + 256 × 36 400 / 1 M
+    expect(adapter.worstCaseNeurons(call)).toBeGreaterThanOrEqual(Math.ceil((1000 * 5_500 + 256 * 36_400) / 1_000_000));
+    expect(adapter.neuronsFor({ input_tokens: 40, output_tokens: 6 })).toBe(1);
+    expect(adapter.neuronsFor({ input_tokens: 1_000_000, output_tokens: 0 })).toBe(5_500);
   });
 
   it('enveloppe §6.1 : consigne serveur en system, données non fiables isolées et incapables de fermer l’enveloppe', () => {
@@ -136,7 +161,7 @@ describe('CC-4 A3 — endpoints : inscription et activation par le propriétaire
     const { ai, calls } = fakeAi();
     const probe = await probeEndpoint(db, workersAiFactory(ai), { endpoint_id: endpointId, proof, op: uniq('probe') });
     expect(probe.ok).toBe(true);
-    expect(calls[0].model).toBe('@cf/meta/llama-3.1-8b-instruct');
+    expect(calls[0].model).toBe('@cf/zai-org/glm-4.7-flash');
     expect(JSON.parse(probe.event.payload_json)).toMatchObject({ action: 'endpoint_probe', ok: true, provider: 'workers-ai',
       attestation_ref: MODEL_REF, usage: { input_tokens: 30, output_tokens: 8 } });
 
@@ -204,19 +229,6 @@ describe('CC-4 A3 — sonde owner', () => {
 });
 
 describe('CC-4 A3 — dispatch d’une invocation A1 par l’API gratuite', () => {
-  async function invocationFor(target: D1Database, endpointId: string, principal = principalOf(endpointId), input = '{"packet":"a3"}') {
-    const store = new CollabStore(target, { dailyWriteLimit: 100_000 });
-    const cycle = uniqueCycle('a3-dispatch');
-    const result = await store.appendActionableEvent(
-      { cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 0, payload_json: '{"action":"wake"}',
-        op_id: 'agent.a:' + cycle + ':wake:1' },
-      { cycle_id: cycle, task_id: 't1', role: 'author', principal_id: principal, endpoint_id: endpointId, reason: 'task_actionable',
-        source_revision: 1, input_packet: input, evidence_refs: ['github-mcp#a3'] },
-    );
-    if (result.status !== 'applied' || !result.invocation) throw new Error('invocation non créée');
-    return result.invocation;
-  }
-
   it('succès : sortie rendue (non persistée), empreinte, usage, provenance, réserve 0 € soldée', async () => {
     const endpointId = uniq('ep');
     await activeEndpoint(db, endpointId);
@@ -227,7 +239,7 @@ describe('CC-4 A3 — dispatch d’une invocation A1 par l’API gratuite', () =
     expect(outcome).toMatchObject({ status: 'succeeded', output: 'Résumé.' });
     expect(outcome.invocation).toMatchObject({ state: 'succeeded', output_hash: await sha256Hex('Résumé.'), usage_input_tokens: 40,
       usage_output_tokens: 6, usage_operations: 1, cost_microunits: 0 });
-    expect(JSON.parse(outcome.invocation.evidence_refs)).toEqual(['provider:workers-ai', 'model:@cf/meta/llama-3.1-8b-instruct']);
+    expect(JSON.parse(outcome.invocation.evidence_refs)).toEqual(['provider:workers-ai', 'model:@cf/zai-org/glm-4.7-flash']);
     expect((calls[0].input.messages as Array<{ role: string; content: string }>)[0].content.startsWith(CONTROL)).toBe(true);
     const reservation = await db.prepare('SELECT reserved_cents, actual_cents, status FROM budget_reservations WHERE reservation_id = ?1')
       .bind(invocationReservationId(invocation.invocation_id, 1)).first();
@@ -270,6 +282,53 @@ describe('CC-4 A3 — dispatch d’une invocation A1 par l’API gratuite', () =
       control: CONTROL, input_packet: '{"packet":"a3"}', max_tokens: 256 });
     expect(outcome).toMatchObject({ status: 'attempt_failed', error: 'UPSTREAM_DOWN' });
     expect(outcome.invocation).toMatchObject({ state: 'queued', consecutive_failures: 1, last_error: 'UPSTREAM_DOWN', cost_microunits: 0 });
+  });
+});
+
+describe('CC-4 A3 — aucun appel sans garantie de gratuité ni sur erreur locale (revue #117 R1/R3)', () => {
+  /** Jour UTC propre à chaque test : registre de neurons et plafond quotidien isolés. */
+  let day = 0;
+  const freshDay = () => { const at = new Date(Date.UTC(2031, 0, 1 + ++day, 12)); return () => at; };
+  const quota = async (key: string) => (await db.prepare('SELECT writes FROM quota_counters WHERE day = ?1').bind(key)
+    .first<{ writes: number }>())?.writes ?? 0;
+
+  it('budget de neurons insuffisant : refus avant l’appel, aucune tentative ; succès : registre ramené au réel', async () => {
+    const endpointId = uniq('ep');
+    await activeEndpoint(db, endpointId);
+    const { ai, calls } = fakeAi();
+    const now = freshDay();
+    const dayKey = 'neurons:workers-ai:' + now().toISOString().slice(0, 10);
+    const tight = await invocationFor(db, endpointId);
+    expect(await codeOf(dispatchFreeInvocation(db, workersAiFactory(ai), { wake_key: tight.wake_key, worker_id: 'w', control: CONTROL,
+      input_packet: '{"packet":"a3"}', max_tokens: 256, neuron_budget: 5, now }))).toBe('EXECUTOR_NEURON_BUDGET');
+    expect(calls).toHaveLength(0);
+    expect(await new InvocationService(db).getByWakeKey(tight.wake_key)).toMatchObject({ state: 'queued', attempt_count: 0 });
+    expect(await quota(dayKey)).toBe(0);
+
+    const ok = await dispatchFreeInvocation(db, workersAiFactory(ai), { wake_key: tight.wake_key, worker_id: 'w', control: CONTROL,
+      input_packet: '{"packet":"a3"}', max_tokens: 256, now });
+    expect(ok.status).toBe('succeeded');
+    expect(await quota(dayKey)).toBe(1); // usage simulé 40 + 6 jetons → 1 neuron
+  });
+
+  it('max_tokens > 2048 ou paquet > 60 000 caractères : erreur locale, ni appel, ni tentative, ni quota consommé', async () => {
+    const endpointId = uniq('ep');
+    await activeEndpoint(db, endpointId, { tools: ['llm.generate'], network_providers: ['workers-ai'], token_ceiling: 4096 });
+    const { ai, calls } = fakeAi();
+    const now = freshDay();
+    const capKey = 'exec:' + endpointId + ':' + now().toISOString().slice(0, 10);
+    const big = 'y'.repeat(60_001);
+    const invocation = await invocationFor(db, endpointId);
+    const large = await invocationFor(db, endpointId, principalOf(endpointId), big);
+    expect(await codeOf(dispatchFreeInvocation(db, workersAiFactory(ai), { wake_key: invocation.wake_key, worker_id: 'w', control: CONTROL,
+      input_packet: '{"packet":"a3"}', max_tokens: 2049, now }))).toBe('EXECUTOR_INVALID_LIMIT');
+    expect(await codeOf(dispatchFreeInvocation(db, workersAiFactory(ai), { wake_key: large.wake_key, worker_id: 'w', control: CONTROL,
+      input_packet: big, max_tokens: 256, now }))).toBe('EXECUTOR_INPUT_TOO_LARGE');
+    expect(calls).toHaveLength(0);
+    const service = new InvocationService(db);
+    expect(await service.getByWakeKey(invocation.wake_key)).toMatchObject({ state: 'queued', attempt_count: 0, consecutive_failures: 0 });
+    expect(await service.getByWakeKey(large.wake_key)).toMatchObject({ state: 'queued', attempt_count: 0, consecutive_failures: 0 });
+    expect(await quota(capKey)).toBe(0);
   });
 });
 

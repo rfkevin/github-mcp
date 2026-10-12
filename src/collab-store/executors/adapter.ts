@@ -24,10 +24,22 @@ export interface LlmResult {
   model: string;
 }
 
+export interface LlmInput {
+  control: string;
+  data: string;
+  max_tokens: number;
+}
+
 export interface LlmAdapter {
   provider: string;
   model: string;
-  generate(input: { control: string; data: string; max_tokens: number }): Promise<LlmResult>;
+  /** Validations locales et déterministes : aucun appel, à faire AVANT quota et bail (revue #117 R3). */
+  validate(input: LlmInput): void;
+  /** Borne haute des neurons consommés par cet appel, calculée avant l'appel (revue #117 R1). */
+  worstCaseNeurons(input: LlmInput): number;
+  /** Neurons réellement consommés d'après l'usage rapporté. */
+  neuronsFor(usage: LlmUsage): number;
+  generate(input: LlmInput): Promise<LlmResult>;
 }
 
 /** Minimal surface of the Workers AI binding used here (keeps tests free of the remote binding). */
@@ -36,6 +48,17 @@ export interface WorkersAiBinding {
 }
 
 export const WORKERS_AI_PROVIDER = 'workers-ai';
+
+/**
+ * Liste blanche du chemin gratuit (revue #117 R1/R2) : seuls ces modèles sont
+ * utilisables, avec leur tarif en neurons relevé sur la page tarifaire
+ * Cloudflare le 2026-10-13 (neurons par million de jetons). Un modèle absent
+ * (déprécié, payant ou inconnu) est refusé : deny-by-default.
+ */
+export const FREE_MODEL_RATES: Readonly<Record<string, { input_per_m: number; output_per_m: number }>> = {
+  '@cf/zai-org/glm-4.7-flash': { input_per_m: 5_500, output_per_m: 36_400 },
+  '@cf/google/gemma-4-26b-a4b-it': { input_per_m: 9_091, output_per_m: 27_273 },
+};
 
 /**
  * Modèles Workers AI qui exigent un moyen de paiement (page tarifaire Cloudflare,
@@ -72,7 +95,26 @@ export function parseWorkersAiRef(attestationRef: string): string {
   if (WORKERS_AI_PAID_ONLY_MODELS.includes(model)) {
     throw adapterError('EXECUTOR_PAID_MODEL', 'Le modèle ' + model + ' exige un moyen de paiement : refusé (pilote à 0 €).');
   }
+  if (!FREE_MODEL_RATES[model]) {
+    throw adapterError('EXECUTOR_UNSUPPORTED', 'Modèle ' + model + ' hors de la liste gratuite vérifiée ('
+      + Object.keys(FREE_MODEL_RATES).join(', ') + ') : déprécié, payant ou non relevé.');
+  }
   return model;
+}
+
+/** Validations locales d'un appel : aucune n'appelle le fournisseur. */
+export function assertGenerateInput(input: LlmInput): void {
+  if (!Number.isSafeInteger(input.max_tokens) || input.max_tokens < 1 || input.max_tokens > MAX_OUTPUT_TOKENS) {
+    throw adapterError('EXECUTOR_INVALID_LIMIT', 'max_tokens entre 1 et ' + MAX_OUTPUT_TOKENS + '.');
+  }
+  if (input.data.length > MAX_DATA) throw adapterError('EXECUTOR_INPUT_TOO_LARGE', 'Données au-delà de ' + MAX_DATA + ' caractères.');
+}
+
+const encoder = new TextEncoder();
+
+/** Borne haute des jetons d'entrée : un jeton couvre au moins un octet UTF-8. */
+function inputTokenBound(messages: Array<{ content: string }>): number {
+  return messages.reduce((total, message) => total + encoder.encode(message.content).length, 0) + 16 * messages.length;
 }
 
 const OPEN = '<<<DONNEES_NON_FIABLES>>>';
@@ -123,13 +165,20 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 export function createWorkersAiAdapter(ai: WorkersAiBinding, attestationRef: string, options: { timeout_ms?: number } = {}): LlmAdapter {
   const model = parseWorkersAiRef(attestationRef);
+  const rates = FREE_MODEL_RATES[model];
+  const neurons = (inputTokens: number, outputTokens: number) =>
+    Math.ceil((inputTokens * rates.input_per_m + outputTokens * rates.output_per_m) / 1_000_000);
   return {
     provider: WORKERS_AI_PROVIDER,
     model,
+    validate: assertGenerateInput,
+    worstCaseNeurons(input) {
+      assertGenerateInput(input);
+      return neurons(inputTokenBound(envelope(input.control, input.data)), input.max_tokens);
+    },
+    neuronsFor: usage => neurons(usage.input_tokens, usage.output_tokens),
     async generate(input) {
-      if (!Number.isSafeInteger(input.max_tokens) || input.max_tokens < 1 || input.max_tokens > MAX_OUTPUT_TOKENS) {
-        throw adapterError('EXECUTOR_INVALID_LIMIT', 'max_tokens entre 1 et ' + MAX_OUTPUT_TOKENS + '.');
-      }
+      assertGenerateInput(input);
       const raw = await withTimeout(ai.run(model, { messages: envelope(input.control, input.data), max_tokens: input.max_tokens }),
         options.timeout_ms ?? DEFAULT_TIMEOUT_MS);
       const { text, usage } = readWorkersAiOutput(raw);

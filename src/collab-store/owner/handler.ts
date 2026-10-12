@@ -16,7 +16,7 @@ import { importStateSnapshot, listImportedStates } from './state-import';
 import { parseExportTarget } from '../export/state-import-plan';
 import { installPhaseDefinitions } from './phase-install';
 import { capabilityMatrix } from '../executors/registry';
-import { parseDailyCap, probeEndpoint, workersAiFactory } from '../executors/run';
+import { parseDailyCap, parseNeuronBudget, probeEndpoint, workersAiFactory } from '../executors/run';
 import type { WorkersAiBinding } from '../executors/adapter';
 
 export const OWNER_PATH = '/owner';
@@ -29,6 +29,8 @@ export interface OwnerRouteEnv extends OwnerChannelEnv {
   AI?: WorkersAiBinding;
   /** CC-4 A3 : plafond quotidien d'appels par endpoint (défaut 50). */
   EXECUTOR_DAILY_CAP?: string;
+  /** CC-4 A3 : budget journalier de neurons Workers AI (défaut 8 000, max 9 500, sous les 10 000 gratuits). */
+  WORKERS_AI_DAILY_NEURONS?: string;
 }
 
 function html(body: string, status = 200): Response {
@@ -160,6 +162,7 @@ export async function handleOwnerRequest(
       // CC-4 A3 : sonde réelle de l'endpoint (paquet fixe du serveur), seule preuve permettant son activation.
       const result = await probeEndpoint(db, workersAiFactory(env.AI), {
         endpoint_id: field('endpoint_id'), proof, op, daily_cap: parseDailyCap(env.EXECUTOR_DAILY_CAP),
+        neuron_budget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
       });
       message = { text: 'Sonde ' + (result.ok ? 'réussie' : 'en échec' + (result.error ? ' (' + result.error + ')' : ''))
         + ' pour ' + field('endpoint_id') + ' (seq ' + result.event.seq + ').', error: !result.ok };

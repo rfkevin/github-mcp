@@ -215,7 +215,12 @@ L’acte est alors écrit comme **un seul** `owner.decision`, qui porte `request
 
 ### 6.3 Exécuteur par API gratuite (CC-4 A3)
 
-Premier fournisseur : **Cloudflare Workers AI**, lié au Worker par le binding `AI`. Aucune clé n'est créée, manipulée par un agent ni stockée dans le store. Le quota gratuit est de 10 000 neurons par jour ; au-delà, un compte Workers Free reçoit une erreur, jamais une facture. Les modèles qui exigent un moyen de paiement sont refusés d'office (`EXECUTOR_PAID_MODEL`).
+Premier fournisseur : **Cloudflare Workers AI**, lié au Worker par le binding `AI`. Aucune clé n'est créée, manipulée par un agent ni stockée dans le store.
+
+**Gratuité démontrable avant l'appel** (revue #117) :
+- **Liste blanche** de modèles, avec leur tarif en neurons relevé le 2026-10-13 : `@cf/zai-org/glm-4.7-flash` et `@cf/google/gemma-4-26b-a4b-it`. Tout autre modèle est refusé : déprécié (comme `@cf/meta/llama-3.1-8b-instruct`, retiré le 2026-05-30), payant (`EXECUTOR_PAID_MODEL`) ou non relevé (`EXECUTOR_UNSUPPORTED`).
+- **Registre journalier de neurons** (remise à 00:00 UTC, comme l'allocation Cloudflare de 10 000 neurons par jour). Avant chaque appel, sonde comprise, le **pire cas** est réservé : octets d'entrée et plafond de jetons de sortie, multipliés par le tarif du modèle. La réservation est refusée si elle dépasserait le budget (`EXECUTOR_NEURON_BUDGET` ; 8 000 par défaut, variable `WORKERS_AI_DAILY_NEURONS`, 9 500 au maximum). Après l'appel, la réserve est ramenée au réel d'après l'usage rapporté. Après une erreur ou un délai dépassé, le pire cas est conservé, car l'appel a pu consommer.
+- **Hypothèse** : seul ce Worker utilise Workers AI sur le compte Cloudflare. Sur un compte Workers Free, un dépassement donne de toute façon une erreur, jamais une facture.
 
 **Cycle de vie d'un endpoint** (matrice §4.1 du plan, section « Exécuteurs » de `/owner`) :
 1. Un agent dépose une demande exécutable `register_endpoint` dont les `params` suivent le contrat A0 : `endpoint_id`, `principal_id`, `attestation_kind` = `provider_adapter`, `attestation_ref` = `workers-ai:@cf/<éditeur>/<modèle>`, `status` = `probe_required`, `capability_set`. Kevin l'approuve sur `/owner`.
@@ -229,7 +234,9 @@ Le principal d'un endpoint est immuable (`ENDPOINT_PRINCIPAL_IMMUTABLE`) et une 
 - endpoint `active`, `provider_adapter`, lié au principal de l'invocation ;
 - capacités deny-by-default : outil `llm.generate`, fournisseur `workers-ai`, `token_ceiling` explicite et au moins égal à `max_tokens` ;
 - paquet d'entrée identique à l'empreinte enregistrée par A1 (`INVOCATION_INPUT_MISMATCH`) ;
+- validations locales (limites, taille du paquet) **avant** tout quota ou bail : une erreur de configuration ne consomme ni le plafond, ni une tentative A1 ;
 - plafond quotidien d'appels par endpoint (`EXECUTOR_DAILY_CAP`, 50 par défaut, variable `EXECUTOR_DAILY_CAP`) ;
+- réserve du pire cas en neurons (voir ci-dessus) ;
 - bail A1 avec réserve de 0 €, soldée à la clôture.
 
 Les consignes de contrôle viennent du code serveur ; le paquet (texte externe) est placé dans une enveloppe marquée non fiable que le texte ne peut pas refermer (§6.1 du plan). Aucun outil n'est donné au modèle. La sortie est rendue à l'appelant mais jamais persistée : seule son empreinte l'est. Une erreur du fournisseur devient une tentative en échec, reprise selon les règles A1.
@@ -312,7 +319,8 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `ENDPOINT_PRINCIPAL_MISMATCH` | A3 | L’endpoint n’appartient pas au principal de l’invocation | Choisir l’endpoint de ce principal |
 | `EXECUTOR_CAPABILITY_DENIED` | A3 | Capacité absente (`llm.generate`, fournisseur) ou plafond de jetons dépassé | Demander au propriétaire d’ajuster les capacités |
 | `EXECUTOR_DAILY_CAP` | A3 | Plafond quotidien d’appels de l’endpoint atteint | Réessayer le lendemain |
-| `EXECUTOR_UNSUPPORTED` | A3 | Fournisseur ou modèle non pris en charge | `workers-ai:@cf/<éditeur>/<modèle>` |
+| `EXECUTOR_UNSUPPORTED` | A3 | Fournisseur non pris en charge, ou modèle hors de la liste gratuite vérifiée (déprécié, non relevé) | Choisir un modèle de la liste (§6.3) |
+| `EXECUTOR_NEURON_BUDGET` | A3 | La réserve du pire cas dépasserait le budget journalier de neurons | Réessayer après 00:00 UTC, ou réduire `max_tokens` / le paquet |
 | `EXECUTOR_PAID_MODEL` | A3 | Modèle Workers AI qui exige un moyen de paiement | Choisir un modèle gratuit |
 | `EXECUTOR_UNAVAILABLE` | A3 | Binding Workers AI absent de l’environnement | Ajouter le binding `AI` au Worker |
 | `EXECUTOR_TIMEOUT` | A3 | Fournisseur sans réponse dans le délai | Tentative en échec, reprise A1 |
