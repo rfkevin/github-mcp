@@ -130,3 +130,7 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `src/collab-store/invocations/schema.ts` : migration interne 0006 (`invocations`, `invocation_attempts`, garde transactionnelle), hors schéma canonique gelé.
 - `src/collab-store/store/collab-store.ts` : `appendActionableEvent` joint événement source et intention outbox au même batch CAS ; déduplication par wake_key avant retry.
 - Tests : `test/collab-store/invocations/{enqueue,lease,simulated}.spec.ts` + `helpers.ts`.
+
+## CC-4 A2 — demandes owner exécutables, arrêt d’urgence, budget (#113)
+
+- `src/collab-store/owner/executable.ts`, `binding.ts`, `automation.ts` (CC-4 A2) : demandes owner exécutables (empreinte du payload canonique, précondition, expiration ; l’acte et la décision forment un seul `owner.decision`), arrêt d’urgence (`owner_flags`) et contrat d’enveloppe budgétaire (`budget_envelopes`, `budget_reservations`, migration 0007). Tests : `test/collab-store/owner/executable-requests.spec.ts`, `automation-halt-budget.spec.ts`.
