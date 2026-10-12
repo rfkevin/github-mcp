@@ -22,6 +22,12 @@ describe('CC-4 A1 — invocation leases and recovery', () => {
     const attempts = await db.prepare('SELECT COUNT(*) AS n FROM invocation_attempts WHERE invocation_id = ?1')
       .bind(invocation.invocation_id).first<{ n: number }>();
     expect(attempts?.n).toBe(1);
+    // Keep the shared D1 fixture clean for the reconciliation test below:
+    // finish the winning lease instead of leaving unrelated expired work behind.
+    const winner = current?.lease_owner;
+    expect(winner).toMatch(/^worker-[ab]$/);
+    await service.markRunning(invocation.wake_key, winner!);
+    await service.succeed(invocation.wake_key, winner!, 'race-complete');
   });
 
   it('expired lease is recoverable once, then the second consecutive expiry stops retries', async () => {

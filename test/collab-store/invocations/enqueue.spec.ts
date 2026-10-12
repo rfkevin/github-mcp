@@ -30,6 +30,19 @@ describe('CC-4 A1 — transactional invocation outbox', () => {
     expect(await counts(cycle)).toEqual({ events: 1, invocations: 1 });
   });
 
+  it('two concurrent actionable deliveries create one source event and one invocation', async () => {
+    const cycle = uniqueCycle('concurrent');
+    const store = new CollabStore(db, { dailyWriteLimit: 100_000 });
+    const intent = invocationIntent(cycle);
+    const outcomes = await Promise.all([
+      store.appendActionableEvent(sourceEvent(cycle, 1), intent),
+      store.appendActionableEvent(sourceEvent(cycle, 2), intent),
+    ]);
+    expect(outcomes.filter(item => item.status === 'applied')).toHaveLength(1);
+    expect(outcomes.filter(item => item.status === 'duplicate')).toHaveLength(1);
+    expect(await counts(cycle)).toEqual({ events: 1, invocations: 1 });
+  });
+
   it('same wake_key with different payload fails closed instead of creating a retry', async () => {
     const cycle = uniqueCycle('conflict');
     const store = new CollabStore(db, { dailyWriteLimit: 100_000 });
