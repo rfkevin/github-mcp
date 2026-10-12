@@ -9,7 +9,7 @@ import type { CollabToolContext } from './context';
 import { outputSchemas } from './schemas';
 import { collabFailure as failure, collabSuccess, toEventOutput } from './result';
 import { CollabStoreError, type AppendOutcome } from '../store/collab-store';
-import type { StoreEventType } from '../contracts';
+import { MAX_OP_ID_LENGTH, type StoreEventType } from '../contracts';
 import { authorizeAppend, authorizePhaseAdvance } from '../identity';
 import { exportCycleState, exportMemoryMarkdown } from '../export';
 import { resolveContextTarget, buildRolePacket } from '../context';
@@ -153,7 +153,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
     inputSchema: {
       cycle: z.string().min(1).max(64),
       expected_rev: z.number().int().min(0),
-      op_id: z.string().min(1).max(256),
+      op_id: z.string().min(1).max(MAX_OP_ID_LENGTH),
       type: z.string().min(1).max(64),
       participant_id: z.string().min(1).max(128),
       payload_json: z.string().min(1).max(65536),

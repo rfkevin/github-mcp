@@ -20,6 +20,8 @@ import { isMemoryEventType, prepareMemoryEvent } from '../memory/journal-lifecyc
 import { redactEventsFor } from './visibility';
 import { revealProposalPayloads } from './sealed-reveal';
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
+import { describeInvocation, type InvocationDescriptor, type InvocationIntent, type InvocationRecord } from '../invocations/contracts';
+import { invocationByWakeKey, invocationInsertStatement } from '../invocations/repository';
 
 export class CollabStoreError extends Error {
   constructor(readonly code: string, message: string) {
@@ -75,8 +77,8 @@ export const STORED_EVENT_COLUMNS = [
 const EVENT_SELECT = 'SELECT ' + STORED_EVENT_COLUMNS.join(', ') + ' FROM events';
 
 export type AppendOutcome =
-  | { status: 'applied'; revision: number; event: StoredStoreEvent; memory?: { id: string; version: number; status: string } }
-  | { status: 'duplicate'; event: StoredStoreEvent }
+  | { status: 'applied'; revision: number; event: StoredStoreEvent; memory?: { id: string; version: number; status: string }; invocation?: InvocationRecord }
+  | { status: 'duplicate'; event: StoredStoreEvent; invocation?: InvocationRecord }
   | { status: 'stale'; currentRevision: number; delta: StoredStoreEvent[] }
   | { status: 'quota_exhausted'; day: string; limit: number };
 
@@ -114,6 +116,15 @@ export class CollabStore {
   }
 
   async appendEvent(input: AppendEventInput): Promise<AppendOutcome> {
+    return this.appendEventInternal(input);
+  }
+
+  /** A1 internal path: event + durable outbox intent share the same CAS batch. */
+  async appendActionableEvent(input: AppendEventInput, invocation: InvocationIntent): Promise<AppendOutcome> {
+    return this.appendEventInternal(input, invocation);
+  }
+
+  private async appendEventInternal(input: AppendEventInput, invocationIntent?: InvocationIntent): Promise<AppendOutcome> {
     // CC-4 A0 (point 1) : grammaire stricte appliquée par opIdToIdempotencyKey
     // (StateContractError INVALID_OP_ID) — les ids réels relâchés comme
     // « op:op:vibe:cc4-design:p2-review:1 » (seq 103/104) sont refusés ici.
@@ -134,6 +145,7 @@ export class CollabStore {
     // A05 (F1): fingerprint the incoming intent BEFORE P1 sealing rewrites
     // the payload, so a replay compares the raw intent to the stored one.
     const intentFingerprint = await this.intentFingerprint(event);
+    const invocation = invocationIntent ? await describeInvocation(invocationIntent, intentFingerprint) : null;
 
     // A05 (F1, review Claude): judge an existing key BEFORE the P1 sealing
     // and the task permission statements. Otherwise a lost-response replay
@@ -141,7 +153,19 @@ export class CollabStore {
     // state its own first write produced (TASK_FORBIDDEN) instead of
     // returning duplicate with the original event.
     const replayed = await this.replayOutcome(key, intentFingerprint);
-    if (replayed) return replayed;
+    if (replayed) {
+      if (!invocation) return replayed;
+      const wakeReplay = await this.invocationReplayOutcome(invocation);
+      if (!wakeReplay) throw new CollabStoreError('INVOCATION_INCONSISTENT', 'Événement rejoué sans invocation durable associée.');
+      return wakeReplay;
+    }
+    if (invocation) {
+      const wakeReplay = await this.invocationReplayOutcome(invocation);
+      if (wakeReplay) return wakeReplay;
+      if (invocation.source_revision !== event.expected_rev + 1) {
+        throw new CollabStoreError('INVALID_INVOCATION', 'source_revision doit être la révision créée par l’événement actionnable.');
+      }
+    }
 
     // CC-4 A0 (point 1) : égalités du contrat op_id, jugées APRÈS le rejeu
     // (une réponse perdue rejouée reste duplicate). Le segment cycle vise
@@ -216,6 +240,7 @@ export class CollabStore {
     const day = now.toISOString().slice(0, 10);
     const nextRevision = event.expected_rev + 1;
     const taskStatements = await this.taskStatements(event, nextRevision);
+    const invocationStatement = invocation ? invocationInsertStatement(this.db, invocation, key, at) : null;
     // CR-B (CR-02) : un événement memory.* porte ses effets memory_entries
     // dans le MÊME batch CAS que l'append du journal — un applied garantit
     // l'effet mémoire (champ memory), un refus n'écrit rien du tout (ni
@@ -263,6 +288,7 @@ export class CollabStore {
         'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)',
       ].join(' ')).bind(event.cycle_id, at, event.type, event.participant_id, event.session_id,
         event.role, event.payload_json, event.expected_rev, key, event.evidence_ref),
+      ...(invocationStatement ? [invocationStatement] : []),
       this.db.prepare(
         'UPDATE cycles SET revision = ?2 WHERE cycle_id = ?1 AND revision = ?3'
       ).bind(event.cycle_id, nextRevision, event.expected_rev),
@@ -287,7 +313,16 @@ export class CollabStore {
       // Fail-closed: diagnose from the durable state, never guess. F1: a
       // duplicate idempotency key wins over STALE.
       const replay = await this.replayOutcome(key, intentFingerprint);
-      if (replay) return replay;
+      if (replay) {
+        if (!invocation) return replay;
+        const wakeReplay = await this.invocationReplayOutcome(invocation);
+        if (!wakeReplay) throw new CollabStoreError('INVOCATION_INCONSISTENT', 'Événement rejoué sans invocation durable associée.');
+        return wakeReplay;
+      }
+      if (invocation) {
+        const wakeReplay = await this.invocationReplayOutcome(invocation);
+        if (wakeReplay) return wakeReplay;
+      }
       const quota = await this.db.prepare('SELECT writes FROM quota_counters WHERE day = ?1')
         .bind(day).first<{ writes: number }>();
       if ((quota?.writes ?? 0) >= this.dailyWriteLimit) {
@@ -333,11 +368,16 @@ export class CollabStore {
       await memoryEffect.postCommit?.();
     }
     const stored = await this.eventByKey(key);
+    const storedInvocation = invocation ? await invocationByWakeKey(this.db, invocation.wake_key) : null;
+    if (invocation && !storedInvocation) {
+      throw new CollabStoreError('INVOCATION_INCONSISTENT', 'Événement actionnable appliqué sans invocation durable.');
+    }
     return {
       status: 'applied',
       revision: nextRevision,
       event: stored!,
       ...(memoryEffect ? { memory: memoryEffect.summary } : {}),
+      ...(storedInvocation ? { invocation: storedInvocation } : {}),
     };
   }
 
@@ -400,6 +440,24 @@ export class CollabStore {
 
   private async eventByKey(key: string): Promise<StoredStoreEvent | null> {
     return this.db.prepare(EVENT_SELECT + ' WHERE idempotency_key = ?1').bind(key).first<StoredStoreEvent>();
+  }
+
+  private async eventBySeq(seq: number): Promise<StoredStoreEvent | null> {
+    return this.db.prepare(EVENT_SELECT + ' WHERE seq = ?1').bind(seq).first<StoredStoreEvent>();
+  }
+
+  private async invocationReplayOutcome(descriptor: InvocationDescriptor): Promise<AppendOutcome | null> {
+    const existing = await invocationByWakeKey(this.db, descriptor.wake_key);
+    if (!existing) return null;
+    if (existing.payload_hash !== descriptor.payload_hash) {
+      throw new CollabStoreError(
+        'INVOCATION_PAYLOAD_CONFLICT',
+        'wake_key déjà utilisé pour un payload d’invocation différent ; ne créez pas une nouvelle tentative.',
+      );
+    }
+    const source = await this.eventBySeq(existing.source_event_seq);
+    if (!source) throw new CollabStoreError('INVOCATION_INCONSISTENT', 'Invocation durable sans événement source.');
+    return { status: 'duplicate', event: source, invocation: existing };
   }
 
   /**
