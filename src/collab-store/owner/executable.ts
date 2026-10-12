@@ -26,8 +26,11 @@ import { installPhaseDefinitions, normalizePhaseDefinitions, PHASE_INSTALL_KEY_P
 import { importStateSnapshot } from './state-import';
 import type { OwnerProof } from './proof';
 import type { PauseOccurrence } from '../memory/pause-resume';
+import { validateEndpointRegistration } from '../contracts/principals';
+import { latestEndpointActSeq, registerEndpoint } from '../executors/registry';
+import { REGISTRY_CYCLE } from './decisions';
 
-export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state'] as const;
+export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint'] as const;
 export type ExecutableAction = (typeof EXECUTABLE_ACTIONS)[number];
 const SHA_RE = /^[0-9a-f]{64}$/;
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -40,6 +43,8 @@ export interface ExecutableRequest {
   action: ExecutableAction;
   params: Record<string, unknown>;
   cycle_id: string;
+  /** Cible de l'acte : le cycle (phases, état) ou l'endpoint_id (register_endpoint, CC-4 A3). */
+  target: string;
   payload_sha256: string;
   previous_seq: number | null;
   reason: string;
@@ -82,7 +87,19 @@ function text(value: unknown, field: string): string {
   return value;
 }
 
+const ENDPOINT_FIELDS = ['endpoint_id', 'principal_id', 'attestation_kind', 'attestation_ref', 'status', 'capability_set'];
+
+/** Renvoie la cible de l'acte : cycle (phases, état) ou endpoint_id (register_endpoint). */
 function validateParams(action: ExecutableAction, params: Record<string, unknown>): string {
+  if (action === 'register_endpoint') {
+    const extra = Object.keys(params).filter(key => !ENDPOINT_FIELDS.includes(key));
+    if (extra.length) throw new Error('params : champs inconnus ' + extra.join(', ') + '.');
+    try {
+      return validateEndpointRegistration(params).endpoint_id;
+    } catch (error) {
+      throw new Error('params : inscription d’endpoint invalide — ' + (error instanceof Error ? error.message : 'contrat A0') + '.');
+    }
+  }
   const cycleId = params.cycle_id;
   if (typeof cycleId !== 'string' || !CYCLE_RE.test(cycleId)) throw new Error('params.cycle_id invalide.');
   if (action === 'install_phases') {
@@ -122,10 +139,13 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
   if (!payload || typeof payload !== 'object' || payload.action === undefined) return { kind: 'plain' };
   try {
     const action = payload.action;
-    if (!EXECUTABLE_ACTIONS.includes(action as ExecutableAction)) throw new Error('action inconnue (install_phases ou import_state).');
+    if (!EXECUTABLE_ACTIONS.includes(action as ExecutableAction)) {
+      throw new Error('action inconnue (' + EXECUTABLE_ACTIONS.join(', ') + ').');
+    }
     const params = payload.params;
     if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('params : objet requis.');
-    const cycleId = validateParams(action as ExecutableAction, params as Record<string, unknown>);
+    const target = validateParams(action as ExecutableAction, params as Record<string, unknown>);
+    const cycleId = action === 'register_endpoint' ? REGISTRY_CYCLE : target;
     const declared = payload.payload_sha256;
     if (typeof declared !== 'string' || !SHA_RE.test(declared)) throw new Error('payload_sha256 : 64 caractères hexadécimaux requis.');
     const computed = await executablePayloadSha256(action as string, params);
@@ -133,7 +153,7 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     const pre = payload.preconditions as Record<string, unknown> | undefined;
     const previous = pre?.previous_seq;
     if (!pre || !(previous === null || (Number.isSafeInteger(previous) && (previous as number) > 0))) {
-      throw new Error('preconditions.previous_seq : seq du dernier acte du même type sur le cycle, ou null.');
+      throw new Error('preconditions.previous_seq : seq du dernier acte du même type sur la cible, ou null.');
     }
     const expires = payload.expires_at;
     if (expires !== undefined && !(Number.isSafeInteger(expires) && (expires as number) > 0)) throw new Error('expires_at : secondes Unix.');
@@ -141,7 +161,7 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     if (!Number.isSafeInteger(cost) || (cost as number) < 0) throw new Error('max_cost_cents : entier >= 0.');
     return { kind: 'executable', request: {
       request_id: String(payload.request_id ?? ''), action: action as ExecutableAction, params: params as Record<string, unknown>,
-      cycle_id: cycleId, payload_sha256: declared, previous_seq: (previous as number | null),
+      cycle_id: cycleId, target, payload_sha256: declared, previous_seq: (previous as number | null),
       reason: text(payload.reason, 'reason'), risk: text(payload.risk, 'risk'), rollback: text(payload.rollback, 'rollback'),
       expires_at: (expires as number | undefined) ?? null, max_cost_cents: cost as number,
     } };
@@ -150,8 +170,9 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
   }
 }
 
-/** seq du dernier acte du même type sur le cycle (précondition à indiquer dans une demande). */
+/** seq du dernier acte du même type sur la cible (cycle, ou endpoint_id pour register_endpoint) : précondition d'une demande. */
 export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction, cycleId: string): Promise<number | null> {
+  if (action === 'register_endpoint') return latestEndpointActSeq(db, cycleId);
   await ensureSchema(db);
   const prefix = (action === 'install_phases' ? PHASE_INSTALL_KEY_PREFIX : STATE_IMPORT_KEY_PREFIX) + cycleId + ':';
   const row = await db.prepare("SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?2)) = ?2")
@@ -162,6 +183,7 @@ export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction
 export interface ExecutableView {
   action?: ExecutableAction;
   cycle_id?: string;
+  target?: string;
   payload_sha256?: string;
   previous_seq?: number | null;
   reason?: string;
@@ -186,9 +208,10 @@ export async function describePending(page: PendingPage, now: () => Date = () =>
     if (parsed.kind === 'plain') { items.push(item); continue; }
     if (parsed.kind === 'invalid') { items.push({ ...item, executable: { invalid: parsed.reason } }); continue; }
     const req = parsed.request;
-    const body = req.action === 'install_phases' ? String(req.params.definitions) : String(req.params.markdown);
+    const body = req.action === 'install_phases' ? String(req.params.definitions)
+      : req.action === 'register_endpoint' ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
     items.push({ ...item, executable: {
-      action: req.action, cycle_id: req.cycle_id, payload_sha256: req.payload_sha256, previous_seq: req.previous_seq,
+      action: req.action, cycle_id: req.cycle_id, target: req.target, payload_sha256: req.payload_sha256, previous_seq: req.previous_seq,
       reason: req.reason, risk: req.risk, rollback: req.rollback, expires_at: req.expires_at,
       expired: req.expires_at !== null && at > req.expires_at, max_cost_cents: req.max_cost_cents,
       preview: body.length > 4000 ? body.slice(0, 4000) + '\n… (' + body.length + ' caractères au total)' : body,
@@ -257,6 +280,12 @@ export async function decideOwnerRequest(db: D1Database, input: {
   }
   const binding = { request_id: req.request_id, request_seq: request.seq, payload_sha256: req.payload_sha256,
     expected_previous_seq: req.previous_seq };
+  if (req.action === 'register_endpoint') {
+    const result = await registerEndpoint(db, { registration: req.params, proof: input.proof, binding, now: input.now });
+    return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action, cycle_id: req.target,
+      detail: 'endpoint ' + result.endpoint.endpoint_id + ' (' + result.endpoint.principal_id + ', ' + result.endpoint.attestation_ref
+        + ') → ' + result.endpoint.status } };
+  }
   if (req.action === 'install_phases') {
     const result = await installPhaseDefinitions(db, { cycle_id: req.cycle_id, definitions: String(req.params.definitions),
       proof: input.proof, now: input.now, binding });

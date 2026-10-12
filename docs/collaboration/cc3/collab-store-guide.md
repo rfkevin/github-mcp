@@ -213,6 +213,27 @@ L’acte est alors écrit comme **un seul** `owner.decision`, qui porte `request
 - **Enveloppe budgétaire :** un plafond en centimes par scope, **0 € par défaut**. Relever un plafond est un acte owner (demande préparée, lot ultérieur) ; aucun chemin agent n’écrit le plafond.
 - **Branchement sur les invocations (A1) :** `lease(wake, worker, secondes, { max_cost_cents, scope })` réserve le pire cas **dans le même lot** que le bail, sous l’identifiant `inv:<invocation_id>:<tentative>` (une réserve par tentative). Sans place dans l’enveloppe → `BUDGET_INSUFFICIENT`, aucune tentative ne démarre et rien n’est écrit. `succeed` / `fail` soldent le coût réel (≤ réserve, sinon `BUDGET_OVERRUN`) dans le lot qui clôt la tentative. Un bail expiré en cours d’exécution compte le pire cas réservé ; un bail jamais exécuté est soldé à 0. Le chemin gratuit ou simulé réserve 0 ; un rejeu ou une réponse perdue ne réserve ni ne dépense deux fois.
 
+### 6.3 Exécuteur par API gratuite (CC-4 A3)
+
+Premier fournisseur : **Cloudflare Workers AI**, lié au Worker par le binding `AI`. Aucune clé n'est créée, manipulée par un agent ni stockée dans le store. Le quota gratuit est de 10 000 neurons par jour ; au-delà, un compte Workers Free reçoit une erreur, jamais une facture. Les modèles qui exigent un moyen de paiement sont refusés d'office (`EXECUTOR_PAID_MODEL`).
+
+**Cycle de vie d'un endpoint** (matrice §4.1 du plan, section « Exécuteurs » de `/owner`) :
+1. Un agent dépose une demande exécutable `register_endpoint` dont les `params` suivent le contrat A0 : `endpoint_id`, `principal_id`, `attestation_kind` = `provider_adapter`, `attestation_ref` = `workers-ai:@cf/<éditeur>/<modèle>`, `status` = `probe_required`, `capability_set`. Kevin l'approuve sur `/owner`.
+2. Kevin clique **Sonder** : un appel réel, avec un message fixe défini par le serveur, vérifie que le modèle répond et renvoie le nonce. Le résultat (modèle, latence, usage, empreinte de la sortie) devient un `owner.decision`.
+3. Un agent dépose une seconde demande `register_endpoint` avec `status` = `active`. Elle n'est exécutable qu'avec une sonde réussie, pour la même attestation, enregistrée après la dernière inscription (`ENDPOINT_PROBE_REQUIRED` sinon).
+
+Le principal d'un endpoint est immuable (`ENDPOINT_PRINCIPAL_IMMUTABLE`) et une attestation n'est portée que par un endpoint du même principal (`ENDPOINT_ATTESTATION_TAKEN`).
+
+**Dispatch d'une invocation A1** (`dispatchFreeInvocation`), garde-fous dans l'ordre :
+- arrêt d'urgence ;
+- endpoint `active`, `provider_adapter`, lié au principal de l'invocation ;
+- capacités deny-by-default : outil `llm.generate`, fournisseur `workers-ai`, `token_ceiling` explicite et au moins égal à `max_tokens` ;
+- paquet d'entrée identique à l'empreinte enregistrée par A1 (`INVOCATION_INPUT_MISMATCH`) ;
+- plafond quotidien d'appels par endpoint (`EXECUTOR_DAILY_CAP`, 50 par défaut, variable `EXECUTOR_DAILY_CAP`) ;
+- bail A1 avec réserve de 0 €, soldée à la clôture.
+
+Les consignes de contrôle viennent du code serveur ; le paquet (texte externe) est placé dans une enveloppe marquée non fiable que le texte ne peut pas refermer (§6.1 du plan). Aucun outil n'est donné au modèle. La sortie est rendue à l'appelant mais jamais persistée : seule son empreinte l'est. Une erreur du fournisseur devient une tentative en échec, reprise selon les règles A1.
+
 Merges vers `main`/`master`, dérogations, promotion et production restent humains (I9). Aucune politique ne peut les automatiser.
 
 ## 7. Codes d’erreur
@@ -282,6 +303,23 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVOCATION_INCONSISTENT` | A1 | Journal et registre invocation ne correspondent plus | Incident store : arrêter l’automatisation et diagnostiquer |
 | `INVOCATION_UNKNOWN` | A1 | `wake_key` inconnu | Relire l’outbox avant de tenter un bail |
 | `INVOCATION_LEASE_LOST` | A1 | Bail absent, expiré ou détenu par un autre worker | Relire l’état ; réconcilier avant toute nouvelle tentative |
+| `INVOCATION_INPUT_MISMATCH` | A3 | Paquet fourni au dispatch différent de l’empreinte enregistrée | Fournir exactement le paquet de l’invocation |
+| `ENDPOINT_PROBE_REQUIRED` | A3 | Activation sans sonde réussie récente pour cette attestation | Sonder l’endpoint sur `/owner`, puis redéposer l’activation |
+| `ENDPOINT_PRINCIPAL_IMMUTABLE` | A3 | Tentative de rattacher un endpoint à un autre principal | Créer un autre `endpoint_id` |
+| `ENDPOINT_ATTESTATION_TAKEN` | A3 | Attestation déjà portée par un autre endpoint du même principal | Réutiliser cet endpoint ou le retirer |
+| `ENDPOINT_NOT_PROBEABLE` | A3 | Endpoint inconnu, retiré ou non `provider_adapter` | Vérifier la matrice des exécuteurs |
+| `ENDPOINT_NOT_ACTIVE` | A3 | Dispatch vers un endpoint absent, non actif ou non `provider_adapter` | Activer l’endpoint (sonde + demande) |
+| `ENDPOINT_PRINCIPAL_MISMATCH` | A3 | L’endpoint n’appartient pas au principal de l’invocation | Choisir l’endpoint de ce principal |
+| `EXECUTOR_CAPABILITY_DENIED` | A3 | Capacité absente (`llm.generate`, fournisseur) ou plafond de jetons dépassé | Demander au propriétaire d’ajuster les capacités |
+| `EXECUTOR_DAILY_CAP` | A3 | Plafond quotidien d’appels de l’endpoint atteint | Réessayer le lendemain |
+| `EXECUTOR_UNSUPPORTED` | A3 | Fournisseur ou modèle non pris en charge | `workers-ai:@cf/<éditeur>/<modèle>` |
+| `EXECUTOR_PAID_MODEL` | A3 | Modèle Workers AI qui exige un moyen de paiement | Choisir un modèle gratuit |
+| `EXECUTOR_UNAVAILABLE` | A3 | Binding Workers AI absent de l’environnement | Ajouter le binding `AI` au Worker |
+| `EXECUTOR_TIMEOUT` | A3 | Fournisseur sans réponse dans le délai | Tentative en échec, reprise A1 |
+| `EXECUTOR_BAD_RESPONSE` | A3 | Réponse du fournisseur sans texte exploitable | Tentative en échec ; vérifier le modèle |
+| `EXECUTOR_INVALID_LIMIT` | A3 | `max_tokens` hors de 1 à 2048 | Corriger la limite |
+| `EXECUTOR_INPUT_TOO_LARGE` | A3 | Paquet au-delà de 60 000 caractères | Réduire le paquet |
+| `INVALID_OWNER_OP` | A3 | Inscription d’endpoint hors demande liée et sans `op` | Passer par une demande `register_endpoint` |
 
 ### 7.3 Phases, contexte et scellement (C3)
 

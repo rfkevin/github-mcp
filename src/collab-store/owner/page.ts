@@ -5,6 +5,7 @@
 import type { OwnerChannelConfig } from './config';
 import type { DescribedPendingPage, PendingWithExecutable } from './executable';
 import type { BudgetEnvelope } from './automation';
+import type { CapabilityRow } from '../executors/registry';
 import type { ImportedStateSummary } from './state-import';
 
 export const OWNER_PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
@@ -65,6 +66,8 @@ export interface DashboardData {
   halted?: boolean;
   /** CC-4 A2 : enveloppe budgétaire globale (0 € par défaut). */
   budget?: BudgetEnvelope;
+  /** CC-4 A3 : matrice des endpoints d'exécution (§4.1). */
+  executors?: CapabilityRow[];
 }
 
 export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): string {
@@ -82,6 +85,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + (config.mode === 'secret' ? ' Le secret est redemandé à chaque action et n’est jamais conservé.' : '') + '</p>'
     + (data.message ? '<p class="msg' + (data.message.error ? ' err' : '') + '">' + escapeHtml(data.message.text) + '</p>' : '')
     + automationSection(data.halted ?? false, data.budget, secret)
+    + executorSection(data.executors ?? [], secret)
     + '<h2>Demandes en attente (' + data.pending.total + ')</h2>'
     + (rows ? '<table><tr><th>Demande</th><th>Participant</th><th>Résumé</th><th>Décision</th></tr>' + rows + '</table>'
       : '<p class="note">Aucune demande en attente.</p>')
@@ -132,7 +136,8 @@ function decisionCell(item: PendingWithExecutable, secret: string): string {
     + '<button name="decision" value="deny">Refuser</button></form>';
 }
 
-const ACTION_LABELS: Record<string, string> = { install_phases: 'Installer les définitions de phase', import_state: 'Importer l’état CC-STATE-1' };
+const ACTION_LABELS: Record<string, string> = { install_phases: 'Installer les définitions de phase', import_state: 'Importer l’état CC-STATE-1',
+  register_endpoint: 'Inscrire ou modifier un endpoint d’exécution' };
 
 /** CC-4 A2 : ce qui sera exécuté exactement, pourquoi, risque, retour arrière, empreinte. */
 function executableDetail(item: PendingWithExecutable): string {
@@ -142,7 +147,8 @@ function executableDetail(item: PendingWithExecutable): string {
   const expiry = exec.expires_at ? new Date(exec.expires_at * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'aucune';
   return '<dl>'
     + '<dt>Action exécutée à l’approbation</dt><dd>' + escapeHtml(ACTION_LABELS[exec.action ?? ''] ?? String(exec.action))
-    + ' — cycle <code>' + escapeHtml(exec.cycle_id ?? '') + '</code></dd>'
+    + (exec.action === 'register_endpoint' ? ' — endpoint <code>' + escapeHtml(exec.target ?? '') + '</code>'
+      : ' — cycle <code>' + escapeHtml(exec.cycle_id ?? '') + '</code>') + '</dd>'
     + '<dt>Pourquoi</dt><dd>' + escapeHtml(exec.reason ?? '') + '</dd>'
     + '<dt>Risque</dt><dd>' + escapeHtml(exec.risk ?? '') + '</dd>'
     + '<dt>Retour arrière</dt><dd>' + escapeHtml(exec.rollback ?? '') + '</dd>'
@@ -170,6 +176,40 @@ function automationSection(halted: boolean, budget: BudgetEnvelope | undefined, 
       + '<p class="note">Enveloppe ' + escapeHtml(budget.scope) + ' : 0 € par défaut (Free d’abord). Toute dépense exige une enveloppe approuvée par le propriétaire.</p>'
     : '';
   return '<h2>Automatisation</h2>' + status + button + '<h2>Budget</h2>' + money;
+}
+
+function capabilitiesText(caps: CapabilityRow['capability_set']): string {
+  const parts = [
+    caps.tools?.length ? 'outils : ' + caps.tools.join(', ') : '',
+    caps.network_providers?.length ? 'fournisseurs : ' + caps.network_providers.join(', ') : '',
+    caps.repositories?.length ? 'dépôts : ' + caps.repositories.join(', ') : '',
+    caps.branch_paths?.length ? 'branches : ' + caps.branch_paths.join(', ') : '',
+    caps.token_ceiling !== undefined ? 'jetons ≤ ' + caps.token_ceiling : '',
+    caps.cost_ceiling !== undefined ? 'coût ≤ ' + caps.cost_ceiling : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'aucune (rien n’est autorisé)';
+}
+
+/** CC-4 A3 : matrice §4.1 — un endpoint par ligne, dernière sonde, bouton de sonde pour les adaptateurs API. */
+function executorSection(rows: CapabilityRow[], secret: string): string {
+  const body = rows.map(row => {
+    const probe = row.last_probe
+      ? (row.last_probe.ok ? 'réussie' : 'en échec') + ' · seq ' + row.last_probe.seq + ' · ' + row.last_probe.latency_ms + ' ms'
+      : 'jamais sondé';
+    const button = row.attestation_kind === 'provider_adapter' && row.status !== 'retired'
+      ? '<form method="post" action="/owner"><input type="hidden" name="action" value="probe_endpoint">'
+        + '<input type="hidden" name="endpoint_id" value="' + escapeHtml(row.endpoint_id) + '">' + secret
+        + '<button type="submit">Sonder</button></form>'
+      : '';
+    return '<tr><td><code>' + escapeHtml(row.endpoint_id) + '</code><br>' + escapeHtml(row.principal_id) + '</td><td>'
+      + escapeHtml(row.attestation_kind) + '<br><code>' + escapeHtml(row.attestation_ref) + '</code></td><td>' + escapeHtml(row.status)
+      + '</td><td>' + escapeHtml(capabilitiesText(row.capability_set)) + '</td><td>' + escapeHtml(probe) + button + '</td></tr>';
+  }).join('');
+  return '<h2>Exécuteurs</h2>'
+    + (body ? '<table><tr><th>Endpoint</th><th>Attestation</th><th>Statut</th><th>Capacités</th><th>Sonde</th></tr>' + body + '</table>'
+      : '<p class="note">Aucun endpoint inscrit. Un agent prépare l’inscription ; vous l’approuvez dans les demandes en attente.</p>')
+    + '<p class="note">Un endpoint ne devient actif qu’après une sonde réussie puis une demande d’activation approuvée. '
+    + 'La sonde fait un appel réel au fournisseur gratuit, avec un message fixe défini par le serveur.</p>';
 }
 
 function importSection(imports: ImportedStateSummary[], secret: string): string {
