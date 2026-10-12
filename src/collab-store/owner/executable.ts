@@ -54,11 +54,17 @@ export type ParsedRequest =
   | { kind: 'executable'; request: ExecutableRequest }
   | { kind: 'invalid'; reason: string };
 
+/** Ordre par unités de code UTF-16 (celui de JSON canonique), explicite et indépendant de la locale. */
+function byCodeUnit(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
 /** JSON canonique : clés triées récursivement, sans espaces (empreinte stable, indépendante de l'ordre). */
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
   if (value && typeof value === 'object') {
-    return '{' + Object.keys(value as Record<string, unknown>).sort()
+    return '{' + Object.keys(value as Record<string, unknown>).sort(byCodeUnit)
       .map(key => JSON.stringify(key) + ':' + canonicalJson((value as Record<string, unknown>)[key])).join(',') + '}';
   }
   return JSON.stringify(value ?? null);
