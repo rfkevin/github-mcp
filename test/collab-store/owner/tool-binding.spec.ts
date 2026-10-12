@@ -62,10 +62,10 @@ describe('CC-3 C5 — identité appliquée par les outils collab_*', () => {
     expect(errorCode(probe)).toBe('PARTICIPANT_MISMATCH');
     const self = (probe.structuredContent.error as { message: string }).message.match(/unregistered:[0-9a-f]{16}/)?.[0];
     expect(self).toBeTruthy();
-    const request = await handlers.get('collab_append_event')!({ cycle, expected_rev: 0, op_id: `x:${cycle}:req:1`,
+    const request = await handlers.get('collab_append_event')!({ cycle, expected_rev: 0, op_id: `${self!.replace(':', '.')}:${cycle}:req:1`,
       type: 'owner.request', participant_id: self, payload_json: '{"request_id":"r1","summary":"accès"}' });
     expect(request.structuredContent.status).toBe('applied');
-    const claim = await handlers.get('collab_append_event')!({ cycle, expected_rev: 1, op_id: `x:${cycle}:cp:1`,
+    const claim = await handlers.get('collab_append_event')!({ cycle, expected_rev: 1, op_id: `${self!.replace(':', '.')}:${cycle}:cp:1`,
       type: 'checkpoint', participant_id: self, payload_json: '{}' });
     expect(errorCode(claim)).toBe('UNREGISTERED_CLIENT');
     const context = await handlers.get('collab_get_context')!({ cycle });

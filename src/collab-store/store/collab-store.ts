@@ -10,7 +10,7 @@
  * exactly at expected_rev and (3) the daily quota is open. Never
  * last-write-wins: a stale writer changes nothing.
  */
-import { opIdToIdempotencyKey, parseOpId, validateAgentEvent, validateTaskAssignment, type StoreEvent, type StoreEventType } from '../contracts';
+import { opIdClientFor, opIdToIdempotencyKey, parseOpId, validateAgentEvent, validateTaskAssignment, type StoreEvent, type StoreEventType } from '../contracts';
 import { phaseEntrySeq } from '../phases/entry-seq';
 import { createSealedEnvelope, parseSealedEnvelope } from '../phases/sealed-envelope';
 import { ensureSchema } from './schema';
@@ -145,10 +145,10 @@ export class CollabStore {
 
     // CC-4 A0 (point 1) : égalités du contrat op_id, jugées APRÈS le rejeu
     // (une réponse perdue rejouée reste duplicate). Le segment cycle vise
-    // TOUJOURS ce cycle ; le segment client est le participant serveur quand
-    // celui-ci peut figurer dans un segment sans ':' — les pseudonymes
-    // « unregistered:… » et les ids legacy avec ':' (ex. « agent:a ») en sont
-    // exemptés (exemption documentée dans le guide, verrouillée par les tests).
+    // TOUJOURS ce cycle ; le segment client est la forme canonique du
+    // participant serveur pour TOUS les participants (review GPT-6 R1 :
+    // ':' → '.', ex. « unregistered.<hash> », « agent.a ») — aucune identité
+    // ne peut réserver le namespace d'idempotence d'une autre.
     const parsedOpId = parseOpId(input.op_id);
     if (parsedOpId.cycle !== event.cycle_id) {
       throw new CollabStoreError(
@@ -156,10 +156,11 @@ export class CollabStore {
         'op_id doit porter le segment cycle de la requête ({client}:{cycle}:{op}:{n}) : attendu « ' + event.cycle_id + ' », reçu « ' + parsedOpId.cycle + ' »',
       );
     }
-    if (!event.participant_id.includes(':') && parsedOpId.client !== event.participant_id) {
+    const expectedClient = opIdClientFor(event.participant_id);
+    if (parsedOpId.client !== expectedClient) {
       throw new CollabStoreError(
         'INVALID_OP_ID',
-        'op_id doit porter le segment client du participant serveur ({client}:{cycle}:{op}:{n}) : attendu « ' + event.participant_id + ' », reçu « ' + parsedOpId.client + ' »',
+        'op_id doit porter le segment client du participant serveur ({client}:{cycle}:{op}:{n}, « : » de l’id remplacés par « . ») : attendu « ' + expectedClient + ' », reçu « ' + parsedOpId.client + ' »',
       );
     }
 

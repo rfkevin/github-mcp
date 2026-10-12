@@ -18,7 +18,7 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 
 async function fileRequest(store: CollabStore, cycleId: string, rev: number, requestId: string): Promise<void> {
   const outcome = await store.appendEvent({ cycle_id: cycleId, type: 'owner.request', participant_id: 'agent:a',
-    expected_rev: rev, op_id: `t:${cycleId}:req:${++n}`, payload_json: JSON.stringify({ request_id: requestId, summary: 'waiver D12' }) });
+    expected_rev: rev, op_id: `agent.a:${cycleId}:req:${++n}`, payload_json: JSON.stringify({ request_id: requestId, summary: 'waiver D12' }) });
   expect(outcome.status).toBe('applied');
 }
 
@@ -57,7 +57,7 @@ describe('CC-3 C5 — décisions owner', () => {
     const store = new CollabStore(db);
     const cycleId = uniq('cycle');
     expect(await codeOf(store.appendEvent({ cycle_id: cycleId, type: 'owner.decision', participant_id: 'agent:a',
-      expected_rev: 0, op_id: `t:${cycleId}:forge:1`, payload_json: '{"request_id":"x","decision":"approve"}' })))
+      expected_rev: 0, op_id: `agent.a:${cycleId}:forge:1`, payload_json: '{"request_id":"x","decision":"approve"}' })))
       .toBe('OWNER_DECISION_FORBIDDEN');
   });
 
@@ -69,7 +69,7 @@ describe('CC-3 C5 — décisions owner', () => {
     const [decision, agent] = await Promise.all([
       recordOwnerDecision(db, { request_id: requestId, decision: 'approve', proof }),
       store.appendEvent({ cycle_id: cycleId, type: 'checkpoint', participant_id: 'agent:a', expected_rev: 1,
-        op_id: `t:${cycleId}:cp:1`, payload_json: '{}' }),
+        op_id: `agent.a:${cycleId}:cp:1`, payload_json: '{}' }),
     ]);
     expect(decision.status).toBe('applied');
     expect(['applied', 'stale']).toContain(agent.status);

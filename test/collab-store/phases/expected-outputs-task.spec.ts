@@ -58,8 +58,13 @@ describe('CC-4 A0 (point 5) — expected_outputs task_id : la sortie compte pour
 
   it('validatePhaseDefinition : task_id invalide → INVALID_PHASE_OUTPUT_TASK', async () => {
     const base = { cycle_id: uniq('def'), phase: 'P2' as const, entry_conditions: [], exit_conditions: [], auto_advance: 'none' };
-    await expectRejected(() => validatePhaseDefinition({ ...base, expected_outputs: [{ role: 'reviewer', kind: 'evidence.add', count: 1, task_id: 'BAD_ID' }] }),
+    await expectRejected(() => validatePhaseDefinition({ ...base, expected_outputs: [{ role: 'reviewer', kind: 'evidence.add', count: 1, task_id: 'bad id!' }] }),
       StateContractError, 'INVALID_PHASE_OUTPUT_TASK', 'task_id invalide');
+    // Review GPT-6 R2 : même grammaire que les tâches du store, insensible à la casse.
+    for (const taskId of ['C7', 'F6-A10', 'T1']) {
+      expect(validatePhaseDefinition({ ...base, expected_outputs: [{ role: 'reviewer', kind: 'evidence.add', count: 1, task_id: taskId }] })
+        .expected_outputs[0].task_id).toBe(taskId);
+    }
     expect(validatePhaseDefinition({ ...base, expected_outputs: [{ role: 'reviewer', kind: 'evidence.add', count: 1 }] })
       .expected_outputs).toHaveLength(1);
     expect(validatePhaseDefinition({ ...base, expected_outputs: [{ role: 'reviewer', kind: 'evidence.add', count: 1, task_id: 't1' }] })

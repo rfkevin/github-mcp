@@ -54,7 +54,7 @@ function cycle(label: string): string {
 
 function appendInput(cycleId: string, expectedRev: number, op: string, payload = '{"n":1}') {
   return {
-    cycle: cycleId, expected_rev: expectedRev, op_id: 't:' + cycleId + ':' + op,
+    cycle: cycleId, expected_rev: expectedRev, op_id: 'agent.a:' + cycleId + ':' + op,
     type: 'checkpoint', participant_id: 'agent:a', payload_json: payload,
   };
 }
@@ -144,7 +144,7 @@ describe('CC-3 C2 — outils collab_* (registre local)', () => {
     const handlers = registry(makeContext());
     const cycleId = cycle('d12');
     const result = await handlers.get('collab_append_event')!({
-      cycle: cycleId, expected_rev: 0, op_id: 't:' + cycleId + ':claim:1', type: 'task.claim',
+      cycle: cycleId, expected_rev: 0, op_id: 'agent.a:' + cycleId + ':claim:1', type: 'task.claim',
       participant_id: 'agent:a',
       payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:a', tester_pid: 'agent:b' } }),
     });

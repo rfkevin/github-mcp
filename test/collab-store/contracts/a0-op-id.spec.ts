@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { CollabStoreError } from '../../../src/collab-store/store/collab-store';
-import { parseOpId, validateOpId } from '../../../src/collab-store/contracts';
+import { opIdClientFor, parseOpId, validateOpId } from '../../../src/collab-store/contracts';
 import { StateContractError } from '../../../src/collab/contracts';
 import { countEvents, expectRejected, makeDatedStore } from '../a0-helpers';
 
@@ -66,20 +66,36 @@ describe('CC-4 A0 (point 1) — op_id strict {client}:{cycle}:{op}:{n}', () => {
     expect(await countEvents(db, cycle)).toBe(0);
   });
 
-  it('exemption documentée : ids legacy avec deux-points (agent:a, pseudonymes unregistered:)', async () => {
+  it('participant avec deux-points : segment client canonique « : » → « . » (agent:a → agent.a), sans exemption', async () => {
     const legacyPid = 'agent:a';
     const cycle = uniq('legacy');
-    const applied = await makeDatedStore(db).appendEvent(checkpoint(cycle, legacyPid, 't:' + cycle + ':cp:1'));
+    const store = makeDatedStore(db);
+    await expectRejected(() => store.appendEvent(checkpoint(cycle, legacyPid, 't:' + cycle + ':cp:1')),
+      CollabStoreError, 'INVALID_OP_ID', 'client arbitraire pour un id à deux-points');
+    expect(await countEvents(db, cycle)).toBe(0);
+    const applied = await store.appendEvent(checkpoint(cycle, legacyPid, opIdClientFor(legacyPid) + ':' + cycle + ':cp:1'));
     expect(applied.status).toBe('applied');
+    expect(opIdClientFor('unregistered:0123456789abcdef')).toBe('unregistered.0123456789abcdef');
   });
 
-  it('segment cycle erroné : INVALID_OP_ID même pour un participant exempté (compat A05)', async () => {
-    const exempted = 'agent:a';
-    const cycle = uniq('cycle');
-    const wrongCycle = checkpoint(cycle, exempted, 't:autre-cycle:cp:1');
+  it('review GPT-6 R1 : un pseudonyme unregistered ne peut pas réserver le namespace d’un autre (gpt6), rien n’est écrit', async () => {
+    const squatter = 'unregistered:0123456789abcdef';
+    const cycle = uniq('squat');
     const store = makeDatedStore(db);
-    await expectRejected(() => store.appendEvent(wrongCycle), CollabStoreError, 'INVALID_OP_ID', 'segment cycle erroné');
+    const squat = { cycle_id: cycle, type: 'owner.request' as const, participant_id: squatter, expected_rev: 0,
+      payload_json: '{"request_id":"r1"}', op_id: 'gpt6:' + cycle + ':req:1' };
+    await expectRejected(() => store.appendEvent(squat), CollabStoreError, 'INVALID_OP_ID', 'squat du namespace gpt6');
     expect(await countEvents(db, cycle)).toBe(0);
+    // Le vrai titulaire écrit ensuite sous sa clé, sans IDEMPOTENCY_CONFLICT.
+    const owned = await store.appendEvent(checkpoint(cycle, 'gpt6', 'gpt6:' + cycle + ':req:1'));
+    expect(owned.status).toBe('applied');
+    // Rejeu prioritaire : la même clé rejouée par un autre auteur reste un conflit d'intention, sans écriture.
+    await expectRejected(() => store.appendEvent({ ...squat, expected_rev: 1 }), CollabStoreError, 'IDEMPOTENCY_CONFLICT', 'rejeu par un autre auteur');
+    expect(await countEvents(db, cycle)).toBe(1);
+  });
+
+  it('opIdClientFor : un id contenant « . » n’est pas représentable (injectivité)', async () => {
+    expect(() => opIdClientFor('a.b')).toThrow(StateContractError);
   });
 
   it('rejeu du même op_id : duplicate, jugé avant les égalités (réponse perdue)', async () => {

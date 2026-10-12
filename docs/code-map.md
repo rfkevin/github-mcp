@@ -116,7 +116,7 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 
 ## CC-4 A0 — durcissement du store avant automatisation (#110)
 
-- `src/collab-store/contracts/phases.ts` : grammaire stricte de l'op_id `{client}:{cycle}:{op}:{n}` (`parseOpId`, exactement quatre segments, aucun deux-points interne), `task_id` optionnel d'une sortie attendue (`INVALID_PHASE_OUTPUT_TASK`).
+- `src/collab-store/contracts/phases.ts` : grammaire stricte de l'op_id `{client}:{cycle}:{op}:{n}` (`parseOpId`, exactement quatre segments, aucun deux-points interne ; `opIdClientFor` : segment client canonique `:` → `.` vérifié pour tous les participants), `task_id` optionnel d'une sortie attendue validé par le même `TASK_ID_RE` que les tâches (`contracts/tasks.ts`, `INVALID_PHASE_OUTPUT_TASK`).
 - `src/collab-store/contracts/principals.ts` : contrat §3.1 principal/endpoint/session — kinds d'attestation, capacités deny-by-default, `provesDistinctPrincipals` (un CIMD partagé ne prouve pas des participants distincts) ; codes `INVALID_ATTESTATION_KIND`, `INVALID_CAPABILITY_SET`, `INVALID_ENDPOINT_REGISTRATION`, `INVALID_SESSION_BINDING`.
 - `src/collab-store/phases/entry-seq.ts` : frontière de ronde CR-F01 partagée avec le store sans cycle d'imports ; `store/collab-store.ts` : garde une-proposition-par-participant-et-par-ronde (pré-check + clause CAS `NOT EXISTS`, `PROPOSAL_ALREADY_SUBMITTED`) et égalités op_id cycle/client jugées après le rejeu.
 - `src/collab-store/context/resolution.ts` : découverte du cycle sans issue ni cycle (`NO_ACTIVE_CYCLE`, `AMBIGUOUS_CYCLE`, filtre `task`) — jamais de choix implicite (défaut du trial C7).
