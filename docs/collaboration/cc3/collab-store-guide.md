@@ -204,8 +204,14 @@ L’acte est alors écrit comme **un seul** `owner.decision`, qui porte `request
 
 ### 6.2 Arrêt d’urgence et budget (CC-4 A2)
 
-- **Arrêt d’urgence :** drapeau `halt`, posé ou levé seulement sur `/owner` (`owner.decision` sur le cycle `owner-registry`). Tant qu’il est posé, `collab_phase_advance` et toute réservation budgétaire renvoient `AUTOMATION_HALTED`.
-- **Enveloppe budgétaire :** un plafond en centimes par scope, **0 € par défaut**. Une invocation réserve son coût maximal avant l’appel, et le solde après usage libère la réserve en comptant le coût réel. Une réserve qui dépasserait le reste est refusée sans écriture. Relever un plafond est un acte owner (demande préparée, lot ultérieur) ; aucun chemin agent n’écrit le plafond.
+- **Arrêt d’urgence :** drapeau `halt`, posé ou levé seulement sur `/owner` (`owner.decision` sur le cycle `owner-registry`). Tant qu’il est posé, renvoient `AUTOMATION_HALTED` :
+  - l’avance de phase par policy (`collab_phase_advance`) ;
+  - le démarrage d’une invocation (`InvocationService.lease`, puis `markRunning`) ;
+  - toute réservation budgétaire.
+
+  Le drapeau est revérifié **dans la garde du lot** qui écrit, pas seulement avant : un arrêt posé entre le contrôle et l’écriture annule le lot. Une tentative déjà en cours peut encore être soldée ; l’état est conservé.
+- **Enveloppe budgétaire :** un plafond en centimes par scope, **0 € par défaut**. Relever un plafond est un acte owner (demande préparée, lot ultérieur) ; aucun chemin agent n’écrit le plafond.
+- **Branchement sur les invocations (A1) :** `lease(wake, worker, secondes, { max_cost_cents, scope })` réserve le pire cas **dans le même lot** que le bail, sous l’identifiant `inv:<invocation_id>:<tentative>` (une réserve par tentative). Sans place dans l’enveloppe → `BUDGET_INSUFFICIENT`, aucune tentative ne démarre et rien n’est écrit. `succeed` / `fail` soldent le coût réel (≤ réserve, sinon `BUDGET_OVERRUN`) dans le lot qui clôt la tentative. Un bail expiré en cours d’exécution compte le pire cas réservé ; un bail jamais exécuté est soldé à 0. Le chemin gratuit ou simulé réserve 0 ; un rejeu ou une réponse perdue ne réserve ni ne dépense deux fois.
 
 Merges vers `main`/`master`, dérogations, promotion et production restent humains (I9). Aucune politique ne peut les automatiser.
 

@@ -12,6 +12,11 @@ export interface SimulatedRunOptions {
   fail_with?: string;
   usage?: Partial<InvocationUsage>;
   evidence_refs?: string[];
+  /** CC-4 A2 : pire cas réservé avant l'exécution (0 par défaut, chemin gratuit). */
+  max_cost_cents?: number;
+  /** CC-4 A2 : coût réel soldé après l'exécution (≤ réserve ; 0 pour le simulateur). */
+  cost_cents?: number;
+  budget_scope?: string;
 }
 
 export type SimulatedRunOutcome =
@@ -33,11 +38,12 @@ export async function runSimulatedInvocation(
     return { status: 'busy', invocation: before };
   }
   const worker = options.worker_id ?? 'simulated-a1';
-  const lease = await service.lease(wakeKey, worker, options.lease_seconds ?? 300);
+  const lease = await service.lease(wakeKey, worker, options.lease_seconds ?? 300,
+    { max_cost_cents: options.max_cost_cents ?? 0, scope: options.budget_scope });
   if (lease.status !== 'leased') return { status: lease.status, invocation: lease.invocation };
   await service.markRunning(wakeKey, worker);
   if (options.fail_with !== undefined) {
-    const failed = await service.fail(wakeKey, worker, options.fail_with, options.usage, options.evidence_refs);
+    const failed = await service.fail(wakeKey, worker, options.fail_with, options.usage, options.evidence_refs, options.cost_cents ?? 0);
     return { status: 'attempt_failed', invocation: failed };
   }
   const succeeded = await service.succeed(
@@ -46,6 +52,7 @@ export async function runSimulatedInvocation(
     options.output ?? 'simulated-ok',
     options.usage,
     options.evidence_refs,
+    options.cost_cents ?? 0,
   );
   return { status: 'succeeded', invocation: succeeded };
 }

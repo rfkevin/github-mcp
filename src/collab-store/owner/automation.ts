@@ -82,8 +82,74 @@ export async function budgetEnvelope(db: D1Database, scope = GLOBAL_BUDGET_SCOPE
   return { scope, limit_cents: limit, reserved_cents: reserved, spent_cents: spent, remaining_cents: Math.max(0, limit - reserved - spent) };
 }
 
-function assertCents(value: number, field: string): void {
+export function assertCents(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 0) throw new CollabStoreError('INVALID_BUDGET_AMOUNT', field + ' : entier de centimes >= 0 attendu.');
+}
+
+/** Validation commune d'une réserve (identifiant, scope, montant). */
+export function assertReservationInput(reservationId: string, scope: string, cents: number): void {
+  if (!RESERVATION_RE.test(reservationId)) throw new CollabStoreError('INVALID_RESERVATION_ID', 'Identifiant de réservation invalide.');
+  if (!SCOPE_RE.test(scope)) throw new CollabStoreError('INVALID_BUDGET_SCOPE', 'Scope budgétaire invalide.');
+  assertCents(cents, 'cents');
+}
+
+/**
+ * Instructions d'une réserve, à placer dans le lot de l'action qu'elle couvre
+ * (CC-4 A2, revue #115 R4 : le lease d'invocation A1 les embarque). La garde
+ * annule tout le lot si l'arrêt d'urgence est posé ou si le reste est insuffisant.
+ */
+export function reserveStatements(db: D1Database, input: {
+  reservation_id: string; scope: string; cents: number; at: number;
+}): D1PreparedStatement[] {
+  return [
+    db.prepare('INSERT INTO budget_envelopes (scope, updated_at) VALUES (?1, ?2) ON CONFLICT(scope) DO NOTHING').bind(input.scope, input.at),
+    db.prepare([
+      'INSERT INTO collab_store_guard (ok)',
+      'SELECT CASE WHEN NOT ' + HALT_ACTIVE_SQL,
+      '  AND (SELECT limit_cents - reserved_cents - spent_cents FROM budget_envelopes WHERE scope = ?1) >= ?2',
+      '  THEN 1 ELSE 0 END',
+    ].join(' ')).bind(input.scope, input.cents),
+    db.prepare('UPDATE budget_envelopes SET reserved_cents = reserved_cents + ?2, updated_at = ?3 WHERE scope = ?1')
+      .bind(input.scope, input.cents, input.at),
+    db.prepare("INSERT INTO budget_reservations (reservation_id, scope, reserved_cents, status, created_at) VALUES (?1, ?2, ?3, 'reserved', ?4)")
+      .bind(input.reservation_id, input.scope, input.cents, input.at),
+    db.prepare('DELETE FROM collab_store_guard'),
+  ];
+}
+
+/** Instructions du solde d'une réserve (garde : encore « reserved »), à placer dans le lot qui clôt l'action. */
+export function settleStatements(db: D1Database, input: {
+  reservation_id: string; scope: string; reserved_cents: number; actual_cents: number;
+}): D1PreparedStatement[] {
+  return [
+    db.prepare([
+      'INSERT INTO collab_store_guard (ok)',
+      "SELECT CASE WHEN EXISTS (SELECT 1 FROM budget_reservations WHERE reservation_id = ?1 AND status = 'reserved') THEN 1 ELSE 0 END",
+    ].join(' ')).bind(input.reservation_id),
+    db.prepare("UPDATE budget_reservations SET status = 'settled', actual_cents = ?2 WHERE reservation_id = ?1")
+      .bind(input.reservation_id, input.actual_cents),
+    db.prepare('UPDATE budget_envelopes SET reserved_cents = reserved_cents - ?2, spent_cents = spent_cents + ?3 WHERE scope = ?1')
+      .bind(input.scope, input.reserved_cents, input.actual_cents),
+    db.prepare('DELETE FROM collab_store_guard'),
+  ];
+}
+
+/** Réservation enregistrée (lecture). */
+export async function budgetReservation(db: D1Database, reservationId: string): Promise<{
+  scope: string; reserved_cents: number; actual_cents: number | null; status: string;
+} | null> {
+  return db.prepare('SELECT scope, reserved_cents, actual_cents, status FROM budget_reservations WHERE reservation_id = ?1')
+    .bind(reservationId).first();
+}
+
+/** Diagnostic d'un refus de réserve : arrêt d'urgence d'abord, puis reste insuffisant. */
+export async function assertReservable(db: D1Database, scope: string, cents: number): Promise<void> {
+  await assertAutomationRunning(db);
+  const envelope = await budgetEnvelope(db, scope);
+  if (envelope.remaining_cents < cents) {
+    throw new CollabStoreError('BUDGET_INSUFFICIENT', 'Enveloppe « ' + scope + ' » insuffisante : reste ' + envelope.remaining_cents
+      + ' centimes, réserve demandée ' + cents + '. Aucune dépense sans enveloppe approuvée par le propriétaire.');
+  }
 }
 
 /**
@@ -95,9 +161,7 @@ export async function reserveBudget(db: D1Database, input: {
   reservation_id: string; cents: number; scope?: string; now?: () => Date;
 }): Promise<{ status: 'reserved' | 'duplicate'; envelope: BudgetEnvelope }> {
   const scope = input.scope ?? GLOBAL_BUDGET_SCOPE;
-  if (!RESERVATION_RE.test(input.reservation_id)) throw new CollabStoreError('INVALID_RESERVATION_ID', 'Identifiant de réservation invalide.');
-  if (!SCOPE_RE.test(scope)) throw new CollabStoreError('INVALID_BUDGET_SCOPE', 'Scope budgétaire invalide.');
-  assertCents(input.cents, 'cents');
+  assertReservationInput(input.reservation_id, scope, input.cents);
   await ensureSchema(db);
   const existing = await db.prepare('SELECT scope, reserved_cents FROM budget_reservations WHERE reservation_id = ?1')
     .bind(input.reservation_id).first<{ scope: string; reserved_cents: number }>();
@@ -110,20 +174,7 @@ export async function reserveBudget(db: D1Database, input: {
   await assertAutomationRunning(db);
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
   try {
-    await db.batch([
-      db.prepare('INSERT INTO budget_envelopes (scope, updated_at) VALUES (?1, ?2) ON CONFLICT(scope) DO NOTHING').bind(scope, at),
-      db.prepare([
-        'INSERT INTO collab_store_guard (ok)',
-        'SELECT CASE WHEN NOT ' + HALT_ACTIVE_SQL,
-        '  AND (SELECT limit_cents - reserved_cents - spent_cents FROM budget_envelopes WHERE scope = ?1) >= ?2',
-        '  THEN 1 ELSE 0 END',
-      ].join(' ')).bind(scope, input.cents),
-      db.prepare('UPDATE budget_envelopes SET reserved_cents = reserved_cents + ?2, updated_at = ?3 WHERE scope = ?1')
-        .bind(scope, input.cents, at),
-      db.prepare("INSERT INTO budget_reservations (reservation_id, scope, reserved_cents, status, created_at) VALUES (?1, ?2, ?3, 'reserved', ?4)")
-        .bind(input.reservation_id, scope, input.cents, at),
-      db.prepare('DELETE FROM collab_store_guard'),
-    ]);
+    await db.batch(reserveStatements(db, { reservation_id: input.reservation_id, scope, cents: input.cents, at }));
   } catch (error) {
     // Revue #115 R2 : une livraison concurrente du même reservation_id a pu gagner
     // (PK) — on juge d'abord l'état durable, jamais un faux manque de budget.
@@ -135,11 +186,8 @@ export async function reserveBudget(db: D1Database, input: {
       }
       return { status: 'duplicate', envelope: await budgetEnvelope(db, scope) };
     }
-    await assertAutomationRunning(db);
-    const envelope = await budgetEnvelope(db, scope);
-    if (envelope.remaining_cents >= input.cents) throw error;
-    throw new CollabStoreError('BUDGET_INSUFFICIENT', 'Enveloppe « ' + scope + ' » insuffisante : reste ' + envelope.remaining_cents
-      + ' centimes, réserve demandée ' + input.cents + '. Aucune dépense sans enveloppe approuvée par le propriétaire.');
+    await assertReservable(db, scope, input.cents);
+    throw error;
   }
   return { status: 'reserved', envelope: await budgetEnvelope(db, scope) };
 }
@@ -161,18 +209,9 @@ export async function settleBudget(db: D1Database, input: {
     throw new CollabStoreError('BUDGET_OVERRUN', 'Coût réel supérieur à la réserve : ' + input.actual_cents + ' > ' + row.reserved_cents + ' centimes.');
   }
   try {
-    await db.batch([
-      // Garde CAS : un solde concurrent de la même réservation annule tout le lot.
-      db.prepare([
-        'INSERT INTO collab_store_guard (ok)',
-        "SELECT CASE WHEN EXISTS (SELECT 1 FROM budget_reservations WHERE reservation_id = ?1 AND status = 'reserved') THEN 1 ELSE 0 END",
-      ].join(' ')).bind(input.reservation_id),
-      db.prepare("UPDATE budget_reservations SET status = 'settled', actual_cents = ?2 WHERE reservation_id = ?1")
-        .bind(input.reservation_id, input.actual_cents),
-      db.prepare('UPDATE budget_envelopes SET reserved_cents = reserved_cents - ?2, spent_cents = spent_cents + ?3 WHERE scope = ?1')
-        .bind(row.scope, row.reserved_cents, input.actual_cents),
-      db.prepare('DELETE FROM collab_store_guard'),
-    ]);
+    // Garde CAS : un solde concurrent de la même réservation annule tout le lot.
+    await db.batch(settleStatements(db, { reservation_id: input.reservation_id, scope: row.scope,
+      reserved_cents: row.reserved_cents, actual_cents: input.actual_cents }));
   } catch (error) {
     const after = await db.prepare('SELECT actual_cents, status FROM budget_reservations WHERE reservation_id = ?1')
       .bind(input.reservation_id).first<{ actual_cents: number | null; status: string }>();
