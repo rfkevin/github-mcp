@@ -321,9 +321,13 @@ export class InvocationService {
     // consommer : on compte le pire cas réservé ; « leased » n'a rien exécuté : 0.
     const reservationId = invocationReservationId(record.invocation_id, record.attempt_count);
     const reservation = await budgetReservation(this.db, reservationId);
+    const countedCents = reservation && reservation.status === 'reserved' && record.state === 'running'
+      ? reservation.reserved_cents : 0;
+    // Revue #115 R5 : le coût compté au budget est aussi porté au ledger A1 (invocation + tentative), même lot.
+    const countedMicro = countedCents * MICROUNITS_PER_CENT;
     const settleBudget = reservation && reservation.status === 'reserved'
       ? settleStatements(this.db, { reservation_id: reservationId, scope: reservation.scope,
-        reserved_cents: reservation.reserved_cents, actual_cents: record.state === 'running' ? reservation.reserved_cents : 0 })
+        reserved_cents: reservation.reserved_cents, actual_cents: countedCents })
       : [];
     try {
       await this.db.batch([
@@ -334,12 +338,13 @@ export class InvocationService {
         ].join(' ')).bind(record.invocation_id, record.state, record.lease_owner, record.lease_expires_at, now),
         this.db.prepare([
           'UPDATE invocations SET state = ?2, consecutive_failures = ?3, last_error = \'lease_expired\',',
-          ' lease_owner = \'\', lease_expires_at = NULL, finished_at = ?4 WHERE invocation_id = ?1',
-        ].join(' ')).bind(record.invocation_id, nextState, failures, nextState === 'failed' ? now : null),
+          ' lease_owner = \'\', lease_expires_at = NULL, finished_at = ?4, cost_microunits = cost_microunits + ?5',
+          ' WHERE invocation_id = ?1',
+        ].join(' ')).bind(record.invocation_id, nextState, failures, nextState === 'failed' ? now : null, countedMicro),
         this.db.prepare([
-          "UPDATE invocation_attempts SET state = 'expired', finished_at = ?2, error = 'lease_expired'",
+          "UPDATE invocation_attempts SET state = 'expired', finished_at = ?2, error = 'lease_expired', cost_microunits = ?4",
           ' WHERE invocation_id = ?1 AND attempt_no = ?3',
-        ].join(' ')).bind(record.invocation_id, now, record.attempt_count),
+        ].join(' ')).bind(record.invocation_id, now, record.attempt_count, countedMicro),
         this.db.prepare('DELETE FROM invocation_guard'),
         ...settleBudget,
       ]);

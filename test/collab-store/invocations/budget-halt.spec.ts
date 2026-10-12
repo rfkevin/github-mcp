@@ -33,6 +33,12 @@ async function attempts(invocationId: string): Promise<number> {
   return row!.n;
 }
 
+async function attemptCosts(invocationId: string): Promise<number[]> {
+  const { results } = await db.prepare('SELECT cost_microunits FROM invocation_attempts WHERE invocation_id = ?1 ORDER BY attempt_no')
+    .bind(invocationId).all<{ cost_microunits: number }>();
+  return results.map(row => row.cost_microunits);
+}
+
 async function reservations(invocationId: string) {
   const { results } = await db.prepare(
     // Pas de LIKE : D1 limite un motif LIKE à 50 octets, l'identifiant d'invocation en fait 68.
@@ -98,6 +104,8 @@ describe('CC-4 A2 × A1 — arrêt d’urgence sur le démarrage d’une invocat
     expect(await reservations(invocation.invocation_id)).toEqual([
       { reservation_id: invocationReservationId(invocation.invocation_id, 1), reserved_cents: 40, actual_cents: 0, status: 'settled' },
     ]);
+    expect((await service.getByWakeKey(invocation.wake_key))?.cost_microunits).toBe(0);
+    expect(await attemptCosts(invocation.invocation_id)).toEqual([0]);
     expect(await budgetEnvelope(db, scope)).toMatchObject({ reserved_cents: 0, spent_cents: 0, remaining_cents: 100 });
   });
 });
@@ -157,6 +165,9 @@ describe('CC-4 A2 × A1 — réserve avant exécution, solde après (R4)', () =>
     now += 11;
     expect(await service.reconcileExpired()).toBe(1);
     expect(await budgetEnvelope(db, scope)).toMatchObject({ reserved_cents: 0, spent_cents: 30, remaining_cents: 70 });
+    // Revue #115 R5 : le ledger A1 porte le même coût que le budget.
+    expect((await service.getByWakeKey(invocation.wake_key))?.cost_microunits).toBe(300_000);
+    expect(await attemptCosts(invocation.invocation_id)).toEqual([300_000]);
 
     expect((await service.lease(invocation.wake_key, 'worker-b', 10, { max_cost_cents: 30, scope })).status).toBe('leased');
     await service.markRunning(invocation.wake_key, 'worker-b');
@@ -165,6 +176,8 @@ describe('CC-4 A2 × A1 — réserve avant exécution, solde après (R4)', () =>
       [30, 30, 'settled'], [30, 10, 'settled'],
     ]);
     expect(await budgetEnvelope(db, scope)).toMatchObject({ reserved_cents: 0, spent_cents: 40, remaining_cents: 60 });
+    expect((await service.getByWakeKey(invocation.wake_key))?.cost_microunits).toBe(400_000);
+    expect(await attemptCosts(invocation.invocation_id)).toEqual([300_000, 100_000]);
   });
 
   it('halt + budget insuffisant ensemble : le halt prime, rien n’est écrit', async () => {
