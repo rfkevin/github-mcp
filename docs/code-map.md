@@ -144,3 +144,11 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `src/collab-store/executors/run.ts` : fabrique provider-aware, sonde owner (`probeEndpoint`), plafond quotidien, `dispatchFreeInvocation` (capacités du fournisseur réel, empreinte du paquet, bail A1, réserve 0 € ; neurons seulement si l’adaptateur en annonce).
 - `src/collab-store/owner/trials.ts` (A4-mini) : consignes serveur fixes, création `appendActionableEvent` dans `owner-trials`, exécution immédiate et retour éphémère de la sortie.
 - `/owner` : section « Exécuteurs », actions `probe_endpoint` et `run_trial` (`owner/handler.ts`, `owner/page.ts`) ; Tâche d’essai uniquement sous endpoint actif. Tests : `test/collab-store/executors/{free-api,openai-compatible}.spec.ts`, `test/collab-store/owner/trials.spec.ts`.
+
+## CC-4 A4 — coordinateur vers workers gratuits (#121)
+
+- `src/collab-store/owner/coordinators.ts` + migration interne 0008 : grants coordinateur owner-only (`grant_coordinator` exécutable, active/revoked, participant actif requis), consultation `isCoordinator`.
+- `src/collab-store/coordinator/tasks.ts` : quatre task_kind serveur, brief/materials bornés et neutralisés, événement+invocation A1 `coordinator-tasks`, rejeu sans second appel fournisseur.
+- `src/collab-store/executors/profiles.ts` : fiches endpoints, quotas du jour, stats A1 7 jours et notes owner ; `owner/executor-notes.ts` écrit ces notes seulement depuis `/owner`.
+- `src/collab-store/mcp/{context,tools,schemas}.ts` : `collab_dispatch_task` et `collab_list_executors`, factory fournisseur et quotas liés au contexte OAuth serveur.
+- Tests : `test/collab-store/mcp/coordinator-tools-e2e.spec.ts` + catalogue MCP ; grant/revoke, halt, limites, injection, replay, quota, provenance, stats et notes.
