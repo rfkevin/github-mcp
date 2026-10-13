@@ -11,23 +11,37 @@ import { OWNER_TRIAL_INSTRUCTIONS, OWNER_TRIAL_MAX_DATA } from './trials';
 
 export const OWNER_PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
+/**
+ * CC-4 : lisible sur téléphone et en mode sombre, sans ressource externe ni
+ * `url(...)` (la CSP n'autorise que les styles inline). `color-scheme` laisse le
+ * navigateur assombrir les champs natifs ; sous 600 px, les tableaux défilent
+ * horizontalement et les contrôles atteignent 44 px (16 px évite le zoom iOS).
+ */
 const STYLE = [
-  'body{margin:0;padding:24px;background:#f4f7f6;color:#10201f;font:15px/1.5 ui-sans-serif,system-ui,sans-serif}',
+  ':root{color-scheme:light dark}*,*::before,*::after{box-sizing:border-box}',
+  'body{margin:0;padding:24px;background:#f4f7f6;color:#10201f;font:15px/1.5 ui-sans-serif,system-ui,sans-serif;-webkit-text-size-adjust:100%}',
   '@media (prefers-color-scheme:dark){body{background:#081210;color:#edf7f4}}',
   'main{max-width:820px;margin:0 auto}',
   'h1{font-size:1.4rem;margin:0 0 4px}h2{font-size:1.05rem;margin:28px 0 8px}',
-  'p.note{color:#5a6b68;margin:0 0 16px}',
-  '.msg{padding:10px 12px;border-radius:8px;margin:12px 0;background:#e3f1ec}',
+  'p.note{color:#5a6b68;margin:0 0 16px}code{overflow-wrap:anywhere}',
+  '.msg{padding:10px 12px;border-radius:8px;margin:12px 0;background:#e3f1ec;overflow-wrap:anywhere}',
   '.msg.err{background:#f8e1df}',
-  '@media (prefers-color-scheme:dark){.msg{background:#16302a}.msg.err{background:#3a1d1a}}',
+  '@media (prefers-color-scheme:dark){p.note{color:#9fb5b0}.msg{background:#16302a}.msg.err{background:#3a1d1a}}',
   'table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:6px 8px;border-bottom:1px solid #d8e2df;vertical-align:top}',
-  'form.inline{display:inline}input,button,textarea{font:inherit}input[type=text],input[type=password],textarea{width:100%;box-sizing:border-box;padding:6px}',
+  'form.inline{display:inline}input,button,textarea,select{font:inherit}label{display:block;margin:0 0 8px}',
+  'input[type=text],input[type=password],textarea,select{display:block;width:100%;padding:6px;margin-top:2px}',
+  'button{min-height:36px;padding:6px 14px;margin:2px 4px 2px 0;cursor:pointer}',
   'textarea{min-height:180px;font-family:ui-monospace,monospace;font-size:13px}',
-  'fieldset{border:1px solid #d8e2df;border-radius:8px;margin:0 0 12px;padding:10px 12px}',
+  'fieldset{border:1px solid #d8e2df;border-radius:8px;margin:0 0 12px;padding:10px 12px;min-width:0}',
+  '@media (prefers-color-scheme:dark){td,th,fieldset{border-color:#2a3f3b}}',
   'pre{white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto;font-size:12px;background:rgba(127,127,127,.08);padding:6px;border-radius:6px}',
-  'dl{margin:6px 0}dt{font-weight:600}dd{margin:0 0 6px}',
+  'dl{margin:6px 0}dt{font-weight:600}dd{margin:0 0 6px;overflow-wrap:anywhere}',
   '.halt{padding:10px 12px;border-radius:8px;background:#f8e1df;font-weight:600}',
   '@media (prefers-color-scheme:dark){.halt{background:#3a1d1a}}',
+  '@media (max-width:600px){body{padding:12px}h2{margin-top:22px}',
+  'table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}td,th{padding:6px;min-width:110px}td[colspan]{min-width:0}',
+  'input[type=text],input[type=password],select,button{min-height:44px;font-size:16px}textarea{font-size:16px;min-height:140px}',
+  'fieldset{padding:8px 10px}pre{max-height:180px}}',
 ].join('');
 
 export function escapeHtml(value: string): string {
