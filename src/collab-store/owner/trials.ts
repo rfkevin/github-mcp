@@ -102,7 +102,7 @@ export async function runOwnerTrial(
   const store = new CollabStore(db, { now: input.now });
   const inputHash = await sha256Hex(data);
   const op = 'owner:' + OWNER_TRIAL_CYCLE + ':trial:' + opCounter();
-  let invocation: NonNullable<Awaited<ReturnType<typeof store.appendActionableEvent>>['invocation']> | undefined;
+  let invocation: InvocationRecord | undefined;
 
   for (let retry = 0; retry < 4; retry += 1) {
     const revision = await store.currentRevision(OWNER_TRIAL_CYCLE);
