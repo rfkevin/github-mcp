@@ -64,7 +64,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
         neuron_budget: context.executor.neuronBudget,
         now: context.executor.now,
       });
-      return collabSuccess(result);
+      return collabSuccess({ ...result });
     } catch (error) {
       return collabFailure(error, 'Délégation au worker impossible.');
     }
