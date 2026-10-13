@@ -63,7 +63,7 @@ function performance(rows: AttemptRow[]): ExecutorPerformance {
   }
   latencies.sort((a, b) => a - b);
   const avg = latencies.length ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : 0;
-  const p95 = latencies.length ? latencies[Math.max(0, Math.ceil(latencies.length * 0.95) - 1)] : 0;
+  const p95 = latencies.length ? (latencies[Math.max(0, Math.ceil(latencies.length * 0.95) - 1)] ?? 0) : 0;
   return {
     invocations: rows.length,
     succeeded,

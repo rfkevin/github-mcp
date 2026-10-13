@@ -15,6 +15,9 @@ import { exportCycleState, exportMemoryMarkdown } from '../export';
 import { resolveContextTarget, buildRolePacket } from '../context';
 import { advanceGuarded } from '../phases/gate';
 import type { Phase } from '../../collab/contracts';
+import { dispatchCoordinatorTask } from '../coordinator/tasks';
+import { listExecutorProfiles } from '../executors/profiles';
+import { isCoordinator } from '../owner/coordinators';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -32,6 +35,64 @@ export function createCollabServer(context: CollabToolContext): McpServer {
 export function registerCollabStoreTools(server: McpServer, context: CollabToolContext): void {
   const collabFailure = (error: unknown, fallback: string, extra: Record<string, unknown> = {}) =>
     failure(error, fallback, extra, context.fallback);
+
+  server.registerTool('collab_dispatch_task', {
+    title: 'Confier une tâche à un worker gratuit (CC-4 A4)',
+    description: 'Coordinateur owner-approved uniquement. Crée une invocation A1 dans coordinator-tasks puis l’exécute immédiatement sur un endpoint actif gratuit. task_kind est une liste serveur fixe ; brief (<=2000) et materials (<=60000) sont bornés et non fiables. Même op_id = aucun second appel fournisseur et aucune restitution de la sortie précédente.',
+    inputSchema: {
+      endpoint_id: z.string().min(1).max(128),
+      task_kind: z.string().min(1).max(64),
+      brief: z.string().min(1).max(3000),
+      materials: z.string().max(65536),
+      max_tokens: z.number().int().min(1).max(2048),
+      op_id: z.string().min(1).max(MAX_OP_ID_LENGTH),
+    },
+    outputSchema: outputSchemas.collab_dispatch_task,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (input) => {
+    try {
+      const identity = await context.identity();
+      const result = await dispatchCoordinatorTask(context.db, context.executor.factory, {
+        participant_id: identity.participant_id,
+        endpoint_id: input.endpoint_id,
+        task_kind: input.task_kind,
+        brief: input.brief,
+        materials: input.materials,
+        max_tokens: input.max_tokens,
+        op_id: input.op_id,
+        daily_cap: context.executor.dailyCap,
+        neuron_budget: context.executor.neuronBudget,
+        now: context.executor.now,
+      });
+      return collabSuccess(result);
+    } catch (error) {
+      return collabFailure(error, 'Délégation au worker impossible.');
+    }
+  });
+
+  server.registerTool('collab_list_executors', {
+    title: 'Fiches des workers disponibles (CC-4 A4)',
+    description: 'Lecture seule réservée au coordinateur owner-approved : endpoints, provider/modèle, capacités, quotas restants, statistiques A1 des 7 derniers jours et notes owner.',
+    inputSchema: {},
+    outputSchema: outputSchemas.collab_list_executors,
+    annotations: READ_ONLY,
+  }, async () => {
+    try {
+      const identity = await context.identity();
+      if (!await isCoordinator(context.db, identity.participant_id)) {
+        throw new CollabStoreError('COORDINATOR_REQUIRED', 'Le rôle coordinateur actif est requis pour lire les fiches exécutants.');
+      }
+      const executors = await listExecutorProfiles(context.db, {
+        dailyCap: context.executor.dailyCap,
+        neuronBudget: context.executor.neuronBudget,
+        now: context.executor.now,
+      });
+      return collabSuccess({ executors });
+    } catch (error) {
+      return collabFailure(error, 'Fiches exécutants indisponibles.');
+    }
+  });
+
   server.registerTool('collab_get_context', {
     title: 'Contexte de cycle (store CC-3)',
     description: 'A09 : résout issue/cycle/task, identité serveur (jamais un participant_id client), packet rôle/tâche sous budget, phase, mémoire C4 visible (scopes partagés + votre participant), delta optionnel depuis last_seen_seq. CC-4 A0 : sans issue ni cycle, découverte de votre unique cycle ouvert où vous tenez un rôle (sinon NO_ACTIVE_CYCLE ou AMBIGUOUS_CYCLE). Lecture seule.',

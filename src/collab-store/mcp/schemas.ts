@@ -42,7 +42,43 @@ const packetMemory = {
   confidence: z.string(),
 };
 
+const capabilitySet = {
+  tools: z.array(z.string()).optional(),
+  repositories: z.array(z.string()).optional(),
+  branch_paths: z.array(z.string()).optional(),
+  network_providers: z.array(z.string()).optional(),
+  token_ceiling: z.number().optional(),
+  cost_ceiling: z.number().optional(),
+};
+
 export const outputSchemas = {
+  collab_dispatch_task: {
+    status: z.enum(['succeeded', 'attempt_failed', 'busy', 'terminal', 'replayed']),
+    invocation_id: z.string(),
+    state: z.string(),
+    replayed: z.boolean(),
+    output: z.string().optional(),
+    error: z.string().optional(),
+    usage: z.object({ input_tokens: z.number(), output_tokens: z.number(), operations: z.number() }),
+    provenance: z.array(z.string()),
+    latency_ms: z.number(),
+  },
+  collab_list_executors: {
+    executors: z.array(z.object({
+      endpoint_id: z.string(), principal_id: z.string(), provider: z.string(), model: z.string(), status: z.string(),
+      capability_set: z.object(capabilitySet), token_ceiling: z.number().nullable(),
+      quota: z.object({
+        calls_limit: z.number(), calls_used: z.number(), calls_remaining: z.number(),
+        neurons_limit: z.number().nullable(), neurons_used: z.number().nullable(), neurons_remaining: z.number().nullable(),
+      }),
+      performance_7d: z.object({
+        invocations: z.number(), succeeded: z.number(), failed: z.number(), success_rate: z.number(),
+        failures_by_code: z.array(z.object({ code: z.string(), count: z.number() })),
+        latency_avg_ms: z.number(), latency_p95_ms: z.number(),
+      }),
+      owner_notes: z.object({ strengths: z.string(), weaknesses: z.string() }),
+    })),
+  },
   collab_get_context: {
     cycle_id: z.string(),
     phase: z.string(),
