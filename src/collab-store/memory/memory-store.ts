@@ -16,6 +16,7 @@ import {
   type MemoryStatus,
 } from '../contracts/memory';
 import { StateContractError } from '../../collab/contracts';
+import { equivalentParticipantIds, participantsEquivalent } from '../identity/families';
 
 // estimateTokens and scopeFamily now live in contracts/memory.ts (single
 // canonical metric and scope taxonomy, shared with the packet builder);
@@ -115,12 +116,13 @@ export interface MemoryMutation {
  * par SELF_REVIEW_KINDS/SELF_REVIEW_CONFIDENCES. callerPid null = appel interne
  * du MemoryStore (wrappers supersede/retire) : garde désactivée, inchangée.
  */
-function assertParticipantScopeAllowed(scope: string, callerPid: string | undefined, type: string): void {
-  if (!callerPid) return;
-  if (scope.startsWith('participant:') && scope !== `participant:${callerPid}`) {
+async function assertParticipantScopeAllowed(db: D1Database, scope: string, callerPid: string | undefined, type: string): Promise<void> {
+  if (!callerPid || !scope.startsWith('participant:')) return;
+  const ownerPid = scope.slice('participant:'.length);
+  if (!await participantsEquivalent(db, ownerPid, callerPid)) {
     throw new MemoryStoreError(
       'MEMORY_SCOPE_FORBIDDEN',
-      `${type}: participant scope ${scope} belongs to another participant (CRB-R1).`,
+      `${type}: participant scope ${scope} belongs to another logical identity (CRB-R1).`,
     );
   }
 }
@@ -493,13 +495,16 @@ export class MemoryStore {
     // propriétaire (un tiers reste aveugle) ; l'auto-revue bornée de l'auteur
     // (SELF_REVIEW_KINDS/SELF_REVIEW_CONFIDENCES) trace reviewer_pid = author_pid,
     // toute autre revue exige un pair distinct (invariant C4 inchangé).
-    assertParticipantScopeAllowed(row.scope, reviewerPid, 'memory.review');
-    const selfReview =
-      reviewerPid === row.author_pid &&
-      row.scope === `participant:${row.author_pid}` &&
-      SELF_REVIEW_KINDS.has(row.kind) &&
-      SELF_REVIEW_CONFIDENCES.has(row.confidence);
-    if (!selfReview) validateMemoryActivation(row.author_pid, reviewerPid);
+    await assertParticipantScopeAllowed(this.db, row.scope, reviewerPid, 'memory.review');
+    const sameIdentity = await participantsEquivalent(this.db, reviewerPid, row.author_pid);
+    const privateOwner = row.scope.startsWith('participant:') ? row.scope.slice('participant:'.length) : null;
+    const ownsPrivateScope = privateOwner !== null && await participantsEquivalent(this.db, privateOwner, row.author_pid);
+    const selfReview = sameIdentity && ownsPrivateScope
+      && SELF_REVIEW_KINDS.has(row.kind) && SELF_REVIEW_CONFIDENCES.has(row.confidence);
+    if (!selfReview) {
+      if (sameIdentity) throw new MemoryStoreError('MEMORY_SELF_ACTIVATION', 'reviewer and author are the same logical identity');
+      validateMemoryActivation(row.author_pid, reviewerPid);
+    }
     if (row.evidence_refs === '[]' || !row.evidence_refs) {
       throw new StateContractError(
         'MEMORY_EVIDENCE_REQUIRED',
@@ -669,7 +674,7 @@ export class MemoryStore {
       .first<StoredMemory>();
     if (!active) throw new MemoryStoreError('MEMORY_NO_ACTIVE', `No active version for ${id}`);
     // CRB-R1 (revue Sol) : un scope participant est privé — son propriétaire seul consolide.
-    assertParticipantScopeAllowed(active.scope, callerPid, 'memory.consolidate');
+    await assertParticipantScopeAllowed(this.db, active.scope, callerPid, 'memory.consolidate');
     // CR-D : jamais de consolidation d'une lignée enregistrée sous plusieurs scopes.
     await this.assertIdScope(id, active.scope, 'memory.consolidate');
     // CR-F04 : une hypothèse échue ne se renouvelle pas — elle se re-propose.
@@ -770,8 +775,8 @@ export class MemoryStore {
     if (row.status !== 'active' && row.status !== 'candidate') {
       throw new MemoryStoreError('MEMORY_NOT_PROMOTABLE', `status ${row.status}`);
     }
-    if (reviewerPid === row.author_pid) {
-      throw new MemoryStoreError('PEER_REQUIRED', 'confidence promotion requires a distinct peer reviewer');
+    if (await participantsEquivalent(this.db, reviewerPid, row.author_pid)) {
+      throw new MemoryStoreError('PEER_REQUIRED', 'confidence promotion requires a distinct logical peer reviewer');
     }
     const current = row.confidence as MemoryConfidence;
     if (confidenceRank(newConfidence) <= confidenceRank(current)) {
@@ -878,8 +883,8 @@ export class MemoryStore {
     // CR-F04 : une hypothèse échue n'est jamais promue (la copie promue, montée en
     // observed, n'expirerait plus).
     await this.assertNotExpired(row);
-    if (reviewerPid === row.author_pid) {
-      throw new MemoryStoreError('PEER_REQUIRED', 'scope promotion requires a distinct peer reviewer');
+    if (await participantsEquivalent(this.db, reviewerPid, row.author_pid)) {
+      throw new MemoryStoreError('PEER_REQUIRED', 'scope promotion requires a distinct logical peer reviewer');
     }
     if (!row.scope.startsWith('participant:')) {
       throw new MemoryStoreError('SCOPE_NOT_PERSONAL', 'only participant scope can be lifted');
@@ -994,7 +999,7 @@ export class MemoryStore {
             .first<StoredMemory>();
     if (!target) throw new MemoryStoreError('MEMORY_NOT_FOUND', `Memory ${id} not found for retire`);
     // CRB-R1 (revue Sol) : un scope participant est privé — son propriétaire seul retire.
-    assertParticipantScopeAllowed(target.scope, callerPid, 'memory.retire');
+    await assertParticipantScopeAllowed(this.db, target.scope, callerPid, 'memory.retire');
     // CR-D : jamais de retrait dans une lignée enregistrée sous plusieurs scopes.
     await this.assertIdScope(id, target.scope, 'memory.retire');
     if (PROTECTED_KINDS.has(target.kind)) {
@@ -1039,9 +1044,10 @@ export class MemoryStore {
   async listActiveFor(callerPid: string, scopes: string[], limit = 50): Promise<StoredMemory[]> {
     await ensureSchema(this.db);
     if (scopes.length === 0) return [];
+    const equivalentIds = new Set(await equivalentParticipantIds(this.db, callerPid));
     const allowed = scopes.filter((s) => {
       if (!s.startsWith('participant:')) return true;
-      return s === `participant:${callerPid}`;
+      return equivalentIds.has(s.slice('participant:'.length));
     });
     if (allowed.length === 0) return [];
     const placeholders = allowed.map((_, i) => `?${i + 1}`).join(',');
@@ -1355,8 +1361,8 @@ export class MemoryStore {
       authorPid,
       'raising confidence requires a NEW peer ledger evidence_ref (peer_evidence_ref)',
     );
-    if (row.producer === authorPid) {
-      throw new MemoryStoreError('PEER_EVIDENCE_SELF', 'ledger producer cannot be the memory author');
+    if (await participantsEquivalent(this.db, row.producer, authorPid)) {
+      throw new MemoryStoreError('PEER_EVIDENCE_SELF', 'ledger producer cannot be the same logical identity as the memory author');
     }
     const ledgerRef = row.evidence_ref || `ledger:${row.seq}`;
     // Anti-recyclage sur la lignée ENTIÈRE de l'id (revue Claude PR
@@ -1416,7 +1422,7 @@ export class MemoryStore {
     authorPid: string,
     requiredMessage: string,
   ): Promise<{ seq: number; producer: string; evidence_ref: string }> {
-    if (!peerEvidenceRef || peerEvidenceRef.startsWith(`self:${authorPid}`)) {
+    if (!peerEvidenceRef || peerEvidenceRef.startsWith('self:')) {
       throw new MemoryStoreError('PEER_EVIDENCE_REQUIRED', requiredMessage);
     }
     const row = await this.findLedgerRow(peerEvidenceRef);
@@ -1436,14 +1442,14 @@ export class MemoryStore {
     authorPid: string,
   ): Promise<string> {
     const row = await this.resolvePeerLedgerRow(peerEvidenceRef, authorPid, 'evidence_ref must be a ledger entry from peer');
-    if (row.producer !== reviewerPid) {
+    if (!await participantsEquivalent(this.db, row.producer, reviewerPid)) {
       throw new MemoryStoreError(
         'PEER_EVIDENCE_PRODUCER',
-        `ledger producer ${row.producer} must equal reviewer ${reviewerPid}`,
+        `ledger producer ${row.producer} must represent the same logical identity as reviewer ${reviewerPid}`,
       );
     }
-    if (row.producer === authorPid) {
-      throw new MemoryStoreError('PEER_EVIDENCE_SELF', 'ledger producer cannot be the memory author');
+    if (await participantsEquivalent(this.db, row.producer, authorPid)) {
+      throw new MemoryStoreError('PEER_EVIDENCE_SELF', 'ledger producer cannot be the same logical identity as the memory author');
     }
     return row.evidence_ref || `ledger:${row.seq}`;
   }
