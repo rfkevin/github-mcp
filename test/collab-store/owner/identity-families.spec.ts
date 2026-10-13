@@ -90,6 +90,19 @@ describe('CC-4 #126 — famille d’identité ChatGPT', () => {
       .bind(gpt, sol).all<{ participant_id: string }>()).toMatchObject({ results: [{ participant_id: gpt }, { participant_id: sol }] });
   });
 
+  it('refuse une family_id qui collisionne avec un participant existant', async () => {
+    const tag = uniq('collision');
+    const gpt = 'gpt6-' + tag;
+    const sol = 'sol-' + tag;
+    const collision = 'grok-' + tag;
+    await register(gpt);
+    await register(sol);
+    await register(collision);
+    expect(await codeOf(configureFamily(collision, [gpt, sol]))).toBe('IDENTITY_FAMILY_INVALID');
+    expect(await logicalIdentityOf(db, gpt)).toBe(gpt);
+    expect(await logicalIdentityOf(db, collision)).toBe(collision);
+  });
+
   it('Sol reprend une tâche GPT, voit son contexte et hérite du grant coordinateur, sans devenir un pair D12', async () => {
     const tag = uniq('roles');
     const gpt = 'gpt6-' + tag;

@@ -48,6 +48,12 @@ export async function setIdentityFamily(db: D1Database, input: {
   }
   const members = normalizeMembers(input.members);
   await ensureSchema(db);
+  const collidingParticipant = await db.prepare('SELECT 1 AS ok FROM participants WHERE participant_id = ?1 LIMIT 1')
+    .bind(familyId).first<{ ok: number }>();
+  if (collidingParticipant) {
+    throw new CollabStoreError('IDENTITY_FAMILY_INVALID',
+      'family_id ne peut pas être aussi un participant : cela rendrait l’identité logique ambiguë.');
+  }
   for (const participantId of members) {
     const participant = await db.prepare('SELECT status FROM participants WHERE participant_id = ?1')
       .bind(participantId).first<{ status: string }>();
@@ -66,13 +72,28 @@ export async function setIdentityFamily(db: D1Database, input: {
   const previous = await latestIdentityFamilyActSeq(db, familyId);
   assertBindingPrecondition(input.binding, previous);
   const prefix = IDENTITY_FAMILY_KEY_PREFIX + familyId;
+  const bound = bindingGuard(input.binding, prefix + ':');
+  const guardParts = ['(' + bound.sql + ')'];
+  const guardBinds: unknown[] = [...bound.binds];
+  // ownerAppend réserve ?1.. ?3 ; bindingGuard consomme ?4.. ?6.
+  const memberPlaceholders = members.map((_, index) => '?' + (7 + index)).join(',');
+  const activeCountIndex = 7 + members.length;
+  const familyIdIndex = activeCountIndex + 1;
+  if (members.length) {
+    guardParts.push('(SELECT COUNT(*) FROM participants WHERE participant_id IN (' + memberPlaceholders
+      + ") AND status = 'active') = ?" + activeCountIndex);
+    guardParts.push('NOT EXISTS (SELECT 1 FROM participant_identity_families WHERE participant_id IN ('
+      + memberPlaceholders + ') AND family_id <> ?' + familyIdIndex + ')');
+  }
+  guardParts.push('NOT EXISTS (SELECT 1 FROM participants WHERE participant_id = ?' + familyIdIndex + ')');
+  guardBinds.push(...members, members.length, familyId);
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
   const result = await ownerAppend(db, {
     cycleId: REGISTRY_CYCLE,
     key: bindingKey(prefix, input.binding),
     payload: { action: 'set_identity_family', family_id: familyId, members, ...bindingPayload(input.binding) },
     proof: input.proof,
-    extraGuard: bindingGuard(input.binding, prefix + ':'),
+    extraGuard: { sql: guardParts.join(' AND '), binds: guardBinds },
     sideEffects: eventKey => [
       ...bindingStatements(db, input.binding, input.proof, eventKey, input.now),
       db.prepare('DELETE FROM participant_identity_families WHERE family_id = ?1').bind(familyId),
