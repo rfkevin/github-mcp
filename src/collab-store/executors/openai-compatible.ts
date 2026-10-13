@@ -52,10 +52,10 @@ export function parseOpenAiCompatibleRef(attestationRef: string): { provider: ty
   return { provider: OPENROUTER_PROVIDER, model };
 }
 
-function providerSecret(env: OpenAiCompatibleEnv): string {
-  const value = env.LLM_KEY_OPENROUTER?.trim() ?? '';
+function providerSecret(env: OpenAiCompatibleEnv, name: keyof OpenAiCompatibleEnv): string {
+  const value = env[name]?.trim() ?? '';
   if (!value) {
-    throw executorError('EXECUTOR_UNAVAILABLE', 'Secret OpenRouter absent de cet environnement.');
+    throw executorError('EXECUTOR_UNAVAILABLE', 'Secret du fournisseur absent de cet environnement.');
   }
   return value;
 }
@@ -94,8 +94,9 @@ export function createOpenAiCompatibleAdapter(
 ): LlmAdapter {
   const parsed = parseOpenAiCompatibleRef(attestationRef);
   const config = PROVIDERS[parsed.provider];
-  const secret = providerSecret(env);
+  const secret = providerSecret(env, config.secret);
   const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = Math.min(Math.max(Math.trunc(options.timeout_ms ?? DEFAULT_TIMEOUT_MS), 1), DEFAULT_TIMEOUT_MS);
   return {
     provider: parsed.provider,
     model: parsed.model,
@@ -119,7 +120,7 @@ export function createOpenAiCompatibleAdapter(
           max_tokens: input.max_tokens,
           provider: { data_collection: 'deny' },
         }),
-      }, options.timeout_ms ?? DEFAULT_TIMEOUT_MS);
+      }, timeoutMs);
       if (!response.ok) {
         throw executorError('EXECUTOR_UPSTREAM_HTTP', 'Fournisseur HTTP ' + response.status + '.');
       }

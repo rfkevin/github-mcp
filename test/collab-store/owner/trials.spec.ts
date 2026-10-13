@@ -10,6 +10,7 @@ import { OWNER_TRIAL_CYCLE } from '../../../src/collab-store/owner/trials';
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const haltDb = (env as unknown as { COLLAB_DB_C6_RESTORE: D1Database }).COLLAB_DB_C6_RESTORE;
 const SECRET = 'owner-secret-A4-MINI-0123456789abcdefghij';
+const OPENROUTER_KEY = 'openrouter-key-CANARY-never-render';
 const MODEL_REF = 'workers-ai:@cf/zai-org/glm-4.7-flash';
 const proof = { kind: 'secret' as const, subject: 'owner-secret' };
 let n = 0;
@@ -26,14 +27,20 @@ function fakeAi(output = 'Résumé de la tâche réelle.') {
   return { ai, calls, output };
 }
 
-async function seedEndpoint(target: D1Database, endpointId: string, status = 'active') {
+async function seedEndpoint(
+  target: D1Database,
+  endpointId: string,
+  status = 'active',
+  attestationRef = MODEL_REF,
+  providers = ['workers-ai'],
+) {
   await ensureSchema(target);
   const principal = 'p-' + endpointId;
   await target.prepare([
     'INSERT INTO endpoints (endpoint_id, principal_id, attestation_kind, attestation_ref, status, capability_set, registered_at)',
     'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)',
-  ].join(' ')).bind(endpointId, principal, 'provider_adapter', MODEL_REF, status,
-    JSON.stringify({ tools: ['llm.generate'], network_providers: ['workers-ai'], token_ceiling: 512 }),
+  ].join(' ')).bind(endpointId, principal, 'provider_adapter', attestationRef, status,
+    JSON.stringify({ tools: ['llm.generate'], network_providers: providers, token_ceiling: 512 }),
     Math.floor(Date.now() / 1000)).run();
   return principal;
 }
@@ -91,6 +98,19 @@ describe('CC-4 A4-mini — Tâche d’essai /owner', () => {
     expect(JSON.stringify(events.results)).not.toContain(output);
     expect(JSON.stringify(events.results)).not.toContain(data);
     expect(JSON.stringify(events.results)).not.toContain(SECRET);
+  });
+
+  it('le secret OpenRouter de l’environnement n’est jamais rendu sur /owner', async () => {
+    const endpointId = uniq('openrouter-view');
+    await seedEndpoint(db, endpointId, 'active', 'openrouter:acme/model-x:free', ['openrouter']);
+    const { ai } = fakeAi();
+    const fx = fixture(db, ai, { LLM_KEY_OPENROUTER: OPENROUTER_KEY });
+    const view = await post(fx, { action: 'view', owner_secret: SECRET });
+    expect(view.status).toBe(200);
+    const body = await view.text();
+    expect(body).toContain(endpointId);
+    expect(body).toContain('openrouter:acme/model-x:free');
+    expect(body).not.toContain(OPENROUTER_KEY);
   });
 
   it('refus : secret absent, endpoint inactif, consigne hors liste, arrêt d’urgence', async () => {
