@@ -56,8 +56,9 @@ function trialData(value: unknown): string {
 }
 
 function opCounter(): string {
-  const random = crypto.getRandomValues(new Uint32Array(1))[0];
-  return String(Date.now()) + String(random).padStart(10, '0');
+  // Contrat A0 : le segment n de l'op_id accepte 1 à 10 chiffres.
+  // Un uint32 tient toujours dans cette borne et chaque clic crée une nouvelle intention.
+  return String(crypto.getRandomValues(new Uint32Array(1))[0] || 1);
 }
 
 export interface OwnerTrialInput {
