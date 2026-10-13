@@ -11,6 +11,9 @@ import { logicalIdentityOf, listIdentityFamilies } from '../../../src/collab-sto
 import { authorizePhaseAdvance } from '../../../src/collab-store/identity/guard';
 import { buildLabelDirectory } from '../../../src/collab-store/export/labels';
 import { planStateImport } from '../../../src/collab-store/export/state-import-plan';
+import { exportMemoryMarkdown } from '../../../src/collab-store/export/memory-export';
+import { buildRolePacket } from '../../../src/collab-store/context/packet';
+import { resolveContextTarget } from '../../../src/collab-store/context/resolution';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const proof = { kind: 'secret' as const, subject: 'owner-secret' };
@@ -128,6 +131,10 @@ describe('CC-4 #126 — famille d’identité ChatGPT', () => {
     });
     expect(status.status).toBe('applied');
     expect((await store.getContext(cycle, sol)).tasks.map(task => task.task_id)).toContain(taskId);
+    const resolved = await resolveContextTarget(db, { cycle, task: taskId, participant_id: sol });
+    expect(resolved.task).toMatchObject({ task_id: taskId, owner_pid: gpt, participation: 'owner' });
+    const packet = await buildRolePacket(db, { cycle, task: taskId, participant_id: sol }, { c0BaselineTokens: 12_000 });
+    expect(packet.role_card).toMatchObject({ role: 'owner' });
     expect(await authorizePhaseAdvance(db, { status: 'registered', participant_id: sol, display_label: 'Sol', client_id: 'x' }, cycle))
       .toBe(sol);
 
@@ -161,6 +168,56 @@ describe('CC-4 #126 — famille d’identité ChatGPT', () => {
     expect(await codeOf(store.appendEvent({ cycle_id: cycle, type: 'proposal.submit', participant_id: sol, expected_rev: 2,
       op_id: opIdClientFor(sol) + ':' + cycle + ':prop:1', payload_json: JSON.stringify({ content: 'seconde' }) })))
       .toBe('PROPOSAL_ALREADY_SUBMITTED');
+  });
+
+  it('partage la mémoire privée entre aliases sans transformer Sol en pair indépendant de GPT', async () => {
+    const tag = uniq('memory');
+    const gpt = 'gpt6-' + tag;
+    const sol = 'sol-' + tag;
+    const outsider = 'grok-' + tag;
+    const family = 'chatgpt-' + tag;
+    for (const pid of [gpt, sol, outsider]) await register(pid);
+    await configureFamily(family, [gpt, sol]);
+    const store = new CollabStore(db);
+    const cycle = uniq('private-memory');
+    const memoryId = 'chatgptmem' + (++n);
+    expect((await store.appendEvent({
+      cycle_id: cycle, type: 'memory.propose', participant_id: gpt, expected_rev: 0,
+      op_id: opIdClientFor(gpt) + ':' + cycle + ':memprop:1',
+      payload_json: JSON.stringify({ memory: { id: memoryId, scope: 'participant:' + gpt, kind: 'lesson',
+        text: 'continuité GPT vers Sol', evidence_refs: ['issue-126'], confidence: 'observed' } }),
+    })).status).toBe('applied');
+    expect((await store.appendEvent({
+      cycle_id: cycle, type: 'memory.review', participant_id: sol, expected_rev: 1,
+      op_id: opIdClientFor(sol) + ':' + cycle + ':memreview:1',
+      payload_json: JSON.stringify({ memory: { id: memoryId, version: 1 } }),
+    })).status).toBe('applied');
+
+    const packet = await buildRolePacket(db, { cycle, participant_id: sol }, { c0BaselineTokens: 12_000 });
+    expect(packet.memory).toEqual(expect.arrayContaining([expect.objectContaining({ id: memoryId, scope: 'participant:' + gpt })]));
+    const exported = await exportMemoryMarkdown(db, sol);
+    expect(exported.content).toContain(memoryId);
+    expect(exported.scopes).toContain('participant:' + gpt);
+
+    const solDelta = await store.getDelta(cycle, 0, 20, sol);
+    expect(solDelta.events[0].payload_json).toContain('continuité GPT vers Sol');
+    const outsiderDelta = await store.getDelta(cycle, 0, 20, outsider);
+    expect(outsiderDelta.events[0].payload_json).toContain('private_scope');
+    expect(outsiderDelta.events[0].payload_json).not.toContain('continuité GPT vers Sol');
+
+    const sharedCycle = uniq('shared-memory');
+    const sharedId = 'chatgptshared' + (++n);
+    expect((await store.appendEvent({
+      cycle_id: sharedCycle, type: 'memory.propose', participant_id: gpt, expected_rev: 0,
+      op_id: opIdClientFor(gpt) + ':' + sharedCycle + ':memprop:1',
+      payload_json: JSON.stringify({ memory: { id: sharedId, scope: 'common', kind: 'lesson',
+        text: 'doit exiger un vrai pair', evidence_refs: ['issue-126'], confidence: 'observed' } }),
+    })).status).toBe('applied');
+    expect(await codeOf(store.appendEvent({
+      cycle_id: sharedCycle, type: 'memory.review', participant_id: sol, expected_rev: 1,
+      op_id: opIdClientFor(sol) + ':' + sharedCycle + ':memreview:1',
+      payload_json: JSON.stringify({ memory: { id: sharedId, version: 1 } }),
+    }))).toBe('MEMORY_SELF_ACTIVATION');
   });
 
   it('l’import CC-STATE-1 refuse deux rôles appartenant à la même identité logique', async () => {
