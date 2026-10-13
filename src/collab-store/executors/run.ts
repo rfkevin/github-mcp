@@ -27,6 +27,10 @@ import { ownerAppend, REGISTRY_CYCLE, type OwnerWriteResult } from '../owner/dec
 import type { OwnerProof } from '../owner/proof';
 import { InvocationService, type InvocationRecord } from '../invocations';
 import { createWorkersAiAdapter, WORKERS_AI_PROVIDER, type LlmAdapter, type WorkersAiBinding } from './adapter';
+import {
+  createOpenAiCompatibleAdapter, OPENROUTER_PROVIDER,
+  type OpenAiCompatibleEnv, type OpenAiCompatibleOptions,
+} from './openai-compatible';
 import { loadEndpoint, PROBE_KEY_PREFIX, type StoredEndpoint } from './registry';
 
 export const DEFAULT_DAILY_CAP = 50;
@@ -40,11 +44,32 @@ const PROBE_CONTROL = 'Tu es une sonde technique. Réponds exactement par une se
 
 export type AdapterFactory = (endpoint: StoredEndpoint) => LlmAdapter;
 
-/** Fabrique par défaut : Workers AI via le binding du Worker. */
+export interface ProviderAdapterEnv extends OpenAiCompatibleEnv {
+  AI?: WorkersAiBinding;
+}
+
+/** Fabrique historique conservée pour les tests/consommateurs Workers AI directs. */
 export function workersAiFactory(ai: WorkersAiBinding | undefined): AdapterFactory {
   return endpoint => {
     if (!ai) throw new CollabStoreError('EXECUTOR_UNAVAILABLE', 'Binding Workers AI absent de cet environnement.');
     return createWorkersAiAdapter(ai, endpoint.attestation_ref);
+  };
+}
+
+/**
+ * Fabrique universelle A3c. Le préfixe de l'attestation choisit uniquement une
+ * entrée codée côté serveur ; aucune URL ni clé n'est issue du registre.
+ */
+export function providerAdapterFactory(env: ProviderAdapterEnv, options: OpenAiCompatibleOptions = {}): AdapterFactory {
+  return endpoint => {
+    if (endpoint.attestation_ref.startsWith(WORKERS_AI_PROVIDER + ':')) {
+      if (!env.AI) throw new CollabStoreError('EXECUTOR_UNAVAILABLE', 'Binding Workers AI absent de cet environnement.');
+      return createWorkersAiAdapter(env.AI, endpoint.attestation_ref);
+    }
+    if (endpoint.attestation_ref.startsWith(OPENROUTER_PROVIDER + ':')) {
+      return createOpenAiCompatibleAdapter(env, endpoint.attestation_ref, options);
+    }
+    throw new StateContractError('EXECUTOR_UNSUPPORTED', 'Fournisseur de l’endpoint non pris en charge.', 'executor');
   };
 }
 
@@ -146,7 +171,9 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
   const call = { control: PROBE_CONTROL, data: 'nonce: ' + nonce, max_tokens: Math.min(PROBE_MAX_TOKENS, ceiling ?? PROBE_MAX_TOKENS) };
   const worst = adapter.worstCaseNeurons(call);
   await consumeDailyCap(db, endpoint.endpoint_id, input.daily_cap ?? DEFAULT_DAILY_CAP, now);
-  const neuronLedger = await reserveNeurons(db, worst, input.neuron_budget ?? DEFAULT_NEURON_BUDGET, now);
+  const neuronLedger = worst > 0
+    ? await reserveNeurons(db, worst, input.neuron_budget ?? DEFAULT_NEURON_BUDGET, now)
+    : null;
   const started = Date.now();
   let ok = false;
   let error: string | undefined;
@@ -156,7 +183,7 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
   try {
     const result = await adapter.generate(call);
     usage = result.usage;
-    await settleNeurons(db, neuronLedger, worst, adapter.neuronsFor(result.usage));
+    if (neuronLedger) await settleNeurons(db, neuronLedger, worst, adapter.neuronsFor(result.usage));
     outputSha = await sha256Hex(result.text);
     ok = result.text.includes('CC4-PROBE-OK') && result.text.includes(nonce);
     if (!ok) error = 'PROBE_OUTPUT_MISMATCH';
@@ -194,11 +221,11 @@ function capabilityDenied(message: string): CollabStoreError {
 }
 
 /** Capacités deny-by-default de l'endpoint pour un appel LLM gratuit. */
-export function assertLlmCapabilities(endpoint: StoredEndpoint, maxTokens: number): void {
+export function assertLlmCapabilities(endpoint: StoredEndpoint, provider: string, maxTokens: number): void {
   const caps = endpoint.capability_set;
   if (!caps.tools?.includes(LLM_TOOL)) throw capabilityDenied('Capacité ' + LLM_TOOL + ' absente pour ' + endpoint.endpoint_id + '.');
-  if (!caps.network_providers?.includes(WORKERS_AI_PROVIDER)) {
-    throw capabilityDenied('Fournisseur ' + WORKERS_AI_PROVIDER + ' non autorisé pour ' + endpoint.endpoint_id + '.');
+  if (!caps.network_providers?.includes(provider)) {
+    throw capabilityDenied('Fournisseur ' + provider + ' non autorisé pour ' + endpoint.endpoint_id + '.');
   }
   if (caps.token_ceiling === undefined || maxTokens > caps.token_ceiling) {
     throw capabilityDenied('max_tokens ' + maxTokens + ' au-delà du plafond ' + (caps.token_ceiling ?? 'absent') + '.');
@@ -237,11 +264,11 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
     throw new CollabStoreError('ENDPOINT_PRINCIPAL_MISMATCH',
       'L’endpoint ' + endpoint.endpoint_id + ' appartient à ' + endpoint.principal_id + ', pas à ' + invocation.principal_id + '.');
   }
-  assertLlmCapabilities(endpoint, input.max_tokens);
+  const adapter = factory(endpoint);
+  assertLlmCapabilities(endpoint, adapter.provider, input.max_tokens);
   if (await sha256Hex(input.input_packet) !== invocation.input_hash) {
     throw new CollabStoreError('INVOCATION_INPUT_MISMATCH', 'Le paquet fourni ne correspond pas à l’empreinte enregistrée de l’invocation.');
   }
-  const adapter = factory(endpoint);
   const call = { control: input.control, data: input.input_packet, max_tokens: input.max_tokens };
   // Revue #117 R3 : validations locales AVANT quota et bail — une erreur de configuration
   // ne consomme ni le plafond, ni une tentative A1, et n'appelle pas le fournisseur.
@@ -249,17 +276,19 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
   const worst = adapter.worstCaseNeurons(call);
   const now = input.now?.() ?? new Date();
   await consumeDailyCap(db, endpoint.endpoint_id, input.daily_cap ?? DEFAULT_DAILY_CAP, now);
-  const neuronLedger = await reserveNeurons(db, worst, input.neuron_budget ?? DEFAULT_NEURON_BUDGET, now);
+  const neuronLedger = worst > 0
+    ? await reserveNeurons(db, worst, input.neuron_budget ?? DEFAULT_NEURON_BUDGET, now)
+    : null;
   let lease;
   try {
     lease = await service.lease(input.wake_key, input.worker_id, input.lease_seconds ?? 120,
       { max_cost_cents: 0, scope: input.budget_scope });
   } catch (error) {
-    await settleNeurons(db, neuronLedger, worst, 0);
+    if (neuronLedger) await settleNeurons(db, neuronLedger, worst, 0);
     throw error;
   }
   if (lease.status !== 'leased') {
-    await settleNeurons(db, neuronLedger, worst, 0);
+    if (neuronLedger) await settleNeurons(db, neuronLedger, worst, 0);
     return { status: lease.status, invocation: lease.invocation };
   }
   await service.markRunning(input.wake_key, input.worker_id);
@@ -274,7 +303,7 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
     const failed = await service.fail(input.wake_key, input.worker_id, code, { operations: 1 }, evidence, 0);
     return { status: 'attempt_failed', invocation: failed, error: code };
   }
-  await settleNeurons(db, neuronLedger, worst, adapter.neuronsFor(result.usage));
+  if (neuronLedger) await settleNeurons(db, neuronLedger, worst, adapter.neuronsFor(result.usage));
   const done = await service.succeed(input.wake_key, input.worker_id, result.text,
     { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens, operations: 1 }, evidence, 0);
   return { status: 'succeeded', invocation: done, output: result.text };
