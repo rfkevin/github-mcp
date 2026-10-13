@@ -126,9 +126,11 @@ export async function planStateImport(input: {
       owned_paths: pathsOf(cell(row, 'owned_paths')),
       next_action: cell(row, 'next_action'),
     };
-    // D12 on import: the participants present ("none" excluded) must be distinct.
+    // D12 on import: ids distincts ne suffisent pas si l'owner les a liés à
+    // la même identité logique (#126, ex. gpt6 + sol => chatgpt).
     const present = [task.owner_pid, task.reviewer_pid, task.tester_pid].filter(Boolean);
-    if (new Set(present).size !== present.length) duplicateRoles.push(taskId);
+    const logical = present.map(pid => input.directory.logicalByPid.get(pid) ?? pid);
+    if (new Set(logical).size !== logical.length) duplicateRoles.push(taskId);
     tasks.push(task);
   }
   if (ambiguous.size) {
