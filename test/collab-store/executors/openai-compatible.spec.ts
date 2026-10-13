@@ -53,6 +53,7 @@ async function invocationFor(endpointId: string, principal: string, packet = '{"
     { cycle_id: cycle, task_id: 't1', role: 'author', principal_id: principal, endpoint_id: endpointId,
       reason: 'a3c_test', source_revision: 1, input_packet: packet },
   );
+  if (result.status !== 'applied' && result.status !== 'duplicate') throw new Error('append actionnable attendu');
   if (!result.invocation) throw new Error('invocation attendue');
   return result.invocation;
 }
