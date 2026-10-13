@@ -20,6 +20,7 @@ import { parseDailyCap, parseNeuronBudget, probeEndpoint, providerAdapterFactory
 import { runOwnerTrial } from './trials';
 import { listActiveCoordinators } from './coordinators';
 import { setExecutorNotes } from './executor-notes';
+import { listIdentityFamilies } from '../identity/families';
 
 export const OWNER_PATH = '/owner';
 // CC-3 C6 : un import d'état CC-STATE-1 (≤ 256 Kio) passe par ce formulaire ; marge pour l'encodage.
@@ -61,6 +62,7 @@ async function dashboardData(db: D1Database, before?: number) {
   return {
     pending: await describePending(await listPendingPage(db, { before })),
     ...await listRegistry(db),
+    identityFamilies: await listIdentityFamilies(db),
     imports: await listImportedStates(db),
     halted: await isAutomationHalted(db),
     budget: await budgetEnvelope(db),
