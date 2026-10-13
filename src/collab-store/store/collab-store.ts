@@ -22,6 +22,9 @@ import { revealProposalPayloads } from './sealed-reveal';
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 import { describeInvocation, type InvocationDescriptor, type InvocationIntent, type InvocationRecord } from '../invocations/contracts';
 import { invocationByWakeKey, invocationInsertStatement } from '../invocations/repository';
+import {
+  assertDistinctLogicalParticipants, equivalentParticipantIds, logicalIdentityOf, participantsEquivalent,
+} from '../identity/families';
 
 export class CollabStoreError extends Error {
   constructor(readonly code: string, message: string) {
@@ -189,7 +192,7 @@ export class CollabStore {
     }
 
     let sealedInsert: D1PreparedStatement | null = null;
-    let proposalRound: { phase: string; entrySeq: number } | null = null;
+    let proposalRound: { phase: string; entrySeq: number; logicalIdentity: string } | null = null;
     if (event.type === 'proposal.submit') {
       const cycle = await this.db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1')
         .bind(event.cycle_id).first<{ phase: string }>();
@@ -199,8 +202,9 @@ export class CollabStore {
       // (depuis la dernière (re)entrée dans cette phase, CR-F01) est refusé,
       // réponse perdue ou pas (cas réel GPT-6, seq 95/96 du cycle cc4-design).
       const entrySeq = await phaseEntrySeq(this.db, event.cycle_id, phase);
-      proposalRound = { phase, entrySeq };
-      if (await this.currentRoundProposal(event.cycle_id, event.participant_id, entrySeq)) {
+      const logicalIdentity = await logicalIdentityOf(this.db, event.participant_id);
+      proposalRound = { phase, entrySeq, logicalIdentity };
+      if (await this.currentRoundProposal(event.cycle_id, logicalIdentity, entrySeq)) {
         throw new CollabStoreError(
           'PROPOSAL_ALREADY_SUBMITTED',
           'Une seule proposition par participant et par ronde : ' + event.participant_id + ' a déjà soumis une proposition en ' + phase + ' (ronde courante).',
@@ -255,13 +259,14 @@ export class CollabStore {
     // concurrents peuvent le passer ; seul le batch tranche (fail-closed).
     const proposalClause = proposalRound
       ? [
-        "             AND NOT EXISTS (SELECT 1 FROM events WHERE cycle_id = ?6 AND type = 'proposal.submit'",
-        '                              AND participant_id = ?7 AND seq > ?8)',
+        "             AND NOT EXISTS (SELECT 1 FROM events e WHERE e.cycle_id = ?6 AND e.type = 'proposal.submit'",
+        "                              AND COALESCE((SELECT family_id FROM participant_identity_families f WHERE f.participant_id = e.participant_id), e.participant_id) = ?7",
+        '                              AND e.seq > ?8)',
       ]
       : [];
     const guardParams: Array<string | number> = [
       key, event.cycle_id, event.expected_rev, day, this.dailyWriteLimit,
-      ...(proposalRound ? [event.cycle_id, event.participant_id, proposalRound.entrySeq] : []),
+      ...(proposalRound ? [event.cycle_id, proposalRound.logicalIdentity, proposalRound.entrySeq] : []),
     ];
     const journal: D1PreparedStatement[] = [
       // Transactional CAS guard: the whole batch rolls back unless the key is
@@ -342,7 +347,7 @@ export class CollabStore {
         const cycle = await this.db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1')
           .bind(event.cycle_id).first<{ phase: string }>();
         const phase = cycle?.phase ?? (event.expected_rev === 0 ? 'P1' : '');
-        if (await this.currentRoundProposal(event.cycle_id, event.participant_id, await phaseEntrySeq(this.db, event.cycle_id, phase))) {
+        if (await this.currentRoundProposal(event.cycle_id, await logicalIdentityOf(this.db, event.participant_id), await phaseEntrySeq(this.db, event.cycle_id, phase))) {
           throw new CollabStoreError(
             'PROPOSAL_ALREADY_SUBMITTED',
             'Une seule proposition par participant et par ronde : ' + event.participant_id + ' a déjà soumis une proposition en ' + phase + ' (ronde courante).',
@@ -412,14 +417,16 @@ export class CollabStore {
     if (!cycle) {
       throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + cycleId);
     }
+    const equivalents = participantId ? await equivalentParticipantIds(this.db, participantId) : [];
+    const placeholders = equivalents.map((_, index) => '?' + (index + 2)).join(',');
     const sql = [
       'SELECT task_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, next_action, revision ',
       'FROM tasks WHERE cycle_id = ?1',
-      participantId ? ' AND (owner_pid = ?2 OR reviewer_pid = ?2 OR tester_pid = ?2)' : '',
+      equivalents.length ? ' AND (owner_pid IN (' + placeholders + ') OR reviewer_pid IN (' + placeholders + ') OR tester_pid IN (' + placeholders + '))' : '',
       ' ORDER BY task_id',
     ].join('');
-    const query = participantId
-      ? this.db.prepare(sql).bind(cycleId, participantId)
+    const query = equivalents.length
+      ? this.db.prepare(sql).bind(cycleId, ...equivalents)
       : this.db.prepare(sql).bind(cycleId);
     const { results } = await query.all<StoreContextTask>();
     return { cycle_id: cycle.cycle_id, phase: cycle.phase, status: cycle.status, revision: cycle.revision, tasks: results };
@@ -520,7 +527,7 @@ export class CollabStore {
         'SELECT owner_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2'
       ).bind(event.cycle_id, taskId).first<{ owner_pid: string }>();
       const allowedOwner = current ? current.owner_pid : assignment.owner_pid;
-      if (allowedOwner !== event.participant_id) {
+      if (!await participantsEquivalent(this.db, allowedOwner, event.participant_id)) {
         throw new CollabStoreError(
           'TASK_FORBIDDEN',
           current
@@ -529,6 +536,7 @@ export class CollabStore {
         );
       }
       await this.requireRegisteredParticipants([assignment.owner_pid, assignment.reviewer_pid, assignment.tester_pid]);
+      await assertDistinctLogicalParticipants(this.db, [assignment.owner_pid, assignment.reviewer_pid, assignment.tester_pid]);
       return [this.db.prepare([
         'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status,',
         '                  owned_paths, target_ref, next_action, revision)',
@@ -551,7 +559,8 @@ export class CollabStore {
     if (event.type === 'task.status') {
       // A08 (F1): only the task roles may move the status.
       const roles = [existing.owner_pid, existing.reviewer_pid, existing.tester_pid];
-      if (!roles.includes(event.participant_id)) {
+      const authorized = (await Promise.all(roles.map(pid => participantsEquivalent(this.db, pid, event.participant_id)))).some(Boolean);
+      if (!authorized) {
         throw new CollabStoreError(
           'TASK_FORBIDDEN',
           'task.status réservé aux rôles de la tâche ' + taskId + ' (' + roles.join(', ') + '), pas à ' + event.participant_id,
@@ -567,7 +576,7 @@ export class CollabStore {
     }
     // task.handoff: transfer the task to a new owner with a new next action.
     // A08 (F1): only the current owner may hand the task over.
-    if (existing.owner_pid !== event.participant_id) {
+    if (!await participantsEquivalent(this.db, existing.owner_pid, event.participant_id)) {
       throw new CollabStoreError(
         'TASK_FORBIDDEN',
         'task.handoff réservé à l\'owner courant de la tâche ' + taskId + ' (' + existing.owner_pid + '), pas à ' + event.participant_id,
@@ -580,6 +589,7 @@ export class CollabStore {
     if (pids.some(pid => !pid) || new Set(pids).size !== pids.length) {
       throw new CollabStoreError('DUPLICATE_TASK_ROLE', 'D12 : auteur, reviewer et testeur doivent etre distincts.');
     }
+    await assertDistinctLogicalParticipants(this.db, pids);
     // A08 (F1): the (possibly new) owner must be a participant registered as
     // active on /owner (K6).
     await this.requireRegisteredParticipants([ownerPid]);
@@ -613,11 +623,12 @@ export class CollabStore {
    * CC-4 A0 (point 5) : une proposition du participant existe-t-elle dans la
    * ronde courante de la phase (événements de seq > entrySeq) ?
    */
-  private async currentRoundProposal(cycleId: string, participantId: string, entrySeq: number): Promise<boolean> {
+  private async currentRoundProposal(cycleId: string, logicalIdentity: string, entrySeq: number): Promise<boolean> {
     const row = await this.db.prepare([
-      "SELECT 1 FROM events WHERE cycle_id = ?1 AND type = 'proposal.submit'",
-      'AND participant_id = ?2 AND seq > ?3 LIMIT 1',
-    ].join(' ')).bind(cycleId, participantId, entrySeq).first();
+      "SELECT 1 FROM events e WHERE e.cycle_id = ?1 AND e.type = 'proposal.submit'",
+      "AND COALESCE((SELECT family_id FROM participant_identity_families f WHERE f.participant_id = e.participant_id), e.participant_id) = ?2",
+      'AND e.seq > ?3 LIMIT 1',
+    ].join(' ')).bind(cycleId, logicalIdentity, entrySeq).first();
     return !!row;
   }
 
