@@ -116,6 +116,14 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Définitions de phase** : installées par Kevin sur `/owner` (opération K-phases). Sans elles, `PHASE_DEFINITION_MISSING`.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `PHASE_ADVANCE_FORBIDDEN`, `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
 
+### Identités logiques équivalentes (#126)
+
+Un identifiant de participant reste l’identité **historique** inscrite dans les événements, tâches, mémoires et preuves. L’owner peut toutefois relier plusieurs identifiants actifs à une même `family_id` logique via une demande exécutable `set_identity_family`. Exemple voulu par Kevin : `gpt6` et `sol` restent visibles séparément, mais appartiennent tous deux à la famille `chatgpt`.
+
+Cette équivalence s’applique aux droits de reprise et à D12 : un membre peut continuer une tâche attribuée à un autre membre, voir cette tâche dans son contexte, déclencher une phase quand un autre membre tient le rôle, et hériter d’un grant coordinateur actif de la famille. À l’inverse, deux membres de la même famille **ne sont jamais deux pairs D12 distincts** : ils ne peuvent pas occuper deux rôles auteur/reviewer/testeur de la même tâche, ne comptent qu’une fois dans les sorties de phase et ne peuvent pas déposer deux propositions dans la même ronde.
+
+La famille ne réécrit rien : anciens `participant_id`, événements et preuves restent inchangés. Les scopes mémoire privés `participant:<id>` restent eux aussi séparés dans ce lot ; les fusionner demanderait une décision owner distincte, car cela changerait une frontière de confidentialité. De même, un ancien avis GitHub signé sous un autre label n’est jamais dupliqué comme un nouvel avis : l’équivalence signifie « même identité logique », pas « seconde validation ».
+
 ### Contrat principal / endpoint / session (A0, plan CC-4 §3.1)
 
 Contrat et schéma seuls — aucune exécution d’agent dans ce lot. Quatre kinds d’attestation (`oauth_client`, `github_oidc`, `provider_adapter`, `chat_cimd`) ; un endpoint porte un statut (`probe_required`, `active`, `retired`) et un jeu de capacités **deny-by-default** : un champ absent ou vide n’autorise rien, pas de joker, plafonds entiers ≥ 0, champs inconnus rejetés. **Un CIMD partagé ne prouve pas des participants distincts** : même principal, même endpoint, même couple (kind, ref) ou même session → pas de preuve de principals distincts (`provesDistinctPrincipals`). Schéma : tables internes `endpoints` (UNIQUE principal + attestation) et `session_bindings` (PK session + endpoint), migration 0005, jamais dans le schéma canonique gelé. Codes : `INVALID_ATTESTATION_KIND`, `INVALID_CAPABILITY_SET`, `INVALID_ENDPOINT_REGISTRATION`, `INVALID_SESSION_BINDING`.
@@ -140,7 +148,7 @@ GitHub state.md fusionné ──import /owner──▶ store (base N)
    - L’import est une décision owner (`import_state`).
    - Il fixe la phase, remplace les tâches matérialisées du cycle et devient la base de l’export.
    - Les libellés des tâches doivent correspondre chacun à **un seul** participant actif (`IMPORT_UNKNOWN_PARTICIPANT` ou `IMPORT_AMBIGUOUS_LABEL` sinon). Le libellé owner (« Kevin » par défaut) correspond à l’identifiant réservé `owner` ; `none` signifie « personne ».
-   - D12 est vérifiée à l’import : deux rôles présents d’une même tâche ne peuvent pas désigner le même participant (`IMPORT_DUPLICATE_ROLE`).
+   - D12 est vérifiée à l’import : deux rôles présents d’une même tâche ne peuvent pas désigner le même participant **ni deux identifiants appartenant à la même identité logique** (`IMPORT_DUPLICATE_ROLE`).
    - Les issues GitHub citées par `framing_ref`, `plan_ref`, `contract_ref` et `acceptance_ref` sont indexées dans la même transaction pour la résolution `issue → cycle` (C3). Les anciennes associations du cycle sont remplacées. Une issue déjà associée à un autre cycle lui est reprise, et le message le signale.
    - Une annotation comme « Claude (for Muse Spark) » est conservée telle quelle ; seul le libellé de tête sert à l’identité.
    - Réimporter le fichier qui est déjà la base ne change rien (`duplicate`).
@@ -365,6 +373,10 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `TASK_MATERIALS_TOO_LARGE` | A4 | Matériaux supérieurs à 60 000 caractères | Réduire ou découper les matériaux |
 | `ENDPOINT_UNKNOWN` | A4 | Tentative d’ajouter des notes owner à un endpoint inexistant | Vérifier l’endpoint sur `/owner` |
 | `EXECUTOR_NOTE_INVALID` | A4 | Note owner points forts/faibles supérieure à 1 000 caractères | Réduire la note |
+| `DUPLICATE_LOGICAL_IDENTITY` | #126 | D12 : deux rôles différents désignent des ids appartenant à la même identité logique | Attribuer le rôle à un autre principal indépendant |
+| `IDENTITY_FAMILY_INVALID` | #126 | `family_id` invalide, membres dupliqués, ou cardinalité autre que 0 ou 2–16 | Corriger la demande `set_identity_family` |
+| `IDENTITY_FAMILY_PARTICIPANT_INACTIVE` | #126 | Un membre de la famille n’est pas un participant actif | Enregistrer/réactiver le participant avant approbation |
+| `IDENTITY_FAMILY_CONFLICT` | #126 | Un membre appartient déjà à une autre famille logique | Le retirer de l’ancienne famille par un acte owner distinct avant de le déplacer |
 
 ### 7.3 Phases, contexte et scellement (C3)
 
@@ -458,7 +470,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `STATE_TOO_LARGE` | C6 | Fichier d’état de plus de 256 Kio | — |
 | `IMPORT_UNKNOWN_PARTICIPANT` | C6 | Libellé de tâche sans participant enregistré | Enregistrer le participant (K6) |
 | `IMPORT_AMBIGUOUS_LABEL` | C6 | Libellé porté par plusieurs participants actifs, ou par un participant et le propriétaire | Rendre les libellés uniques sur `/owner` |
-| `IMPORT_DUPLICATE_ROLE` | C6 | D12 : deux rôles présents d’une tâche désignent le même participant (`none` reste permis) | Corriger l’attribution dans l’état |
+| `IMPORT_DUPLICATE_ROLE` | C6/#126 | D12 : deux rôles présents d’une tâche désignent le même participant ou deux ids de la même identité logique (`none` reste permis) | Corriger l’attribution dans l’état |
 | `IMPORT_INVALID_TASK` | C6 | Identifiant de tâche non importable | Corriger l’état |
 | `IMPORT_TOO_MANY_TASKS` | C6 | Plus de 200 tâches | — |
 | `INVALID_EXPORT_TARGET` | C6 | Cible d’export invalide (dépôt `owner/repo`, chemin relatif) | — |

@@ -105,6 +105,7 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - Branchement : `src/index.ts` (route `/owner`), `src/collab-store/mcp/{context,tools,handler,schemas}.ts` (identité appliquée aux outils `collab_*`).
 - Sorties d’événements MCP : colonnes publiques `STORED_EVENT_COLUMNS` (`store/collab-store.ts`) et projection `toEventOutput` (`mcp/result.ts`) ; schéma strict `storedEvent` (`mcp/schemas.ts`). Tests : `test/collab-store/mcp/event-output-schema-e2e.spec.ts`, `test/collab-store/mcp/event-output.spec.ts`.
 - Tests : `test/collab-store/owner/` (`identity`, `decisions`, `channel`, `tool-binding`, `no-agent-path`). Guide : `docs/collaboration/cc3/owner-setup.md`.
+- **CC-4 #126 — familles d’identité** : `identity/families.ts` résout l’identité logique et les ids équivalents ; `owner/identity-families.ts` est l’unique mutation owner liée à une demande exacte ; migration interne 0009 `participant_identity_families`. Les gardes de tâches, contexte, phase, proposition par ronde, coordinateur et import D12 utilisent la famille sans réécrire les ids historiques. Les scopes mémoire privés restent séparés. Tests : `test/collab-store/owner/identity-families.spec.ts`.
 
 ## CC-3 C6 — export GitHub et documentation
 
