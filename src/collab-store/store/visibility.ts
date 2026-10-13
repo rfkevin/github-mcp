@@ -22,6 +22,7 @@
  * Le journal stocké n'est pas modifié (append-only) ; seul le rendu change.
  */
 import type { StoredStoreEvent } from './collab-store';
+import { equivalentParticipantIds } from '../identity/families';
 
 const MEMORY_EVENT_TYPES = new Set(['memory.propose', 'memory.review', 'memory.consolidate', 'memory.retire']);
 
@@ -39,8 +40,9 @@ function memoryOf(event: StoredStoreEvent): Record<string, unknown> | null {
   }
 }
 
-function isForeignPrivate(scope: string, viewer: string | null): boolean {
-  return scope.startsWith('participant:') && (viewer === null || scope !== 'participant:' + viewer);
+function isForeignPrivate(scope: string, viewers: ReadonlySet<string>): boolean {
+  if (!scope.startsWith('participant:')) return false;
+  return !viewers.has(scope.slice('participant:'.length));
 }
 
 function redacted(event: StoredStoreEvent, memory: Record<string, unknown> | null): StoredStoreEvent {
@@ -70,11 +72,12 @@ export async function redactEventsFor(
   viewer: string | null,
   events: StoredStoreEvent[],
 ): Promise<StoredStoreEvent[]> {
+  const viewers = new Set(viewer === null ? [] : await equivalentParticipantIds(db, viewer));
   // Collecte les IDs mémoire distincts nécessitant une recherche de scope
   const idsToLookup = new Set<string>();
   for (const event of events) {
     if (!MEMORY_EVENT_TYPES.has(event.type)) continue;
-    if (viewer !== null && event.participant_id === viewer) continue;
+    if (viewers.has(event.participant_id)) continue;
     const memory = memoryOf(event);
     if (!memory || typeof memory.id !== 'string') continue;
     idsToLookup.add(memory.id);
@@ -103,7 +106,7 @@ export async function redactEventsFor(
   // Rendu des événements avec les données de scope batchées
   return events.map((event) => {
     if (!MEMORY_EVENT_TYPES.has(event.type)) return event;
-    if (viewer !== null && event.participant_id === viewer) return event;
+    if (viewers.has(event.participant_id)) return event;
     const memory = memoryOf(event);
     if (!memory) return redacted(event, null);
     const scopes: string[] = [];
@@ -114,6 +117,6 @@ export async function redactEventsFor(
     }
     // Scope indéterminable (propose sans id ni scope lisible, id inconnu) : masqué.
     if (scopes.length === 0) return redacted(event, memory);
-    return scopes.some(scope => isForeignPrivate(scope, viewer)) ? redacted(event, memory) : event;
+    return scopes.some(scope => isForeignPrivate(scope, viewers)) ? redacted(event, memory) : event;
   });
 }

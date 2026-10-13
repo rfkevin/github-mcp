@@ -3,6 +3,7 @@ import { ensureSchema } from '../store/schema';
 import { ensureContextSchema } from './schema';
 import { resolveContextTarget, type ResolveContextInput, type ResolvedTask } from './resolution';
 import { toProjectScopeKey } from '../contracts/memory';
+import { equivalentParticipantIds } from '../identity/families';
 
 // X2/X5 : toProjectScopeKey vit dans contracts/memory.ts (définition canonique,
 // partagée avec memory-store.ts) ; re-exportée ici pour la compatibilité de l'API.
@@ -72,10 +73,13 @@ function effectiveBudget(options: PacketOptions): number {
 /** I6 — common, participant:<caller>, role:<role>, task:<task>, project:<id C4>. */
 export function memoryVisible(
   scope: string,
-  ctx: { participantId: string; role?: string | null; taskId?: string | null; project?: string | null },
+  ctx: { participantId: string; participantIds?: ReadonlySet<string>; role?: string | null; taskId?: string | null; project?: string | null },
 ): boolean {
   if (scope === 'common') return true;
-  if (scope.startsWith('participant:')) return scope === 'participant:' + ctx.participantId;
+  if (scope.startsWith('participant:')) {
+    const owner = scope.slice('participant:'.length);
+    return ctx.participantIds?.has(owner) ?? owner === ctx.participantId;
+  }
   if (scope.startsWith('role:')) return ctx.role != null && ctx.role.length > 0 && scope === 'role:' + ctx.role;
   if (scope.startsWith('task:')) return ctx.taskId != null && ctx.taskId.length > 0 && scope === 'task:' + ctx.taskId;
   if (scope.startsWith('project:')) {
@@ -87,7 +91,7 @@ export function memoryVisible(
 
 async function loadVisibleActiveMemory(
   db: D1Database,
-  ctx: { participantId: string; role?: string | null; taskId?: string | null; project?: string | null },
+  ctx: { participantId: string; participantIds?: ReadonlySet<string>; role?: string | null; taskId?: string | null; project?: string | null },
 ): Promise<PacketMemory[]> {
   await ensureSchema(db);
   const { results } = await db.prepare([
@@ -115,8 +119,10 @@ export async function buildRolePacket(
   const openQuestions = [...(options.openQuestions ?? [])];
   while (estimateTokens(openQuestions) > OPEN_QUESTIONS_BUDGET && openQuestions.length) openQuestions.pop();
 
+  const equivalents = await equivalentParticipantIds(db, input.participant_id);
   const visibilityCtx = {
     participantId: input.participant_id,
+    participantIds: new Set(equivalents),
     role: resolved.task?.participation ?? null,
     taskId: resolved.task?.task_id ?? null,
     project: cycle.project ?? null,

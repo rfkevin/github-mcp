@@ -6,7 +6,7 @@
  * si deux ids représentent la même identité logique pour les droits et D12.
  */
 import { ensureSchema } from '../store/schema';
-import { CollabStoreError } from '../store/collab-store';
+import { StateContractError } from '../../collab/contracts';
 
 export const IDENTITY_FAMILY_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
@@ -42,7 +42,7 @@ export async function participantsEquivalent(db: D1Database, left: string, right
 export async function assertDistinctLogicalParticipants(db: D1Database, pids: readonly string[]): Promise<void> {
   const logical = await Promise.all(pids.map(pid => logicalIdentityOf(db, pid)));
   if (new Set(logical).size !== logical.length) {
-    throw new CollabStoreError(
+    throw new StateContractError(
       'DUPLICATE_LOGICAL_IDENTITY',
       'D12 : auteur, reviewer et testeur doivent représenter trois identités logiques distinctes.',
     );

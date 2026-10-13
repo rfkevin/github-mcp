@@ -8,6 +8,7 @@
  * live in the evidence ledger, which this export does not read.
  */
 import { ensureSchema } from '../store/schema';
+import { equivalentParticipantIds } from '../identity/families';
 import { inlineCell, sha256Hex } from './document';
 
 export const MEMORY_FORMAT = 'CC-MEMORY-MD-1';
@@ -40,8 +41,8 @@ function scopeRank(scope: string): number {
   return 5;
 }
 
-function visible(scope: string, participantId: string | null): boolean {
-  if (scope.startsWith('participant:')) return participantId !== null && scope === 'participant:' + participantId;
+function visible(scope: string, participantIds: ReadonlySet<string>): boolean {
+  if (scope.startsWith('participant:')) return participantIds.has(scope.slice('participant:'.length));
   return true;
 }
 
@@ -57,11 +58,12 @@ function refs(json: string): string[] {
 /** participantId = the caller's server-derived id, or null for an unregistered client. */
 export async function exportMemoryMarkdown(db: D1Database, participantId: string | null): Promise<MemoryExport> {
   await ensureSchema(db);
+  const participantIds = new Set(participantId === null ? [] : await equivalentParticipantIds(db, participantId));
   const { results } = await db.prepare([
     'SELECT id, version, scope, kind, text, evidence_refs, confidence, author_pid, reviewer_pid',
     "FROM memory_entries WHERE status = 'active'",
   ].join(' ')).all<MemoryRow>();
-  const rows = results.filter(row => visible(row.scope, participantId)).sort((a, b) =>
+  const rows = results.filter(row => visible(row.scope, participantIds)).sort((a, b) =>
     scopeRank(a.scope) - scopeRank(b.scope) || a.scope.localeCompare(b.scope)
     || a.id.localeCompare(b.id) || a.version - b.version);
   const lines = ['# CC-3 memory export', 'format: ' + MEMORY_FORMAT, 'entries: ' + rows.length];
