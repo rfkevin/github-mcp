@@ -7,7 +7,7 @@
 import { insufficientScope, type OAuthResourceContext } from '@cloudflare/workers-oauth-provider';
 import { createMcpHandler } from 'agents/mcp/server';
 import { isAllowedUser, publicOrigin, type AuthEnv } from '../../config';
-import { createCollabToolContext } from './context';
+import { createCollabToolContext, type CollabExecutionEnv } from './context';
 import { createCollabServer } from './tools';
 import { acceptsCollabOrigin } from './origin';
 import type { CollabStoreEnv } from '../store/config';
@@ -35,7 +35,7 @@ export const collabMcpHandler = {
         headers: { 'Cache-Control': 'no-store', 'Retry-After': '15' } });
     }
     try {
-      const tools = createCollabToolContext(env as AuthEnv & CollabStoreEnv, userId, ctx.auth.scope, {}, ctx.auth.clientId);
+      const tools = createCollabToolContext(env as AuthEnv & CollabExecutionEnv, userId, ctx.auth.scope, {}, ctx.auth.clientId);
       return createMcpHandler(() => createCollabServer(tools), {
         // Le wrapper stateless du SDK agents ne traite que ce chemin exact
         // (défaut '/mcp') et répond 404 'Not Found' à tout autre pathname.

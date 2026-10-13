@@ -67,7 +67,9 @@ export interface DashboardData {
   halted?: boolean;
   /** CC-4 A2 : enveloppe budgétaire globale (0 € par défaut). */
   budget?: BudgetEnvelope;
-  /** CC-4 A3 : matrice des endpoints d'exécution (§4.1). */
+  /** CC-4 A4 : coordinateurs actifs, accordés uniquement par demande owner exécutable. */
+  coordinators?: Array<{ participant_id: string; display_label: string; event_seq: number | null; updated_at: number }>;
+  /** CC-4 A3/A4 : matrice des endpoints d'exécution (§4.1), avec notes owner. */
   executors?: CapabilityRow[];
 }
 
@@ -86,6 +88,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + (config.mode === 'secret' ? ' Le secret est redemandé à chaque action et n’est jamais conservé.' : '') + '</p>'
     + (data.message ? '<p class="msg' + (data.message.error ? ' err' : '') + '">' + escapeHtml(data.message.text) + '</p>' : '')
     + automationSection(data.halted ?? false, data.budget, secret)
+    + coordinatorSection(data.coordinators ?? [])
     + executorSection(data.executors ?? [], secret)
     + '<h2>Demandes en attente (' + data.pending.total + ')</h2>'
     + (rows ? '<table><tr><th>Demande</th><th>Participant</th><th>Résumé</th><th>Décision</th></tr>' + rows + '</table>'
@@ -138,7 +141,7 @@ function decisionCell(item: PendingWithExecutable, secret: string): string {
 }
 
 const ACTION_LABELS: Record<string, string> = { install_phases: 'Installer les définitions de phase', import_state: 'Importer l’état CC-STATE-1',
-  register_endpoint: 'Inscrire ou modifier un endpoint d’exécution' };
+  register_endpoint: 'Inscrire ou modifier un endpoint d’exécution', grant_coordinator: 'Accorder ou révoquer le rôle coordinateur' };
 
 /** CC-4 A2 : ce qui sera exécuté exactement, pourquoi, risque, retour arrière, empreinte. */
 function executableDetail(item: PendingWithExecutable): string {
@@ -149,7 +152,8 @@ function executableDetail(item: PendingWithExecutable): string {
   return '<dl>'
     + '<dt>Action exécutée à l’approbation</dt><dd>' + escapeHtml(ACTION_LABELS[exec.action ?? ''] ?? String(exec.action))
     + (exec.action === 'register_endpoint' ? ' — endpoint <code>' + escapeHtml(exec.target ?? '') + '</code>'
-      : ' — cycle <code>' + escapeHtml(exec.cycle_id ?? '') + '</code>') + '</dd>'
+      : exec.action === 'grant_coordinator' ? ' — participant <code>' + escapeHtml(exec.target ?? '') + '</code>'
+        : ' — cycle <code>' + escapeHtml(exec.cycle_id ?? '') + '</code>') + '</dd>'
     + '<dt>Pourquoi</dt><dd>' + escapeHtml(exec.reason ?? '') + '</dd>'
     + '<dt>Risque</dt><dd>' + escapeHtml(exec.risk ?? '') + '</dd>'
     + '<dt>Retour arrière</dt><dd>' + escapeHtml(exec.rollback ?? '') + '</dd>'
@@ -177,6 +181,15 @@ function automationSection(halted: boolean, budget: BudgetEnvelope | undefined, 
       + '<p class="note">Enveloppe ' + escapeHtml(budget.scope) + ' : 0 € par défaut (Free d’abord). Toute dépense exige une enveloppe approuvée par le propriétaire.</p>'
     : '';
   return '<h2>Automatisation</h2>' + status + button + '<h2>Budget</h2>' + money;
+}
+
+function coordinatorSection(rows: Array<{ participant_id: string; display_label: string; event_seq: number | null }>): string {
+  const body = rows.map(row => '<tr><td><code>' + escapeHtml(row.participant_id) + '</code></td><td>'
+    + escapeHtml(row.display_label) + '</td><td>' + (row.event_seq ?? '—') + '</td></tr>').join('');
+  return '<h2>Coordinateurs actifs</h2>'
+    + '<p class="note">Ce rôle ne peut être accordé ou retiré que par une demande <code>grant_coordinator</code> approuvée ci-dessous.</p>'
+    + (body ? '<table><tr><th>Participant</th><th>Libellé</th><th>Décision owner</th></tr>' + body + '</table>'
+      : '<p class="note">Aucun coordinateur actif.</p>');
 }
 
 function capabilitiesText(caps: CapabilityRow['capability_set']): string {
@@ -213,7 +226,13 @@ function executorSection(rows: CapabilityRow[], secret: string): string {
         + '<label>Données <textarea name="trial_data" maxlength="' + OWNER_TRIAL_MAX_DATA + '" required></textarea></label>'
         + secret + '<p><button type="submit">Exécuter</button></p></form></td></tr>'
       : '';
-    return endpointRow + trialRow;
+    const notes = row.owner_notes;
+    const notesRow = '<tr><td colspan="5"><strong>Notes owner</strong><form method="post" action="/owner">'
+      + '<input type="hidden" name="action" value="update_executor_notes"><input type="hidden" name="endpoint_id" value="' + escapeHtml(row.endpoint_id) + '">'
+      + '<label>Points forts <textarea name="strengths" maxlength="1000">' + escapeHtml(notes?.strengths ?? '') + '</textarea></label>'
+      + '<label>Points faibles <textarea name="weaknesses" maxlength="1000">' + escapeHtml(notes?.weaknesses ?? '') + '</textarea></label>'
+      + secret + '<p><button type="submit">Enregistrer les notes</button></p></form></td></tr>';
+    return endpointRow + trialRow + notesRow;
   }).join('');
   return '<h2>Exécuteurs</h2>'
     + (body ? '<table><tr><th>Endpoint</th><th>Attestation</th><th>Statut</th><th>Capacités</th><th>Sonde</th></tr>' + body + '</table>'

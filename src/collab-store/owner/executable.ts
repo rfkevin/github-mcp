@@ -29,8 +29,12 @@ import type { PauseOccurrence } from '../memory/pause-resume';
 import { validateEndpointRegistration } from '../contracts/principals';
 import { latestEndpointActSeq, registerEndpoint } from '../executors/registry';
 import { REGISTRY_CYCLE } from './decisions';
+import {
+  COORDINATOR_STATUSES, latestCoordinatorActSeq, setCoordinatorGrant,
+  type CoordinatorStatus,
+} from './coordinators';
 
-export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint'] as const;
+export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator'] as const;
 export type ExecutableAction = (typeof EXECUTABLE_ACTIONS)[number];
 const SHA_RE = /^[0-9a-f]{64}$/;
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -100,6 +104,19 @@ function validateParams(action: ExecutableAction, params: Record<string, unknown
       throw new Error('params : inscription d’endpoint invalide — ' + (error instanceof Error ? error.message : 'contrat A0') + '.');
     }
   }
+  if (action === 'grant_coordinator') {
+    const extra = Object.keys(params).filter(key => !['participant_id', 'status'].includes(key));
+    if (extra.length) throw new Error('params : champs inconnus ' + extra.join(', ') + '.');
+    const participantId = params.participant_id;
+    const status = params.status;
+    if (typeof participantId !== 'string' || !/^[a-z0-9][a-z0-9:_-]{0,127}$/i.test(participantId)) {
+      throw new Error('params.participant_id invalide.');
+    }
+    if (typeof status !== 'string' || !COORDINATOR_STATUSES.includes(status as CoordinatorStatus)) {
+      throw new Error('params.status : active ou revoked attendu.');
+    }
+    return participantId;
+  }
   const cycleId = params.cycle_id;
   if (typeof cycleId !== 'string' || !CYCLE_RE.test(cycleId)) throw new Error('params.cycle_id invalide.');
   if (action === 'install_phases') {
@@ -145,7 +162,7 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     const params = payload.params;
     if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('params : objet requis.');
     const target = validateParams(action as ExecutableAction, params as Record<string, unknown>);
-    const cycleId = action === 'register_endpoint' ? REGISTRY_CYCLE : target;
+    const cycleId = action === 'register_endpoint' || action === 'grant_coordinator' ? REGISTRY_CYCLE : target;
     const declared = payload.payload_sha256;
     if (typeof declared !== 'string' || !SHA_RE.test(declared)) throw new Error('payload_sha256 : 64 caractères hexadécimaux requis.');
     const computed = await executablePayloadSha256(action as string, params);
@@ -173,6 +190,7 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
 /** seq du dernier acte du même type sur la cible (cycle, ou endpoint_id pour register_endpoint) : précondition d'une demande. */
 export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction, cycleId: string): Promise<number | null> {
   if (action === 'register_endpoint') return latestEndpointActSeq(db, cycleId);
+  if (action === 'grant_coordinator') return latestCoordinatorActSeq(db, cycleId);
   await ensureSchema(db);
   const prefix = (action === 'install_phases' ? PHASE_INSTALL_KEY_PREFIX : STATE_IMPORT_KEY_PREFIX) + cycleId + ':';
   const row = await db.prepare("SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?2)) = ?2")
@@ -209,7 +227,8 @@ export async function describePending(page: PendingPage, now: () => Date = () =>
     if (parsed.kind === 'invalid') { items.push({ ...item, executable: { invalid: parsed.reason } }); continue; }
     const req = parsed.request;
     const body = req.action === 'install_phases' ? String(req.params.definitions)
-      : req.action === 'register_endpoint' ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
+      : req.action === 'register_endpoint' || req.action === 'grant_coordinator'
+        ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
     items.push({ ...item, executable: {
       action: req.action, cycle_id: req.cycle_id, target: req.target, payload_sha256: req.payload_sha256, previous_seq: req.previous_seq,
       reason: req.reason, risk: req.risk, rollback: req.rollback, expires_at: req.expires_at,
@@ -285,6 +304,16 @@ export async function decideOwnerRequest(db: D1Database, input: {
     return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action, cycle_id: req.target,
       detail: 'endpoint ' + result.endpoint.endpoint_id + ' (' + result.endpoint.principal_id + ', ' + result.endpoint.attestation_ref
         + ') → ' + result.endpoint.status } };
+  }
+  if (req.action === 'grant_coordinator') {
+    const result = await setCoordinatorGrant(db, {
+      participant_id: String(req.params.participant_id), status: req.params.status as CoordinatorStatus,
+      proof: input.proof, binding, now: input.now,
+    });
+    return { status: result.status, event: result.event, decision: 'approve', executed: {
+      action: req.action, cycle_id: REGISTRY_CYCLE,
+      detail: 'coordinateur ' + result.participant_id + ' → ' + result.coordinator_status,
+    } };
   }
   if (req.action === 'install_phases') {
     const result = await installPhaseDefinitions(db, { cycle_id: req.cycle_id, definitions: String(req.params.definitions),

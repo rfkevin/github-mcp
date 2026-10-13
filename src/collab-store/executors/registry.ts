@@ -20,6 +20,7 @@ import {
 import { ownerAppend, REGISTRY_CYCLE, type OwnerWriteResult } from '../owner/decisions';
 import { assertBindingPrecondition, bindingGuard, bindingKey, bindingPayload, bindingStatements, type OwnerRequestBinding } from '../owner/binding';
 import type { OwnerProof } from '../owner/proof';
+import { loadExecutorNotes, type ExecutorNotes } from '../owner/executor-notes';
 
 export const ENDPOINT_KEY_PREFIX = 'owner:endpoint:';
 export const PROBE_KEY_PREFIX = 'owner:probe:';
@@ -30,6 +31,7 @@ export interface StoredEndpoint extends EndpointRegistration {
 
 export interface CapabilityRow extends StoredEndpoint {
   last_probe: { ok: boolean; at: number; seq: number; model: string; latency_ms: number; error?: string } | null;
+  owner_notes: ExecutorNotes | null;
 }
 
 type EndpointRow = {
@@ -89,11 +91,12 @@ export async function capabilityMatrix(db: D1Database): Promise<CapabilityRow[]>
   for (const row of results) {
     const endpoint = parseRow(row);
     const probe = await latestProbe(db, endpoint.endpoint_id);
+    const ownerNotes = await loadExecutorNotes(db, endpoint.endpoint_id);
     rows.push({ ...endpoint, last_probe: probe ? {
       ok: probe.payload.ok === true, at: probe.at, seq: probe.seq,
       model: String(probe.payload.model ?? ''), latency_ms: Number(probe.payload.latency_ms ?? 0),
       ...(typeof probe.payload.error === 'string' ? { error: probe.payload.error } : {}),
-    } : null });
+    } : null, owner_notes: ownerNotes });
   }
   return rows;
 }

@@ -82,6 +82,19 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
   - `STALE`, avec `currentRevision` et `delta` à rejouer avant de réessayer ; le message nomme `currentRevision = <n>` et l’`expected_rev` fourni, lisible sans décoder le delta (A0) ; delta rendu pour l’appelant : mémoire privée d’autrui masquée, CR-C ;
   - `QUOTA_EXHAUSTED` quand le quota quotidien est atteint (5000 par défaut, `COLLAB_DAILY_WRITE_LIMIT`).
 
+### `collab_dispatch_task`
+- **Qui** : participant enregistré avec un rôle coordinateur **actif**, accordé uniquement par une demande exécutable `grant_coordinator` approuvée sur `/owner`. Une auto-déclaration, un label ou un champ MCP ne donne jamais ce droit (`COORDINATOR_REQUIRED`).
+- **Entrée** : `endpoint_id`, `task_kind` parmi `summarize`, `review_risks`, `propose_tests`, `draft`, `brief` (1 à 2 000 caractères), `materials` (≤ 60 000), `max_tokens`, et `op_id` strict visant le cycle fixe `coordinator-tasks` avec le client canonique du coordinateur.
+- **Sécurité** : arrêt d’urgence vérifié avant toute exécution ; endpoint actif et capacités deny-by-default requis. La consigne de contrôle vient du serveur. Le `brief` est placé dans une section distincte « Mission du coordinateur » et neutralise `<<<` ; les `materials` restent des données non fiables passées à `envelope()` par l’adaptateur. Aucun texte ne peut ajouter un outil, une permission ou un secret.
+- **A1** : le serveur écrit dans un même batch l’événement source et l’invocation A1. L’événement ne contient que endpoint, task_kind, limites et empreintes SHA-256 du brief/matériaux/contrôle ; ni brief, ni matériaux, ni sortie brute ne sont persistés. Le principal est celui de l’endpoint.
+- **Idempotence** : le premier appel dispatch l’invocation avec tous les garde-fous A3. Rejouer exactement le même `op_id` renvoie l’état durable de l’invocation avec `replayed=true`, sans second appel fournisseur et sans restituer l’ancienne sortie. Une intention différente sous le même `op_id` reste un conflit d’idempotence.
+- **Sortie** : `invocation_id`, état/statut, usage A1, provenance, latence observée et, uniquement sur l’appel frais qui la produit, la sortie éphémère.
+
+### `collab_list_executors`
+- **Qui** : coordinateur owner-approved actif (`COORDINATOR_REQUIRED` sinon). Lecture seule.
+- **Sortie** : une fiche par endpoint avec principal, provider/modèle, statut, capacités et plafond de jetons ; quota d’appels du jour restant et, pour Workers AI, budget neurons restant ; statistiques des invocations A1 des 7 derniers jours (nombre, succès/échecs, codes d’erreur, latence moyenne/p95) ; notes owner points forts/faibles.
+- **Notes owner** : elles ne sont jamais modifiables par MCP. Kevin les édite sur `/owner`; la mutation devient un `owner.decision` et la fiche ne fait que les lire.
+
 ### `collab_export`
 - **Entrée** : `cycle`, `format` (`cc-state-1` par défaut, ou `memory-md`).
 - **`cc-state-1`** : l’état du cycle au format CC-STATE-1 (détaillé en section 4).
@@ -186,10 +199,12 @@ Toute erreur non typée du store (D1 indisponible, binding absent) répond `STOR
 Un agent prépare l’acte au lieu de demander à Kevin de le coller. Il dépose un `owner.request` dont le `payload_json` contient :
 
 - `request_id`, `summary` ;
-- `action` : `install_phases` ou `import_state` ;
+- `action` : `install_phases`, `import_state`, `register_endpoint` ou `grant_coordinator` ;
 - `params` :
   - `install_phases` : `{cycle_id, definitions}`, où `definitions` est le JSON des définitions sous forme de chaîne ;
   - `import_state` : `{cycle_id, markdown, owner_label?, target?: {repository, path, ref}}`, l’état faisant au plus 60 000 caractères ;
+  - `register_endpoint` : contrat d’inscription A0 de l’endpoint (§6.3) ;
+  - `grant_coordinator` : `{participant_id, status: "active"|"revoked"}` ; le participant doit déjà être enregistré et actif. Le dernier acte sur ce participant est la précondition `previous_seq` ; approbation et mise à jour du registre coordinateur partagent le même batch ;
 - `payload_sha256` = sha256 du JSON canonique de `{action, params}` (clés triées récursivement, sans espaces) ;
 - `preconditions.previous_seq` : seq du dernier acte du même type sur le cycle cible au moment du dépôt, ou `null` ;
 - `reason`, `risk`, `rollback` (texte requis) ;
@@ -243,6 +258,14 @@ Le principal d'un endpoint est immuable (`ENDPOINT_PRINCIPAL_IMMUTABLE`) et une 
 Les consignes de contrôle viennent du code serveur ; le paquet (texte externe) est placé dans une enveloppe marquée non fiable que le texte ne peut pas refermer (§6.1 du plan). Aucun outil n'est donné au modèle. La sortie est rendue à l'appelant mais jamais persistée : seule son empreinte l'est. Une erreur du fournisseur devient une tentative en échec, reprise selon les règles A1.
 
 **A4-mini — Tâche d’essai sur `/owner`.** Sous chaque endpoint actif, Kevin peut choisir uniquement une consigne fixée dans le serveur (`résumer` ou `relire (signaler les risques)`) et fournir au plus 4 000 caractères de données. Le serveur crée dans `owner-trials` un événement actionnable et une invocation A1 dans le même batch, avec l’endpoint et son principal ; l’événement ne porte que l’empreinte de l’entrée. L’invocation est ensuite exécutée immédiatement par `dispatchFreeInvocation`, donc arrêt d’urgence, capacités, plafond quotidien, contrôle de paquet, bail et réserve 0 € restent applicables. Le texte de réponse est affiché dans la réponse HTML courante, échappé, mais n’est jamais stocké ; A1 conserve uniquement son empreinte, l’usage et la provenance.
+
+### 6.4 Coordinateur vers workers gratuits (CC-4 A4)
+
+Le rôle coordinateur est un droit de délégation, **pas** un droit owner. Un agent prépare une demande `grant_coordinator`; Kevin l’approuve ou la refuse sur `/owner`. L’approbation exécute le payload exact et écrit le grant dans le même lot que la décision. Révoquer utilise la même action avec `status=revoked`. Un participant absent ou inactif est refusé (`COORDINATOR_PARTICIPANT_INACTIVE`). `/owner` affiche la liste des coordinateurs actifs.
+
+Le coordinateur peut ensuite utiliser `collab_list_executors` pour choisir un worker et `collab_dispatch_task` pour lui confier une mission bornée. Cette délégation ne donne **aucun** outil GitHub ni droit D12 au modèle : le worker reçoit seulement une tâche texte via `llm.generate`, sous les capacités, quota, budget gratuit et arrêt d’urgence existants. Les workers ne remplacent jamais les rôles auteur/reviewer/testeur authentifiés du protocole.
+
+Les fiches exécutants utilisent le registre A3 et les invocations A1 : quota du jour, compte/succès/échecs et latences sur les 7 derniers jours. Kevin peut ajouter « Points forts » et « Points faibles » sur `/owner`; ces notes sont stockées séparément, tracées par `owner.decision`, et sont en lecture seule pour les coordinateurs.
 
 Merges vers `main`/`master`, dérogations, promotion et production restent humains (I9). Aucune politique ne peut les automatiser.
 
@@ -334,6 +357,14 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `INVALID_OWNER_OP` | A3 | Inscription d’endpoint hors demande liée et sans `op` | Passer par une demande `register_endpoint` |
 | `OWNER_TRIAL_INVALID_INSTRUCTION` | A4-mini | La consigne de Tâche d’essai ne fait pas partie de la liste fixée dans le serveur | Choisir `résumer` ou `relire (signaler les risques)` sur `/owner` |
 | `OWNER_TRIAL_INVALID_DATA` | A4-mini | Données de Tâche d’essai vides ou supérieures à 4 000 caractères | Fournir 1 à 4 000 caractères |
+| `COORDINATOR_REQUIRED` | A4 | Outil réservé à un participant enregistré avec grant coordinateur actif | Faire préparer puis approuver `grant_coordinator` sur `/owner` |
+| `COORDINATOR_PARTICIPANT_INACTIVE` | A4 | `grant_coordinator` vise un participant absent ou non actif | Enregistrer/réactiver le participant avant la demande |
+| `INVALID_COORDINATOR_STATUS` | A4 | Statut de grant autre que `active` ou `revoked` | Corriger le payload owner préparé |
+| `TASK_KIND_INVALID` | A4 | `task_kind` hors `summarize`, `review_risks`, `propose_tests`, `draft` | Choisir une consigne serveur autorisée |
+| `TASK_BRIEF_INVALID` | A4 | Brief vide ou supérieur à 2 000 caractères | Réduire la mission du coordinateur |
+| `TASK_MATERIALS_TOO_LARGE` | A4 | Matériaux supérieurs à 60 000 caractères | Réduire ou découper les matériaux |
+| `ENDPOINT_UNKNOWN` | A4 | Tentative d’ajouter des notes owner à un endpoint inexistant | Vérifier l’endpoint sur `/owner` |
+| `EXECUTOR_NOTE_INVALID` | A4 | Note owner points forts/faibles supérieure à 1 000 caractères | Réduire la note |
 
 ### 7.3 Phases, contexte et scellement (C3)
 

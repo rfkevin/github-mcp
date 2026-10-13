@@ -28,12 +28,13 @@ export interface E2eClient {
  * écrire ; agent() l'enregistre auprès de l'owner et le mappe à un participant
  * déclaré.
  */
-export function e2eScenario(db: D1Database, prefix: string, secret: string) {
+export function e2eScenario(db: D1Database, prefix: string, secret: string, extraEnv: Record<string, unknown> = {}) {
   const fixture = createOAuthFixture({
     COLLAB_DB: db,
     COLLAB_STORE_ENABLED: 'true',
     OWNER_AUTH_MODE: 'secret',
     OWNER_SECRET: secret,
+    ...extraEnv,
   });
   const owner = (fields: Record<string, string>) =>
     fixture.send('/owner', {

@@ -18,6 +18,8 @@ import { installPhaseDefinitions } from './phase-install';
 import { capabilityMatrix } from '../executors/registry';
 import { parseDailyCap, parseNeuronBudget, probeEndpoint, providerAdapterFactory, type ProviderAdapterEnv } from '../executors/run';
 import { runOwnerTrial } from './trials';
+import { listActiveCoordinators } from './coordinators';
+import { setExecutorNotes } from './executor-notes';
 
 export const OWNER_PATH = '/owner';
 // CC-3 C6 : un import d'état CC-STATE-1 (≤ 256 Kio) passe par ce formulaire ; marge pour l'encodage.
@@ -52,7 +54,7 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial'] as const;
+const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes'] as const;
 
 /** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
 async function dashboardData(db: D1Database, before?: number) {
@@ -62,6 +64,7 @@ async function dashboardData(db: D1Database, before?: number) {
     imports: await listImportedStates(db),
     halted: await isAutomationHalted(db),
     budget: await budgetEnvelope(db),
+    coordinators: await listActiveCoordinators(db),
     executors: await capabilityMatrix(db),
   };
 }
@@ -173,6 +176,11 @@ export async function handleOwnerRequest(
       message = result.status === 'succeeded'
         ? { text: 'Tâche d’essai réussie sur ' + field('endpoint_id') + '. Réponse : ' + (result.output ?? ''), error: false }
         : { text: 'Tâche d’essai non terminée (' + result.status + ')' + (result.error ? ' : ' + result.error : '') + '.', error: true };
+    } else if (action === 'update_executor_notes') {
+      const result = await setExecutorNotes(db, {
+        endpoint_id: field('endpoint_id'), strengths: field('strengths'), weaknesses: field('weaknesses'), proof, op,
+      });
+      message = { text: 'Notes owner enregistrées pour ' + field('endpoint_id') + ' (seq ' + result.event.seq + ').', error: false };
     } else if (action === 'install_phases') {
       // CR-A / CR-03 : amorçage owner des définitions de phase (vide = P1–P6, auto_advance none).
       const result = await installPhaseDefinitions(db, { cycle_id: field('cycle_id'), definitions: field('phases'), proof });
