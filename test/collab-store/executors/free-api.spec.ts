@@ -138,6 +138,11 @@ describe('CC-4 A3 — adaptateur Workers AI', () => {
       .toEqual({ text: 'a', usage: { input_tokens: 3, output_tokens: 2 } });
     expect(readWorkersAiOutput({ choices: [{ message: { content: 'b' } }] })).toEqual({ text: 'b', usage: { input_tokens: 0, output_tokens: 0 } });
     expect(() => readWorkersAiOutput({ result: 1 })).toThrow(expect.objectContaining({ code: 'EXECUTOR_BAD_RESPONSE' }));
+    // content nullable (schéma Workers AI) : diagnostic technique, jamais de contenu.
+    expect(() => readWorkersAiOutput({ choices: [{ message: { content: null }, finish_reason: 'length' }],
+      usage: { completion_tokens: 32, completion_tokens_details: { reasoning_tokens: 32 } } }))
+      .toThrow(expect.objectContaining({ code: 'EXECUTOR_BAD_RESPONSE',
+        message: expect.stringContaining('finish_reason=length, completion_tokens=32, reasoning_tokens=32') }));
   });
 
   it('délai dépassé → EXECUTOR_TIMEOUT ; plafond de jetons hors bornes → EXECUTOR_INVALID_LIMIT', async () => {
@@ -205,6 +210,47 @@ describe('CC-4 A3 — sonde owner', () => {
       .toMatchObject({ ok: false, error: 'UPSTREAM_DOWN' });
     expect(await codeOf(approve(db, await fileRegistration(db, registration(endpointId, { status: 'active' })))))
       .toBe('ENDPOINT_PROBE_REQUIRED');
+  });
+
+  it('sonde réelle seq 122 : glm-4.7-flash raisonne, content null → raisonnement coupé et plafond 256 ; échec diagnostiqué sans texte fournisseur', async () => {
+    // Simule le comportement observé en direct : en mode raisonnement, ou avec un plafond trop bas,
+    // les jetons de raisonnement épuisent max_tokens et Workers AI renvoie content: null.
+    const calls: Array<Record<string, unknown>> = [];
+    const glm: WorkersAiBinding = {
+      async run(_model, input) {
+        calls.push(input);
+        const thinkingOff = (input.chat_template_kwargs as { enable_thinking?: boolean } | undefined)?.enable_thinking === false;
+        const budget = Number(input.max_tokens);
+        if (!thinkingOff || budget < 64) {
+          return { choices: [{ message: { content: null }, finish_reason: 'length' }],
+            usage: { prompt_tokens: 90, completion_tokens: budget, completion_tokens_details: { reasoning_tokens: budget } } };
+        }
+        const nonce = /nonce: ([0-9a-f]{8})/.exec((input.messages as Array<{ content: string }>)[1].content)?.[1];
+        return { choices: [{ message: { content: 'CC4-PROBE-OK ' + nonce }, finish_reason: 'stop' }], usage: { prompt_tokens: 90, completion_tokens: 9 } };
+      },
+    };
+    const endpointId = uniq('ep');
+    await approve(db, await fileRegistration(db, registration(endpointId)));
+    expect(await probeEndpoint(db, workersAiFactory(glm), { endpoint_id: endpointId, proof, op: uniq('probe') })).toMatchObject({ ok: true });
+    expect(calls[0]).toMatchObject({ chat_template_kwargs: { enable_thinking: false }, max_tokens: 256 });
+
+    // Plafond déclaré plus bas que 256 : la sonde le respecte (ici 32, trop bas → échec diagnostiqué).
+    const tight = uniq('ep');
+    await approve(db, await fileRegistration(db, registration(tight, {
+      capability_set: { tools: ['llm.generate'], network_providers: ['workers-ai'], token_ceiling: 32 } })));
+    const failed = await probeEndpoint(db, workersAiFactory(glm), { endpoint_id: tight, proof, op: uniq('probe') });
+    expect(calls[1]).toMatchObject({ max_tokens: 32 });
+    expect(failed).toMatchObject({ ok: false, error: 'EXECUTOR_BAD_RESPONSE' });
+    expect(failed.error_detail).toContain('finish_reason=length');
+    expect(failed.error_detail).toContain('reasoning_tokens=32');
+    expect(JSON.parse(failed.event.payload_json)).toMatchObject({ error: 'EXECUTOR_BAD_RESPONSE', error_detail: failed.error_detail });
+
+    // Erreur libre du fournisseur : code conservé, texte jamais recopié.
+    const leaky: WorkersAiBinding = { run: async () => { throw Object.assign(new Error('secret-ish upstream text'), { code: 'UPSTREAM_DOWN' }); } };
+    const down = await probeEndpoint(db, workersAiFactory(leaky), { endpoint_id: tight, proof, op: uniq('probe') });
+    expect(down).toMatchObject({ ok: false, error: 'UPSTREAM_DOWN' });
+    expect(down.error_detail).toBeUndefined();
+    expect(down.event.payload_json).not.toContain('secret-ish');
   });
 
   it('rejeu du même op sans nouvel appel ; plafond quotidien ; endpoint non API refusé ; binding absent', async () => {

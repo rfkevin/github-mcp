@@ -29,7 +29,7 @@ export interface StoredEndpoint extends EndpointRegistration {
 }
 
 export interface CapabilityRow extends StoredEndpoint {
-  last_probe: { ok: boolean; at: number; seq: number; model: string; latency_ms: number } | null;
+  last_probe: { ok: boolean; at: number; seq: number; model: string; latency_ms: number; error?: string } | null;
 }
 
 type EndpointRow = {
@@ -92,6 +92,7 @@ export async function capabilityMatrix(db: D1Database): Promise<CapabilityRow[]>
     rows.push({ ...endpoint, last_probe: probe ? {
       ok: probe.payload.ok === true, at: probe.at, seq: probe.seq,
       model: String(probe.payload.model ?? ''), latency_ms: Number(probe.payload.latency_ms ?? 0),
+      ...(typeof probe.payload.error === 'string' ? { error: probe.payload.error } : {}),
     } : null });
   }
   return rows;
