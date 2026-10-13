@@ -9,6 +9,7 @@ import { assertAutomationRunning } from './automation';
 import { CollabStore, CollabStoreError } from '../store/collab-store';
 import { sha256Hex } from '../store/hash';
 import { loadEndpoint } from '../executors/registry';
+import type { InvocationRecord } from '../invocations';
 import {
   assertLlmCapabilities, DEFAULT_DAILY_CAP, DEFAULT_NEURON_BUDGET,
   dispatchFreeInvocation, type AdapterFactory, type DispatchOutcome,
