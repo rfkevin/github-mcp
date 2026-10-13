@@ -18,6 +18,7 @@
  * 8. bail A1 + réserve budgétaire 0 € (chemin gratuit), solde à la clôture.
  * Le texte produit n'est pas persisté : seule son empreinte l'est (A1 §3.3).
  */
+import { StateContractError } from '../../collab/contracts';
 import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { sha256Hex } from '../store/hash';
@@ -33,7 +34,8 @@ export const DEFAULT_DAILY_CAP = 50;
 export const DEFAULT_NEURON_BUDGET = 8_000;
 export const MAX_NEURON_BUDGET = 9_500;
 export const LLM_TOOL = 'llm.generate';
-const PROBE_MAX_TOKENS = 32;
+/** Assez large pour une réponse d'une ligne même si le modèle raisonne un peu ; borné par token_ceiling. */
+const PROBE_MAX_TOKENS = 256;
 const PROBE_CONTROL = 'Tu es une sonde technique. Réponds exactement par une seule ligne : CC4-PROBE-OK suivi du nonce présent dans les données. Rien d’autre.';
 
 export type AdapterFactory = (endpoint: StoredEndpoint) => LlmAdapter;
@@ -123,13 +125,14 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
   daily_cap?: number;
   neuron_budget?: number;
   now?: () => Date;
-}): Promise<OwnerWriteResult & { ok: boolean; error?: string }> {
+}): Promise<OwnerWriteResult & { ok: boolean; error?: string; error_detail?: string }> {
   await ensureSchema(db);
   const key = PROBE_KEY_PREFIX + input.endpoint_id + ':' + input.op;
   const replay = await db.prepare('SELECT * FROM events WHERE idempotency_key = ?1').bind(key).first<OwnerWriteResult['event']>();
   if (replay) {
-    const payload = JSON.parse(replay.payload_json) as { ok?: boolean };
-    return { status: 'duplicate', event: replay, ok: payload.ok === true };
+    const payload = JSON.parse(replay.payload_json) as { ok?: boolean; error?: string; error_detail?: string };
+    return { status: 'duplicate', event: replay, ok: payload.ok === true,
+      ...(payload.error ? { error: payload.error } : {}), ...(payload.error_detail ? { error_detail: payload.error_detail } : {}) };
   }
   await assertAutomationRunning(db);
   const endpoint = await loadEndpoint(db, input.endpoint_id);
@@ -139,13 +142,15 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
   const adapter = factory(endpoint);
   const now = input.now?.() ?? new Date();
   const nonce = crypto.randomUUID().slice(0, 8);
-  const call = { control: PROBE_CONTROL, data: 'nonce: ' + nonce, max_tokens: PROBE_MAX_TOKENS };
+  const ceiling = endpoint.capability_set.token_ceiling;
+  const call = { control: PROBE_CONTROL, data: 'nonce: ' + nonce, max_tokens: Math.min(PROBE_MAX_TOKENS, ceiling ?? PROBE_MAX_TOKENS) };
   const worst = adapter.worstCaseNeurons(call);
   await consumeDailyCap(db, endpoint.endpoint_id, input.daily_cap ?? DEFAULT_DAILY_CAP, now);
   const neuronLedger = await reserveNeurons(db, worst, input.neuron_budget ?? DEFAULT_NEURON_BUDGET, now);
   const started = Date.now();
   let ok = false;
   let error: string | undefined;
+  let errorDetail: string | undefined;
   let usage = { input_tokens: 0, output_tokens: 0 };
   let outputSha = '';
   try {
@@ -157,6 +162,8 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
     if (!ok) error = 'PROBE_OUTPUT_MISMATCH';
   } catch (caught) {
     error = errorCode(caught);
+    // Seuls nos propres messages (codes typés) sont conservés : jamais un texte libre du fournisseur.
+    if (caught instanceof StateContractError || caught instanceof CollabStoreError) errorDetail = caught.message.slice(0, 300);
   }
   const written = await ownerAppend(db, {
     cycleId: REGISTRY_CYCLE,
@@ -165,12 +172,13 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
       action: 'endpoint_probe', endpoint_id: endpoint.endpoint_id, principal_id: endpoint.principal_id,
       attestation_ref: endpoint.attestation_ref, provider: adapter.provider, model: adapter.model,
       ok, latency_ms: Date.now() - started, usage, output_sha256: outputSha, ...(error ? { error } : {}),
+      ...(errorDetail ? { error_detail: errorDetail } : {}),
     },
     proof: input.proof,
     sideEffects: () => [],
     now: input.now,
   });
-  return { ...written, ok, ...(error ? { error } : {}) };
+  return { ...written, ok, ...(error ? { error } : {}), ...(errorDetail ? { error_detail: errorDetail } : {}) };
 }
 
 export interface DispatchOutcome {

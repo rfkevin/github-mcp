@@ -164,7 +164,8 @@ export async function handleOwnerRequest(
         endpoint_id: field('endpoint_id'), proof, op, daily_cap: parseDailyCap(env.EXECUTOR_DAILY_CAP),
         neuron_budget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
       });
-      message = { text: 'Sonde ' + (result.ok ? 'réussie' : 'en échec' + (result.error ? ' (' + result.error + ')' : ''))
+      message = { text: 'Sonde ' + (result.ok ? 'réussie' : 'en échec' + (result.error ? ' (' + result.error + ')' : '')
+        + (result.error_detail ? ' : ' + result.error_detail : ''))
         + ' pour ' + field('endpoint_id') + ' (seq ' + result.event.seq + ').', error: !result.ok };
     } else if (action === 'install_phases') {
       // CR-A / CR-03 : amorçage owner des définitions de phase (vide = P1–P6, auto_advance none).

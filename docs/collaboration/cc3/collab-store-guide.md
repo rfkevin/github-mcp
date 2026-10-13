@@ -224,7 +224,7 @@ Premier fournisseur : **Cloudflare Workers AI**, lié au Worker par le binding `
 
 **Cycle de vie d'un endpoint** (matrice §4.1 du plan, section « Exécuteurs » de `/owner`) :
 1. Un agent dépose une demande exécutable `register_endpoint` dont les `params` suivent le contrat A0 : `endpoint_id`, `principal_id`, `attestation_kind` = `provider_adapter`, `attestation_ref` = `workers-ai:@cf/<éditeur>/<modèle>`, `status` = `probe_required`, `capability_set`. Kevin l'approuve sur `/owner`.
-2. Kevin clique **Sonder** : un appel réel, avec un message fixe défini par le serveur, vérifie que le modèle répond et renvoie le nonce. Le résultat (modèle, latence, usage, empreinte de la sortie) devient un `owner.decision`.
+2. Kevin clique **Sonder** : un appel réel, avec un message fixe défini par le serveur, vérifie que le modèle répond et renvoie le nonce. Le résultat (modèle, latence, usage, empreinte de la sortie) devient un `owner.decision`. Le plafond de la sonde est de 256 jetons, borné par `token_ceiling`. En cas d'échec, `error` et, pour nos propres erreurs typées seulement, `error_detail` (par exemple `finish_reason=length, reasoning_tokens=32`) sont enregistrés ; un texte libre du fournisseur n'est jamais recopié. Le raisonnement de `glm-4.7-flash` est coupé (`chat_template_kwargs.enable_thinking = false`) : sinon il épuise le plafond et la réponse revient vide (sonde réelle du 2026-10-13).
 3. Un agent dépose une seconde demande `register_endpoint` avec `status` = `active`. Elle n'est exécutable qu'avec une sonde réussie, pour la même attestation, enregistrée après la dernière inscription (`ENDPOINT_PROBE_REQUIRED` sinon).
 
 Le principal d'un endpoint est immuable (`ENDPOINT_PRINCIPAL_IMMUTABLE`) et une attestation n'est portée que par un endpoint du même principal (`ENDPOINT_ATTESTATION_TAKEN`).
@@ -324,7 +324,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `EXECUTOR_PAID_MODEL` | A3 | Modèle Workers AI qui exige un moyen de paiement | Choisir un modèle gratuit |
 | `EXECUTOR_UNAVAILABLE` | A3 | Binding Workers AI absent de l’environnement | Ajouter le binding `AI` au Worker |
 | `EXECUTOR_TIMEOUT` | A3 | Fournisseur sans réponse dans le délai | Tentative en échec, reprise A1 |
-| `EXECUTOR_BAD_RESPONSE` | A3 | Réponse du fournisseur sans texte exploitable | Tentative en échec ; vérifier le modèle |
+| `EXECUTOR_BAD_RESPONSE` | A3 | Réponse du fournisseur sans texte exploitable (`content: null`, souvent `finish_reason=length` avec des jetons de raisonnement) | Tentative en échec ; lire `error_detail`, vérifier le modèle et le plafond de jetons |
 | `EXECUTOR_INVALID_LIMIT` | A3 | `max_tokens` hors de 1 à 2048 | Corriger la limite |
 | `EXECUTOR_INPUT_TOO_LARGE` | A3 | Paquet au-delà de 60 000 caractères | Réduire le paquet |
 | `INVALID_OWNER_OP` | A3 | Inscription d’endpoint hors demande liée et sans `op` | Passer par une demande `register_endpoint` |

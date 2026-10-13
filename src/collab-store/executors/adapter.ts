@@ -61,6 +61,17 @@ export const FREE_MODEL_RATES: Readonly<Record<string, { input_per_m: number; ou
 };
 
 /**
+ * Options d'appel propres à un modèle. glm-4.7-flash raisonne par défaut : les
+ * jetons de raisonnement consomment `max_tokens` avant la réponse, et un petit
+ * plafond rend `content: null` (sonde réelle du 2026-10-13, seq 122 :
+ * EXECUTOR_BAD_RESPONSE). Le pilote demande des réponses directes, donc le
+ * raisonnement est coupé via le gabarit de chat.
+ */
+export const MODEL_CALL_OPTIONS: Readonly<Record<string, Record<string, unknown>>> = {
+  '@cf/zai-org/glm-4.7-flash': { chat_template_kwargs: { enable_thinking: false } },
+};
+
+/**
  * Modèles Workers AI qui exigent un moyen de paiement (page tarifaire Cloudflare,
  * relevée le 2026-10-12). Refusés d'office : le pilote reste à 0 €. La liste
  * n'est qu'un garde-fou ; seule la sonde owner rend un endpoint actif.
@@ -144,9 +155,21 @@ export function readWorkersAiOutput(raw: unknown): { text: string; usage: LlmUsa
     const choices = value.choices as Array<{ message?: { content?: unknown } }> | undefined;
     text = Array.isArray(choices) ? choices[0]?.message?.content : undefined;
   }
-  if (typeof text !== 'string') throw adapterError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur sans texte exploitable.');
   const usage = (value.usage ?? {}) as Record<string, unknown>;
+  if (typeof text !== 'string') {
+    throw adapterError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur sans texte exploitable (' + responseDiagnostic(value, usage) + ').');
+  }
   return { text, usage: { input_tokens: nonNegativeInt(usage.prompt_tokens), output_tokens: nonNegativeInt(usage.completion_tokens) } };
+}
+
+/** Diagnostic sans contenu du fournisseur : seulement des champs techniques bornés. */
+function responseDiagnostic(value: Record<string, unknown>, usage: Record<string, unknown>): string {
+  const choices = value.choices as Array<{ finish_reason?: unknown }> | undefined;
+  const finish = Array.isArray(choices) ? choices[0]?.finish_reason : undefined;
+  const details = (usage.completion_tokens_details ?? {}) as Record<string, unknown>;
+  return 'finish_reason=' + (typeof finish === 'string' && /^[a-z_]{1,32}$/.test(finish) ? finish : 'absent')
+    + ', completion_tokens=' + nonNegativeInt(usage.completion_tokens)
+    + ', reasoning_tokens=' + nonNegativeInt(details.reasoning_tokens);
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -179,7 +202,9 @@ export function createWorkersAiAdapter(ai: WorkersAiBinding, attestationRef: str
     neuronsFor: usage => neurons(usage.input_tokens, usage.output_tokens),
     async generate(input) {
       assertGenerateInput(input);
-      const raw = await withTimeout(ai.run(model, { messages: envelope(input.control, input.data), max_tokens: input.max_tokens }),
+      const raw = await withTimeout(ai.run(model, {
+        ...MODEL_CALL_OPTIONS[model], messages: envelope(input.control, input.data), max_tokens: input.max_tokens,
+      }),
         options.timeout_ms ?? DEFAULT_TIMEOUT_MS);
       const { text, usage } = readWorkersAiOutput(raw);
       return { text, usage, provider: WORKERS_AI_PROVIDER, model };

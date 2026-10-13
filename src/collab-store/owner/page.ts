@@ -194,7 +194,7 @@ function capabilitiesText(caps: CapabilityRow['capability_set']): string {
 function executorSection(rows: CapabilityRow[], secret: string): string {
   const body = rows.map(row => {
     const probe = row.last_probe
-      ? (row.last_probe.ok ? 'réussie' : 'en échec') + ' · seq ' + row.last_probe.seq + ' · ' + row.last_probe.latency_ms + ' ms'
+      ? (row.last_probe.ok ? 'réussie' : 'en échec' + (row.last_probe.error ? ' (' + row.last_probe.error + ')' : '')) + ' · seq ' + row.last_probe.seq + ' · ' + row.last_probe.latency_ms + ' ms'
       : 'jamais sondé';
     const button = row.attestation_kind === 'provider_adapter' && row.status !== 'retired'
       ? '<form method="post" action="/owner"><input type="hidden" name="action" value="probe_endpoint">'
