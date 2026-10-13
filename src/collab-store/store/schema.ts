@@ -257,6 +257,32 @@ export const STORE_MIGRATION_0007 = [
   ].join(' '),
 ];
 
+/**
+ * Store-owned migration 0008 (CC-4 A4, issue #121) : rôle coordinateur accordé
+ * exclusivement par décision owner et notes owner des exécuteurs. Les métriques
+ * de performance sont calculées depuis les invocations/tentatives A1 existantes.
+ */
+export const STORE_MIGRATION_0008 = [
+  [
+    'CREATE TABLE IF NOT EXISTS coordinators (',
+    '  participant_id TEXT PRIMARY KEY REFERENCES participants(participant_id),',
+    "  status TEXT NOT NULL CHECK (status IN ('active','revoked')),",
+    '  event_seq INTEGER REFERENCES events(seq),',
+    '  updated_at INTEGER NOT NULL',
+    ')',
+  ].join(' '),
+  [
+    'CREATE TABLE IF NOT EXISTS executor_notes (',
+    '  endpoint_id TEXT PRIMARY KEY REFERENCES endpoints(endpoint_id),',
+    "  strengths TEXT NOT NULL DEFAULT '',",
+    "  weaknesses TEXT NOT NULL DEFAULT '',",
+    '  event_seq INTEGER REFERENCES events(seq),',
+    '  updated_at INTEGER NOT NULL',
+    ')',
+  ].join(' '),
+  'CREATE INDEX IF NOT EXISTS idx_invocations_endpoint_finished ON invocations(endpoint_id, finished_at)',
+];
+
 const ENSURED = new WeakSet<object>();
 
 function runnableStatements(sql: string): string[] {
@@ -283,6 +309,8 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     ...INVOCATION_SCHEMA_0006.map(statement => db.prepare(statement)),
     // CC-4 A2 (0007) : arrêt d'urgence et enveloppes budgétaires.
     ...STORE_MIGRATION_0007.map(statement => db.prepare(statement)),
+    // CC-4 A4 (0008) : coordinateurs owner-only, notes exécuteurs et index métriques.
+    ...STORE_MIGRATION_0008.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.
