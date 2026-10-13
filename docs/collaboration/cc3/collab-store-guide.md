@@ -215,12 +215,13 @@ L’acte est alors écrit comme **un seul** `owner.decision`, qui porte `request
 
 ### 6.3 Exécuteur par API gratuite (CC-4 A3)
 
-Premier fournisseur : **Cloudflare Workers AI**, lié au Worker par le binding `AI`. Aucune clé n'est créée, manipulée par un agent ni stockée dans le store.
+Fournisseurs du pilote : **Cloudflare Workers AI**, lié au Worker par le binding `AI`, et **OpenRouter** via l’adaptateur compatible OpenAI. Pour OpenRouter, l’URL est fixée dans le code serveur à `https://openrouter.ai/api/v1/chat/completions` et la clé vient uniquement du secret Worker `LLM_KEY_OPENROUTER` posé par Kevin. Ni l’URL ni la clé ne viennent d’un endpoint, d’une demande, d’un formulaire, d’un prompt ou du store.
 
 **Gratuité démontrable avant l'appel** (revue #117) :
 - **Liste blanche** de modèles, avec leur tarif en neurons relevé le 2026-10-13 : `@cf/zai-org/glm-4.7-flash` et `@cf/google/gemma-4-26b-a4b-it`. Tout autre modèle est refusé : déprécié (comme `@cf/meta/llama-3.1-8b-instruct`, retiré le 2026-05-30), payant (`EXECUTOR_PAID_MODEL`) ou non relevé (`EXECUTOR_UNSUPPORTED`).
 - **Registre journalier de neurons** (remise à 00:00 UTC, comme l'allocation Cloudflare de 10 000 neurons par jour). Avant chaque appel, sonde comprise, le **pire cas** est réservé : octets d'entrée et plafond de jetons de sortie, multipliés par le tarif du modèle. La réservation est refusée si elle dépasserait le budget (`EXECUTOR_NEURON_BUDGET` ; 8 000 par défaut, variable `WORKERS_AI_DAILY_NEURONS`, 9 500 au maximum). Après l'appel, la réserve est ramenée au réel d'après l'usage rapporté. Après une erreur ou un délai dépassé, le pire cas est conservé, car l'appel a pu consommer.
 - **Hypothèse** : seul ce Worker utilise Workers AI sur le compte Cloudflare. Sur un compte Workers Free, un dépassement donne de toute façon une erreur, jamais une facture.
+- **OpenRouter** : seules les attestations `openrouter:<éditeur>/<modèle>:free` sont acceptées ; l’absence du suffixe `:free` est refusée (`EXECUTOR_PAID_MODEL`). La requête utilise `envelope()`, `max_tokens` et `provider: { data_collection: 'deny' }`. Le chemin retourne 0 neuron et ne réserve donc rien dans le registre Workers AI ; le plafond commun par endpoint reste 50 appels/jour. Une réponse HTTP non 2xx devient `EXECUTOR_UPSTREAM_HTTP` avec le statut uniquement : le corps fournisseur n’est jamais recopié.
 
 **Cycle de vie d'un endpoint** (matrice §4.1 du plan, section « Exécuteurs » de `/owner`) :
 1. Un agent dépose une demande exécutable `register_endpoint` dont les `params` suivent le contrat A0 : `endpoint_id`, `principal_id`, `attestation_kind` = `provider_adapter`, `attestation_ref` = `workers-ai:@cf/<éditeur>/<modèle>`, `status` = `probe_required`, `capability_set`. Kevin l'approuve sur `/owner`.
@@ -232,14 +233,16 @@ Le principal d'un endpoint est immuable (`ENDPOINT_PRINCIPAL_IMMUTABLE`) et une 
 **Dispatch d'une invocation A1** (`dispatchFreeInvocation`), garde-fous dans l'ordre :
 - arrêt d'urgence ;
 - endpoint `active`, `provider_adapter`, lié au principal de l'invocation ;
-- capacités deny-by-default : outil `llm.generate`, fournisseur `workers-ai`, `token_ceiling` explicite et au moins égal à `max_tokens` ;
+- capacités deny-by-default : outil `llm.generate`, **fournisseur réel de l’adaptateur** (`workers-ai` ou `openrouter`), `token_ceiling` explicite et au moins égal à `max_tokens` ;
 - paquet d'entrée identique à l'empreinte enregistrée par A1 (`INVOCATION_INPUT_MISMATCH`) ;
 - validations locales (limites, taille du paquet) **avant** tout quota ou bail : une erreur de configuration ne consomme ni le plafond, ni une tentative A1 ;
 - plafond quotidien d'appels par endpoint (`EXECUTOR_DAILY_CAP`, 50 par défaut, variable `EXECUTOR_DAILY_CAP`) ;
-- réserve du pire cas en neurons (voir ci-dessus) ;
+- réserve du pire cas en neurons pour Workers AI seulement ; si l’adaptateur annonce un pire cas de 0 (OpenRouter `:free`), aucune réservation neurons n’est créée ;
 - bail A1 avec réserve de 0 €, soldée à la clôture.
 
 Les consignes de contrôle viennent du code serveur ; le paquet (texte externe) est placé dans une enveloppe marquée non fiable que le texte ne peut pas refermer (§6.1 du plan). Aucun outil n'est donné au modèle. La sortie est rendue à l'appelant mais jamais persistée : seule son empreinte l'est. Une erreur du fournisseur devient une tentative en échec, reprise selon les règles A1.
+
+**A4-mini — Tâche d’essai sur `/owner`.** Sous chaque endpoint actif, Kevin peut choisir uniquement une consigne fixée dans le serveur (`résumer` ou `relire (signaler les risques)`) et fournir au plus 4 000 caractères de données. Le serveur crée dans `owner-trials` un événement actionnable et une invocation A1 dans le même batch, avec l’endpoint et son principal ; l’événement ne porte que l’empreinte de l’entrée. L’invocation est ensuite exécutée immédiatement par `dispatchFreeInvocation`, donc arrêt d’urgence, capacités, plafond quotidien, contrôle de paquet, bail et réserve 0 € restent applicables. Le texte de réponse est affiché dans la réponse HTML courante, échappé, mais n’est jamais stocké ; A1 conserve uniquement son empreinte, l’usage et la provenance.
 
 Merges vers `main`/`master`, dérogations, promotion et production restent humains (I9). Aucune politique ne peut les automatiser.
 
@@ -321,13 +324,16 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `EXECUTOR_DAILY_CAP` | A3 | Plafond quotidien d’appels de l’endpoint atteint | Réessayer le lendemain |
 | `EXECUTOR_UNSUPPORTED` | A3 | Fournisseur non pris en charge, ou modèle hors de la liste gratuite vérifiée (déprécié, non relevé) | Choisir un modèle de la liste (§6.3) |
 | `EXECUTOR_NEURON_BUDGET` | A3 | La réserve du pire cas dépasserait le budget journalier de neurons | Réessayer après 00:00 UTC, ou réduire `max_tokens` / le paquet |
-| `EXECUTOR_PAID_MODEL` | A3 | Modèle Workers AI qui exige un moyen de paiement | Choisir un modèle gratuit |
-| `EXECUTOR_UNAVAILABLE` | A3 | Binding Workers AI absent de l’environnement | Ajouter le binding `AI` au Worker |
+| `EXECUTOR_PAID_MODEL` | A3 | Modèle hors du chemin gratuit (notamment OpenRouter sans suffixe `:free`, ou modèle Workers AI payant) | Choisir un modèle gratuit autorisé |
+| `EXECUTOR_UNAVAILABLE` | A3 | Binding Workers AI absent ou secret du fournisseur compatible OpenAI absent | Configurer le binding/secret sur le Worker, jamais via un agent |
+| `EXECUTOR_UPSTREAM_HTTP` | A3c | Le fournisseur compatible OpenAI a répondu avec un statut HTTP non 2xx ; seul le statut est conservé | Vérifier le fournisseur puis laisser A1 reprendre la tentative |
 | `EXECUTOR_TIMEOUT` | A3 | Fournisseur sans réponse dans le délai | Tentative en échec, reprise A1 |
 | `EXECUTOR_BAD_RESPONSE` | A3 | Réponse du fournisseur sans texte exploitable (`content: null`, souvent `finish_reason=length` avec des jetons de raisonnement) | Tentative en échec ; lire `error_detail`, vérifier le modèle et le plafond de jetons |
 | `EXECUTOR_INVALID_LIMIT` | A3 | `max_tokens` hors de 1 à 2048 | Corriger la limite |
 | `EXECUTOR_INPUT_TOO_LARGE` | A3 | Paquet au-delà de 60 000 caractères | Réduire le paquet |
 | `INVALID_OWNER_OP` | A3 | Inscription d’endpoint hors demande liée et sans `op` | Passer par une demande `register_endpoint` |
+| `OWNER_TRIAL_INVALID_INSTRUCTION` | A4-mini | La consigne de Tâche d’essai ne fait pas partie de la liste fixée dans le serveur | Choisir `résumer` ou `relire (signaler les risques)` sur `/owner` |
+| `OWNER_TRIAL_INVALID_DATA` | A4-mini | Données de Tâche d’essai vides ou supérieures à 4 000 caractères | Fournir 1 à 4 000 caractères |
 
 ### 7.3 Phases, contexte et scellement (C3)
 
