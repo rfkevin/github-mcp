@@ -32,7 +32,7 @@ function normalizeMembers(value: readonly string[]): string[] {
   if (new Set(members).size !== members.length) {
     throw new CollabStoreError('IDENTITY_FAMILY_INVALID', 'Un participant apparaît plusieurs fois dans la famille.');
   }
-  return [...members].sort();
+  return [...members].sort((left, right) => left.localeCompare(right));
 }
 
 export async function setIdentityFamily(db: D1Database, input: {
