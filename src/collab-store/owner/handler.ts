@@ -16,17 +16,15 @@ import { importStateSnapshot, listImportedStates } from './state-import';
 import { parseExportTarget } from '../export/state-import-plan';
 import { installPhaseDefinitions } from './phase-install';
 import { capabilityMatrix } from '../executors/registry';
-import { parseDailyCap, parseNeuronBudget, probeEndpoint, workersAiFactory } from '../executors/run';
-import type { WorkersAiBinding } from '../executors/adapter';
+import { parseDailyCap, parseNeuronBudget, probeEndpoint, providerAdapterFactory, type ProviderAdapterEnv } from '../executors/run';
+import { runOwnerTrial } from './trials';
 
 export const OWNER_PATH = '/owner';
 // CC-3 C6 : un import d'état CC-STATE-1 (≤ 256 Kio) passe par ce formulaire ; marge pour l'encodage.
 const MAX_FORM_BYTES = 786_432;
 
-export interface OwnerRouteEnv extends OwnerChannelEnv {
+export interface OwnerRouteEnv extends OwnerChannelEnv, ProviderAdapterEnv {
   COLLAB_DB?: D1Database;
-  /** CC-4 A3 : binding Workers AI (API gratuite) ; absent = sonde indisponible. */
-  AI?: WorkersAiBinding;
   /** CC-4 A3 : plafond quotidien d'appels par endpoint (défaut 50). */
   EXECUTOR_DAILY_CAP?: string;
   /** CC-4 A3 : budget journalier de neurons Workers AI (défaut 8 000, max 9 500, sous les 10 000 gratuits). */
@@ -54,7 +52,7 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint'] as const;
+const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial'] as const;
 
 /** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
 async function dashboardData(db: D1Database, before?: number) {
@@ -160,13 +158,21 @@ export async function handleOwnerRequest(
       message = { text: (action === 'halt' ? 'Arrêt d’urgence posé' : 'Automatisation reprise') + ' (seq ' + result.event.seq + ').', error: false };
     } else if (action === 'probe_endpoint') {
       // CC-4 A3 : sonde réelle de l'endpoint (paquet fixe du serveur), seule preuve permettant son activation.
-      const result = await probeEndpoint(db, workersAiFactory(env.AI), {
+      const result = await probeEndpoint(db, providerAdapterFactory(env), {
         endpoint_id: field('endpoint_id'), proof, op, daily_cap: parseDailyCap(env.EXECUTOR_DAILY_CAP),
         neuron_budget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
       });
       message = { text: 'Sonde ' + (result.ok ? 'réussie' : 'en échec' + (result.error ? ' (' + result.error + ')' : '')
         + (result.error_detail ? ' : ' + result.error_detail : ''))
         + ' pour ' + field('endpoint_id') + ' (seq ' + result.event.seq + ').', error: !result.ok };
+    } else if (action === 'run_trial') {
+      const result = await runOwnerTrial(db, providerAdapterFactory(env), {
+        endpoint_id: field('endpoint_id'), instruction: field('trial_instruction'), data: field('trial_data'),
+        daily_cap: parseDailyCap(env.EXECUTOR_DAILY_CAP), neuron_budget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
+      });
+      message = result.status === 'succeeded'
+        ? { text: 'Tâche d’essai réussie sur ' + field('endpoint_id') + '. Réponse : ' + (result.output ?? ''), error: false }
+        : { text: 'Tâche d’essai non terminée (' + result.status + ')' + (result.error ? ' : ' + result.error : '') + '.', error: true };
     } else if (action === 'install_phases') {
       // CR-A / CR-03 : amorçage owner des définitions de phase (vide = P1–P6, auto_advance none).
       const result = await installPhaseDefinitions(db, { cycle_id: field('cycle_id'), definitions: field('phases'), proof });

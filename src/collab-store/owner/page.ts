@@ -7,6 +7,7 @@ import type { DescribedPendingPage, PendingWithExecutable } from './executable';
 import type { BudgetEnvelope } from './automation';
 import type { CapabilityRow } from '../executors/registry';
 import type { ImportedStateSummary } from './state-import';
+import { OWNER_TRIAL_INSTRUCTIONS, OWNER_TRIAL_MAX_DATA } from './trials';
 
 export const OWNER_PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
@@ -192,6 +193,7 @@ function capabilitiesText(caps: CapabilityRow['capability_set']): string {
 
 /** CC-4 A3 : matrice §4.1 — un endpoint par ligne, dernière sonde, bouton de sonde pour les adaptateurs API. */
 function executorSection(rows: CapabilityRow[], secret: string): string {
+  const options = OWNER_TRIAL_INSTRUCTIONS.map(item => '<option value="' + escapeHtml(item.key) + '">' + escapeHtml(item.label) + '</option>').join('');
   const body = rows.map(row => {
     const probe = row.last_probe
       ? (row.last_probe.ok ? 'réussie' : 'en échec' + (row.last_probe.error ? ' (' + row.last_probe.error + ')' : '')) + ' · seq ' + row.last_probe.seq + ' · ' + row.last_probe.latency_ms + ' ms'
@@ -201,15 +203,23 @@ function executorSection(rows: CapabilityRow[], secret: string): string {
         + '<input type="hidden" name="endpoint_id" value="' + escapeHtml(row.endpoint_id) + '">' + secret
         + '<button type="submit">Sonder</button></form>'
       : '';
-    return '<tr><td><code>' + escapeHtml(row.endpoint_id) + '</code><br>' + escapeHtml(row.principal_id) + '</td><td>'
+    const endpointRow = '<tr><td><code>' + escapeHtml(row.endpoint_id) + '</code><br>' + escapeHtml(row.principal_id) + '</td><td>'
       + escapeHtml(row.attestation_kind) + '<br><code>' + escapeHtml(row.attestation_ref) + '</code></td><td>' + escapeHtml(row.status)
       + '</td><td>' + escapeHtml(capabilitiesText(row.capability_set)) + '</td><td>' + escapeHtml(probe) + button + '</td></tr>';
+    const trialRow = row.status === 'active'
+      ? '<tr><td colspan="5"><strong>Tâche d’essai</strong><form method="post" action="/owner">'
+        + '<input type="hidden" name="action" value="run_trial"><input type="hidden" name="endpoint_id" value="' + escapeHtml(row.endpoint_id) + '">'
+        + '<label>Consigne <select name="trial_instruction" required>' + options + '</select></label>'
+        + '<label>Données <textarea name="trial_data" maxlength="' + OWNER_TRIAL_MAX_DATA + '" required></textarea></label>'
+        + secret + '<p><button type="submit">Exécuter</button></p></form></td></tr>'
+      : '';
+    return endpointRow + trialRow;
   }).join('');
   return '<h2>Exécuteurs</h2>'
     + (body ? '<table><tr><th>Endpoint</th><th>Attestation</th><th>Statut</th><th>Capacités</th><th>Sonde</th></tr>' + body + '</table>'
       : '<p class="note">Aucun endpoint inscrit. Un agent prépare l’inscription ; vous l’approuvez dans les demandes en attente.</p>')
     + '<p class="note">Un endpoint ne devient actif qu’après une sonde réussie puis une demande d’activation approuvée. '
-    + 'La sonde fait un appel réel au fournisseur gratuit, avec un message fixe défini par le serveur.</p>';
+    + 'La sonde et la tâche d’essai font un appel réel au fournisseur gratuit avec des consignes fixées par le serveur.</p>';
 }
 
 function importSection(imports: ImportedStateSummary[], secret: string): string {

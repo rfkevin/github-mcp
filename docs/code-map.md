@@ -138,7 +138,9 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 
 ## CC-4 A3 — exécuteur par API gratuite
 
-- `src/collab-store/executors/adapter.ts` : adaptateur Workers AI (binding `AI`, aucune clé), modèles payants refusés, enveloppe de données non fiables, délai, lecture des deux formats de réponse.
+- `src/collab-store/executors/adapter.ts` : adaptateur Workers AI (binding `AI`, aucune clé), modèles gratuits allowlistés, enveloppe de données non fiables, délai, lecture des formats de réponse.
+- `src/collab-store/executors/openai-compatible.ts` (A3c) : surface compatible OpenAI à fournisseurs codés côté serveur ; premier fournisseur OpenRouter, URL fixe, secret Worker `LLM_KEY_OPENROUTER`, modèles `:free` seulement, `data_collection: deny`.
 - `src/collab-store/executors/registry.ts` : endpoints (table A0 `endpoints`) inscrits et activés par demande owner `register_endpoint` seulement ; activation conditionnée à une sonde réussie ; matrice §4.1.
-- `src/collab-store/executors/run.ts` : sonde owner (`probeEndpoint`), plafond quotidien, `dispatchFreeInvocation` (capacités deny-by-default, empreinte du paquet, bail A1, réserve 0 €).
-- `/owner` : section « Exécuteurs » et action `probe_endpoint` (`owner/handler.ts`, `owner/page.ts`). Tests : `test/collab-store/executors/free-api.spec.ts`.
+- `src/collab-store/executors/run.ts` : fabrique provider-aware, sonde owner (`probeEndpoint`), plafond quotidien, `dispatchFreeInvocation` (capacités du fournisseur réel, empreinte du paquet, bail A1, réserve 0 € ; neurons seulement si l’adaptateur en annonce).
+- `src/collab-store/owner/trials.ts` (A4-mini) : consignes serveur fixes, création `appendActionableEvent` dans `owner-trials`, exécution immédiate et retour éphémère de la sortie.
+- `/owner` : section « Exécuteurs », actions `probe_endpoint` et `run_trial` (`owner/handler.ts`, `owner/page.ts`) ; Tâche d’essai uniquement sous endpoint actif. Tests : `test/collab-store/executors/{free-api,openai-compatible}.spec.ts`, `test/collab-store/owner/trials.spec.ts`.
