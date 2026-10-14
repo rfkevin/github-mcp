@@ -35,6 +35,39 @@ function normalizeMembers(value: readonly string[]): string[] {
   return [...members].sort((left, right) => left.localeCompare(right));
 }
 
+interface OpenTaskD12Conflict {
+  cycle_id: string;
+  task_id: string;
+  owner_pid: string;
+  reviewer_pid: string;
+  tester_pid: string;
+}
+
+async function openTaskD12Conflicts(db: D1Database, members: readonly string[]): Promise<OpenTaskD12Conflict[]> {
+  if (members.length < 2) return [];
+  const membersJson = JSON.stringify(members);
+  const { results } = await db.prepare([
+    'SELECT t.cycle_id, t.task_id, t.owner_pid, t.reviewer_pid, t.tester_pid',
+    'FROM tasks t JOIN cycles c ON c.cycle_id = t.cycle_id',
+    "WHERE c.status = 'open' AND (",
+    '  (CASE WHEN t.owner_pid IN (SELECT value FROM json_each(?1)) THEN 1 ELSE 0 END) +',
+    '  (CASE WHEN t.reviewer_pid IN (SELECT value FROM json_each(?1)) THEN 1 ELSE 0 END) +',
+    '  (CASE WHEN t.tester_pid IN (SELECT value FROM json_each(?1)) THEN 1 ELSE 0 END)',
+    ') >= 2',
+    'ORDER BY t.cycle_id, t.task_id LIMIT 50',
+  ].join(' ')).bind(membersJson).all<OpenTaskD12Conflict>();
+  return results ?? [];
+}
+
+function d12ConflictError(conflicts: readonly OpenTaskD12Conflict[]): CollabStoreError {
+  const tasks = conflicts.map(row => row.cycle_id + '/' + row.task_id +
+    ' (' + row.owner_pid + ', ' + row.reviewer_pid + ', ' + row.tester_pid + ')').join('; ');
+  return new CollabStoreError(
+    'IDENTITY_FAMILY_D12_CONFLICT',
+    'La famille rendrait non conforme D12 au moins une tâche d’un cycle ouvert. Réattribuez d’abord ces tâches : ' + tasks,
+  );
+}
+
 export async function setIdentityFamily(db: D1Database, input: {
   family_id: string;
   members: readonly string[];
@@ -69,40 +102,55 @@ export async function setIdentityFamily(db: D1Database, input: {
         'Un membre appartient déjà à une autre famille ; retirez-le d’abord via une demande owner distincte.');
     }
   }
+  const preexistingConflicts = await openTaskD12Conflicts(db, members);
+  if (preexistingConflicts.length) throw d12ConflictError(preexistingConflicts);
+
   const previous = await latestIdentityFamilyActSeq(db, familyId);
   assertBindingPrecondition(input.binding, previous);
   const prefix = IDENTITY_FAMILY_KEY_PREFIX + familyId;
   const bound = bindingGuard(input.binding, prefix + ':');
   const guardParts = ['(' + bound.sql + ')'];
-  const guardBinds: unknown[] = [...bound.binds];
   // ownerAppend réserve ?1.. ?3 ; bindingGuard consomme ?4.. ?6.
-  const memberPlaceholders = members.map((_, index) => '?' + (7 + index)).join(',');
-  const activeCountIndex = 7 + members.length;
-  const familyIdIndex = activeCountIndex + 1;
-  if (members.length) {
-    guardParts.push('(SELECT COUNT(*) FROM participants WHERE participant_id IN (' + memberPlaceholders
-      + ") AND status = 'active') = ?" + activeCountIndex);
-    guardParts.push('NOT EXISTS (SELECT 1 FROM participant_identity_families WHERE participant_id IN ('
-      + memberPlaceholders + ') AND family_id <> ?' + familyIdIndex + ')');
-  }
-  guardParts.push('NOT EXISTS (SELECT 1 FROM participants WHERE participant_id = ?' + familyIdIndex + ')');
-  guardBinds.push(...members, members.length, familyId);
+  // ?7 = JSON des membres, ?8 = cardinalité, ?9 = family_id.
+  const membersJson = JSON.stringify(members);
+  const guardBinds: unknown[] = [...bound.binds, membersJson, members.length, familyId];
+  guardParts.push("(SELECT COUNT(*) FROM participants WHERE participant_id IN (SELECT value FROM json_each(?7)) AND status = 'active') = ?8");
+  guardParts.push('NOT EXISTS (SELECT 1 FROM participant_identity_families WHERE participant_id IN '
+    + '(SELECT value FROM json_each(?7)) AND family_id <> ?9)');
+  guardParts.push('NOT EXISTS (SELECT 1 FROM participants WHERE participant_id = ?9)');
+  guardParts.push([
+    'NOT EXISTS (SELECT 1 FROM tasks t JOIN cycles c ON c.cycle_id = t.cycle_id',
+    "WHERE c.status = 'open' AND (",
+    '  (CASE WHEN t.owner_pid IN (SELECT value FROM json_each(?7)) THEN 1 ELSE 0 END) +',
+    '  (CASE WHEN t.reviewer_pid IN (SELECT value FROM json_each(?7)) THEN 1 ELSE 0 END) +',
+    '  (CASE WHEN t.tester_pid IN (SELECT value FROM json_each(?7)) THEN 1 ELSE 0 END)',
+    ') >= 2)',
+  ].join(' '));
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
-  const result = await ownerAppend(db, {
-    cycleId: REGISTRY_CYCLE,
-    key: bindingKey(prefix, input.binding),
-    payload: { action: 'set_identity_family', family_id: familyId, members, ...bindingPayload(input.binding) },
-    proof: input.proof,
-    extraGuard: { sql: guardParts.join(' AND '), binds: guardBinds },
-    sideEffects: eventKey => [
-      ...bindingStatements(db, input.binding, input.proof, eventKey, input.now),
-      db.prepare('DELETE FROM participant_identity_families WHERE family_id = ?1').bind(familyId),
-      ...members.map(participantId => db.prepare([
-        'INSERT INTO participant_identity_families (participant_id, family_id, event_seq, updated_at)',
-        'VALUES (?1, ?2, (SELECT seq FROM events WHERE idempotency_key = ?3), ?4)',
-      ].join(' ')).bind(participantId, familyId, eventKey, at)),
-    ],
-    now: input.now,
-  });
+  let result: OwnerWriteResult;
+  try {
+    result = await ownerAppend(db, {
+      cycleId: REGISTRY_CYCLE,
+      key: bindingKey(prefix, input.binding),
+      payload: { action: 'set_identity_family', family_id: familyId, members, ...bindingPayload(input.binding) },
+      proof: input.proof,
+      extraGuard: { sql: guardParts.join(' AND '), binds: guardBinds },
+      sideEffects: eventKey => [
+        ...bindingStatements(db, input.binding, input.proof, eventKey, input.now),
+        db.prepare('DELETE FROM participant_identity_families WHERE family_id = ?1').bind(familyId),
+        ...members.map(participantId => db.prepare([
+          'INSERT INTO participant_identity_families (participant_id, family_id, event_seq, updated_at)',
+          'VALUES (?1, ?2, (SELECT seq FROM events WHERE idempotency_key = ?3), ?4)',
+        ].join(' ')).bind(participantId, familyId, eventKey, at)),
+      ],
+      now: input.now,
+    });
+  } catch (error) {
+    if (error instanceof CollabStoreError && error.code === 'OWNER_PRECONDITION_FAILED') {
+      const concurrentConflicts = await openTaskD12Conflicts(db, members);
+      if (concurrentConflicts.length) throw d12ConflictError(concurrentConflicts);
+    }
+    throw error;
+  }
   return { ...result, family_id: familyId, members };
 }

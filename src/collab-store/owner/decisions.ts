@@ -372,17 +372,47 @@ export async function registerParticipant(db: D1Database, input: {
   assertParticipantId(input.participant_id);
   const label = input.display_label.trim().slice(0, 80);
   if (!label) throw new CollabStoreError('INVALID_LABEL', 'Libellé requis (affichage seulement).');
-  return ownerAppend(db, {
-    cycleId: REGISTRY_CYCLE,
-    key: 'owner-registry:register:' + input.op,
-    payload: { action: 'register_participant', participant_id: input.participant_id, display_label: label },
-    proof: input.proof,
-    sideEffects: () => [db.prepare([
-      "INSERT INTO participants (participant_id, display_label, status) VALUES (?1, ?2, 'active')",
-      "ON CONFLICT(participant_id) DO UPDATE SET display_label = excluded.display_label, status = 'active'",
-    ].join(' ')).bind(input.participant_id, label)],
-    now: input.now,
-  });
+  await ensureSchema(db);
+  const familyCollision = await db.prepare(
+    'SELECT 1 AS ok FROM participant_identity_families WHERE family_id = ?1 LIMIT 1',
+  ).bind(input.participant_id).first<{ ok: number }>();
+  if (familyCollision) {
+    throw new CollabStoreError(
+      'IDENTITY_FAMILY_INVALID',
+      'Identifiant réservé par une famille logique existante : choisissez un autre participant_id.',
+    );
+  }
+  try {
+    return await ownerAppend(db, {
+      cycleId: REGISTRY_CYCLE,
+      key: 'owner-registry:register:' + input.op,
+      payload: { action: 'register_participant', participant_id: input.participant_id, display_label: label },
+      proof: input.proof,
+      // #126 revue Claude : fermer aussi la course famille créée entre le pré-check et le batch.
+      extraGuard: {
+        sql: 'NOT EXISTS (SELECT 1 FROM participant_identity_families WHERE family_id = ?4)',
+        binds: [input.participant_id],
+      },
+      sideEffects: () => [db.prepare([
+        "INSERT INTO participants (participant_id, display_label, status) VALUES (?1, ?2, 'active')",
+        "ON CONFLICT(participant_id) DO UPDATE SET display_label = excluded.display_label, status = 'active'",
+      ].join(' ')).bind(input.participant_id, label)],
+      now: input.now,
+    });
+  } catch (error) {
+    if (error instanceof CollabStoreError && error.code === 'OWNER_PRECONDITION_FAILED') {
+      const concurrentFamily = await db.prepare(
+        'SELECT 1 AS ok FROM participant_identity_families WHERE family_id = ?1 LIMIT 1',
+      ).bind(input.participant_id).first<{ ok: number }>();
+      if (concurrentFamily) {
+        throw new CollabStoreError(
+          'IDENTITY_FAMILY_INVALID',
+          'Identifiant réservé par une famille logique créée entre-temps : aucun participant n’a été enregistré.',
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 /** Map an OAuth client id to a registered participant (one participant per client). */
