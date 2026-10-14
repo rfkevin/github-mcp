@@ -156,7 +156,7 @@ describe('CC-AUTO UX-0 — catalogue compact des exécuteurs', () => {
     for (const n of [0, 1, 10, 30]) {
       const fixtureRows = executorRows(n);
       const html = dashboardPage(config, dataWithExecutors(fixtureRows));
-      expect(html.match(/<details class="ep">/g)?.length, 'n=' + n).toBe(n);
+      expect((html.match(/<details class="ep">/g) ?? []).length, 'n=' + n).toBe(n);
       expect(html).not.toContain('<details class="ep" open');
       const expected: Record<string, number> = { active: 0, probe_required: 0, retired: 0 };
       for (const row of fixtureRows) expected[row.status] += 1;
