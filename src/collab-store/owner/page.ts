@@ -201,7 +201,7 @@ function statusBanner(data: DashboardData): string {
   return '<p><strong>' + data.pending.total + '</strong> demande(s) en attente · Automatisation '
     + (halted ? 'HALTÉE' : 'ACTIVE') + budget + '</p>'
     + (halted
-      ? '<p class="halt">Arrêt d'urgence posé : aucune action automatique ne démarre.</p>'
+      ? '<p class="halt">Arrêt d’urgence posé : aucune action automatique ne démarre.</p>'
       : '');
 }
 
