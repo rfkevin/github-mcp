@@ -94,17 +94,51 @@ describe('CC-4 #126 — famille d’identité ChatGPT', () => {
       .bind(gpt, sol).all<{ participant_id: string }>()).toMatchObject({ results: [{ participant_id: gpt }, { participant_id: sol }] });
   });
 
-  it('refuse une family_id qui collisionne avec un participant existant', async () => {
+  it('refuse la collision family_id ↔ participant dans les deux ordres', async () => {
     const tag = uniq('collision');
     const gpt = 'gpt6-' + tag;
     const sol = 'sol-' + tag;
-    const collision = 'grok-' + tag;
+    const existingParticipant = 'grok-' + tag;
     await register(gpt);
     await register(sol);
-    await register(collision);
-    expect(await codeOf(configureFamily(collision, [gpt, sol]))).toBe('IDENTITY_FAMILY_INVALID');
+    await register(existingParticipant);
+    expect(await codeOf(configureFamily(existingParticipant, [gpt, sol]))).toBe('IDENTITY_FAMILY_INVALID');
     expect(await logicalIdentityOf(db, gpt)).toBe(gpt);
-    expect(await logicalIdentityOf(db, collision)).toBe(collision);
+    expect(await logicalIdentityOf(db, existingParticipant)).toBe(existingParticipant);
+
+    const family = 'chatgpt-' + tag;
+    await configureFamily(family, [gpt, sol]);
+    expect(await codeOf(register(family, 'participant collision'))).toBe('IDENTITY_FAMILY_INVALID');
+    expect(await db.prepare('SELECT 1 AS ok FROM participants WHERE participant_id = ?1')
+      .bind(family).first<{ ok: number }>()).toBeNull();
+    expect(await logicalIdentityOf(db, gpt)).toBe(family);
+    expect(await logicalIdentityOf(db, sol)).toBe(family);
+  });
+
+  it('refuse une famille qui rendrait une tâche de cycle ouvert non conforme D12', async () => {
+    const tag = uniq('preexisting-d12');
+    const gpt = 'gpt6-' + tag;
+    const sol = 'sol-' + tag;
+    const vibe = 'vibe-' + tag;
+    const family = 'chatgpt-' + tag;
+    for (const pid of [gpt, sol, vibe]) await register(pid);
+    const store = new CollabStore(db);
+    const cycle = uniq('open-task');
+    const taskId = 'task' + (++n);
+    const claim = await store.appendEvent({
+      cycle_id: cycle, type: 'task.claim', participant_id: gpt, expected_rev: 0,
+      op_id: opIdClientFor(gpt) + ':' + cycle + ':claim:1',
+      payload_json: JSON.stringify({ task: { task_id: taskId, owner_pid: gpt, reviewer_pid: sol, tester_pid: vibe } }),
+    });
+    expect(claim.status).toBe('applied');
+
+    let failure: unknown;
+    try { await configureFamily(family, [gpt, sol]); } catch (error) { failure = error; }
+    expect((failure as { code?: string }).code).toBe('IDENTITY_FAMILY_D12_CONFLICT');
+    expect((failure as Error).message).toContain(cycle + '/' + taskId);
+    expect(await logicalIdentityOf(db, gpt)).toBe(gpt);
+    expect(await logicalIdentityOf(db, sol)).toBe(sol);
+    expect((await listIdentityFamilies(db)).some(item => item.family_id === family)).toBe(false);
   });
 
   it('Sol reprend une tâche GPT, voit son contexte et hérite du grant coordinateur, sans devenir un pair D12', async () => {
