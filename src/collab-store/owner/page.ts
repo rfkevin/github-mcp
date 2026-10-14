@@ -103,9 +103,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + '<p class="note">Chaque action est enregistrée comme événement owner.decision avec sa preuve (' + config.mode + ').'
     + (config.mode === 'secret' ? ' Le secret est redemandé à chaque action et n’est jamais conservé.' : '') + '</p>'
     + (data.message ? '<p class="msg' + (data.message.error ? ' err' : '') + '">' + escapeHtml(data.message.text) + '</p>' : '')
-    + automationSection(data.halted ?? false, data.budget, secret)
-    + coordinatorSection(data.coordinators ?? [])
-    + executorSection(data.executors ?? [], secret)
+    + statusBanner(data)
     + '<h2>Demandes en attente (' + data.pending.total + ')</h2>'
     + (rows ? '<table><tr><th>Demande</th><th>Participant</th><th>Résumé</th><th>Décision</th></tr>' + rows + '</table>'
       : '<p class="note">Aucune demande en attente.</p>')
@@ -114,6 +112,9 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
         + '<input type="hidden" name="before" value="' + data.pending.next_before + '">' + secret
         + '<p><button type="submit">Demandes plus anciennes</button></p></form>'
       : '')
+    + automationSection(data.halted ?? false, data.budget, secret)
+    + coordinatorSection(data.coordinators ?? [])
+    + executorSection(data.executors ?? [], secret)
     + '<h2>Participants</h2>'
     + (participants ? '<table><tr><th>Identifiant</th><th>Libellé (affichage)</th><th>Statut</th></tr>' + participants + '</table>' : '<p class="note">Aucun participant.</p>')
     + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="register">'
@@ -185,6 +186,23 @@ function executableDetail(item: PendingWithExecutable): string {
 
 function euros(cents: number): string {
   return (cents / 100).toFixed(2) + ' €';
+}
+
+/**
+ * CC-AUTO T1 : bandeau synthétique lecture seule — nombre de demandes, état de
+ * l'automatisation et budget visibles avant tout défilement. Aucun bouton ici :
+ * l'unique bouton halt/resume reste dans la section Automatisation.
+ */
+function statusBanner(data: DashboardData): string {
+  const halted = data.halted ?? false;
+  const budget = data.budget
+    ? ' · Budget restant ' + euros(data.budget.remaining_cents) + ' / ' + euros(data.budget.limit_cents)
+    : '';
+  return '<p><strong>' + data.pending.total + '</strong> demande(s) en attente · Automatisation '
+    + (halted ? 'HALTÉE' : 'ACTIVE') + budget + '</p>'
+    + (halted
+      ? '<p class="halt">Arrêt d’urgence posé : aucune action automatique ne démarre.</p>'
+      : '');
 }
 
 /** CC-4 A2 : arrêt d'urgence et enveloppe budgétaire globale. */
