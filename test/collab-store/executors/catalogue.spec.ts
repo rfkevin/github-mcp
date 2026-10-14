@@ -4,7 +4,7 @@ import {
 } from '../../../src/collab-store/executors/catalogue';
 
 describe('R4 catalogue multi-fournisseurs dormant', () => {
-  it('n'accorde jamais une sonde ou un dispatch via le catalogue', () => {
+  it('ne donne jamais une sonde ou un dispatch via le catalogue', () => {
     expect(MODEL_CANDIDATES.length).toBeGreaterThanOrEqual(10);
     for (const item of MODEL_CANDIDATES) {
       expect(item.catalogue_only).toBe(true);
@@ -53,7 +53,7 @@ describe('R4 catalogue multi-fournisseurs dormant', () => {
     expect(MODEL_CANDIDATES.every(x => x.source_url.startsWith('https://'))).toBe(true);
   });
 
-  it('est immuable au runtime : un catalogue ne s'active pas par mutation', () => {
+  it('est immuable au runtime : impossible d activer par mutation', () => {
     expect(Object.isFrozen(MODEL_CANDIDATES)).toBe(true);
     expect(Object.isFrozen(MODEL_CANDIDATES[0])).toBe(true);
     expect(catalogueCandidate('openrouter:qwen/qwen3.5-flash-02-23')?.paid_disabled)
