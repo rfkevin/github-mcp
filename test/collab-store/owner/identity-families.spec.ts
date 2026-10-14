@@ -14,6 +14,7 @@ import { planStateImport } from '../../../src/collab-store/export/state-import-p
 import { exportMemoryMarkdown } from '../../../src/collab-store/export/memory-export';
 import { buildRolePacket } from '../../../src/collab-store/context/packet';
 import { resolveContextTarget } from '../../../src/collab-store/context/resolution';
+import { EvidenceLedger } from '../../../src/collab-store/ledger/evidence-ledger';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const proof = { kind: 'secret' as const, subject: 'owner-secret' };
@@ -218,6 +219,21 @@ describe('CC-4 #126 — famille d’identité ChatGPT', () => {
       op_id: opIdClientFor(sol) + ':' + sharedCycle + ':memreview:1',
       payload_json: JSON.stringify({ memory: { id: sharedId, version: 1 } }),
     }))).toBe('MEMORY_SELF_ACTIVATION');
+  });
+
+  it('traite aussi les preuves ledger comme appartenant à une seule identité logique', async () => {
+    const tag = uniq('ledger');
+    const gpt = 'gpt6-' + tag;
+    const sol = 'sol-' + tag;
+    const grok = 'grok-' + tag;
+    const family = 'chatgpt-' + tag;
+    for (const pid of [gpt, sol, grok]) await register(pid);
+    await configureFamily(family, [gpt, sol]);
+    const ledger = new EvidenceLedger(db);
+    expect(await codeOf(ledger.append({ subject_pid: gpt, producer: sol, kind: 'metric', payload_json: '{"n":1}' })))
+      .toBe('LEDGER_SELF_WRITE');
+    const row = await ledger.append({ subject_pid: gpt, producer: grok, kind: 'metric', payload_json: '{"n":2}', evidence_ref: 'family-ledger-' + n });
+    expect((await ledger.listBySubject(sol)).map(item => item.seq)).toContain(row.seq);
   });
 
   it('l’import CC-STATE-1 refuse deux rôles appartenant à la même identité logique', async () => {
