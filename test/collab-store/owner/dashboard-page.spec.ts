@@ -73,7 +73,7 @@ describe('CC-AUTO T1 — rendu du tableau de bord /owner', () => {
       halted: true,
       budget: { scope: 'global', limit_cents: 500, reserved_cents: 100, spent_cents: 150, remaining_cents: 250 },
     }));
-    expect(halted).toContain('Automatisation HALTÉE</p>');
+    expect(halted).toContain('Automatisation HALTÉE · Budget restant 2.50 € / 5.00 €</p>');
     const bannerHalted = halted.slice(0, halted.indexOf('<h2>Demandes en attente'));
     expect(bannerHalted).toContain('class="halt"');
     expect(bannerHalted).toContain('urgence posé');
