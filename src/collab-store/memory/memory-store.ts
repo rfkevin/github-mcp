@@ -502,7 +502,7 @@ export class MemoryStore {
     const selfReview = sameIdentity && ownsPrivateScope
       && SELF_REVIEW_KINDS.has(row.kind) && SELF_REVIEW_CONFIDENCES.has(row.confidence);
     if (!selfReview) {
-      if (sameIdentity) throw new MemoryStoreError('MEMORY_SELF_ACTIVATION', 'reviewer and author are the same logical identity');
+      if (sameIdentity) throw new MemoryStoreError('MEMORY_SELF_ACTIVATION', 'reviewer must be distinct from the author logical identity');
       validateMemoryActivation(row.author_pid, reviewerPid);
     }
     if (row.evidence_refs === '[]' || !row.evidence_refs) {
