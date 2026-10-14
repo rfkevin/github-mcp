@@ -358,6 +358,11 @@ export class CollabStore {
       // garde d'effet mémoire) ; re-préparer le lifecycle sur l'état durable
       // donne la cause typée (ex. une candidature devenue non candidate),
       // sinon l'erreur d'origine est relancée telle quelle.
+      if (event.type === 'task.claim' || event.type === 'task.handoff') {
+        // #126 : une famille a pu être activée entre le pré-check et le batch.
+        // Re-préparer donne alors DUPLICATE_LOGICAL_IDENTITY au lieu d'une erreur SQL opaque.
+        await this.taskStatements(event, nextRevision);
+      }
       if (isMemoryEventType(event.type)) {
         await prepareMemoryEvent(this.db, event, nextRevision);
       }
@@ -535,9 +540,10 @@ export class CollabStore {
             : 'task.claim initial doit être fait par l\'owner de la tâche (' + assignment.owner_pid + '), pas par ' + event.participant_id,
         );
       }
-      await this.requireRegisteredParticipants([assignment.owner_pid, assignment.reviewer_pid, assignment.tester_pid]);
-      await assertDistinctLogicalParticipants(this.db, [assignment.owner_pid, assignment.reviewer_pid, assignment.tester_pid]);
-      return [this.db.prepare([
+      const assignmentPids = [assignment.owner_pid, assignment.reviewer_pid, assignment.tester_pid] as const;
+      await this.requireRegisteredParticipants([...assignmentPids]);
+      await assertDistinctLogicalParticipants(this.db, assignmentPids);
+      return [this.logicalTaskD12Guard(assignmentPids), this.db.prepare([
         'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status,',
         '                  owned_paths, target_ref, next_action, revision)',
         'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \'\', ?8, ?9)',
@@ -593,12 +599,29 @@ export class CollabStore {
     // A08 (F1): the (possibly new) owner must be a participant registered as
     // active on /owner (K6).
     await this.requireRegisteredParticipants([ownerPid]);
-    return [this.db.prepare(
+    return [this.logicalTaskD12Guard(pids as [string, string, string]), this.db.prepare(
       'UPDATE tasks SET next_action = ?2, owner_pid = ?3, revision = ?4 WHERE cycle_id = ?1 AND task_id = ?5'
     ).bind(event.cycle_id,
       typeof record.next_action === 'string' ? record.next_action : '',
       ownerPid,
       nextRevision, taskId)];
+  }
+
+  /**
+   * #126 : garde D12 dans le batch lui-même. Si une famille est créée après
+   * le pré-check mais avant le commit de task.claim/task.handoff, l'écriture
+   * échoue et tout le journal est rollback au lieu de matérialiser deux rôles
+   * de la même identité logique.
+   */
+  private logicalTaskD12Guard(pids: readonly [string, string, string]): D1PreparedStatement {
+    return this.db.prepare([
+      'INSERT INTO collab_store_guard (ok)',
+      'SELECT CASE WHEN COUNT(DISTINCT logical_id) = 3 THEN 1 ELSE 0 END FROM (',
+      '  SELECT COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?1), ?1) AS logical_id',
+      '  UNION ALL SELECT COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?2), ?2)',
+      '  UNION ALL SELECT COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?3), ?3)',
+      ')',
+    ].join(' ')).bind(...pids);
   }
 
   /**
