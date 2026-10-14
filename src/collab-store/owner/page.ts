@@ -74,6 +74,8 @@ export interface DashboardData {
   pending: DescribedPendingPage;
   participants: Array<{ participant_id: string; display_label: string; status: string }>;
   clients: Array<{ oauth_client_id: string; participant_id: string; approved_event_seq: number | null }>;
+  /** #126 : ids historiques qui représentent une même identité logique. */
+  identityFamilies?: Array<{ family_id: string; members: string[]; event_seq: number | null; updated_at: number }>;
   /** CC-3 C6 : dernier état CC-STATE-1 importé par cycle. */
   imports?: ImportedStateSummary[];
   message?: { text: string; error: boolean };
@@ -118,6 +120,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + '<label>Identifiant <input type="text" name="participant_id" required pattern="[A-Za-z0-9][A-Za-z0-9:_-]{0,127}"></label>'
     + '<label>Libellé <input type="text" name="display_label" required maxlength="80"></label>' + secret
     + '<p><button type="submit">Enregistrer le participant</button></p></form></fieldset>'
+    + identityFamilySection(data.identityFamilies ?? [])
     + '<h2>Clients OAuth associés</h2>'
     + (clients ? '<table><tr><th>Client OAuth</th><th>Participant</th><th>Événement</th></tr>' + clients + '</table>' : '<p class="note">Aucun client associé : tous les clients sont « unregistered ».</p>')
     + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="map">'
@@ -155,7 +158,8 @@ function decisionCell(item: PendingWithExecutable, secret: string): string {
 }
 
 const ACTION_LABELS: Record<string, string> = { install_phases: 'Installer les définitions de phase', import_state: 'Importer l’état CC-STATE-1',
-  register_endpoint: 'Inscrire ou modifier un endpoint d’exécution', grant_coordinator: 'Accorder ou révoquer le rôle coordinateur' };
+  register_endpoint: 'Inscrire ou modifier un endpoint d’exécution', grant_coordinator: 'Accorder ou révoquer le rôle coordinateur',
+  set_identity_family: 'Configurer une identité logique commune' };
 
 /** CC-4 A2 : ce qui sera exécuté exactement, pourquoi, risque, retour arrière, empreinte. */
 function executableDetail(item: PendingWithExecutable): string {
@@ -167,7 +171,8 @@ function executableDetail(item: PendingWithExecutable): string {
     + '<dt>Action exécutée à l’approbation</dt><dd>' + escapeHtml(ACTION_LABELS[exec.action ?? ''] ?? String(exec.action))
     + (exec.action === 'register_endpoint' ? ' — endpoint <code>' + escapeHtml(exec.target ?? '') + '</code>'
       : exec.action === 'grant_coordinator' ? ' — participant <code>' + escapeHtml(exec.target ?? '') + '</code>'
-        : ' — cycle <code>' + escapeHtml(exec.cycle_id ?? '') + '</code>') + '</dd>'
+        : exec.action === 'set_identity_family' ? ' — identité <code>' + escapeHtml(exec.target ?? '') + '</code>'
+          : ' — cycle <code>' + escapeHtml(exec.cycle_id ?? '') + '</code>') + '</dd>'
     + '<dt>Pourquoi</dt><dd>' + escapeHtml(exec.reason ?? '') + '</dd>'
     + '<dt>Risque</dt><dd>' + escapeHtml(exec.risk ?? '') + '</dd>'
     + '<dt>Retour arrière</dt><dd>' + escapeHtml(exec.rollback ?? '') + '</dd>'
@@ -195,6 +200,15 @@ function automationSection(halted: boolean, budget: BudgetEnvelope | undefined, 
       + '<p class="note">Enveloppe ' + escapeHtml(budget.scope) + ' : 0 € par défaut (Free d’abord). Toute dépense exige une enveloppe approuvée par le propriétaire.</p>'
     : '';
   return '<h2>Automatisation</h2>' + status + button + '<h2>Budget</h2>' + money;
+}
+
+function identityFamilySection(rows: Array<{ family_id: string; members: string[]; event_seq: number | null }>): string {
+  const body = rows.map(row => '<tr><td><code>' + escapeHtml(row.family_id) + '</code></td><td>'
+    + row.members.map(member => '<code>' + escapeHtml(member) + '</code>').join(', ')
+    + '</td><td>' + (row.event_seq ?? '—') + '</td></tr>').join('');
+  return '<h2>Identités logiques</h2><p class="note">Les identifiants restent distincts dans l’historique, mais une même famille compte comme un seul principal D12 et partage les droits de reprise.</p>'
+    + (body ? '<table><tr><th>Identité</th><th>Identifiants historiques</th><th>Décision owner</th></tr>' + body + '</table>'
+      : '<p class="note">Aucune équivalence configurée.</p>');
 }
 
 function coordinatorSection(rows: Array<{ participant_id: string; display_label: string; event_seq: number | null }>): string {

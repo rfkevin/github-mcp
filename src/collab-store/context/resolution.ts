@@ -1,4 +1,5 @@
 import { CollabStoreError } from '../store/collab-store';
+import { equivalentParticipantIds } from '../identity/families';
 import { ensureContextSchema, normalizeIssueRef } from './schema';
 
 export type Participation = 'owner' | 'reviewer' | 'tester';
@@ -35,14 +36,16 @@ async function resolveCycleId(db: D1Database, input: ResolveContextInput): Promi
     // cycle ouvert (ou dans la tâche nommée). Sinon l'échec est explicite —
     // jamais un choix implicite.
     await ensureContextSchema(db);
+    const equivalents = await equivalentParticipantIds(db, input.participant_id);
+    const placeholders = equivalents.map((_, index) => '?' + (index + 1)).join(',');
     const lines = [
       'SELECT DISTINCT t.cycle_id FROM tasks t JOIN cycles c ON c.cycle_id = t.cycle_id',
       "WHERE c.status = 'open'",
-      'AND (t.owner_pid = ?1 OR t.reviewer_pid = ?1 OR t.tester_pid = ?1)',
+      'AND (t.owner_pid IN (' + placeholders + ') OR t.reviewer_pid IN (' + placeholders + ') OR t.tester_pid IN (' + placeholders + '))',
     ];
-    const params: unknown[] = [input.participant_id];
+    const params: unknown[] = [...equivalents];
     if (input.task) {
-      lines.push('AND t.task_id = ?2');
+      lines.push('AND t.task_id = ?' + (equivalents.length + 1));
       params.push(input.task);
     }
     lines.push('ORDER BY t.cycle_id');
@@ -90,10 +93,10 @@ async function resolveCycleId(db: D1Database, input: ResolveContextInput): Promi
   return results[0].cycle_id;
 }
 
-function participationOf(row: Omit<ResolvedTask, 'participation'>, participantId: string): Participation | null {
-  if (row.owner_pid === participantId) return 'owner';
-  if (row.reviewer_pid === participantId) return 'reviewer';
-  if (row.tester_pid === participantId) return 'tester';
+function participationOf(row: Omit<ResolvedTask, 'participation'>, participantIds: ReadonlySet<string>): Participation | null {
+  if (participantIds.has(row.owner_pid)) return 'owner';
+  if (participantIds.has(row.reviewer_pid)) return 'reviewer';
+  if (participantIds.has(row.tester_pid)) return 'tester';
   return null;
 }
 
@@ -106,15 +109,18 @@ export async function resolveContextTarget(db: D1Database, input: ResolveContext
   const cycle = await db.prepare('SELECT cycle_id FROM cycles WHERE cycle_id = ?1').bind(cycleId).first();
   if (!cycle) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + cycleId);
 
+  const equivalents = await equivalentParticipantIds(db, input.participant_id);
+  const equivalentSet = new Set(equivalents);
+  const placeholders = equivalents.map((_, index) => '?' + (index + 2)).join(',');
   const { results } = await db.prepare([
     'SELECT task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision',
     'FROM tasks WHERE cycle_id = ?1',
-    'AND (owner_pid = ?2 OR reviewer_pid = ?2 OR tester_pid = ?2)',
+    'AND (owner_pid IN (' + placeholders + ') OR reviewer_pid IN (' + placeholders + ') OR tester_pid IN (' + placeholders + '))',
     'ORDER BY task_id',
-  ].join(' ')).bind(cycleId, input.participant_id).all<Omit<ResolvedTask, 'participation'>>();
+  ].join(' ')).bind(cycleId, ...equivalents).all<Omit<ResolvedTask, 'participation'>>();
 
   let candidates = results
-    .map(row => ({ ...row, participation: participationOf(row, input.participant_id)! }))
+    .map(row => ({ ...row, participation: participationOf(row, equivalentSet)! }))
     .filter(row => !input.role || row.participation === input.role);
 
   if (input.task) candidates = candidates.filter(row => row.task_id === input.task);

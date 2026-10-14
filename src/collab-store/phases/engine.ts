@@ -37,39 +37,35 @@ async function outputsSatisfied(db: D1Database, def: PhaseDefinition): Promise<b
   // CR-F01: only count contributions from the *current* visit to this phase.
   const entrySeq = await phaseEntrySeq(db, def.cycle_id, def.phase);
   for (const expected of def.expected_outputs) {
-    // CC-4 A0 (point 5) : task_id optionnel lie la sortie à SA tâche —
-    // l'événement doit porter payload.task = task_id et son auteur tenir le
-    // rôle attendu sur CETTE tâche (pas seulement un rôle quelque part dans
-    // le cycle : la policy P2 ne devait pas compter n'importe quel evidence.add).
+    // #126 : un id historique (gpt6/sol) tient le rôle de toute sa famille
+    // logique, mais la famille ne compte qu'une fois dans COUNT(DISTINCT).
+    const eventIdentity = "COALESCE((SELECT family_id FROM participant_identity_families ef WHERE ef.participant_id = e.participant_id), e.participant_id)";
+    const ownerIdentity = "COALESCE((SELECT family_id FROM participant_identity_families tf WHERE tf.participant_id = t.owner_pid), t.owner_pid)";
+    const reviewerIdentity = "COALESCE((SELECT family_id FROM participant_identity_families tf WHERE tf.participant_id = t.reviewer_pid), t.reviewer_pid)";
+    const testerIdentity = "COALESCE((SELECT family_id FROM participant_identity_families tf WHERE tf.participant_id = t.tester_pid), t.tester_pid)";
     const lines = [
-      'SELECT COUNT(DISTINCT e.participant_id) AS n',
+      'SELECT COUNT(DISTINCT ' + eventIdentity + ') AS n',
       'FROM events e',
       'WHERE e.cycle_id = ?1 AND e.type = ?2',
       'AND e.seq > ?4',
+    ];
+    const roleChecks = [
+      "((?3 = 'author' OR ?3 = 'owner') AND " + ownerIdentity + ' = ' + eventIdentity + ')',
+      "(?3 = 'reviewer' AND " + reviewerIdentity + ' = ' + eventIdentity + ')',
+      "(?3 = 'tester' AND " + testerIdentity + ' = ' + eventIdentity + ')',
     ];
     const params: unknown[] = [def.cycle_id, expected.kind, expected.role, entrySeq];
     if (expected.task_id) {
       lines.push(
         'AND json_valid(e.payload_json)',
         "AND json_extract(e.payload_json, '$.task') = ?5",
-        'AND EXISTS (',
-        '  SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND t.task_id = ?5 AND (',
-        "    ((?3 = 'author' OR ?3 = 'owner') AND t.owner_pid = e.participant_id)",
-        "    OR (?3 = 'reviewer' AND t.reviewer_pid = e.participant_id)",
-        "    OR (?3 = 'tester' AND t.tester_pid = e.participant_id)",
-        '  )',
-        ')',
+        'AND EXISTS (SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND t.task_id = ?5 AND ('
+          + roleChecks.join(' OR ') + '))',
       );
       params.push(expected.task_id);
     } else {
       lines.push(
-        'AND EXISTS (',
-        '  SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND (',
-        "    ((?3 = 'author' OR ?3 = 'owner') AND t.owner_pid = e.participant_id)",
-        "    OR (?3 = 'reviewer' AND t.reviewer_pid = e.participant_id)",
-        "    OR (?3 = 'tester' AND t.tester_pid = e.participant_id)",
-        '  )',
-        ')',
+        'AND EXISTS (SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND (' + roleChecks.join(' OR ') + '))',
       );
     }
     const count = await db.prepare(lines.join(' ')).bind(...params).first<{ n: number }>();

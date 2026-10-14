@@ -24,6 +24,7 @@ import { MemoryStore, MemoryStoreError, type MemoryMutation, type ProposeInput }
 import type { JournalWriteContext } from './p1-independence';
 import type { StoreEvent } from '../contracts';
 import type { MemoryConfidence, MemoryKind } from '../contracts/memory';
+import { participantsEquivalent } from '../identity/families';
 
 const MEMORY_EVENT_TYPES = new Set(['memory.propose', 'memory.review', 'memory.consolidate', 'memory.retire']);
 
@@ -123,11 +124,13 @@ function optionalInt(memory: Record<string, unknown>, key: string, type: string,
  * tout tiers reste aveugle. Les scopes partagés (common/project/role/task)
  * restent collaboratifs. Délégation ou dérogation : owner.request (C5).
  */
-function assertScopeOwnership(scope: string, participantId: string, type: string): void {
-  if (scope.startsWith('participant:') && scope !== `participant:${participantId}`) {
+async function assertScopeOwnership(db: D1Database, scope: string, participantId: string, type: string): Promise<void> {
+  if (!scope.startsWith('participant:')) return;
+  const ownerPid = scope.slice('participant:'.length);
+  if (!await participantsEquivalent(db, ownerPid, participantId)) {
     throw new MemoryStoreError(
       'MEMORY_SCOPE_FORBIDDEN',
-      `${type} : le scope ${scope} est la mémoire privée d'un autre participant (CRB-R1).`,
+      `${type} : le scope ${scope} appartient à une autre identité logique (CRB-R1).`,
     );
   }
 }
@@ -155,7 +158,7 @@ export async function prepareMemoryEvent(
   if (event.type === 'memory.propose') {
     // CRB-R1 (revue Sol) : le scope participant visé doit être celui de l'appelant.
     const scope = requiredString(memory, 'scope', event.type);
-    assertScopeOwnership(scope, event.participant_id, event.type);
+    await assertScopeOwnership(db, scope, event.participant_id, event.type);
     const input: ProposeInput = {
       id: optionalString(memory, 'id', event.type),
       scope,

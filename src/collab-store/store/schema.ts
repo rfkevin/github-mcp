@@ -283,6 +283,24 @@ export const STORE_MIGRATION_0008 = [
   'CREATE INDEX IF NOT EXISTS idx_invocations_endpoint_finished ON invocations(endpoint_id, finished_at)',
 ];
 
+/**
+ * Store-owned migration 0009 (#126) : plusieurs identifiants historiques
+ * peuvent appartenir à une même identité logique. Les événements et tâches ne
+ * sont jamais réécrits ; cette table sert seulement aux gardes d'autorisation
+ * et de séparation D12 pour les nouveaux actes.
+ */
+export const STORE_MIGRATION_0009 = [
+  [
+    'CREATE TABLE IF NOT EXISTS participant_identity_families (',
+    '  participant_id TEXT PRIMARY KEY REFERENCES participants(participant_id),',
+    '  family_id TEXT NOT NULL,',
+    '  event_seq INTEGER REFERENCES events(seq),',
+    '  updated_at INTEGER NOT NULL',
+    ')',
+  ].join(' '),
+  'CREATE INDEX IF NOT EXISTS idx_identity_families_family ON participant_identity_families(family_id)',
+];
+
 const ENSURED = new WeakSet<object>();
 
 function runnableStatements(sql: string): string[] {
@@ -311,6 +329,8 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     ...STORE_MIGRATION_0007.map(statement => db.prepare(statement)),
     // CC-4 A4 (0008) : coordinateurs owner-only, notes exécuteurs et index métriques.
     ...STORE_MIGRATION_0008.map(statement => db.prepare(statement)),
+    // CC-4 #126 (0009) : équivalences d'identité owner-only, sans réécriture historique.
+    ...STORE_MIGRATION_0009.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.

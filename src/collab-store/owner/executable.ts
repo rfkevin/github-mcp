@@ -33,8 +33,10 @@ import {
   COORDINATOR_STATUSES, latestCoordinatorActSeq, setCoordinatorGrant,
   type CoordinatorStatus,
 } from './coordinators';
+import { latestIdentityFamilyActSeq, setIdentityFamily } from './identity-families';
+import { IDENTITY_FAMILY_RE } from '../identity/families';
 
-export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator'] as const;
+export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator', 'set_identity_family'] as const;
 export type ExecutableAction = (typeof EXECUTABLE_ACTIONS)[number];
 const SHA_RE = /^[0-9a-f]{64}$/;
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -117,6 +119,18 @@ function validateParams(action: ExecutableAction, params: Record<string, unknown
     }
     return participantId;
   }
+  if (action === 'set_identity_family') {
+    const extra = Object.keys(params).filter(key => !['family_id', 'members'].includes(key));
+    if (extra.length) throw new Error('params : champs inconnus ' + extra.join(', ') + '.');
+    const familyId = params.family_id;
+    const members = params.members;
+    if (typeof familyId !== 'string' || !IDENTITY_FAMILY_RE.test(familyId)) throw new Error('params.family_id invalide.');
+    if (!Array.isArray(members) || members.some(item => typeof item !== 'string') || members.length > 16
+      || (members.length !== 0 && members.length < 2) || new Set(members).size !== members.length) {
+      throw new Error('params.members : 0 membre (suppression) ou 2 à 16 ids distincts attendus.');
+    }
+    return familyId;
+  }
   const cycleId = params.cycle_id;
   if (typeof cycleId !== 'string' || !CYCLE_RE.test(cycleId)) throw new Error('params.cycle_id invalide.');
   if (action === 'install_phases') {
@@ -162,7 +176,8 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     const params = payload.params;
     if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('params : objet requis.');
     const target = validateParams(action as ExecutableAction, params as Record<string, unknown>);
-    const cycleId = action === 'register_endpoint' || action === 'grant_coordinator' ? REGISTRY_CYCLE : target;
+    const cycleId = action === 'register_endpoint' || action === 'grant_coordinator' || action === 'set_identity_family'
+      ? REGISTRY_CYCLE : target;
     const declared = payload.payload_sha256;
     if (typeof declared !== 'string' || !SHA_RE.test(declared)) throw new Error('payload_sha256 : 64 caractères hexadécimaux requis.');
     const computed = await executablePayloadSha256(action as string, params);
@@ -191,6 +206,7 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
 export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction, cycleId: string): Promise<number | null> {
   if (action === 'register_endpoint') return latestEndpointActSeq(db, cycleId);
   if (action === 'grant_coordinator') return latestCoordinatorActSeq(db, cycleId);
+  if (action === 'set_identity_family') return latestIdentityFamilyActSeq(db, cycleId);
   await ensureSchema(db);
   const prefix = (action === 'install_phases' ? PHASE_INSTALL_KEY_PREFIX : STATE_IMPORT_KEY_PREFIX) + cycleId + ':';
   const row = await db.prepare("SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?2)) = ?2")
@@ -227,7 +243,7 @@ export async function describePending(page: PendingPage, now: () => Date = () =>
     if (parsed.kind === 'invalid') { items.push({ ...item, executable: { invalid: parsed.reason } }); continue; }
     const req = parsed.request;
     const body = req.action === 'install_phases' ? String(req.params.definitions)
-      : req.action === 'register_endpoint' || req.action === 'grant_coordinator'
+      : req.action === 'register_endpoint' || req.action === 'grant_coordinator' || req.action === 'set_identity_family'
         ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
     items.push({ ...item, executable: {
       action: req.action, cycle_id: req.cycle_id, target: req.target, payload_sha256: req.payload_sha256, previous_seq: req.previous_seq,
@@ -313,6 +329,16 @@ export async function decideOwnerRequest(db: D1Database, input: {
     return { status: result.status, event: result.event, decision: 'approve', executed: {
       action: req.action, cycle_id: REGISTRY_CYCLE,
       detail: 'coordinateur ' + result.participant_id + ' → ' + result.coordinator_status,
+    } };
+  }
+  if (req.action === 'set_identity_family') {
+    const result = await setIdentityFamily(db, {
+      family_id: String(req.params.family_id), members: req.params.members as string[],
+      proof: input.proof, binding, now: input.now,
+    });
+    return { status: result.status, event: result.event, decision: 'approve', executed: {
+      action: req.action, cycle_id: REGISTRY_CYCLE,
+      detail: 'famille ' + result.family_id + ' → [' + result.members.join(', ') + ']',
     } };
   }
   if (req.action === 'install_phases') {

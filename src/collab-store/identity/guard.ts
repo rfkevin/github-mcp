@@ -9,6 +9,7 @@
  */
 import { CollabStoreError } from '../store/collab-store';
 import type { ParticipantIdentity } from './resolve';
+import { equivalentParticipantIds } from './families';
 
 export const UNREGISTERED_ALLOWED_TYPES: readonly string[] = ['owner.request'];
 
@@ -39,9 +40,12 @@ export async function authorizePhaseAdvance(db: D1Database, identity: Participan
     throw new CollabStoreError('UNREGISTERED_CLIENT',
       'Client non enregistré : lecture et owner.request uniquement. Demandez au propriétaire d’associer ce client à un participant.');
   }
+  const equivalents = await equivalentParticipantIds(db, identity.participant_id);
+  const placeholders = equivalents.map((_, index) => '?' + (index + 2)).join(',');
   const role = await db.prepare(
-    'SELECT 1 AS ok FROM tasks WHERE cycle_id = ?1 AND (owner_pid = ?2 OR reviewer_pid = ?2 OR tester_pid = ?2) LIMIT 1',
-  ).bind(cycleId, identity.participant_id).first<{ ok: number }>();
+    'SELECT 1 AS ok FROM tasks WHERE cycle_id = ?1 AND (owner_pid IN (' + placeholders + ') OR reviewer_pid IN ('
+      + placeholders + ') OR tester_pid IN (' + placeholders + ')) LIMIT 1',
+  ).bind(cycleId, ...equivalents).first<{ ok: number }>();
   if (!role) {
     throw new CollabStoreError('PHASE_ADVANCE_FORBIDDEN',
       'Seuls les participants qui tiennent un rôle (owner, reviewer, testeur) sur une tâche du cycle peuvent déclencher la policy de phase.');

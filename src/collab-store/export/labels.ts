@@ -17,6 +17,8 @@ export interface LabelDirectory {
   ownerLabel: string;
   byLabel: Map<string, string>;
   byPid: Map<string, string>;
+  /** participant_id -> identité logique owner-approved (#126). */
+  logicalByPid: Map<string, string>;
   /** Labels carried by several active participants (or by a participant and the owner): never resolved (I8). */
   ambiguous: Set<string>;
 }
@@ -28,11 +30,14 @@ export const ACTIVE_PARTICIPANTS_SQL =
 export async function loadLabelDirectory(db: D1Database, ownerLabel = DEFAULT_OWNER_LABEL): Promise<LabelDirectory> {
   await ensureSchema(db);
   const { results } = await db.prepare(ACTIVE_PARTICIPANTS_SQL).all<{ participant_id: string; display_label: string }>();
-  return buildLabelDirectory(results, ownerLabel);
+  const families = await db.prepare('SELECT participant_id, family_id FROM participant_identity_families')
+    .all<{ participant_id: string; family_id: string }>();
+  return buildLabelDirectory(results, ownerLabel,
+    new Map(families.results.map(row => [row.participant_id, row.family_id])));
 }
 
 export function buildLabelDirectory(rows: ReadonlyArray<{ participant_id: string; display_label: string }>,
-  ownerLabel = DEFAULT_OWNER_LABEL): LabelDirectory {
+  ownerLabel = DEFAULT_OWNER_LABEL, logicalByPid: Map<string, string> = new Map()): LabelDirectory {
   const byLabel = new Map<string, string>();
   const byPid = new Map<string, string>();
   const ambiguous = new Set<string>();
@@ -42,7 +47,7 @@ export function buildLabelDirectory(rows: ReadonlyArray<{ participant_id: string
     else byLabel.set(row.display_label, row.participant_id);
   }
   for (const label of ambiguous) byLabel.delete(label);
-  return { ownerLabel, byLabel, byPid, ambiguous };
+  return { ownerLabel, byLabel, byPid, logicalByPid, ambiguous };
 }
 
 /** Leading label of a cell, without a trailing parenthesised annotation. */
