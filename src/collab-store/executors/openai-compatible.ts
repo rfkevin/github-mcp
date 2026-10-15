@@ -2,6 +2,8 @@
  * CC-4 A3c / R4 lot A — adaptateur LLM compatible OpenAI multi-fournisseurs.
  * URL et nom de secret = constantes serveur uniquement (jamais attestation,
  * notes ou POST). Paid hors allowlist Free → EXECUTOR_PAID_MODEL avant fetch.
+ * Groq : config/catalogue ok, runtime bloqué tant que le plan non-facturable
+ * n'est pas prouvé et approuvé Owner (Free vs Developer facturable).
  */
 import { StateContractError } from '../../collab/contracts';
 import {
@@ -61,11 +63,20 @@ const PROVIDERS: Readonly<Record<OpenAiCompatibleProvider, ProviderConfig>> = {
   },
 };
 
-/** Allowlist Free (deny-by-default hors liste). Revalider au jour d'activation. */
+/**
+ * Fournisseurs dont le runtime est interdit : la présence d'une clé ne prouve
+ * pas un compte non facturable. Owner doit approuver un contrat vérifiable
+ * avant tout fetch (review Sol #144 CHANGE_REQUEST).
+ */
+const RUNTIME_BLOCKED_PROVIDERS: ReadonlySet<OpenAiCompatibleProvider> = new Set([
+  GROQ_PROVIDER,
+]);
+
+/** Allowlist Free exécutable (deny-by-default). Groq vide : catalogue only. */
 const FREE_MODELS: Readonly<Record<OpenAiCompatibleProvider, ReadonlySet<string>>> = {
   /** OpenRouter : tout modèle avec suffixe :free (validé à part). */
   openrouter: new Set(),
-  groq: new Set(['openai/gpt-oss-20b']),
+  groq: new Set(),
   deepseek: new Set(),
   zai: new Set(['glm-4.7-flash']),
 };
@@ -73,7 +84,7 @@ const FREE_MODELS: Readonly<Record<OpenAiCompatibleProvider, ReadonlySet<string>
 /** Paid connus — refusés même si secret présent (dormant, 0 €). */
 const PAID_MODELS: Readonly<Record<OpenAiCompatibleProvider, ReadonlySet<string>>> = {
   openrouter: new Set(),
-  groq: new Set(['llama-3.3-70b-versatile', 'llama-3.1-70b-versatile']),
+  groq: new Set(['llama-3.3-70b-versatile', 'llama-3.1-70b-versatile', 'openai/gpt-oss-20b']),
   deepseek: new Set(['deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner']),
   zai: new Set(['glm-4.7-flashx']),
 };
@@ -108,6 +119,7 @@ export function openAiCompatibleProviderOf(attestationRef: string): OpenAiCompat
 /**
  * Parse `provider:model`.
  * - openrouter : suffixe `:free` obligatoire
+ * - groq : runtime bloqué (facturation compte non vérifiée)
  * - autres : allowlist Free ; paid listés → EXECUTOR_PAID_MODEL
  */
 export function parseOpenAiCompatibleRef(
@@ -120,6 +132,14 @@ export function parseOpenAiCompatibleRef(
   const model = attestationRef.slice(provider.length + 1);
   if (!model) {
     throw executorError('EXECUTOR_UNSUPPORTED', 'Référence de modèle vide.');
+  }
+
+  // Avant Free/Paid : aucun fetch Groq tant que Owner n'a pas prouvé un plan 0 €.
+  if (RUNTIME_BLOCKED_PROVIDERS.has(provider)) {
+    throw executorError(
+      'EXECUTOR_UNAVAILABLE',
+      'Runtime ' + provider + ' bloqué : facturation du compte non vérifiée (catalogue only, 0 fetch).',
+    );
   }
 
   if (provider === OPENROUTER_PROVIDER) {
