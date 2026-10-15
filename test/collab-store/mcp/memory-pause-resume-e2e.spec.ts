@@ -45,6 +45,7 @@ const fact = (id: string, scope: string, n: number) =>
   ({ memory: { id, scope, kind: 'fact', text: `fait partage numero ${n}`, evidence_refs: [`ev:crf2-${n}`], confidence: 'observed' } });
 
 describe('CC-3 CR-F02 — pause mémoire reprenable par décision owner (HTTP)', () => {
+  // E2E HTTP multi-étapes (OAuth, MCP, /owner) : défaut Vitest 5s trop serré sous charge CI.
   it('alarme → demande exacte → refus sans décision, autre occurrence, rejeu → approbation /owner → reprise', async () => {
     const { owner, agent, uniq } = e2eScenario(db, 'crf2', 'owner-secret-CRF2-0123456789abcdefghijklm');
     const [alpha, beta] = [await agent('alpha'), await agent('beta')];
@@ -122,8 +123,9 @@ describe('CC-3 CR-F02 — pause mémoire reprenable par décision owner (HTTP)',
     expect(denied.status).toBe(200);
     expect(await pauseState(scope)).toEqual({ ...stillPaused, decisions: stillPaused.decisions + 1 });
     expect(code(await review(3))).toBe('ACTIVATION_PAUSED');
-  });
+  }, 60_000);
 
+  // Parcours concurrent HTTP : même contrainte de budget temps CI.
   it('approbations concurrentes de la même demande : un seul effet, une seule décision', async () => {
     const { owner, agent, uniq } = e2eScenario(db, 'crf2c', 'owner-secret-CRF2C-0123456789abcdefghijk');
     const [alpha, beta] = [await agent('alpha'), await agent('beta')];
@@ -144,5 +146,5 @@ describe('CC-3 CR-F02 — pause mémoire reprenable par décision owner (HTTP)',
     const decisionEvents = await db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'owner.decision' AND json_extract(payload_json, '$.request_id') = ?1")
       .bind(request.request_id).first<{ n: number }>();
     expect(decisionEvents?.n).toBe(1);
-  });
+  }, 30_000);
 });
