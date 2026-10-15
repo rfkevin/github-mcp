@@ -1,7 +1,7 @@
 /**
- * CC-4 A3c — adaptateur LLM compatible OpenAI, à fournisseurs explicitement
- * autorisés par le serveur. L'URL et le nom du secret ne viennent jamais d'un
- * endpoint, d'une demande owner ou d'un formulaire.
+ * CC-4 A3c / R4 lot A — adaptateur LLM compatible OpenAI multi-fournisseurs.
+ * URL et nom de secret = constantes serveur uniquement (jamais attestation,
+ * notes ou POST). Paid hors allowlist Free → EXECUTOR_PAID_MODEL avant fetch.
  */
 import { StateContractError } from '../../collab/contracts';
 import {
@@ -10,20 +10,79 @@ import {
 } from './adapter';
 
 export const OPENROUTER_PROVIDER = 'openrouter';
+export const GROQ_PROVIDER = 'groq';
+export const DEEPSEEK_PROVIDER = 'deepseek';
+export const ZAI_PROVIDER = 'zai';
+
+export type OpenAiCompatibleProvider =
+  | typeof OPENROUTER_PROVIDER
+  | typeof GROQ_PROVIDER
+  | typeof DEEPSEEK_PROVIDER
+  | typeof ZAI_PROVIDER;
+
 export const OPENROUTER_CHAT_COMPLETIONS_URL = 'https://openrouter.ai/api/v1/chat/completions';
+export const GROQ_CHAT_COMPLETIONS_URL = 'https://api.groq.com/openai/v1/chat/completions';
+export const DEEPSEEK_CHAT_COMPLETIONS_URL = 'https://api.deepseek.com/chat/completions';
+export const ZAI_CHAT_COMPLETIONS_URL = 'https://api.z.ai/api/paas/v4/chat/completions';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MODEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}$/i;
+/** OpenRouter org/model */
+const OR_MODEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}$/i;
+/** Ids simples ou org/model (Groq, DeepSeek, Z.AI) */
+const GENERIC_MODEL_RE = /^[a-z0-9][a-z0-9._/-]{0,127}$/i;
 
-const PROVIDERS = {
+interface ProviderConfig {
+  readonly endpoint: string;
+  readonly secret: keyof OpenAiCompatibleEnv;
+  /** Si true, le body inclut provider.data_collection=deny (OpenRouter). */
+  readonly denyDataCollection: boolean;
+}
+
+const PROVIDERS: Readonly<Record<OpenAiCompatibleProvider, ProviderConfig>> = {
   openrouter: {
     endpoint: OPENROUTER_CHAT_COMPLETIONS_URL,
     secret: 'LLM_KEY_OPENROUTER',
+    denyDataCollection: true,
   },
-} as const;
+  groq: {
+    endpoint: GROQ_CHAT_COMPLETIONS_URL,
+    secret: 'LLM_KEY_GROQ',
+    denyDataCollection: false,
+  },
+  deepseek: {
+    endpoint: DEEPSEEK_CHAT_COMPLETIONS_URL,
+    secret: 'LLM_KEY_DEEPSEEK',
+    denyDataCollection: false,
+  },
+  zai: {
+    endpoint: ZAI_CHAT_COMPLETIONS_URL,
+    secret: 'LLM_KEY_ZAI',
+    denyDataCollection: false,
+  },
+};
+
+/** Allowlist Free (deny-by-default hors liste). Revalider au jour d'activation. */
+const FREE_MODELS: Readonly<Record<OpenAiCompatibleProvider, ReadonlySet<string>>> = {
+  /** OpenRouter : tout modèle avec suffixe :free (validé à part). */
+  openrouter: new Set(),
+  groq: new Set(['openai/gpt-oss-20b']),
+  deepseek: new Set(),
+  zai: new Set(['glm-4.7-flash']),
+};
+
+/** Paid connus — refusés même si secret présent (dormant, 0 €). */
+const PAID_MODELS: Readonly<Record<OpenAiCompatibleProvider, ReadonlySet<string>>> = {
+  openrouter: new Set(),
+  groq: new Set(['llama-3.3-70b-versatile', 'llama-3.1-70b-versatile']),
+  deepseek: new Set(['deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner']),
+  zai: new Set(['glm-4.7-flashx']),
+};
 
 export interface OpenAiCompatibleEnv {
   LLM_KEY_OPENROUTER?: string;
+  LLM_KEY_GROQ?: string;
+  LLM_KEY_DEEPSEEK?: string;
+  LLM_KEY_ZAI?: string;
 }
 
 export interface OpenAiCompatibleOptions {
@@ -35,21 +94,55 @@ function executorError(code: string, message: string): StateContractError {
   return new StateContractError(code, message, 'executor');
 }
 
-/** openrouter:<éditeur>/<modèle>:free — tout modèle sans :free est refusé. */
-export function parseOpenAiCompatibleRef(attestationRef: string): { provider: typeof OPENROUTER_PROVIDER; model: string } {
-  const prefix = OPENROUTER_PROVIDER + ':';
-  if (!attestationRef.startsWith(prefix)) {
+export function openAiCompatibleProviderOf(attestationRef: string): OpenAiCompatibleProvider | null {
+  const colon = attestationRef.indexOf(':');
+  if (colon <= 0) return null;
+  const prefix = attestationRef.slice(0, colon);
+  if (prefix === OPENROUTER_PROVIDER || prefix === GROQ_PROVIDER
+    || prefix === DEEPSEEK_PROVIDER || prefix === ZAI_PROVIDER) {
+    return prefix;
+  }
+  return null;
+}
+
+/**
+ * Parse `provider:model`.
+ * - openrouter : suffixe `:free` obligatoire
+ * - autres : allowlist Free ; paid listés → EXECUTOR_PAID_MODEL
+ */
+export function parseOpenAiCompatibleRef(
+  attestationRef: string,
+): { provider: OpenAiCompatibleProvider; model: string } {
+  const provider = openAiCompatibleProviderOf(attestationRef);
+  if (!provider) {
     throw executorError('EXECUTOR_UNSUPPORTED', 'Fournisseur compatible OpenAI non pris en charge.');
   }
-  const model = attestationRef.slice(prefix.length);
-  if (!model.endsWith(':free')) {
-    throw executorError('EXECUTOR_PAID_MODEL', 'Le modèle OpenRouter doit porter le suffixe :free (pilote à 0 €).');
+  const model = attestationRef.slice(provider.length + 1);
+  if (!model) {
+    throw executorError('EXECUTOR_UNSUPPORTED', 'Référence de modèle vide.');
   }
-  const baseModel = model.slice(0, -':free'.length);
-  if (!MODEL_RE.test(baseModel)) {
-    throw executorError('EXECUTOR_UNSUPPORTED', 'Référence de modèle OpenRouter invalide.');
+
+  if (provider === OPENROUTER_PROVIDER) {
+    if (!model.endsWith(':free')) {
+      throw executorError('EXECUTOR_PAID_MODEL', 'Le modèle OpenRouter doit porter le suffixe :free (pilote à 0 €).');
+    }
+    const baseModel = model.slice(0, -':free'.length);
+    if (!OR_MODEL_RE.test(baseModel)) {
+      throw executorError('EXECUTOR_UNSUPPORTED', 'Référence de modèle OpenRouter invalide.');
+    }
+    return { provider, model };
   }
-  return { provider: OPENROUTER_PROVIDER, model };
+
+  if (!GENERIC_MODEL_RE.test(model)) {
+    throw executorError('EXECUTOR_UNSUPPORTED', 'Référence de modèle invalide.');
+  }
+  if (PAID_MODELS[provider].has(model)) {
+    throw executorError('EXECUTOR_PAID_MODEL', 'Modèle payant refusé (0 € / paid dormant) : ' + model + '.');
+  }
+  if (!FREE_MODELS[provider].has(model)) {
+    throw executorError('EXECUTOR_UNSUPPORTED', 'Modèle hors allowlist Free vérifiée : ' + model + '.');
+  }
+  return { provider, model };
 }
 
 function providerSecret(env: OpenAiCompatibleEnv, name: keyof OpenAiCompatibleEnv): string {
@@ -84,8 +177,8 @@ async function fetchWithTimeout(
 }
 
 /**
- * OpenRouter est le premier fournisseur de cette surface universelle. La clé
- * reste dans l'environnement Worker et l'adresse est la constante serveur.
+ * Adaptateur universel : une entrée PROVIDERS par fournisseur.
+ * La clé reste dans l'env Worker ; l'URL est la constante serveur.
  */
 export function createOpenAiCompatibleAdapter(
   env: OpenAiCompatibleEnv,
@@ -108,18 +201,21 @@ export function createOpenAiCompatibleAdapter(
     neuronsFor: () => 0,
     async generate(input) {
       assertGenerateInput(input);
+      const body: Record<string, unknown> = {
+        model: parsed.model,
+        messages: envelope(input.control, input.data),
+        max_tokens: input.max_tokens,
+      };
+      if (config.denyDataCollection) {
+        body.provider = { data_collection: 'deny' };
+      }
       const response = await fetchWithTimeout(fetchImpl, config.endpoint, {
         method: 'POST',
         headers: {
           Authorization: 'Bearer ' + secret,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: parsed.model,
-          messages: envelope(input.control, input.data),
-          max_tokens: input.max_tokens,
-          provider: { data_collection: 'deny' },
-        }),
+        body: JSON.stringify(body),
       }, timeoutMs);
       if (!response.ok) {
         throw executorError('EXECUTOR_UPSTREAM_HTTP', 'Fournisseur HTTP ' + response.status + '.');
