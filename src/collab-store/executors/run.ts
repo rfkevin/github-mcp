@@ -28,7 +28,7 @@ import type { OwnerProof } from '../owner/proof';
 import { InvocationService, type InvocationRecord } from '../invocations';
 import { createWorkersAiAdapter, WORKERS_AI_PROVIDER, type LlmAdapter, type WorkersAiBinding } from './adapter';
 import {
-  createOpenAiCompatibleAdapter, OPENROUTER_PROVIDER,
+  createOpenAiCompatibleAdapter, openAiCompatibleProviderOf,
   type OpenAiCompatibleEnv, type OpenAiCompatibleOptions,
 } from './openai-compatible';
 import { loadEndpoint, PROBE_KEY_PREFIX, type StoredEndpoint } from './registry';
@@ -66,7 +66,7 @@ export function providerAdapterFactory(env: ProviderAdapterEnv, options: OpenAiC
       if (!env.AI) throw new CollabStoreError('EXECUTOR_UNAVAILABLE', 'Binding Workers AI absent de cet environnement.');
       return createWorkersAiAdapter(env.AI, endpoint.attestation_ref);
     }
-    if (endpoint.attestation_ref.startsWith(OPENROUTER_PROVIDER + ':')) {
+    if (openAiCompatibleProviderOf(endpoint.attestation_ref)) {
       return createOpenAiCompatibleAdapter(env, endpoint.attestation_ref, options);
     }
     throw new StateContractError('EXECUTOR_UNSUPPORTED', 'Fournisseur de l’endpoint non pris en charge.', 'executor');

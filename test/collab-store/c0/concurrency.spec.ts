@@ -5,6 +5,7 @@ import { cycleId, freshStore, metric, percentile } from './helpers';
 const task = (status: TaskStatus, nextAction = 'go') => ({ taskId: 'C0', status, ownerPid: 'p-claude', nextAction });
 
 describe('C0 S1 — concurrent writes at the same revision', () => {
+  // 100 paires concurrentes Miniflare/D1 : le défaut Vitest 5s est trop serré sous charge CI.
   it('exactly one success and one STALE with delta, 100/100 runs', async () => {
     const { store } = await freshStore();
     let pass = 0;
@@ -26,7 +27,7 @@ describe('C0 S1 — concurrent writes at the same revision', () => {
       pass += 1;
     }
     metric('S1_runs_passed', pass);
-  });
+  }, 30_000);
 
   it('retry with the same op_id returns the original event and writes nothing', async () => {
     const { store } = await freshStore();
@@ -43,6 +44,7 @@ describe('C0 S1 — concurrent writes at the same revision', () => {
     await expect(store.append({ ...input, opId: '' })).rejects.toThrow('OP_ID_REQUIRED');
   });
 
+  // 200 appends séquentiels : même contrainte de budget temps CI.
   it('records append latency p50/p95 (local Miniflare, indicative only)', async () => {
     const { store } = await freshStore();
     const id = cycleId('lat');
@@ -56,5 +58,5 @@ describe('C0 S1 — concurrent writes at the same revision', () => {
     }
     metric('append_ms_p50', percentile(samples, 50));
     metric('append_ms_p95', percentile(samples, 95));
-  });
+  }, 30_000);
 });
