@@ -38,6 +38,9 @@ const STYLE = [
   'dl{margin:6px 0}dt{font-weight:600}dd{margin:0 0 6px;overflow-wrap:anywhere}',
   '.halt{padding:10px 12px;border-radius:8px;background:#f8e1df;font-weight:600}',
   '@media (prefers-color-scheme:dark){.halt{background:#3a1d1a}}',
+  'summary{cursor:pointer;min-height:44px;padding:10px 6px;overflow-wrap:anywhere}',
+  'details.ep{border:1px solid #d8e2df;border-radius:8px;margin:8px 0;padding:2px 10px}',
+  '@media (prefers-color-scheme:dark){details.ep{border-color:#2a3f3b}}',
   '@media (max-width:600px){body{padding:12px}h2{margin-top:22px}',
   'table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}td,th{padding:6px;min-width:110px}td[colspan]{min-width:0}',
   'input[type=text],input[type=password],select,button{min-height:44px;font-size:16px}textarea{font-size:16px;min-height:140px}',
@@ -250,38 +253,70 @@ function capabilitiesText(caps: CapabilityRow['capability_set']): string {
   return parts.length ? parts.join(' · ') : 'aucune (rien n’est autorisé)';
 }
 
-/** CC-4 A3 : matrice §4.1 — un endpoint par ligne, dernière sonde, bouton de sonde pour les adaptateurs API. */
+/**
+ * CC-AUTO UX-0 : catalogue compact — un endpoint par fiche <details> repliée
+ * par défaut, sans script ni nouveau contrat : seules les données du registre
+ * sont affichées (aucun compteur inventé). La ligne de résumé garde visible,
+ * sans déplier, l’identifiant, le statut et l’état de la dernière sonde (un
+ * échec reste signalé) ; les formulaires Sonde / Tâche d’essai / Notes owner
+ * sont conservés à l’identique : mêmes noms de champs, même action, preuve
+ * owner exigée. Le tableau plat d’origine (une table par matrice) rendait la
+ * page illisible au-delà de quelques endpoints sur mobile.
+ */
+function executorStatusCounts(rows: CapabilityRow[]): string {
+  const counts = { active: 0, probe_required: 0, retired: 0, other: 0 };
+  for (const row of rows) {
+    if (row.status === 'active' || row.status === 'probe_required' || row.status === 'retired') counts[row.status] += 1;
+    else counts.other += 1;
+  }
+  return '<h2>Exécuteurs</h2>'
+    + '<p class="note"><strong>' + rows.length + '</strong> endpoint(s) — actifs ' + counts.active
+    + ' · à sonder ' + counts.probe_required + ' · retirés ' + counts.retired
+    + (counts.other ? ' · autre ' + counts.other : '')
+    + '. Dépliez une fiche pour sonder, lancer une tâche d’essai ou annoter.</p>';
+}
+
 function executorSection(rows: CapabilityRow[], secret: string): string {
   const options = OWNER_TRIAL_INSTRUCTIONS.map(item => '<option value="' + escapeHtml(item.key) + '">' + escapeHtml(item.label) + '</option>').join('');
-  const body = rows.map(row => {
-    const probe = row.last_probe
+  const items = rows.map(row => {
+    const probeDetail = row.last_probe
       ? (row.last_probe.ok ? 'réussie' : 'en échec' + (row.last_probe.error ? ' (' + row.last_probe.error + ')' : '')) + ' · seq ' + row.last_probe.seq + ' · ' + row.last_probe.latency_ms + ' ms'
       : 'jamais sondé';
-    const button = row.attestation_kind === 'provider_adapter' && row.status !== 'retired'
+    const probeShort = row.last_probe
+      ? (row.last_probe.ok ? '✔ sonde ' + row.last_probe.latency_ms + ' ms'
+        : '⚠ sonde en échec' + (row.last_probe.error ? ' (' + row.last_probe.error + ')' : ''))
+      : 'jamais sondé';
+    const head = '<summary><code>' + escapeHtml(row.endpoint_id) + '</code> · ' + escapeHtml(row.status)
+      + ' · ' + escapeHtml(probeShort) + '</summary>';
+    const facts = '<dl>'
+      + '<dt>Principal</dt><dd><code>' + escapeHtml(row.principal_id) + '</code></dd>'
+      + '<dt>Attestation</dt><dd>' + escapeHtml(row.attestation_kind) + ' · <code>' + escapeHtml(row.attestation_ref) + '</code></dd>'
+      + '<dt>Statut</dt><dd>' + escapeHtml(row.status) + '</dd>'
+      + '<dt>Capacités</dt><dd>' + escapeHtml(capabilitiesText(row.capability_set)) + '</dd>'
+      + '<dt>Dernière sonde</dt><dd>' + escapeHtml(probeDetail) + '</dd>'
+      + '</dl>';
+    const probeButton = row.attestation_kind === 'provider_adapter' && row.status !== 'retired'
       ? '<form method="post" action="/owner"><input type="hidden" name="action" value="probe_endpoint">'
         + '<input type="hidden" name="endpoint_id" value="' + escapeHtml(row.endpoint_id) + '">' + secret
         + '<button type="submit">Sonder</button></form>'
       : '';
-    const endpointRow = '<tr><td><code>' + escapeHtml(row.endpoint_id) + '</code><br>' + escapeHtml(row.principal_id) + '</td><td>'
-      + escapeHtml(row.attestation_kind) + '<br><code>' + escapeHtml(row.attestation_ref) + '</code></td><td>' + escapeHtml(row.status)
-      + '</td><td>' + escapeHtml(capabilitiesText(row.capability_set)) + '</td><td>' + escapeHtml(probe) + button + '</td></tr>';
-    const trialRow = row.status === 'active'
-      ? '<tr><td colspan="5"><strong>Tâche d’essai</strong><form method="post" action="/owner">'
+    const trialForm = row.status === 'active'
+      ? '<strong>Tâche d’essai</strong><form method="post" action="/owner">'
         + '<input type="hidden" name="action" value="run_trial"><input type="hidden" name="endpoint_id" value="' + escapeHtml(row.endpoint_id) + '">'
         + '<label>Consigne <select name="trial_instruction" required>' + options + '</select></label>'
         + '<label>Données <textarea name="trial_data" maxlength="' + OWNER_TRIAL_MAX_DATA + '" required></textarea></label>'
-        + secret + '<p><button type="submit">Exécuter</button></p></form></td></tr>'
+        + secret + '<p><button type="submit">Exécuter</button></p></form>'
       : '';
     const notes = row.owner_notes;
-    const notesRow = '<tr><td colspan="5"><strong>Notes owner</strong><form method="post" action="/owner">'
+    const notesForm = '<strong>Notes owner</strong><form method="post" action="/owner">'
       + '<input type="hidden" name="action" value="update_executor_notes"><input type="hidden" name="endpoint_id" value="' + escapeHtml(row.endpoint_id) + '">'
       + '<label>Points forts <textarea name="strengths" maxlength="1000">' + escapeHtml(notes?.strengths ?? '') + '</textarea></label>'
       + '<label>Points faibles <textarea name="weaknesses" maxlength="1000">' + escapeHtml(notes?.weaknesses ?? '') + '</textarea></label>'
-      + secret + '<p><button type="submit">Enregistrer les notes</button></p></form></td></tr>';
-    return endpointRow + trialRow + notesRow;
+      + secret + '<p><button type="submit">Enregistrer les notes</button></p></form>';
+    return '<details class="ep">' + head + facts + probeButton + trialForm + notesForm + '</details>';
   }).join('');
-  return '<h2>Exécuteurs</h2>'
-    + (body ? '<table><tr><th>Endpoint</th><th>Attestation</th><th>Statut</th><th>Capacités</th><th>Sonde</th></tr>' + body + '</table>'
+  return executorStatusCounts(rows)
+    + (items ? items
       : '<p class="note">Aucun endpoint inscrit. Un agent prépare l’inscription ; vous l’approuvez dans les demandes en attente.</p>')
     + '<p class="note">Un endpoint ne devient actif qu’après une sonde réussie puis une demande d’activation approuvée. '
     + 'La sonde et la tâche d’essai font un appel réel au fournisseur gratuit avec des consignes fixées par le serveur.</p>';

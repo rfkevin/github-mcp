@@ -3,6 +3,7 @@ import { dashboardPage, OWNER_PAGE_CSP } from '../../../src/collab-store/owner/p
 import type { DashboardData } from '../../../src/collab-store/owner/page';
 import type { OwnerChannelConfig } from '../../../src/collab-store/owner/config';
 import type { PendingWithExecutable } from '../../../src/collab-store/owner/executable';
+import { OWNER_TRIAL_MAX_DATA } from '../../../src/collab-store/owner/trials';
 
 /**
  * CC-AUTO T1 — smoke test de rendu du tableau de bord /owner (dashboardPage) :
@@ -124,5 +125,92 @@ describe('CC-AUTO T1 — rendu du tableau de bord /owner', () => {
     expect(html).toContain('Demandes plus anciennes');
     const last = dashboardPage(config, dataWith({ nextBefore: null }));
     expect(last).not.toContain('Demandes plus anciennes');
+  });
+});
+
+describe('CC-AUTO UX-0 — catalogue compact des exécuteurs', () => {
+  type ExecutorRow = NonNullable<DashboardData['executors']>[number];
+
+  function executorRow(overrides: Record<string, unknown> = {}): ExecutorRow {
+    return {
+      endpoint_id: uniq('ep'), principal_id: 'agent:fixture', attestation_kind: 'provider_adapter',
+      attestation_ref: 'workers-ai:@cf/zai-org/glm-4.7-flash', status: 'active',
+      capability_set: { tools: ['llm.generate'], token_ceiling: 512 },
+      registered_at: 0, last_probe: null, owner_notes: null,
+      ...overrides,
+    } as unknown as ExecutorRow;
+  }
+
+  function executorRows(n: number): ExecutorRow[] {
+    const statuses = ['active', 'probe_required', 'retired'];
+    return Array.from({ length: n }, (_, i) => executorRow({
+      endpoint_id: 'ux0-ep-' + (i + 1), status: statuses[i % 3],
+    }));
+  }
+
+  function dataWithExecutors(executors: ExecutorRow[]): DashboardData {
+    return { pending: { items: [], total: 0, next_before: null }, participants: [], clients: [], executors };
+  }
+
+  it('0/1/10/30 : fiches <details> repliées par défaut, compteurs justes, aucune fiche ouverte', () => {
+    for (const n of [0, 1, 10, 30]) {
+      const fixtureRows = executorRows(n);
+      const html = dashboardPage(config, dataWithExecutors(fixtureRows));
+      expect((html.match(/<details class="ep">/g) ?? []).length, 'n=' + n).toBe(n);
+      expect(html).not.toContain('<details class="ep" open');
+      const expected: Record<string, number> = { active: 0, probe_required: 0, retired: 0 };
+      for (const row of fixtureRows) expected[row.status] += 1;
+      expect(html).toContain('<strong>' + n + '</strong> endpoint(s) — actifs ' + expected.active
+        + ' · à sonder ' + expected.probe_required + ' · retirés ' + expected.retired);
+      if (n === 0) expect(html).toContain('Aucun endpoint inscrit.');
+      assertOrder(html);
+    }
+  });
+
+  it('formulaires inchangés : Sonde, Tâche d’essai (actif seulement), Notes, preuve owner exigée', () => {
+    const active = executorRow({ endpoint_id: 'ux0-active', status: 'active' });
+    const html = dashboardPage(config, dataWithExecutors([active]));
+    expect(html).toContain('name="action" value="probe_endpoint"');
+    expect(html).toContain('name="endpoint_id" value="ux0-active"');
+    expect(html).toContain('>Sonder</button>');
+    expect(html).toContain('name="action" value="run_trial"');
+    expect(html).toContain('name="trial_instruction"');
+    expect(html).toContain('name="trial_data" maxlength="' + OWNER_TRIAL_MAX_DATA + '"');
+    expect(html).toContain('>Exécuter</button>');
+    expect(html).toContain('name="action" value="update_executor_notes"');
+    expect(html).toContain('name="strengths"');
+    expect(html).toContain('name="weaknesses"');
+    expect(html).toContain('>Enregistrer les notes</button>');
+    const start = html.indexOf('<details class="ep">');
+    const fiche = html.slice(start, html.indexOf('</details>', start));
+    expect((fiche.match(/name="owner_secret"/g) ?? []).length).toBe(3);
+
+    const probeRequired = executorRow({ endpoint_id: 'ux0-probe', status: 'probe_required' });
+    const probeHtml = dashboardPage(config, dataWithExecutors([probeRequired]));
+    expect(probeHtml).toContain('name="action" value="probe_endpoint"');
+    expect(probeHtml).not.toContain('run_trial');
+
+    const retired = executorRow({ endpoint_id: 'ux0-retired', status: 'retired' });
+    const retiredHtml = dashboardPage(config, dataWithExecutors([retired]));
+    expect(retiredHtml).not.toContain('value="probe_endpoint"');
+  });
+
+  it('échec de sonde visible sans déplier (429), détails dans la fiche', () => {
+    const failing = executorRow({ endpoint_id: 'ux0-429', status: 'probe_required',
+      last_probe: { ok: false, at: 1, seq: 155, model: 'gemma-4-26b', latency_ms: 12, error: 'HTTP 429' } });
+    const html = dashboardPage(config, dataWithExecutors([failing]));
+    const at = html.indexOf('<summary>');
+    const summary = html.slice(at, html.indexOf('</summary>', at));
+    expect(summary).toContain('⚠ sonde en échec (HTTP 429)');
+    expect(html).toContain('en échec (HTTP 429) · seq 155 · 12 ms');
+    expect(html).not.toContain('<details class="ep" open');
+  });
+
+  it('sécurité et poids mesuré : aucun script, secret jamais rendu, 30 endpoints < 150 000 octets', () => {
+    const html = dashboardPage(config, dataWithExecutors(executorRows(30)));
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain(SECRET);
+    // Le contenu plié reste téléchargé : la mesure est affichée dans la PR (critère UX-0).
+    expect(html.length).toBeLessThan(150_000);
   });
 });
