@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { StateContractError } from '../../../src/collab/contracts';
 import {
+  OPENROUTER_CHAT_COMPLETIONS_URL,
   ZAI_CHAT_COMPLETIONS_URL,
   createOpenAiCompatibleAdapter,
   openAiCompatibleProviderOf,
@@ -83,22 +84,79 @@ describe('R4 A — openai-compatible multi-provider', () => {
     expectCode(() => parseOpenAiCompatibleRef('openrouter:acme/model-x'), 'EXECUTOR_PAID_MODEL');
   });
 
-  it('generate Z.AI mock', async () => {
-    const fetchImpl = vi.fn(async (url: string) => {
+  it('Z.AI glm-4.7-flash : body exact avec thinking.disabled (#145)', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       expect(url).toBe(ZAI_CHAT_COMPLETIONS_URL);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.model).toBe('glm-4.7-flash');
+      expect(body.thinking).toEqual({ type: 'disabled' });
+      expect(body.provider).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain('present-secret');
       return okJson({
         choices: [{ message: { content: 'ok-zai' } }],
         usage: { prompt_tokens: 1, completion_tokens: 1 },
       });
     });
     const adapter = createOpenAiCompatibleAdapter(
-      { LLM_KEY_ZAI: 'k' },
+      { LLM_KEY_ZAI: 'present-secret' },
       'zai:glm-4.7-flash',
       { fetchImpl: fetchImpl as typeof fetch },
     );
     const result = await adapter.generate({ control: 'c', data: 'd', max_tokens: 8 });
-    expect(result.provider).toBe('zai');
-    expect(result.text).toBe('ok-zai');
+    expect(result).toMatchObject({ text: 'ok-zai', provider: 'zai', model: 'glm-4.7-flash' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('OpenRouter :free : pas de thinking dans le body', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe(OPENROUTER_CHAT_COMPLETIONS_URL);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.thinking).toBeUndefined();
+      expect(body.provider).toEqual({ data_collection: 'deny' });
+      return okJson({
+        choices: [{ message: { content: 'ok-or' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      });
+    });
+    const adapter = createOpenAiCompatibleAdapter(
+      { LLM_KEY_OPENROUTER: 'k' },
+      'openrouter:acme/model-x:free',
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    const result = await adapter.generate({ control: 'c', data: 'd', max_tokens: 8 });
+    expect(result.text).toBe('ok-or');
+  });
+
+  it('contenu message vide → EXECUTOR_BAD_RESPONSE', async () => {
+    const fetchImpl = vi.fn(async () => okJson({
+      choices: [{ message: { content: '' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 256 },
+    }));
+    const adapter = createOpenAiCompatibleAdapter(
+      { LLM_KEY_ZAI: 'k' },
+      'zai:glm-4.7-flash',
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    await expect(
+      adapter.generate({ control: 'c', data: 'd', max_tokens: 8 }),
+    ).rejects.toMatchObject({ code: 'EXECUTOR_BAD_RESPONSE' });
+  });
+
+  it('timeout → EXECUTOR_TIMEOUT, 0 secret dans le message', async () => {
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => { /* hang */ }));
+    const adapter = createOpenAiCompatibleAdapter(
+      { LLM_KEY_ZAI: 'secret-must-not-leak' },
+      'zai:glm-4.7-flash',
+      { fetchImpl: fetchImpl as typeof fetch, timeout_ms: 20 },
+    );
+    try {
+      await adapter.generate({ control: 'c', data: 'd', max_tokens: 8 });
+      expect.fail('timeout attendu');
+    } catch (error) {
+      expect(error).toBeInstanceOf(StateContractError);
+      expect((error as StateContractError).code).toBe('EXECUTOR_TIMEOUT');
+      expect(String((error as Error).message)).not.toContain('secret-must-not-leak');
+    }
   });
 
   it('secret Z.AI absent → UNAVAILABLE sans réseau', () => {

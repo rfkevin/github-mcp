@@ -4,6 +4,7 @@
  * notes ou POST). Paid hors allowlist Free → EXECUTOR_PAID_MODEL avant fetch.
  * Groq : config/catalogue ok, runtime bloqué tant que le plan non-facturable
  * n'est pas prouvé et approuvé Owner (Free vs Developer facturable).
+ * Z.AI glm-4.7-flash : thinking.type=disabled (sonde vide au plafond 256, #145).
  */
 import { StateContractError } from '../../collab/contracts';
 import {
@@ -64,6 +65,17 @@ const PROVIDERS: Readonly<Record<OpenAiCompatibleProvider, ProviderConfig>> = {
 };
 
 /**
+ * Options de body spécifiques au modèle Free Z.AI (doc API 2026-10-15) :
+ * GLM-4.7 raisonne par défaut ; sans thinking.disabled les jetons max partent
+ * dans le raisonnement et message.content reste vide (incident seq 158).
+ * Uniquement `zai:glm-4.7-flash` — jamais les autres providers.
+ */
+const ZAI_FREE_MODEL = 'glm-4.7-flash';
+const MODEL_REQUEST_OPTIONS: Readonly<Record<string, Record<string, unknown>>> = {
+  [ZAI_PROVIDER + ':' + ZAI_FREE_MODEL]: { thinking: { type: 'disabled' } },
+};
+
+/**
  * Fournisseurs dont le runtime est interdit : la présence d'une clé ne prouve
  * pas un compte non facturable. Owner doit approuver un contrat vérifiable
  * avant tout fetch (review Sol #144 CHANGE_REQUEST).
@@ -78,7 +90,7 @@ const FREE_MODELS: Readonly<Record<OpenAiCompatibleProvider, ReadonlySet<string>
   openrouter: new Set(),
   groq: new Set(),
   deepseek: new Set(),
-  zai: new Set(['glm-4.7-flash']),
+  zai: new Set([ZAI_FREE_MODEL]),
 };
 
 /** Paid connus — refusés même si secret présent (dormant, 0 €). */
@@ -210,6 +222,7 @@ export function createOpenAiCompatibleAdapter(
   const secret = providerSecret(env, config.secret);
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = Math.min(Math.max(Math.trunc(options.timeout_ms ?? DEFAULT_TIMEOUT_MS), 1), DEFAULT_TIMEOUT_MS);
+  const modelKey = parsed.provider + ':' + parsed.model;
   return {
     provider: parsed.provider,
     model: parsed.model,
@@ -225,6 +238,7 @@ export function createOpenAiCompatibleAdapter(
         model: parsed.model,
         messages: envelope(input.control, input.data),
         max_tokens: input.max_tokens,
+        ...MODEL_REQUEST_OPTIONS[modelKey],
       };
       if (config.denyDataCollection) {
         body.provider = { data_collection: 'deny' };
@@ -247,6 +261,9 @@ export function createOpenAiCompatibleAdapter(
         throw executorError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur sans JSON exploitable.');
       }
       const { text, usage } = readWorkersAiOutput(raw);
+      if (!text.trim()) {
+        throw executorError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur avec contenu vide.');
+      }
       return { text, usage, provider: parsed.provider, model: parsed.model };
     },
   };
