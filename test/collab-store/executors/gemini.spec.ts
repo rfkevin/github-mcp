@@ -7,20 +7,8 @@ import {
   geminiProviderOf,
   parseGeminiRef,
 } from '../../../src/collab-store/executors/gemini';
-
-function okJson(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-function expectCode(fn: () => unknown, code: string): void {
-  let thrown: unknown;
-  try { fn(); } catch (error) { thrown = error; }
-  expect(thrown).toBeInstanceOf(StateContractError);
-  expect((thrown as StateContractError).code).toBe(code);
-}
+import { providerAdapterFactory } from '../../../src/collab-store/executors/run';
+import { expectCode, okJson } from './test-helpers';
 
 const freeOk = { freeProjectAttested: true as const };
 
@@ -39,6 +27,29 @@ describe('R4 A — Gemini Free', () => {
         'gemini:' + GEMINI_FREE_MODEL,
         { fetchImpl: fetchImpl as typeof fetch },
       ),
+      'EXECUTOR_UNAVAILABLE',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('factory prod : clé Gemini présente → UNAVAILABLE, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    const factory = providerAdapterFactory(
+      { LLM_KEY_GEMINI: 'present-in-env' },
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    expectCode(
+      () => factory({
+        endpoint_id: 'ep-gemini',
+        principal_id: 'gemini-25-flash-lite',
+        status: 'probe_required',
+        attestation_kind: 'provider_adapter',
+        attestation_ref: 'gemini:' + GEMINI_FREE_MODEL,
+        capability_set: { tools: ['llm.generate'], network_providers: ['gemini'], token_ceiling: 256 },
+        notes: '',
+        created_at: '',
+        updated_at: '',
+      } as never),
       'EXECUTOR_UNAVAILABLE',
     );
     expect(fetchImpl).not.toHaveBeenCalled();

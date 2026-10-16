@@ -9,7 +9,7 @@ import {
   assertGenerateInput, envelope, readWorkersAiOutput,
   type LlmAdapter, type LlmInput,
 } from './adapter';
-import { executorError, fetchWithTimeout } from './fetch-timeout';
+import { clampTimeoutMs, executorError, fetchWithTimeout, readUpstreamJson } from './fetch-timeout';
 
 export const OPENROUTER_PROVIDER = 'openrouter';
 export const GROQ_PROVIDER = 'groq';
@@ -30,7 +30,6 @@ export const DEEPSEEK_CHAT_COMPLETIONS_URL = 'https://api.deepseek.com/chat/comp
 export const ZAI_CHAT_COMPLETIONS_URL = 'https://api.z.ai/api/paas/v4/chat/completions';
 export const XAI_CHAT_COMPLETIONS_URL = 'https://api.x.ai/v1/chat/completions';
 
-const DEFAULT_TIMEOUT_MS = 30_000;
 const OR_MODEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}$/i;
 const GENERIC_MODEL_RE = /^[a-z0-9][a-z0-9._/-]{0,127}$/i;
 
@@ -181,7 +180,7 @@ export function createOpenAiCompatibleAdapter(
   const config = PROVIDERS[parsed.provider];
   const secret = providerSecret(env, config.secret);
   const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = Math.min(Math.max(Math.trunc(options.timeout_ms ?? DEFAULT_TIMEOUT_MS), 1), DEFAULT_TIMEOUT_MS);
+  const timeoutMs = clampTimeoutMs(options.timeout_ms);
   const modelKey = parsed.provider + ':' + parsed.model;
   return {
     provider: parsed.provider,
@@ -211,15 +210,7 @@ export function createOpenAiCompatibleAdapter(
         },
         body: JSON.stringify(body),
       }, timeoutMs);
-      if (!response.ok) {
-        throw executorError('EXECUTOR_UPSTREAM_HTTP', 'Fournisseur HTTP ' + response.status + '.');
-      }
-      let raw: unknown;
-      try {
-        raw = await response.json();
-      } catch {
-        throw executorError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur sans JSON exploitable.');
-      }
+      const raw = await readUpstreamJson(response);
       const { text, usage } = readWorkersAiOutput(raw);
       if (!text.trim()) {
         throw executorError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur avec contenu vide.');
