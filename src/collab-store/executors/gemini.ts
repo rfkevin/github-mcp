@@ -5,6 +5,9 @@
  * gemini-2.5-flash-lite : hors allowlist (accès 2.5 restreint nouveaux projets).
  * Runtime deny-by-default : sans freeProjectAttested (Owner), 0 fetch même si
  * LLM_KEY_GEMINI est présent (même modèle peut être facturé Free vs Paid Google).
+ *
+ * Thinking Gemini 3.x : thinkingLevel (pas thinkingBudget 2.5). Désactivation
+ * complète non supportée sur Flash/Flash-Lite → niveau `minimal` (défaut doc).
  */
 import {
   assertGenerateInput, envelope, zeroCostAdapter,
@@ -113,14 +116,14 @@ export function createGeminiAdapter(
     const messages = envelope(input.control, input.data);
     const system = messages.find(m => m.role === 'system')?.content ?? input.control;
     const user = messages.find(m => m.role === 'user')?.content ?? input.data;
-    // thinkingConfig.thinkingBudget=0 : 3.5 peut consommer maxOutputTokens en
-    // raisonnement sinon → content vide (même classe de risque que Z.AI thinking).
+    // Gemini 3.x : thinkingLevel (doc 14/10/2026). OFF total non supporté sur
+    // Flash-Lite → minimal. thinkingBudget (2.5) n'est pas le contrat 3.x.
     const body = {
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: user }] }],
       generationConfig: {
         maxOutputTokens: input.max_tokens,
-        thinkingConfig: { thinkingBudget: 0 },
+        thinkingConfig: { thinkingLevel: 'minimal' },
       },
     };
     const response = await fetchWithTimeout(fetchImpl, url, {

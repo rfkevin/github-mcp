@@ -81,7 +81,7 @@ describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('generate mock — URL 3.5 + thinkingBudget 0 + x-goog-api-key', async () => {
+  it('generate mock — URL 3.5 + thinkingLevel minimal (pas thinkingBudget)', async () => {
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       expect(url).toBe(GEMINI_API_BASE + '/' + GEMINI_FREE_MODEL + ':generateContent');
       const headers = init?.headers as Record<string, string>;
@@ -89,9 +89,10 @@ describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
       expect(headers.Authorization).toBeUndefined();
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(JSON.stringify(body)).not.toContain('gemini-secret');
+      expect(JSON.stringify(body)).not.toContain('thinkingBudget');
       expect(body.generationConfig).toEqual({
         maxOutputTokens: 16,
-        thinkingConfig: { thinkingBudget: 0 },
+        thinkingConfig: { thinkingLevel: 'minimal' },
       });
       return okJson({
         candidates: [{ content: { parts: [{ text: 'CC4-PROBE-OK' }] } }],
@@ -149,7 +150,7 @@ describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
     );
   });
 
-  it('contenu vide (ex. thinking a consommé le plafond) → BAD_RESPONSE', async () => {
+  it('contenu vide → BAD_RESPONSE (pas de promesse OFF total thinking)', async () => {
     const fetchImpl = vi.fn(async () => okJson({
       candidates: [{ content: { parts: [{ text: '' }] } }],
     }));
