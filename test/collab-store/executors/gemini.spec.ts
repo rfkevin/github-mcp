@@ -4,6 +4,7 @@ import {
   GEMINI_FREE_MODEL,
   GEMINI_LEGACY_25_FLASH_LITE,
   createGeminiAdapter,
+  geminiFreeAttestedFromEnv,
   geminiProviderOf,
   parseGeminiRef,
 } from '../../../src/collab-store/executors/gemini';
@@ -14,6 +15,18 @@ import {
 
 const freeOk = { freeProjectAttested: true as const };
 const freeRef = 'gemini:' + GEMINI_FREE_MODEL;
+
+const endpointStub = {
+  endpoint_id: 'ep-gemini',
+  principal_id: 'gemini-35-flash-lite',
+  status: 'probe_required',
+  attestation_kind: 'provider_adapter',
+  attestation_ref: freeRef,
+  capability_set: { tools: ['llm.generate'], network_providers: ['gemini'], token_ceiling: 256 },
+  notes: '',
+  created_at: '',
+  updated_at: '',
+} as never;
 
 describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
   it('préfixe et Free model = gemini-3.5-flash-lite', () => {
@@ -30,6 +43,14 @@ describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
     );
   });
 
+  it('geminiFreeAttestedFromEnv : seule la chaîne exacte true', () => {
+    expect(geminiFreeAttestedFromEnv({})).toBe(false);
+    expect(geminiFreeAttestedFromEnv({ GEMINI_FREE_PROJECT_ATTESTED: 'true' })).toBe(true);
+    expect(geminiFreeAttestedFromEnv({ GEMINI_FREE_PROJECT_ATTESTED: 'True' })).toBe(false);
+    expect(geminiFreeAttestedFromEnv({ GEMINI_FREE_PROJECT_ATTESTED: '1' })).toBe(false);
+    expect(geminiFreeAttestedFromEnv({ GEMINI_FREE_PROJECT_ATTESTED: 'false' })).toBe(false);
+  });
+
   it('clé présente + pas d’attestation Free → UNAVAILABLE, 0 fetch', () => {
     const fetchImpl = vi.fn();
     expectCode(
@@ -43,26 +64,43 @@ describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('factory prod : clé Gemini présente → UNAVAILABLE, 0 fetch', () => {
+  it('factory : clé seule → UNAVAILABLE, 0 fetch', () => {
     const fetchImpl = vi.fn();
     const factory = providerAdapterFactory(
       { LLM_KEY_GEMINI: 'present-in-env' },
       { fetchImpl: fetchImpl as typeof fetch },
     );
-    expectCode(
-      () => factory({
-        endpoint_id: 'ep-gemini',
-        principal_id: 'gemini-35-flash-lite',
-        status: 'probe_required',
-        attestation_kind: 'provider_adapter',
-        attestation_ref: freeRef,
-        capability_set: { tools: ['llm.generate'], network_providers: ['gemini'], token_ceiling: 256 },
-        notes: '',
-        created_at: '',
-        updated_at: '',
-      } as never),
-      'EXECUTOR_UNAVAILABLE',
+    expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('factory : GEMINI_FREE_PROJECT_ATTESTED=true + clé → adapter, mock generate', async () => {
+    const fetchImpl = vi.fn(async () => okJson({
+      candidates: [{ content: { parts: [{ text: 'CC4-PROBE-OK' }] } }],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+    }));
+    const factory = providerAdapterFactory(
+      {
+        LLM_KEY_GEMINI: 'gemini-secret',
+        GEMINI_FREE_PROJECT_ATTESTED: 'true',
+      },
+      { fetchImpl: fetchImpl as typeof fetch },
     );
+    const adapter = factory(endpointStub);
+    const result = await adapter.generate({ control: 'c', data: 'd', max_tokens: 16 });
+    expect(result.text).toBe('CC4-PROBE-OK');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('factory : valeur env non exacte → UNAVAILABLE, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    for (const bad of ['True', 'TRUE', '1', 'yes', '']) {
+      const factory = providerAdapterFactory(
+        { LLM_KEY_GEMINI: 'k', GEMINI_FREE_PROJECT_ATTESTED: bad },
+        { fetchImpl: fetchImpl as typeof fetch },
+      );
+      expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');
+    }
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
