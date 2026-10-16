@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   GEMINI_API_BASE,
+  GEMINI_CC3_TEST_PUBLIC_ORIGIN,
   GEMINI_FREE_MODEL,
   GEMINI_LEGACY_25_FLASH_LITE,
   createGeminiAdapter,
@@ -15,6 +16,13 @@ import {
 
 const freeOk = { freeProjectAttested: true as const };
 const freeRef = 'gemini:' + GEMINI_FREE_MODEL;
+
+/** Env TEST complet : attestation + origin CC3-test. */
+const testEnvOk = {
+  LLM_KEY_GEMINI: 'gemini-secret',
+  GEMINI_FREE_PROJECT_ATTESTED: 'true',
+  PUBLIC_ORIGIN: GEMINI_CC3_TEST_PUBLIC_ORIGIN,
+} as const;
 
 const endpointStub = {
   endpoint_id: 'ep-gemini',
@@ -43,12 +51,27 @@ describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
     );
   });
 
-  it('geminiFreeAttestedFromEnv : seule la chaîne exacte true', () => {
+  it('geminiFreeAttestedFromEnv : true + origin CC3-test uniquement', () => {
     expect(geminiFreeAttestedFromEnv({})).toBe(false);
-    expect(geminiFreeAttestedFromEnv({ GEMINI_FREE_PROJECT_ATTESTED: 'true' })).toBe(true);
-    expect(geminiFreeAttestedFromEnv({ GEMINI_FREE_PROJECT_ATTESTED: 'True' })).toBe(false);
-    expect(geminiFreeAttestedFromEnv({ GEMINI_FREE_PROJECT_ATTESTED: '1' })).toBe(false);
-    expect(geminiFreeAttestedFromEnv({ GEMINI_FREE_PROJECT_ATTESTED: 'false' })).toBe(false);
+    expect(geminiFreeAttestedFromEnv({
+      GEMINI_FREE_PROJECT_ATTESTED: 'true',
+    })).toBe(false);
+    expect(geminiFreeAttestedFromEnv({
+      GEMINI_FREE_PROJECT_ATTESTED: 'true',
+      PUBLIC_ORIGIN: GEMINI_CC3_TEST_PUBLIC_ORIGIN,
+    })).toBe(true);
+    expect(geminiFreeAttestedFromEnv({
+      GEMINI_FREE_PROJECT_ATTESTED: 'true',
+      PUBLIC_ORIGIN: 'https://github-mcp.rfahedkevin.workers.dev',
+    })).toBe(false);
+    expect(geminiFreeAttestedFromEnv({
+      GEMINI_FREE_PROJECT_ATTESTED: 'True',
+      PUBLIC_ORIGIN: GEMINI_CC3_TEST_PUBLIC_ORIGIN,
+    })).toBe(false);
+    expect(geminiFreeAttestedFromEnv({
+      GEMINI_FREE_PROJECT_ATTESTED: '1',
+      PUBLIC_ORIGIN: GEMINI_CC3_TEST_PUBLIC_ORIGIN,
+    })).toBe(false);
   });
 
   it('clé présente + pas d’attestation Free → UNAVAILABLE, 0 fetch', () => {
@@ -74,16 +97,13 @@ describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('factory : GEMINI_FREE_PROJECT_ATTESTED=true + clé → adapter, mock generate', async () => {
+  it('factory : true + origin TEST → adapter, mock generate', async () => {
     const fetchImpl = vi.fn(async () => okJson({
       candidates: [{ content: { parts: [{ text: 'CC4-PROBE-OK' }] } }],
       usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
     }));
     const factory = providerAdapterFactory(
-      {
-        LLM_KEY_GEMINI: 'gemini-secret',
-        GEMINI_FREE_PROJECT_ATTESTED: 'true',
-      },
+      { ...testEnvOk },
       { fetchImpl: fetchImpl as typeof fetch },
     );
     const adapter = factory(endpointStub);
@@ -92,11 +112,45 @@ describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('factory : valeur env non exacte → UNAVAILABLE, 0 fetch', () => {
+  it('factory : true + origin PROD → UNAVAILABLE, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    const factory = providerAdapterFactory(
+      {
+        LLM_KEY_GEMINI: 'k',
+        GEMINI_FREE_PROJECT_ATTESTED: 'true',
+        PUBLIC_ORIGIN: 'https://github-mcp.rfahedkevin.workers.dev',
+      },
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('factory : true + origin absente / preview → UNAVAILABLE, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    for (const origin of [undefined, '', 'https://preview.example.workers.dev']) {
+      const factory = providerAdapterFactory(
+        {
+          LLM_KEY_GEMINI: 'k',
+          GEMINI_FREE_PROJECT_ATTESTED: 'true',
+          ...(origin !== undefined ? { PUBLIC_ORIGIN: origin } : {}),
+        },
+        { fetchImpl: fetchImpl as typeof fetch },
+      );
+      expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('factory : valeur env non exacte même avec origin TEST → UNAVAILABLE', () => {
     const fetchImpl = vi.fn();
     for (const bad of ['True', 'TRUE', '1', 'yes', '']) {
       const factory = providerAdapterFactory(
-        { LLM_KEY_GEMINI: 'k', GEMINI_FREE_PROJECT_ATTESTED: bad },
+        {
+          LLM_KEY_GEMINI: 'k',
+          GEMINI_FREE_PROJECT_ATTESTED: bad,
+          PUBLIC_ORIGIN: GEMINI_CC3_TEST_PUBLIC_ORIGIN,
+        },
         { fetchImpl: fetchImpl as typeof fetch },
       );
       expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');

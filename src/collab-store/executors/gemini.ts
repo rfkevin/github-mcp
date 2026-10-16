@@ -6,8 +6,11 @@
  *
  * Runtime deny-by-default : sans freeProjectAttested, 0 fetch même si
  * LLM_KEY_GEMINI est présent. L'attestation Free n'est **pas** déduite de la
- * clé ni du registre : uniquement option explicite (tests) ou env serveur
- * `GEMINI_FREE_PROJECT_ATTESTED=true` (Owner, CC3-test uniquement).
+ * clé ni du registre : uniquement option explicite (tests) ou **double**
+ * condition serveur Owner :
+ *   GEMINI_FREE_PROJECT_ATTESTED=true
+ *   ET PUBLIC_ORIGIN = origin CC3-test exacte.
+ * Prod / preview / autre origin → fail-closed même si la var d'attestation est true.
  *
  * Thinking Gemini 3.x : thinkingLevel (pas thinkingBudget 2.5). Désactivation
  * complète non supportée sur Flash/Flash-Lite → niveau `minimal` (défaut doc).
@@ -24,8 +27,13 @@ export const GEMINI_FREE_MODEL = 'gemini-3.5-flash-lite';
 /** Ancien Free 2.5 — non utilisable pour les nouveaux projets (restreint 18/09/2026). */
 export const GEMINI_LEGACY_25_FLASH_LITE = 'gemini-2.5-flash-lite';
 export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-/** Env serveur Owner (CF vars TEST) : seule valeur acceptée = 'true' (casse exacte). */
+/** Env serveur Owner : seule valeur acceptée = 'true' (casse exacte). */
 export const GEMINI_FREE_ATTEST_ENV = 'GEMINI_FREE_PROJECT_ATTESTED';
+/**
+ * Origin de déploiement CC3-test (wrangler env.cc3-test). Constante serveur,
+ * jamais lue depuis l'en-tête HTTP Origin de la requête.
+ */
+export const GEMINI_CC3_TEST_PUBLIC_ORIGIN = 'https://github-mcp-cc3-test.rfahedkevin.workers.dev';
 
 const MODEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
@@ -40,10 +48,15 @@ export interface GeminiEnv {
   LLM_KEY_GEMINI?: string;
   /**
    * Attestation projet Google Free, **server-only**. Owner pose/retire la var
-   * sur le Worker TEST. Jamais lue depuis client, notes endpoint ou registre.
-   * Seule la chaîne exacte `true` débloque ; toute autre valeur = fail-closed.
+   * sur le Worker CC3-test. Jamais lue depuis client, notes endpoint ou registre.
+   * Seule la chaîne exacte `true` compte ; insuffisante seule (voir PUBLIC_ORIGIN).
    */
   GEMINI_FREE_PROJECT_ATTESTED?: string;
+  /**
+   * Origin de déploiement serveur (wrangler vars). Doit égaler
+   * GEMINI_CC3_TEST_PUBLIC_ORIGIN pour débloquer. Jamais l'Origin HTTP client.
+   */
+  PUBLIC_ORIGIN?: string;
 }
 
 export interface GeminiOptions {
@@ -52,14 +65,20 @@ export interface GeminiOptions {
   /**
    * Preuve Owner uniquement (jamais depuis le client / registre) : projet Google
    * Free non facturable vérifié. Absent → EXECUTOR_UNAVAILABLE, 0 fetch.
-   * En prod/TEST, la factory le dérive uniquement de GEMINI_FREE_PROJECT_ATTESTED.
+   * Runtime : dérivé uniquement de geminiFreeAttestedFromEnv (var + origin TEST).
    */
   freeProjectAttested?: boolean;
 }
 
-/** true ssi env.GEMINI_FREE_PROJECT_ATTESTED === 'true' (fail-closed sinon). */
+/**
+ * true ssi double condition serveur :
+ * 1) GEMINI_FREE_PROJECT_ATTESTED === 'true'
+ * 2) PUBLIC_ORIGIN === GEMINI_CC3_TEST_PUBLIC_ORIGIN
+ * Fail-closed sinon (prod, preview, origin absente, valeur non exacte).
+ */
 export function geminiFreeAttestedFromEnv(env: GeminiEnv): boolean {
-  return env.GEMINI_FREE_PROJECT_ATTESTED === 'true';
+  return env.GEMINI_FREE_PROJECT_ATTESTED === 'true'
+    && env.PUBLIC_ORIGIN === GEMINI_CC3_TEST_PUBLIC_ORIGIN;
 }
 
 export function geminiProviderOf(attestationRef: string): typeof GEMINI_PROVIDER | null {
