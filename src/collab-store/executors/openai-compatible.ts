@@ -3,8 +3,8 @@
  * URL et nom de secret = constantes serveur uniquement (jamais attestation,
  * notes ou POST). Paid hors allowlist Free → EXECUTOR_PAID_MODEL avant fetch.
  * Groq Free : double condition Owner (GROQ_FREE_PROJECT_ATTESTED=true +
- * PUBLIC_ORIGIN CC3-test) ; sinon 0 fetch. Z.AI glm-4.7-flash :
- * thinking.disabled. xAI : 100 % paid dormant (0 free API public).
+ * PUBLIC_ORIGIN CC3-test) imposée dans le constructeur ; sinon 0 fetch.
+ * Z.AI glm-4.7-flash : thinking.disabled. xAI : 100 % paid dormant.
  */
 import {
   assertGenerateInput, envelope, readWorkersAiOutput, zeroCostAdapter,
@@ -129,9 +129,9 @@ export interface OpenAiCompatibleOptions {
   fetchImpl?: typeof fetch;
   timeout_ms?: number;
   /**
-   * Preuve Owner uniquement (jamais client / registre) : compte Groq Free
-   * non facturable vérifié. Absent → EXECUTOR_UNAVAILABLE, 0 fetch pour groq.
-   * Runtime : dérivé uniquement de groqFreeAttestedFromEnv.
+   * Uniquement pour parse/tests. Le constructeur **ignore** cette option et
+   * dérive l'autorisation uniquement de `groqFreeAttestedFromEnv(env)` :
+   * `options.freeProjectAttested=true` ne peut jamais élargir l'accès.
    */
   freeProjectAttested?: boolean;
 }
@@ -202,12 +202,18 @@ export function parseOpenAiCompatibleRef(
   return { provider, model };
 }
 
+/**
+ * Constructeur exporté : pour Groq, l'attestation vient **uniquement** de env
+ * (`groqFreeAttestedFromEnv`). `options.freeProjectAttested` ne peut jamais
+ * élargir l'accès (fail-closed même si un appelant malveillant le force à true).
+ */
 export function createOpenAiCompatibleAdapter(
   env: OpenAiCompatibleEnv,
   attestationRef: string,
   options: OpenAiCompatibleOptions = {},
 ): LlmAdapter {
-  const parsed = parseOpenAiCompatibleRef(attestationRef, options);
+  const freeProjectAttested = groqFreeAttestedFromEnv(env);
+  const parsed = parseOpenAiCompatibleRef(attestationRef, { freeProjectAttested });
   const config = PROVIDERS[parsed.provider];
   const secret = requireSecret(env[config.secret]);
   const fetchImpl = options.fetchImpl ?? fetch;
