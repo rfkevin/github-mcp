@@ -41,6 +41,17 @@ describe('R4 catalogue multi-fournisseurs dormant', () => {
     expect(new Set(refs).size).toBe(refs.length);
   });
 
+  it('Gemini catalogue = 3.5-flash-lite unverified, pas 2.5', () => {
+    const gemini = catalogueCandidate('gemini:gemini-3.5-flash-lite');
+    expect(gemini?.model_id).toBe('gemini-3.5-flash-lite');
+    expect(gemini?.tier).toBe('unverified');
+    expect(gemini?.catalogue_only).toBe(true);
+    expect(gemini?.probe_allowed).toBe(false);
+    expect(gemini?.dispatch_allowed).toBe(false);
+    expect(gemini?.paid_disabled).toBe(true);
+    expect(catalogueCandidate('gemini:gemini-2.5-flash-lite')).toBeNull();
+  });
+
   it('montre les pools de quota partagés et les noms de secrets sans aucune valeur', () => {
     const cf = MODEL_CANDIDATES.filter(x => x.provider === 'workers-ai');
     expect(new Set(cf.map(x => x.quota_pool)).size).toBe(1);

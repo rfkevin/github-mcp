@@ -1,8 +1,13 @@
 /**
  * R4 lot A — adaptateur Google Gemini API (generateContent, non OpenAI-chat).
- * URL + nom de secret = constantes serveur. Free allowlist : gemini-2.5-flash-lite.
+ * URL + nom de secret = constantes serveur.
+ * Free allowlist : gemini-3.5-flash-lite (GA 21/07/2026, Standard Free).
+ * gemini-2.5-flash-lite : hors allowlist (accès 2.5 restreint nouveaux projets).
  * Runtime deny-by-default : sans freeProjectAttested (Owner), 0 fetch même si
  * LLM_KEY_GEMINI est présent (même modèle peut être facturé Free vs Paid Google).
+ *
+ * Thinking Gemini 3.x : thinkingLevel (pas thinkingBudget 2.5). Désactivation
+ * complète non supportée sur Flash/Flash-Lite → niveau `minimal` (défaut doc).
  */
 import {
   assertGenerateInput, envelope, zeroCostAdapter,
@@ -11,14 +16,19 @@ import {
 import { clampTimeoutMs, executorError, fetchWithTimeout, readUpstreamJson, requireSecret } from './fetch-timeout';
 
 export const GEMINI_PROVIDER = 'gemini';
-export const GEMINI_FREE_MODEL = 'gemini-2.5-flash-lite';
+/** Cible Free principale CC3-4 (stable, Standard Free). */
+export const GEMINI_FREE_MODEL = 'gemini-3.5-flash-lite';
+/** Ancien Free 2.5 — non utilisable pour les nouveaux projets (restreint 18/09/2026). */
+export const GEMINI_LEGACY_25_FLASH_LITE = 'gemini-2.5-flash-lite';
 export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 const MODEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
 const FREE_MODELS: ReadonlySet<string> = new Set([GEMINI_FREE_MODEL]);
 const PAID_MODELS: ReadonlySet<string> = new Set([
-  'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash',
+  'gemini-2.5-pro', 'gemini-2.5-flash',
+  'gemini-1.5-pro', 'gemini-1.5-flash',
+  'gemini-3.5-flash', 'gemini-3.5-pro',
 ]);
 
 export interface GeminiEnv {
@@ -53,7 +63,13 @@ export function parseGeminiRef(attestationRef: string): { provider: typeof GEMIN
     throw executorError('EXECUTOR_PAID_MODEL', 'Modèle Gemini payant refusé (0 € / paid dormant) : ' + model + '.');
   }
   if (!FREE_MODELS.has(model)) {
-    throw executorError('EXECUTOR_UNSUPPORTED', 'Modèle Gemini hors allowlist Free vérifiée : ' + model + '.');
+    throw executorError(
+      'EXECUTOR_UNSUPPORTED',
+      'Modèle Gemini hors allowlist Free vérifiée : ' + model
+        + (model === GEMINI_LEGACY_25_FLASH_LITE
+          ? ' (2.5 restreint nouveaux projets ; cible Free = ' + GEMINI_FREE_MODEL + ').'
+          : '.'),
+    );
   }
   return { provider: GEMINI_PROVIDER, model };
 }
@@ -100,10 +116,15 @@ export function createGeminiAdapter(
     const messages = envelope(input.control, input.data);
     const system = messages.find(m => m.role === 'system')?.content ?? input.control;
     const user = messages.find(m => m.role === 'user')?.content ?? input.data;
+    // Gemini 3.x : thinkingLevel (doc 14/10/2026). OFF total non supporté sur
+    // Flash-Lite → minimal. thinkingBudget (2.5) n'est pas le contrat 3.x.
     const body = {
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: user }] }],
-      generationConfig: { maxOutputTokens: input.max_tokens },
+      generationConfig: {
+        maxOutputTokens: input.max_tokens,
+        thinkingConfig: { thinkingLevel: 'minimal' },
+      },
     };
     const response = await fetchWithTimeout(fetchImpl, url, {
       method: 'POST',

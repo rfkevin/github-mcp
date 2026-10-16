@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   GEMINI_API_BASE,
   GEMINI_FREE_MODEL,
+  GEMINI_LEGACY_25_FLASH_LITE,
   createGeminiAdapter,
   geminiProviderOf,
   parseGeminiRef,
@@ -14,11 +15,19 @@ import {
 const freeOk = { freeProjectAttested: true as const };
 const freeRef = 'gemini:' + GEMINI_FREE_MODEL;
 
-describe('R4 A — Gemini Free', () => {
-  it('préfixe et Free model', () => {
+describe('R4 A — Gemini Free (3.5 Flash-Lite)', () => {
+  it('préfixe et Free model = gemini-3.5-flash-lite', () => {
+    expect(GEMINI_FREE_MODEL).toBe('gemini-3.5-flash-lite');
     expect(geminiProviderOf(freeRef)).toBe('gemini');
     expect(geminiProviderOf('openrouter:x')).toBeNull();
     expect(parseGeminiRef(freeRef).model).toBe(GEMINI_FREE_MODEL);
+  });
+
+  it('2.5-flash-lite hors allowlist (nouveaux projets restreints)', () => {
+    expectCode(
+      () => parseGeminiRef('gemini:' + GEMINI_LEGACY_25_FLASH_LITE),
+      'EXECUTOR_UNSUPPORTED',
+    );
   });
 
   it('clé présente + pas d’attestation Free → UNAVAILABLE, 0 fetch', () => {
@@ -43,7 +52,7 @@ describe('R4 A — Gemini Free', () => {
     expectCode(
       () => factory({
         endpoint_id: 'ep-gemini',
-        principal_id: 'gemini-25-flash-lite',
+        principal_id: 'gemini-35-flash-lite',
         status: 'probe_required',
         attestation_kind: 'provider_adapter',
         attestation_ref: freeRef,
@@ -60,6 +69,7 @@ describe('R4 A — Gemini Free', () => {
   it('Paid / inconnu refusés avant fetch', () => {
     const fetchImpl = vi.fn();
     expectCode(() => parseGeminiRef('gemini:gemini-2.5-pro'), 'EXECUTOR_PAID_MODEL');
+    expectCode(() => parseGeminiRef('gemini:gemini-3.5-pro'), 'EXECUTOR_PAID_MODEL');
     expectCode(() => parseGeminiRef('gemini:unknown-model'), 'EXECUTOR_UNSUPPORTED');
     expectCode(
       () => createGeminiAdapter({ LLM_KEY_GEMINI: 'k' }, 'gemini:gemini-2.5-pro', {
@@ -71,7 +81,7 @@ describe('R4 A — Gemini Free', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('generate mock — URL path + x-goog-api-key, 0 Bearer', async () => {
+  it('generate mock — URL 3.5 + thinkingLevel minimal (pas thinkingBudget)', async () => {
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       expect(url).toBe(GEMINI_API_BASE + '/' + GEMINI_FREE_MODEL + ':generateContent');
       const headers = init?.headers as Record<string, string>;
@@ -79,7 +89,11 @@ describe('R4 A — Gemini Free', () => {
       expect(headers.Authorization).toBeUndefined();
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(JSON.stringify(body)).not.toContain('gemini-secret');
-      expect(body.generationConfig).toEqual({ maxOutputTokens: 16 });
+      expect(JSON.stringify(body)).not.toContain('thinkingBudget');
+      expect(body.generationConfig).toEqual({
+        maxOutputTokens: 16,
+        thinkingConfig: { thinkingLevel: 'minimal' },
+      });
       return okJson({
         candidates: [{ content: { parts: [{ text: 'CC4-PROBE-OK' }] } }],
         usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 2 },
@@ -136,7 +150,7 @@ describe('R4 A — Gemini Free', () => {
     );
   });
 
-  it('contenu vide → BAD_RESPONSE', async () => {
+  it('contenu vide → BAD_RESPONSE (pas de promesse OFF total thinking)', async () => {
     const fetchImpl = vi.fn(async () => okJson({
       candidates: [{ content: { parts: [{ text: '' }] } }],
     }));

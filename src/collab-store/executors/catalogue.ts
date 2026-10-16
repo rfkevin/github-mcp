@@ -78,7 +78,8 @@ const MODELS: readonly ModelSeed[] = [
   ['openrouter', 'qwen/qwen3.5-flash-02-23', 'paid',
     'https://openrouter.ai/qwen/qwen3.5-flash-02-23'],
   ['groq', 'openai/gpt-oss-20b', 'free'],
-  ['gemini', 'gemini-2.5-flash-lite', 'unverified'],
+  // Cible Free adaptateur R4 ; tier unverified = accès clé non prouvé (pas de sonde).
+  ['gemini', 'gemini-3.5-flash-lite', 'unverified'],
   ['zai', 'glm-4.7-flash', 'free'],
   ['zai', 'glm-4.7-flashx', 'paid'],
   ['deepseek', 'deepseek-flash', 'paid'],
