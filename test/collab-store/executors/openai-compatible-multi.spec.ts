@@ -15,7 +15,6 @@ function okJson(body: unknown, status = 200): Response {
   });
 }
 
-/** Échoue si fn ne jette pas, ou si le code d'erreur diffère. */
 function expectCode(fn: () => unknown, code: string): void {
   let thrown: unknown;
   try {
@@ -33,6 +32,7 @@ describe('R4 A — openai-compatible multi-provider', () => {
     expect(openAiCompatibleProviderOf('zai:glm-4.7-flash')).toBe('zai');
     expect(openAiCompatibleProviderOf('deepseek:deepseek-flash')).toBe('deepseek');
     expect(openAiCompatibleProviderOf('openrouter:x/y:free')).toBe('openrouter');
+    expect(openAiCompatibleProviderOf('xai:grok-4.7')).toBe('xai');
     expect(openAiCompatibleProviderOf('workers-ai:@cf/x')).toBeNull();
   });
 
@@ -67,6 +67,21 @@ describe('R4 A — openai-compatible multi-provider', () => {
       () => createOpenAiCompatibleAdapter(
         { LLM_KEY_DEEPSEEK: 'k' },
         'deepseek:deepseek-flash',
+        { fetchImpl: fetchImpl as typeof fetch },
+      ),
+      'EXECUTOR_PAID_MODEL',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('xAI : tous modèles Paid dormant, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    expectCode(() => parseOpenAiCompatibleRef('xai:grok-4.7'), 'EXECUTOR_PAID_MODEL');
+    expectCode(() => parseOpenAiCompatibleRef('xai:grok-3-mini'), 'EXECUTOR_PAID_MODEL');
+    expectCode(
+      () => createOpenAiCompatibleAdapter(
+        { LLM_KEY_XAI: 'k' },
+        'xai:grok-4.7',
         { fetchImpl: fetchImpl as typeof fetch },
       ),
       'EXECUTOR_PAID_MODEL',
