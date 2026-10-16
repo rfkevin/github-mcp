@@ -7,24 +7,7 @@ import {
   openAiCompatibleProviderOf,
   parseOpenAiCompatibleRef,
 } from '../../../src/collab-store/executors/openai-compatible';
-
-function okJson(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-function expectCode(fn: () => unknown, code: string): void {
-  let thrown: unknown;
-  try {
-    fn();
-  } catch (error) {
-    thrown = error;
-  }
-  expect(thrown, 'exception attendue pour code ' + code).toBeInstanceOf(StateContractError);
-  expect((thrown as StateContractError).code).toBe(code);
-}
+import { expectCode, okJson } from './test-helpers';
 
 describe('R4 A — openai-compatible multi-provider', () => {
   it('détecte les préfixes supportés', () => {
