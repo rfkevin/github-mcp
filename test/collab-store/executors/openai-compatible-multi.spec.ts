@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { StateContractError } from '../../../src/collab/contracts';
 import {
   OPENROUTER_CHAT_COMPLETIONS_URL,
   ZAI_CHAT_COMPLETIONS_URL,
@@ -7,7 +6,7 @@ import {
   openAiCompatibleProviderOf,
   parseOpenAiCompatibleRef,
 } from '../../../src/collab-store/executors/openai-compatible';
-import { expectCode, okJson } from './test-helpers';
+import { expectCode, expectRejectCode, hangFetch, okJson } from './test-helpers';
 
 describe('R4 A — openai-compatible multi-provider', () => {
   it('détecte les préfixes supportés', () => {
@@ -21,14 +20,8 @@ describe('R4 A — openai-compatible multi-provider', () => {
 
   it('Groq : clé présente + modèle « free » catalogue → UNAVAILABLE, 0 fetch', () => {
     const fetchImpl = vi.fn();
-    expectCode(
-      () => parseOpenAiCompatibleRef('groq:openai/gpt-oss-20b'),
-      'EXECUTOR_UNAVAILABLE',
-    );
-    expectCode(
-      () => parseOpenAiCompatibleRef('groq:llama-3.3-70b-versatile'),
-      'EXECUTOR_UNAVAILABLE',
-    );
+    expectCode(() => parseOpenAiCompatibleRef('groq:openai/gpt-oss-20b'), 'EXECUTOR_UNAVAILABLE');
+    expectCode(() => parseOpenAiCompatibleRef('groq:llama-3.3-70b-versatile'), 'EXECUTOR_UNAVAILABLE');
     expectCode(
       () => createOpenAiCompatibleAdapter(
         { LLM_KEY_GROQ: 'present-but-billing-unknown' },
@@ -42,10 +35,7 @@ describe('R4 A — openai-compatible multi-provider', () => {
 
   it('DeepSeek direct Paid → PAID_MODEL avant fetch', () => {
     const fetchImpl = vi.fn();
-    expectCode(
-      () => parseOpenAiCompatibleRef('deepseek:deepseek-flash'),
-      'EXECUTOR_PAID_MODEL',
-    );
+    expectCode(() => parseOpenAiCompatibleRef('deepseek:deepseek-flash'), 'EXECUTOR_PAID_MODEL');
     expectCode(
       () => createOpenAiCompatibleAdapter(
         { LLM_KEY_DEEPSEEK: 'k' },
@@ -135,26 +125,23 @@ describe('R4 A — openai-compatible multi-provider', () => {
       'zai:glm-4.7-flash',
       { fetchImpl: fetchImpl as typeof fetch },
     );
-    await expect(
+    await expectRejectCode(
       adapter.generate({ control: 'c', data: 'd', max_tokens: 8 }),
-    ).rejects.toMatchObject({ code: 'EXECUTOR_BAD_RESPONSE' });
+      'EXECUTOR_BAD_RESPONSE',
+    );
   });
 
   it('timeout → EXECUTOR_TIMEOUT, 0 secret dans le message', async () => {
-    const fetchImpl = vi.fn(() => new Promise<Response>(() => { /* hang */ }));
     const adapter = createOpenAiCompatibleAdapter(
       { LLM_KEY_ZAI: 'secret-must-not-leak' },
       'zai:glm-4.7-flash',
-      { fetchImpl: fetchImpl as typeof fetch, timeout_ms: 20 },
+      { fetchImpl: hangFetch(), timeout_ms: 20 },
     );
-    try {
-      await adapter.generate({ control: 'c', data: 'd', max_tokens: 8 });
-      expect.fail('timeout attendu');
-    } catch (error) {
-      expect(error).toBeInstanceOf(StateContractError);
-      expect((error as StateContractError).code).toBe('EXECUTOR_TIMEOUT');
-      expect(String((error as Error).message)).not.toContain('secret-must-not-leak');
-    }
+    await expectRejectCode(
+      adapter.generate({ control: 'c', data: 'd', max_tokens: 8 }),
+      'EXECUTOR_TIMEOUT',
+      ['secret-must-not-leak'],
+    );
   });
 
   it('secret Z.AI absent → UNAVAILABLE sans réseau', () => {
