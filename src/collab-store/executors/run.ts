@@ -31,7 +31,9 @@ import {
   createOpenAiCompatibleAdapter, openAiCompatibleProviderOf,
   type OpenAiCompatibleEnv, type OpenAiCompatibleOptions,
 } from './openai-compatible';
-import { createGeminiAdapter, geminiProviderOf, type GeminiEnv } from './gemini';
+import {
+  createGeminiAdapter, geminiFreeAttestedFromEnv, geminiProviderOf, type GeminiEnv,
+} from './gemini';
 import { loadEndpoint, PROBE_KEY_PREFIX, type StoredEndpoint } from './registry';
 
 export const DEFAULT_DAILY_CAP = 50;
@@ -60,6 +62,10 @@ export function workersAiFactory(ai: WorkersAiBinding | undefined): AdapterFacto
 /**
  * Fabrique universelle A3c. Le préfixe de l'attestation choisit uniquement une
  * entrée codée côté serveur ; aucune URL ni clé n'est issue du registre.
+ *
+ * Gemini : freeProjectAttested dérivé **uniquement** de
+ * GEMINI_FREE_PROJECT_ATTESTED=true (var serveur Owner). Jamais true en dur,
+ * jamais depuis le client / registre / présence de LLM_KEY_GEMINI.
  */
 export function providerAdapterFactory(env: ProviderAdapterEnv, options: OpenAiCompatibleOptions = {}): AdapterFactory {
   return endpoint => {
@@ -68,7 +74,10 @@ export function providerAdapterFactory(env: ProviderAdapterEnv, options: OpenAiC
       return createWorkersAiAdapter(env.AI, endpoint.attestation_ref);
     }
     if (geminiProviderOf(endpoint.attestation_ref)) {
-      return createGeminiAdapter(env, endpoint.attestation_ref, options);
+      return createGeminiAdapter(env, endpoint.attestation_ref, {
+        ...options,
+        freeProjectAttested: geminiFreeAttestedFromEnv(env),
+      });
     }
     if (openAiCompatibleProviderOf(endpoint.attestation_ref)) {
       return createOpenAiCompatibleAdapter(env, endpoint.attestation_ref, options);
