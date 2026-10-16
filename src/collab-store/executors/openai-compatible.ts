@@ -6,10 +6,10 @@
  * thinking.disabled. xAI : 100 % paid dormant (0 free API public).
  */
 import {
-  assertGenerateInput, envelope, readWorkersAiOutput,
+  assertGenerateInput, envelope, readWorkersAiOutput, zeroCostAdapter,
   type LlmAdapter, type LlmInput,
 } from './adapter';
-import { clampTimeoutMs, executorError, fetchWithTimeout, readUpstreamJson } from './fetch-timeout';
+import { clampTimeoutMs, executorError, fetchWithTimeout, readUpstreamJson, requireSecret } from './fetch-timeout';
 
 export const OPENROUTER_PROVIDER = 'openrouter';
 export const GROQ_PROVIDER = 'groq';
@@ -163,14 +163,6 @@ export function parseOpenAiCompatibleRef(
   return { provider, model };
 }
 
-function providerSecret(env: OpenAiCompatibleEnv, name: keyof OpenAiCompatibleEnv): string {
-  const value = env[name]?.trim() ?? '';
-  if (!value) {
-    throw executorError('EXECUTOR_UNAVAILABLE', 'Secret du fournisseur absent de cet environnement.');
-  }
-  return value;
-}
-
 export function createOpenAiCompatibleAdapter(
   env: OpenAiCompatibleEnv,
   attestationRef: string,
@@ -178,44 +170,34 @@ export function createOpenAiCompatibleAdapter(
 ): LlmAdapter {
   const parsed = parseOpenAiCompatibleRef(attestationRef);
   const config = PROVIDERS[parsed.provider];
-  const secret = providerSecret(env, config.secret);
+  const secret = requireSecret(env[config.secret]);
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = clampTimeoutMs(options.timeout_ms);
   const modelKey = parsed.provider + ':' + parsed.model;
-  return {
-    provider: parsed.provider,
-    model: parsed.model,
-    validate: assertGenerateInput,
-    worstCaseNeurons(input: LlmInput) {
-      assertGenerateInput(input);
-      return 0;
-    },
-    neuronsFor: () => 0,
-    async generate(input) {
-      assertGenerateInput(input);
-      const body: Record<string, unknown> = {
-        model: parsed.model,
-        messages: envelope(input.control, input.data),
-        max_tokens: input.max_tokens,
-        ...MODEL_REQUEST_OPTIONS[modelKey],
-      };
-      if (config.denyDataCollection) {
-        body.provider = { data_collection: 'deny' };
-      }
-      const response = await fetchWithTimeout(fetchImpl, config.endpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer ' + secret,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      }, timeoutMs);
-      const raw = await readUpstreamJson(response);
-      const { text, usage } = readWorkersAiOutput(raw);
-      if (!text.trim()) {
-        throw executorError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur avec contenu vide.');
-      }
-      return { text, usage, provider: parsed.provider, model: parsed.model };
-    },
-  };
+  return zeroCostAdapter(parsed.provider, parsed.model, async (input: LlmInput) => {
+    assertGenerateInput(input);
+    const body: Record<string, unknown> = {
+      model: parsed.model,
+      messages: envelope(input.control, input.data),
+      max_tokens: input.max_tokens,
+      ...MODEL_REQUEST_OPTIONS[modelKey],
+    };
+    if (config.denyDataCollection) {
+      body.provider = { data_collection: 'deny' };
+    }
+    const response = await fetchWithTimeout(fetchImpl, config.endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + secret,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }, timeoutMs);
+    const raw = await readUpstreamJson(response);
+    const { text, usage } = readWorkersAiOutput(raw);
+    if (!text.trim()) {
+      throw executorError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur avec contenu vide.');
+    }
+    return { text, usage, provider: parsed.provider, model: parsed.model };
+  });
 }

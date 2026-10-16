@@ -5,10 +5,10 @@
  * LLM_KEY_GEMINI est présent (même modèle peut être facturé Free vs Paid Google).
  */
 import {
-  assertGenerateInput, envelope,
+  assertGenerateInput, envelope, zeroCostAdapter,
   type LlmAdapter, type LlmInput,
 } from './adapter';
-import { clampTimeoutMs, executorError, fetchWithTimeout, readUpstreamJson } from './fetch-timeout';
+import { clampTimeoutMs, executorError, fetchWithTimeout, readUpstreamJson, requireSecret } from './fetch-timeout';
 
 export const GEMINI_PROVIDER = 'gemini';
 export const GEMINI_FREE_MODEL = 'gemini-2.5-flash-lite';
@@ -58,14 +58,6 @@ export function parseGeminiRef(attestationRef: string): { provider: typeof GEMIN
   return { provider: GEMINI_PROVIDER, model };
 }
 
-function readGeminiSecret(env: GeminiEnv): string {
-  const value = env.LLM_KEY_GEMINI?.trim() ?? '';
-  if (!value) {
-    throw executorError('EXECUTOR_UNAVAILABLE', 'Secret du fournisseur absent de cet environnement.');
-  }
-  return value;
-}
-
 function readGeminiText(raw: unknown): { text: string; input_tokens: number; output_tokens: number } {
   const value = (raw ?? {}) as Record<string, unknown>;
   const candidates = value.candidates as Array<{ content?: { parts?: Array<{ text?: unknown }> } }> | undefined;
@@ -99,45 +91,35 @@ export function createGeminiAdapter(
       'Runtime gemini bloqué : projet Free non facturable non attesté par Owner (0 fetch).',
     );
   }
-  const secret = readGeminiSecret(env);
+  const secret = requireSecret(env.LLM_KEY_GEMINI);
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = clampTimeoutMs(options.timeout_ms);
   const url = GEMINI_API_BASE + '/' + encodeURIComponent(parsed.model) + ':generateContent';
-  return {
-    provider: parsed.provider,
-    model: parsed.model,
-    validate: assertGenerateInput,
-    worstCaseNeurons(input: LlmInput) {
-      assertGenerateInput(input);
-      return 0;
-    },
-    neuronsFor: () => 0,
-    async generate(input) {
-      assertGenerateInput(input);
-      const messages = envelope(input.control, input.data);
-      const system = messages.find(m => m.role === 'system')?.content ?? input.control;
-      const user = messages.find(m => m.role === 'user')?.content ?? input.data;
-      const body = {
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: 'user', parts: [{ text: user }] }],
-        generationConfig: { maxOutputTokens: input.max_tokens },
-      };
-      const response = await fetchWithTimeout(fetchImpl, url, {
-        method: 'POST',
-        headers: {
-          'x-goog-api-key': secret,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      }, timeoutMs);
-      const raw = await readUpstreamJson(response);
-      const { text, input_tokens, output_tokens } = readGeminiText(raw);
-      return {
-        text,
-        usage: { input_tokens, output_tokens },
-        provider: parsed.provider,
-        model: parsed.model,
-      };
-    },
-  };
+  return zeroCostAdapter(parsed.provider, parsed.model, async (input: LlmInput) => {
+    assertGenerateInput(input);
+    const messages = envelope(input.control, input.data);
+    const system = messages.find(m => m.role === 'system')?.content ?? input.control;
+    const user = messages.find(m => m.role === 'user')?.content ?? input.data;
+    const body = {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [{ text: user }] }],
+      generationConfig: { maxOutputTokens: input.max_tokens },
+    };
+    const response = await fetchWithTimeout(fetchImpl, url, {
+      method: 'POST',
+      headers: {
+        'x-goog-api-key': secret,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }, timeoutMs);
+    const raw = await readUpstreamJson(response);
+    const { text, input_tokens, output_tokens } = readGeminiText(raw);
+    return {
+      text,
+      usage: { input_tokens, output_tokens },
+      provider: parsed.provider,
+      model: parsed.model,
+    };
+  });
 }
