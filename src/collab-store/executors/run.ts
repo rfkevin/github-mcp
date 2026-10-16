@@ -205,6 +205,7 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
     if (!ok) error = 'PROBE_OUTPUT_MISMATCH';
   } catch (caught) {
     error = errorCode(caught);
+    // Seuls nos propres messages (codes typés) sont conservés : jamais un texte libre du fournisseur.
     if (caught instanceof StateContractError || caught instanceof CollabStoreError) errorDetail = caught.message.slice(0, 300);
   }
   const written = await ownerAppend(db, {
@@ -226,6 +227,7 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
 export interface DispatchOutcome {
   status: 'succeeded' | 'attempt_failed' | 'busy' | 'terminal';
   invocation: InvocationRecord;
+  /** Texte produit (jamais persisté ; seule son empreinte l'est). */
   output?: string;
   error?: string;
 }
@@ -234,6 +236,7 @@ function capabilityDenied(message: string): CollabStoreError {
   return new CollabStoreError('EXECUTOR_CAPABILITY_DENIED', message);
 }
 
+/** Capacités deny-by-default de l'endpoint pour un appel LLM gratuit. */
 export function assertLlmCapabilities(endpoint: StoredEndpoint, provider: string, maxTokens: number): void {
   const caps = endpoint.capability_set;
   if (!caps.tools?.includes(LLM_TOOL)) throw capabilityDenied('Capacité ' + LLM_TOOL + ' absente pour ' + endpoint.endpoint_id + '.');
@@ -245,6 +248,11 @@ export function assertLlmCapabilities(endpoint: StoredEndpoint, provider: string
   }
 }
 
+/**
+ * Exécute une invocation A1 sur son endpoint par l'API gratuite. Les
+ * instructions de contrôle (`control`) viennent du code serveur, jamais d'un
+ * agent ; `input_packet` doit être exactement celui enregistré (empreinte).
+ */
 export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFactory, input: {
   wake_key: string;
   worker_id: string;
@@ -278,6 +286,8 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
     throw new CollabStoreError('INVOCATION_INPUT_MISMATCH', 'Le paquet fourni ne correspond pas à l’empreinte enregistrée de l’invocation.');
   }
   const call = { control: input.control, data: input.input_packet, max_tokens: input.max_tokens };
+  // Revue #117 R3 : validations locales AVANT quota et bail — une erreur de configuration
+  // ne consomme ni le plafond, ni une tentative A1, et n'appelle pas le fournisseur.
   adapter.validate(call);
   const worst = adapter.worstCaseNeurons(call);
   const now = input.now?.() ?? new Date();
@@ -303,6 +313,8 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
   try {
     result = await adapter.generate(call);
   } catch (caught) {
+    // Pire cas conservé : un appel interrompu (délai) a pu consommer chez le fournisseur.
+    // Seul l'échec du fournisseur devient une tentative échouée ; une erreur du store remonte telle quelle.
     const code = errorCode(caught);
     const failed = await service.fail(input.wake_key, input.worker_id, code, { operations: 1 }, evidence, 0);
     return { status: 'attempt_failed', invocation: failed, error: code };
