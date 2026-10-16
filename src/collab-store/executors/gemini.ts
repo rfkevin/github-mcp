@@ -1,13 +1,14 @@
 /**
  * R4 lot A — adaptateur Google Gemini API (generateContent, non OpenAI-chat).
  * URL + nom de secret = constantes serveur. Free allowlist : gemini-2.5-flash-lite.
- * Secret LLM_KEY_GEMINI : jamais lu hors Worker env ; 0 sonde réelle dans ce module.
+ * Runtime deny-by-default : sans freeProjectAttested (Owner), 0 fetch même si
+ * LLM_KEY_GEMINI est présent (même modèle peut être facturé Free vs Paid Google).
  */
-import { StateContractError } from '../../collab/contracts';
 import {
   assertGenerateInput, envelope,
   type LlmAdapter, type LlmInput,
 } from './adapter';
+import { executorError, fetchWithTimeout } from './fetch-timeout';
 
 export const GEMINI_PROVIDER = 'gemini';
 export const GEMINI_FREE_MODEL = 'gemini-2.5-flash-lite';
@@ -28,10 +29,11 @@ export interface GeminiEnv {
 export interface GeminiOptions {
   fetchImpl?: typeof fetch;
   timeout_ms?: number;
-}
-
-function executorError(code: string, message: string): StateContractError {
-  return new StateContractError(code, message, 'executor');
+  /**
+   * Preuve Owner uniquement (jamais depuis le client / registre) : projet Google
+   * Free non facturable vérifié. Absent → EXECUTOR_UNAVAILABLE, 0 fetch.
+   */
+  freeProjectAttested?: boolean;
 }
 
 export function geminiProviderOf(attestationRef: string): typeof GEMINI_PROVIDER | null {
@@ -69,7 +71,12 @@ function readGeminiText(raw: unknown): { text: string; input_tokens: number; out
   const value = (raw ?? {}) as Record<string, unknown>;
   const candidates = value.candidates as Array<{ content?: { parts?: Array<{ text?: unknown }> } }> | undefined;
   const parts = Array.isArray(candidates) ? candidates[0]?.content?.parts : undefined;
-  const text = Array.isArray(parts) && typeof parts[0]?.text === 'string' ? parts[0].text : '';
+  let text = '';
+  if (Array.isArray(parts)) {
+    for (const part of parts) {
+      if (typeof part?.text === 'string') text += part.text;
+    }
+  }
   if (!text.trim()) {
     throw executorError('EXECUTOR_BAD_RESPONSE', 'Réponse Gemini sans texte exploitable.');
   }
@@ -81,35 +88,18 @@ function readGeminiText(raw: unknown): { text: string; input_tokens: number; out
   return { text, input_tokens: input, output_tokens: output };
 }
 
-async function fetchWithTimeout(
-  fetchImpl: typeof fetch,
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      fetchImpl(url, { ...init, signal: controller.signal }),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          controller.abort();
-          reject(executorError('EXECUTOR_TIMEOUT', 'Fournisseur sans réponse après ' + timeoutMs + ' ms.'));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 export function createGeminiAdapter(
   env: GeminiEnv,
   attestationRef: string,
   options: GeminiOptions = {},
 ): LlmAdapter {
   const parsed = parseGeminiRef(attestationRef);
+  if (!options.freeProjectAttested) {
+    throw executorError(
+      'EXECUTOR_UNAVAILABLE',
+      'Runtime gemini bloqué : projet Free non facturable non attesté par Owner (0 fetch).',
+    );
+  }
   const secret = readGeminiSecret(env);
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = Math.min(Math.max(Math.trunc(options.timeout_ms ?? DEFAULT_TIMEOUT_MS), 1), DEFAULT_TIMEOUT_MS);

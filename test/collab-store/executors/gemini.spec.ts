@@ -8,9 +8,9 @@ import {
   parseGeminiRef,
 } from '../../../src/collab-store/executors/gemini';
 
-function okJson(body: unknown): Response {
+function okJson(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { 'Content-Type': 'application/json' },
   });
 }
@@ -22,11 +22,26 @@ function expectCode(fn: () => unknown, code: string): void {
   expect((thrown as StateContractError).code).toBe(code);
 }
 
+const freeOk = { freeProjectAttested: true as const };
+
 describe('R4 A — Gemini Free', () => {
   it('préfixe et Free model', () => {
     expect(geminiProviderOf('gemini:' + GEMINI_FREE_MODEL)).toBe('gemini');
     expect(geminiProviderOf('openrouter:x')).toBeNull();
     expect(parseGeminiRef('gemini:' + GEMINI_FREE_MODEL).model).toBe(GEMINI_FREE_MODEL);
+  });
+
+  it('clé présente + pas d’attestation Free → UNAVAILABLE, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    expectCode(
+      () => createGeminiAdapter(
+        { LLM_KEY_GEMINI: 'present-key' },
+        'gemini:' + GEMINI_FREE_MODEL,
+        { fetchImpl: fetchImpl as typeof fetch },
+      ),
+      'EXECUTOR_UNAVAILABLE',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('Paid / inconnu refusés avant fetch', () => {
@@ -36,6 +51,7 @@ describe('R4 A — Gemini Free', () => {
     expectCode(
       () => createGeminiAdapter({ LLM_KEY_GEMINI: 'k' }, 'gemini:gemini-2.5-pro', {
         fetchImpl: fetchImpl as typeof fetch,
+        ...freeOk,
       }),
       'EXECUTOR_PAID_MODEL',
     );
@@ -59,13 +75,62 @@ describe('R4 A — Gemini Free', () => {
     const adapter = createGeminiAdapter(
       { LLM_KEY_GEMINI: 'gemini-secret' },
       'gemini:' + GEMINI_FREE_MODEL,
-      { fetchImpl: fetchImpl as typeof fetch },
+      { fetchImpl: fetchImpl as typeof fetch, ...freeOk },
     );
     const result = await adapter.generate({ control: 'ctrl', data: 'data', max_tokens: 16 });
     expect(result).toMatchObject({
       text: 'CC4-PROBE-OK', provider: 'gemini', model: GEMINI_FREE_MODEL,
       usage: { input_tokens: 3, output_tokens: 2 },
     });
+  });
+
+  it('concatène plusieurs parts textuelles', async () => {
+    const fetchImpl = vi.fn(async () => okJson({
+      candidates: [{ content: { parts: [{ text: 'A' }, { text: 'B' }] } }],
+    }));
+    const adapter = createGeminiAdapter(
+      { LLM_KEY_GEMINI: 'k' },
+      'gemini:' + GEMINI_FREE_MODEL,
+      { fetchImpl: fetchImpl as typeof fetch, ...freeOk },
+    );
+    const result = await adapter.generate({ control: 'c', data: 'd', max_tokens: 8 });
+    expect(result.text).toBe('AB');
+    expect(result.usage).toEqual({ input_tokens: 0, output_tokens: 0 });
+  });
+
+  it.each([400, 401, 429, 500])('HTTP %i → UPSTREAM_HTTP, 0 retry, 0 fuite clé', async (status) => {
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      return okJson({ error: { message: 'upstream' } }, status);
+    });
+    const adapter = createGeminiAdapter(
+      { LLM_KEY_GEMINI: 'secret-no-leak' },
+      'gemini:' + GEMINI_FREE_MODEL,
+      { fetchImpl: fetchImpl as typeof fetch, ...freeOk },
+    );
+    try {
+      await adapter.generate({ control: 'c', data: 'd', max_tokens: 8 });
+      expect.fail('erreur attendue');
+    } catch (error) {
+      expect(error).toBeInstanceOf(StateContractError);
+      expect((error as StateContractError).code).toBe('EXECUTOR_UPSTREAM_HTTP');
+      expect(String((error as Error).message)).not.toContain('secret-no-leak');
+      expect(String((error as Error).message)).not.toContain('upstream');
+    }
+    expect(calls).toBe(1);
+  });
+
+  it('JSON malformé → BAD_RESPONSE', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not-json', { status: 200 }));
+    const adapter = createGeminiAdapter(
+      { LLM_KEY_GEMINI: 'k' },
+      'gemini:' + GEMINI_FREE_MODEL,
+      { fetchImpl: fetchImpl as typeof fetch, ...freeOk },
+    );
+    await expect(
+      adapter.generate({ control: 'c', data: 'd', max_tokens: 8 }),
+    ).rejects.toMatchObject({ code: 'EXECUTOR_BAD_RESPONSE' });
   });
 
   it('contenu vide → BAD_RESPONSE', async () => {
@@ -75,18 +140,36 @@ describe('R4 A — Gemini Free', () => {
     const adapter = createGeminiAdapter(
       { LLM_KEY_GEMINI: 'k' },
       'gemini:' + GEMINI_FREE_MODEL,
-      { fetchImpl: fetchImpl as typeof fetch },
+      { fetchImpl: fetchImpl as typeof fetch, ...freeOk },
     );
     await expect(
       adapter.generate({ control: 'c', data: 'd', max_tokens: 8 }),
     ).rejects.toMatchObject({ code: 'EXECUTOR_BAD_RESPONSE' });
   });
 
-  it('secret absent → UNAVAILABLE 0 fetch', () => {
+  it('timeout → EXECUTOR_TIMEOUT, 0 secret dans le message', async () => {
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => { /* hang */ }));
+    const adapter = createGeminiAdapter(
+      { LLM_KEY_GEMINI: 'secret-must-not-leak' },
+      'gemini:' + GEMINI_FREE_MODEL,
+      { fetchImpl: fetchImpl as typeof fetch, timeout_ms: 20, ...freeOk },
+    );
+    try {
+      await adapter.generate({ control: 'c', data: 'd', max_tokens: 8 });
+      expect.fail('timeout attendu');
+    } catch (error) {
+      expect(error).toBeInstanceOf(StateContractError);
+      expect((error as StateContractError).code).toBe('EXECUTOR_TIMEOUT');
+      expect(String((error as Error).message)).not.toContain('secret-must-not-leak');
+    }
+  });
+
+  it('secret absent → UNAVAILABLE sans réseau', () => {
     const fetchImpl = vi.fn();
     expectCode(
       () => createGeminiAdapter({}, 'gemini:' + GEMINI_FREE_MODEL, {
         fetchImpl: fetchImpl as typeof fetch,
+        ...freeOk,
       }),
       'EXECUTOR_UNAVAILABLE',
     );
