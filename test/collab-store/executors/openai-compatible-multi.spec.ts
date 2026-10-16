@@ -11,7 +11,9 @@ import {
   parseOpenAiCompatibleRef,
 } from '../../../src/collab-store/executors/openai-compatible';
 import { providerAdapterFactory } from '../../../src/collab-store/executors/run';
-import { expectCode, expectRejectCode, hangFetch, okJson } from './test-helpers';
+import {
+  countingStatusFetch, expectCode, expectRejectCode, hangFetch, okJson,
+} from './test-helpers';
 
 const freeRef = 'groq:' + GROQ_FREE_MODEL;
 
@@ -66,7 +68,7 @@ describe('R4 A — openai-compatible multi-provider', () => {
     expectCode(
       () => createOpenAiCompatibleAdapter(
         { LLM_KEY_GROQ: 'present-but-billing-unknown' },
-        'groq:openai/gpt-oss-20b',
+        freeRef,
         { fetchImpl: fetchImpl as typeof fetch },
       ),
       'EXECUTOR_UNAVAILABLE',
@@ -74,10 +76,68 @@ describe('R4 A — openai-compatible multi-provider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('constructeur direct : options.freeProjectAttested=true + origin PROD → UNAVAILABLE, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    expectCode(
+      () => createOpenAiCompatibleAdapter(
+        {
+          LLM_KEY_GROQ: 'secret-must-not-leak',
+          GROQ_FREE_PROJECT_ATTESTED: 'true',
+          PUBLIC_ORIGIN: 'https://github-mcp.rfahedkevin.workers.dev',
+        },
+        freeRef,
+        { freeProjectAttested: true, fetchImpl: fetchImpl as typeof fetch },
+      ),
+      'EXECUTOR_UNAVAILABLE',
+    );
+    expectCode(
+      () => createOpenAiCompatibleAdapter(
+        { LLM_KEY_GROQ: 'secret-must-not-leak' },
+        freeRef,
+        { freeProjectAttested: true, fetchImpl: fetchImpl as typeof fetch },
+      ),
+      'EXECUTOR_UNAVAILABLE',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('constructeur direct : env TEST exacte → un seul fetch mock', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      expect(url).toBe(GROQ_CHAT_COMPLETIONS_URL);
+      return okJson({
+        choices: [{ message: { content: 'CC4-PROBE-OK' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      });
+    });
+    const adapter = createOpenAiCompatibleAdapter(
+      { ...testEnvOk },
+      freeRef,
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    const result = await adapter.generate({ control: 'c', data: 'd', max_tokens: 16 });
+    expect(result.text).toBe('CC4-PROBE-OK');
+    expect(result.provider).toBe('groq');
+    expect(result.model).toBe(GROQ_FREE_MODEL);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('factory : clé seule → UNAVAILABLE, 0 fetch', () => {
     const fetchImpl = vi.fn();
     const factory = providerAdapterFactory(
       { LLM_KEY_GROQ: 'present-in-env' },
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('factory : env TEST true + secret manquant → UNAVAILABLE, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    const factory = providerAdapterFactory(
+      {
+        GROQ_FREE_PROJECT_ATTESTED: 'true',
+        PUBLIC_ORIGIN: GROQ_CC3_TEST_PUBLIC_ORIGIN,
+      },
       { fetchImpl: fetchImpl as typeof fetch },
     );
     expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');
@@ -99,8 +159,6 @@ describe('R4 A — openai-compatible multi-provider', () => {
     const adapter = factory(endpointStub);
     const result = await adapter.generate({ control: 'c', data: 'd', max_tokens: 16 });
     expect(result.text).toBe('CC4-PROBE-OK');
-    expect(result.provider).toBe('groq');
-    expect(result.model).toBe(GROQ_FREE_MODEL);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -112,7 +170,7 @@ describe('R4 A — openai-compatible multi-provider', () => {
         GROQ_FREE_PROJECT_ATTESTED: 'true',
         PUBLIC_ORIGIN: 'https://github-mcp.rfahedkevin.workers.dev',
       },
-      { fetchImpl: fetchImpl as typeof fetch },
+      { freeProjectAttested: true, fetchImpl: fetchImpl as typeof fetch },
     );
     expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -125,6 +183,50 @@ describe('R4 A — openai-compatible multi-provider', () => {
     expectCode(() => parseOpenAiCompatibleRef('groq:openai/gpt-oss-120b', opts), 'EXECUTOR_PAID_MODEL');
     expectCode(() => parseOpenAiCompatibleRef('groq:unknown-model', opts), 'EXECUTOR_UNSUPPORTED');
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('Groq mock autorisé : HTTP 429 → UPSTREAM_HTTP, 0 secret', async () => {
+    const { fetchImpl, calls } = countingStatusFetch(429);
+    const adapter = createOpenAiCompatibleAdapter(
+      { ...testEnvOk, LLM_KEY_GROQ: 'secret-must-not-leak' },
+      freeRef,
+      { fetchImpl },
+    );
+    await expectRejectCode(
+      adapter.generate({ control: 'c', data: 'd', max_tokens: 8 }),
+      'EXECUTOR_UPSTREAM_HTTP',
+      ['secret-must-not-leak', 'upstream'],
+    );
+    expect(calls()).toBe(1);
+  });
+
+  it('Groq mock autorisé : timeout → EXECUTOR_TIMEOUT, 0 secret', async () => {
+    const adapter = createOpenAiCompatibleAdapter(
+      { ...testEnvOk, LLM_KEY_GROQ: 'secret-must-not-leak' },
+      freeRef,
+      { fetchImpl: hangFetch(), timeout_ms: 20 },
+    );
+    await expectRejectCode(
+      adapter.generate({ control: 'c', data: 'd', max_tokens: 8 }),
+      'EXECUTOR_TIMEOUT',
+      ['secret-must-not-leak'],
+    );
+  });
+
+  it('Groq mock autorisé : contenu vide → BAD_RESPONSE', async () => {
+    const fetchImpl = vi.fn(async () => okJson({
+      choices: [{ message: { content: '' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 256 },
+    }));
+    const adapter = createOpenAiCompatibleAdapter(
+      { ...testEnvOk },
+      freeRef,
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    await expectRejectCode(
+      adapter.generate({ control: 'c', data: 'd', max_tokens: 8 }),
+      'EXECUTOR_BAD_RESPONSE',
+    );
   });
 
   it('DeepSeek direct Paid → PAID_MODEL avant fetch', () => {
