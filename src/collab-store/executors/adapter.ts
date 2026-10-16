@@ -121,6 +121,28 @@ export function assertGenerateInput(input: LlmInput): void {
   if (input.data.length > MAX_DATA) throw adapterError('EXECUTOR_INPUT_TOO_LARGE', 'Données au-delà de ' + MAX_DATA + ' caractères.');
 }
 
+/**
+ * Coque 0 neuron pour adaptateurs Free réseau (Gemini, OpenAI-compat).
+ * Factorise validate / worstCaseNeurons / neuronsFor entre modules (Sonar).
+ */
+export function zeroCostAdapter(
+  provider: string,
+  model: string,
+  generate: (input: LlmInput) => Promise<LlmResult>,
+): LlmAdapter {
+  return {
+    provider,
+    model,
+    validate: assertGenerateInput,
+    worstCaseNeurons(input: LlmInput) {
+      assertGenerateInput(input);
+      return 0;
+    },
+    neuronsFor: () => 0,
+    generate,
+  };
+}
+
 const encoder = new TextEncoder();
 
 /** Borne haute des jetons d'entrée : un jeton couvre au moins un octet UTF-8. */

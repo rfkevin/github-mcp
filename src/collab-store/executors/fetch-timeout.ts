@@ -5,6 +5,14 @@ export function executorError(code: string, message: string): StateContractError
   return new StateContractError(code, message, 'executor');
 }
 
+export function requireSecret(value: string | undefined): string {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed) {
+    throw executorError('EXECUTOR_UNAVAILABLE', 'Secret du fournisseur absent de cet environnement.');
+  }
+  return trimmed;
+}
+
 export function clampTimeoutMs(value: number | undefined, maxMs = 30_000): number {
   return Math.min(Math.max(Math.trunc(value ?? maxMs), 1), maxMs);
 }
