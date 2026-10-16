@@ -28,7 +28,7 @@ import type { OwnerProof } from '../owner/proof';
 import { InvocationService, type InvocationRecord } from '../invocations';
 import { createWorkersAiAdapter, WORKERS_AI_PROVIDER, type LlmAdapter, type WorkersAiBinding } from './adapter';
 import {
-  createOpenAiCompatibleAdapter, openAiCompatibleProviderOf,
+  createOpenAiCompatibleAdapter, groqFreeAttestedFromEnv, openAiCompatibleProviderOf,
   type OpenAiCompatibleEnv, type OpenAiCompatibleOptions,
 } from './openai-compatible';
 import {
@@ -63,9 +63,9 @@ export function workersAiFactory(ai: WorkersAiBinding | undefined): AdapterFacto
  * Fabrique universelle A3c. Le préfixe de l'attestation choisit uniquement une
  * entrée codée côté serveur ; aucune URL ni clé n'est issue du registre.
  *
- * Gemini : freeProjectAttested dérivé **uniquement** de
- * GEMINI_FREE_PROJECT_ATTESTED=true (var serveur Owner). Jamais true en dur,
- * jamais depuis le client / registre / présence de LLM_KEY_GEMINI.
+ * Gemini / Groq Free : freeProjectAttested dérivé **uniquement** des vars
+ * serveur Owner (GEMINI_/GROQ_FREE_PROJECT_ATTESTED=true + PUBLIC_ORIGIN
+ * CC3-test). Jamais true en dur, jamais client / registre / présence de clé.
  */
 export function providerAdapterFactory(env: ProviderAdapterEnv, options: OpenAiCompatibleOptions = {}): AdapterFactory {
   return endpoint => {
@@ -80,7 +80,10 @@ export function providerAdapterFactory(env: ProviderAdapterEnv, options: OpenAiC
       });
     }
     if (openAiCompatibleProviderOf(endpoint.attestation_ref)) {
-      return createOpenAiCompatibleAdapter(env, endpoint.attestation_ref, options);
+      return createOpenAiCompatibleAdapter(env, endpoint.attestation_ref, {
+        ...options,
+        freeProjectAttested: groqFreeAttestedFromEnv(env),
+      });
     }
     throw new StateContractError('EXECUTOR_UNSUPPORTED', 'Fournisseur de l’endpoint non pris en charge.', 'executor');
   };
