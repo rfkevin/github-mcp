@@ -1,12 +1,37 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  GROQ_CC3_TEST_PUBLIC_ORIGIN,
+  GROQ_CHAT_COMPLETIONS_URL,
+  GROQ_FREE_MODEL,
   OPENROUTER_CHAT_COMPLETIONS_URL,
   ZAI_CHAT_COMPLETIONS_URL,
   createOpenAiCompatibleAdapter,
+  groqFreeAttestedFromEnv,
   openAiCompatibleProviderOf,
   parseOpenAiCompatibleRef,
 } from '../../../src/collab-store/executors/openai-compatible';
+import { providerAdapterFactory } from '../../../src/collab-store/executors/run';
 import { expectCode, expectRejectCode, hangFetch, okJson } from './test-helpers';
+
+const freeRef = 'groq:' + GROQ_FREE_MODEL;
+
+const testEnvOk = {
+  LLM_KEY_GROQ: 'groq-secret',
+  GROQ_FREE_PROJECT_ATTESTED: 'true',
+  PUBLIC_ORIGIN: GROQ_CC3_TEST_PUBLIC_ORIGIN,
+} as const;
+
+const endpointStub = {
+  endpoint_id: 'ep-groq',
+  principal_id: 'groq-gptoss20b',
+  status: 'probe_required',
+  attestation_kind: 'provider_adapter',
+  attestation_ref: freeRef,
+  capability_set: { tools: ['llm.generate'], network_providers: ['groq'], token_ceiling: 256 },
+  notes: '',
+  created_at: '',
+  updated_at: '',
+} as never;
 
 describe('R4 A — openai-compatible multi-provider', () => {
   it('détecte les préfixes supportés', () => {
@@ -18,10 +43,26 @@ describe('R4 A — openai-compatible multi-provider', () => {
     expect(openAiCompatibleProviderOf('workers-ai:@cf/x')).toBeNull();
   });
 
-  it('Groq : clé présente + modèle « free » catalogue → UNAVAILABLE, 0 fetch', () => {
+  it('groqFreeAttestedFromEnv : true + origin CC3-test uniquement', () => {
+    expect(groqFreeAttestedFromEnv({})).toBe(false);
+    expect(groqFreeAttestedFromEnv({ GROQ_FREE_PROJECT_ATTESTED: 'true' })).toBe(false);
+    expect(groqFreeAttestedFromEnv({
+      GROQ_FREE_PROJECT_ATTESTED: 'true',
+      PUBLIC_ORIGIN: GROQ_CC3_TEST_PUBLIC_ORIGIN,
+    })).toBe(true);
+    expect(groqFreeAttestedFromEnv({
+      GROQ_FREE_PROJECT_ATTESTED: 'true',
+      PUBLIC_ORIGIN: 'https://github-mcp.rfahedkevin.workers.dev',
+    })).toBe(false);
+    expect(groqFreeAttestedFromEnv({
+      GROQ_FREE_PROJECT_ATTESTED: 'True',
+      PUBLIC_ORIGIN: GROQ_CC3_TEST_PUBLIC_ORIGIN,
+    })).toBe(false);
+  });
+
+  it('Groq sans attestation → UNAVAILABLE, 0 fetch', () => {
     const fetchImpl = vi.fn();
     expectCode(() => parseOpenAiCompatibleRef('groq:openai/gpt-oss-20b'), 'EXECUTOR_UNAVAILABLE');
-    expectCode(() => parseOpenAiCompatibleRef('groq:llama-3.3-70b-versatile'), 'EXECUTOR_UNAVAILABLE');
     expectCode(
       () => createOpenAiCompatibleAdapter(
         { LLM_KEY_GROQ: 'present-but-billing-unknown' },
@@ -30,6 +71,59 @@ describe('R4 A — openai-compatible multi-provider', () => {
       ),
       'EXECUTOR_UNAVAILABLE',
     );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('factory : clé seule → UNAVAILABLE, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    const factory = providerAdapterFactory(
+      { LLM_KEY_GROQ: 'present-in-env' },
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('factory : true + origin TEST → adapter, mock generate', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      expect(url).toBe(GROQ_CHAT_COMPLETIONS_URL);
+      return okJson({
+        choices: [{ message: { content: 'CC4-PROBE-OK' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      });
+    });
+    const factory = providerAdapterFactory(
+      { ...testEnvOk },
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    const adapter = factory(endpointStub);
+    const result = await adapter.generate({ control: 'c', data: 'd', max_tokens: 16 });
+    expect(result.text).toBe('CC4-PROBE-OK');
+    expect(result.provider).toBe('groq');
+    expect(result.model).toBe(GROQ_FREE_MODEL);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('factory : true + origin PROD → UNAVAILABLE, 0 fetch', () => {
+    const fetchImpl = vi.fn();
+    const factory = providerAdapterFactory(
+      {
+        LLM_KEY_GROQ: 'k',
+        GROQ_FREE_PROJECT_ATTESTED: 'true',
+        PUBLIC_ORIGIN: 'https://github-mcp.rfahedkevin.workers.dev',
+      },
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+    expectCode(() => factory(endpointStub), 'EXECUTOR_UNAVAILABLE');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('Groq Paid / hors allowlist refusés même avec attestation', () => {
+    const fetchImpl = vi.fn();
+    const opts = { freeProjectAttested: true as const, fetchImpl: fetchImpl as typeof fetch };
+    expectCode(() => parseOpenAiCompatibleRef('groq:llama-3.3-70b-versatile', opts), 'EXECUTOR_PAID_MODEL');
+    expectCode(() => parseOpenAiCompatibleRef('groq:openai/gpt-oss-120b', opts), 'EXECUTOR_PAID_MODEL');
+    expectCode(() => parseOpenAiCompatibleRef('groq:unknown-model', opts), 'EXECUTOR_UNSUPPORTED');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
