@@ -3,8 +3,11 @@
  * URL + nom de secret = constantes serveur.
  * Free allowlist : gemini-3.5-flash-lite (GA 21/07/2026, Standard Free).
  * gemini-2.5-flash-lite : hors allowlist (accès 2.5 restreint nouveaux projets).
- * Runtime deny-by-default : sans freeProjectAttested (Owner), 0 fetch même si
- * LLM_KEY_GEMINI est présent (même modèle peut être facturé Free vs Paid Google).
+ *
+ * Runtime deny-by-default : sans freeProjectAttested, 0 fetch même si
+ * LLM_KEY_GEMINI est présent. L'attestation Free n'est **pas** déduite de la
+ * clé ni du registre : uniquement option explicite (tests) ou env serveur
+ * `GEMINI_FREE_PROJECT_ATTESTED=true` (Owner, CC3-test uniquement).
  *
  * Thinking Gemini 3.x : thinkingLevel (pas thinkingBudget 2.5). Désactivation
  * complète non supportée sur Flash/Flash-Lite → niveau `minimal` (défaut doc).
@@ -21,6 +24,8 @@ export const GEMINI_FREE_MODEL = 'gemini-3.5-flash-lite';
 /** Ancien Free 2.5 — non utilisable pour les nouveaux projets (restreint 18/09/2026). */
 export const GEMINI_LEGACY_25_FLASH_LITE = 'gemini-2.5-flash-lite';
 export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+/** Env serveur Owner (CF vars TEST) : seule valeur acceptée = 'true' (casse exacte). */
+export const GEMINI_FREE_ATTEST_ENV = 'GEMINI_FREE_PROJECT_ATTESTED';
 
 const MODEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
@@ -33,6 +38,12 @@ const PAID_MODELS: ReadonlySet<string> = new Set([
 
 export interface GeminiEnv {
   LLM_KEY_GEMINI?: string;
+  /**
+   * Attestation projet Google Free, **server-only**. Owner pose/retire la var
+   * sur le Worker TEST. Jamais lue depuis client, notes endpoint ou registre.
+   * Seule la chaîne exacte `true` débloque ; toute autre valeur = fail-closed.
+   */
+  GEMINI_FREE_PROJECT_ATTESTED?: string;
 }
 
 export interface GeminiOptions {
@@ -41,8 +52,14 @@ export interface GeminiOptions {
   /**
    * Preuve Owner uniquement (jamais depuis le client / registre) : projet Google
    * Free non facturable vérifié. Absent → EXECUTOR_UNAVAILABLE, 0 fetch.
+   * En prod/TEST, la factory le dérive uniquement de GEMINI_FREE_PROJECT_ATTESTED.
    */
   freeProjectAttested?: boolean;
+}
+
+/** true ssi env.GEMINI_FREE_PROJECT_ATTESTED === 'true' (fail-closed sinon). */
+export function geminiFreeAttestedFromEnv(env: GeminiEnv): boolean {
+  return env.GEMINI_FREE_PROJECT_ATTESTED === 'true';
 }
 
 export function geminiProviderOf(attestationRef: string): typeof GEMINI_PROVIDER | null {
