@@ -5,11 +5,11 @@
  * Groq : runtime bloqué (facturation non vérifiée). Z.AI glm-4.7-flash :
  * thinking.disabled. xAI : 100 % paid dormant (0 free API public).
  */
-import { StateContractError } from '../../collab/contracts';
 import {
   assertGenerateInput, envelope, readWorkersAiOutput,
   type LlmAdapter, type LlmInput,
 } from './adapter';
+import { executorError, fetchWithTimeout } from './fetch-timeout';
 
 export const OPENROUTER_PROVIDER = 'openrouter';
 export const GROQ_PROVIDER = 'groq';
@@ -110,10 +110,6 @@ export interface OpenAiCompatibleOptions {
   timeout_ms?: number;
 }
 
-function executorError(code: string, message: string): StateContractError {
-  return new StateContractError(code, message, 'executor');
-}
-
 export function openAiCompatibleProviderOf(attestationRef: string): OpenAiCompatibleProvider | null {
   const colon = attestationRef.indexOf(':');
   if (colon <= 0) return null;
@@ -174,29 +170,6 @@ function providerSecret(env: OpenAiCompatibleEnv, name: keyof OpenAiCompatibleEn
     throw executorError('EXECUTOR_UNAVAILABLE', 'Secret du fournisseur absent de cet environnement.');
   }
   return value;
-}
-
-async function fetchWithTimeout(
-  fetchImpl: typeof fetch,
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      fetchImpl(url, { ...init, signal: controller.signal }),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          controller.abort();
-          reject(executorError('EXECUTOR_TIMEOUT', 'Fournisseur sans réponse après ' + timeoutMs + ' ms.'));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 export function createOpenAiCompatibleAdapter(
