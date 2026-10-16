@@ -31,6 +31,7 @@ import {
   createOpenAiCompatibleAdapter, openAiCompatibleProviderOf,
   type OpenAiCompatibleEnv, type OpenAiCompatibleOptions,
 } from './openai-compatible';
+import { createGeminiAdapter, geminiProviderOf, type GeminiEnv } from './gemini';
 import { loadEndpoint, PROBE_KEY_PREFIX, type StoredEndpoint } from './registry';
 
 export const DEFAULT_DAILY_CAP = 50;
@@ -44,7 +45,7 @@ const PROBE_CONTROL = 'Tu es une sonde technique. Réponds exactement par une se
 
 export type AdapterFactory = (endpoint: StoredEndpoint) => LlmAdapter;
 
-export interface ProviderAdapterEnv extends OpenAiCompatibleEnv {
+export interface ProviderAdapterEnv extends OpenAiCompatibleEnv, GeminiEnv {
   AI?: WorkersAiBinding;
 }
 
@@ -65,6 +66,9 @@ export function providerAdapterFactory(env: ProviderAdapterEnv, options: OpenAiC
     if (endpoint.attestation_ref.startsWith(WORKERS_AI_PROVIDER + ':')) {
       if (!env.AI) throw new CollabStoreError('EXECUTOR_UNAVAILABLE', 'Binding Workers AI absent de cet environnement.');
       return createWorkersAiAdapter(env.AI, endpoint.attestation_ref);
+    }
+    if (geminiProviderOf(endpoint.attestation_ref)) {
+      return createGeminiAdapter(env, endpoint.attestation_ref, options);
     }
     if (openAiCompatibleProviderOf(endpoint.attestation_ref)) {
       return createOpenAiCompatibleAdapter(env, endpoint.attestation_ref, options);

@@ -2,9 +2,8 @@
  * CC-4 A3c / R4 lot A — adaptateur LLM compatible OpenAI multi-fournisseurs.
  * URL et nom de secret = constantes serveur uniquement (jamais attestation,
  * notes ou POST). Paid hors allowlist Free → EXECUTOR_PAID_MODEL avant fetch.
- * Groq : config/catalogue ok, runtime bloqué tant que le plan non-facturable
- * n'est pas prouvé et approuvé Owner (Free vs Developer facturable).
- * Z.AI glm-4.7-flash : thinking.type=disabled (sonde vide au plafond 256, #145).
+ * Groq : runtime bloqué (facturation non vérifiée). Z.AI glm-4.7-flash :
+ * thinking.disabled. xAI : 100 % paid dormant (0 free API public).
  */
 import { StateContractError } from '../../collab/contracts';
 import {
@@ -16,28 +15,28 @@ export const OPENROUTER_PROVIDER = 'openrouter';
 export const GROQ_PROVIDER = 'groq';
 export const DEEPSEEK_PROVIDER = 'deepseek';
 export const ZAI_PROVIDER = 'zai';
+export const XAI_PROVIDER = 'xai';
 
 export type OpenAiCompatibleProvider =
   | typeof OPENROUTER_PROVIDER
   | typeof GROQ_PROVIDER
   | typeof DEEPSEEK_PROVIDER
-  | typeof ZAI_PROVIDER;
+  | typeof ZAI_PROVIDER
+  | typeof XAI_PROVIDER;
 
 export const OPENROUTER_CHAT_COMPLETIONS_URL = 'https://openrouter.ai/api/v1/chat/completions';
 export const GROQ_CHAT_COMPLETIONS_URL = 'https://api.groq.com/openai/v1/chat/completions';
 export const DEEPSEEK_CHAT_COMPLETIONS_URL = 'https://api.deepseek.com/chat/completions';
 export const ZAI_CHAT_COMPLETIONS_URL = 'https://api.z.ai/api/paas/v4/chat/completions';
+export const XAI_CHAT_COMPLETIONS_URL = 'https://api.x.ai/v1/chat/completions';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-/** OpenRouter org/model */
 const OR_MODEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}$/i;
-/** Ids simples ou org/model (Groq, DeepSeek, Z.AI) */
 const GENERIC_MODEL_RE = /^[a-z0-9][a-z0-9._/-]{0,127}$/i;
 
 interface ProviderConfig {
   readonly endpoint: string;
   readonly secret: keyof OpenAiCompatibleEnv;
-  /** Si true, le body inclut provider.data_collection=deny (OpenRouter). */
   readonly denyDataCollection: boolean;
 }
 
@@ -62,43 +61,40 @@ const PROVIDERS: Readonly<Record<OpenAiCompatibleProvider, ProviderConfig>> = {
     secret: 'LLM_KEY_ZAI',
     denyDataCollection: false,
   },
+  xai: {
+    endpoint: XAI_CHAT_COMPLETIONS_URL,
+    secret: 'LLM_KEY_XAI',
+    denyDataCollection: false,
+  },
 };
 
-/**
- * Options de body spécifiques au modèle Free Z.AI (doc API 2026-10-15) :
- * GLM-4.7 raisonne par défaut ; sans thinking.disabled les jetons max partent
- * dans le raisonnement et message.content reste vide (incident seq 158).
- * Uniquement `zai:glm-4.7-flash` — jamais les autres providers.
- */
 const ZAI_FREE_MODEL = 'glm-4.7-flash';
 const MODEL_REQUEST_OPTIONS: Readonly<Record<string, Record<string, unknown>>> = {
   [ZAI_PROVIDER + ':' + ZAI_FREE_MODEL]: { thinking: { type: 'disabled' } },
 };
 
-/**
- * Fournisseurs dont le runtime est interdit : la présence d'une clé ne prouve
- * pas un compte non facturable. Owner doit approuver un contrat vérifiable
- * avant tout fetch (review Sol #144 CHANGE_REQUEST).
- */
 const RUNTIME_BLOCKED_PROVIDERS: ReadonlySet<OpenAiCompatibleProvider> = new Set([
   GROQ_PROVIDER,
 ]);
 
-/** Allowlist Free exécutable (deny-by-default). Groq vide : catalogue only. */
 const FREE_MODELS: Readonly<Record<OpenAiCompatibleProvider, ReadonlySet<string>>> = {
-  /** OpenRouter : tout modèle avec suffixe :free (validé à part). */
   openrouter: new Set(),
   groq: new Set(),
   deepseek: new Set(),
   zai: new Set([ZAI_FREE_MODEL]),
+  xai: new Set(),
 };
 
-/** Paid connus — refusés même si secret présent (dormant, 0 €). */
 const PAID_MODELS: Readonly<Record<OpenAiCompatibleProvider, ReadonlySet<string>>> = {
   openrouter: new Set(),
   groq: new Set(['llama-3.3-70b-versatile', 'llama-3.1-70b-versatile', 'openai/gpt-oss-20b']),
   deepseek: new Set(['deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner']),
   zai: new Set(['glm-4.7-flashx']),
+  xai: new Set([
+    'grok-4.7', 'grok-4.6', 'grok-4.5', 'grok-4.3', 'grok-4',
+    'grok-3', 'grok-3-mini', 'grok-2', 'grok-2-latest',
+    'grok-build-0.1',
+  ]),
 };
 
 export interface OpenAiCompatibleEnv {
@@ -106,6 +102,7 @@ export interface OpenAiCompatibleEnv {
   LLM_KEY_GROQ?: string;
   LLM_KEY_DEEPSEEK?: string;
   LLM_KEY_ZAI?: string;
+  LLM_KEY_XAI?: string;
 }
 
 export interface OpenAiCompatibleOptions {
@@ -122,18 +119,13 @@ export function openAiCompatibleProviderOf(attestationRef: string): OpenAiCompat
   if (colon <= 0) return null;
   const prefix = attestationRef.slice(0, colon);
   if (prefix === OPENROUTER_PROVIDER || prefix === GROQ_PROVIDER
-    || prefix === DEEPSEEK_PROVIDER || prefix === ZAI_PROVIDER) {
+    || prefix === DEEPSEEK_PROVIDER || prefix === ZAI_PROVIDER
+    || prefix === XAI_PROVIDER) {
     return prefix;
   }
   return null;
 }
 
-/**
- * Parse `provider:model`.
- * - openrouter : suffixe `:free` obligatoire
- * - groq : runtime bloqué (facturation compte non vérifiée)
- * - autres : allowlist Free ; paid listés → EXECUTOR_PAID_MODEL
- */
 export function parseOpenAiCompatibleRef(
   attestationRef: string,
 ): { provider: OpenAiCompatibleProvider; model: string } {
@@ -146,7 +138,6 @@ export function parseOpenAiCompatibleRef(
     throw executorError('EXECUTOR_UNSUPPORTED', 'Référence de modèle vide.');
   }
 
-  // Avant Free/Paid : aucun fetch Groq tant que Owner n'a pas prouvé un plan 0 €.
   if (RUNTIME_BLOCKED_PROVIDERS.has(provider)) {
     throw executorError(
       'EXECUTOR_UNAVAILABLE',
@@ -208,10 +199,6 @@ async function fetchWithTimeout(
   }
 }
 
-/**
- * Adaptateur universel : une entrée PROVIDERS par fournisseur.
- * La clé reste dans l'env Worker ; l'URL est la constante serveur.
- */
 export function createOpenAiCompatibleAdapter(
   env: OpenAiCompatibleEnv,
   attestationRef: string,
