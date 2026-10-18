@@ -16,10 +16,10 @@
  * complète non supportée sur Flash/Flash-Lite → niveau `minimal` (défaut doc).
  */
 import {
-  assertGenerateInput, envelope, zeroCostAdapter,
+  assertGenerateInput, attachUsage, envelope, zeroCostAdapter,
   type LlmAdapter, type LlmInput,
 } from './adapter';
-import { clampTimeoutMs, executorError, fetchWithTimeout, readUpstreamJson, requireSecret } from './fetch-timeout';
+import { executorError, fetchWithTimeout, providerTimeoutMs, readUpstreamJson, requireSecret } from './fetch-timeout';
 
 export const GEMINI_PROVIDER = 'gemini';
 /** Cible Free principale CC3-4 (stable, Standard Free). */
@@ -120,14 +120,16 @@ function readGeminiText(raw: unknown): { text: string; input_tokens: number; out
       if (typeof part?.text === 'string') text += part.text;
     }
   }
-  if (!text.trim()) {
-    throw executorError('EXECUTOR_BAD_RESPONSE', 'Réponse Gemini sans texte exploitable.');
-  }
   const usage = (value.usageMetadata ?? {}) as Record<string, unknown>;
   const input = typeof usage.promptTokenCount === 'number' && Number.isSafeInteger(usage.promptTokenCount) && usage.promptTokenCount >= 0
     ? usage.promptTokenCount : 0;
   const output = typeof usage.candidatesTokenCount === 'number' && Number.isSafeInteger(usage.candidatesTokenCount) && usage.candidatesTokenCount >= 0
     ? usage.candidatesTokenCount : 0;
+  // CC-5 L0 (dette X14) : usage calculé avant la garde — l'erreur le porte.
+  if (!text.trim()) {
+    throw attachUsage(executorError('EXECUTOR_BAD_RESPONSE', 'Réponse Gemini sans texte exploitable.'),
+      { input_tokens: input, output_tokens: output });
+  }
   return { text, input_tokens: input, output_tokens: output };
 }
 
@@ -145,7 +147,7 @@ export function createGeminiAdapter(
   }
   const secret = requireSecret(env.LLM_KEY_GEMINI);
   const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = clampTimeoutMs(options.timeout_ms);
+  const timeoutMs = providerTimeoutMs(GEMINI_PROVIDER, options.timeout_ms);
   const url = GEMINI_API_BASE + '/' + encodeURIComponent(parsed.model) + ':generateContent';
   return zeroCostAdapter(parsed.provider, parsed.model, async (input: LlmInput) => {
     assertGenerateInput(input);
