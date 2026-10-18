@@ -6,7 +6,7 @@ export const INVOCATION_COLUMNS = [
   'source_event_hash', 'input_hash', 'payload_hash', 'target_repository',
   'target_head', 'target_base', 'state', 'attempt_count', 'consecutive_failures',
   'queued_at', 'leased_at', 'running_at', 'finished_at', 'lease_owner',
-  'lease_expires_at', 'output_hash', 'last_error', 'usage_input_tokens',
+  'lease_expires_at', 'output_hash', 'output_text', 'last_error', 'usage_input_tokens',
   'usage_output_tokens', 'usage_operations', 'cost_microunits', 'evidence_refs',
 ].join(', ');
 

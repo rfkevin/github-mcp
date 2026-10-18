@@ -16,7 +16,8 @@
  *    neurons gratuits par jour) : aucune facturation possible, même sur un
  *    compte Workers Paid (revue #117 R1) ;
  * 8. bail A1 + réserve budgétaire 0 € (chemin gratuit), solde à la clôture.
- * Le texte produit n'est pas persisté : seule son empreinte l'est (A1 §3.3).
+ * Depuis CC-5 L0 (X14), le texte produit est conservé borné dans la colonne
+ * invocations.output_text pour le rejeu ; l'empreinte complète reste le contrat (A1 §3.3).
  */
 import { StateContractError } from '../../collab/contracts';
 import { CollabStoreError } from '../store/collab-store';
@@ -26,7 +27,7 @@ import { assertAutomationRunning } from '../owner/automation';
 import { ownerAppend, REGISTRY_CYCLE, type OwnerWriteResult } from '../owner/decisions';
 import type { OwnerProof } from '../owner/proof';
 import { InvocationService, type InvocationRecord } from '../invocations';
-import { createWorkersAiAdapter, WORKERS_AI_PROVIDER, type LlmAdapter, type WorkersAiBinding } from './adapter';
+import { createWorkersAiAdapter, usageOf, WORKERS_AI_PROVIDER, type LlmAdapter, type WorkersAiBinding } from './adapter';
 import {
   createOpenAiCompatibleAdapter, groqFreeAttestedFromEnv, openAiCompatibleProviderOf,
   type OpenAiCompatibleEnv, type OpenAiCompatibleOptions,
@@ -207,6 +208,10 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
     error = errorCode(caught);
     // Seuls nos propres messages (codes typés) sont conservés : jamais un texte libre du fournisseur.
     if (caught instanceof StateContractError || caught instanceof CollabStoreError) errorDetail = caught.message.slice(0, 300);
+    // CC-5 L0 (dette X14) : usage partiel attaché par l'adaptateur — une sonde
+    // échouée ne compte plus un faux 0/0.
+    const partial = usageOf(caught);
+    if (partial) usage = { input_tokens: partial.input_tokens ?? 0, output_tokens: partial.output_tokens ?? 0 };
   }
   const written = await ownerAppend(db, {
     cycleId: REGISTRY_CYCLE,
@@ -227,7 +232,7 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
 export interface DispatchOutcome {
   status: 'succeeded' | 'attempt_failed' | 'busy' | 'terminal';
   invocation: InvocationRecord;
-  /** Texte produit (jamais persisté ; seule son empreinte l'est). */
+  /** Texte produit ; depuis CC-5 L0 (X14) la version conservée bornée est restituée au rejeu. */
   output?: string;
   error?: string;
 }
@@ -269,7 +274,15 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
   const service = new InvocationService(db, { now: input.now });
   const invocation = await service.getByWakeKey(input.wake_key);
   if (!invocation) throw new CollabStoreError('INVOCATION_UNKNOWN', 'wake_key inconnu.');
-  if (invocation.state === 'succeeded' || invocation.state === 'failed') return { status: 'terminal', invocation };
+  // CC-5 L0 (X14) : au rejeu d'une invocation terminée, la sortie conservée
+  // (bornée) est restituée pour une invocation réussie ; jamais de second appel.
+  if (invocation.state === 'succeeded' || invocation.state === 'failed') {
+    return {
+      status: 'terminal',
+      invocation,
+      ...(invocation.state === 'succeeded' && invocation.output_text ? { output: invocation.output_text } : {}),
+    };
+  }
   if (invocation.state === 'leased' || invocation.state === 'running') return { status: 'busy', invocation };
   await assertAutomationRunning(db);
   const endpoint = await loadEndpoint(db, invocation.endpoint_id);
@@ -316,7 +329,12 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
     // Pire cas conservé : un appel interrompu (délai) a pu consommer chez le fournisseur.
     // Seul l'échec du fournisseur devient une tentative échouée ; une erreur du store remonte telle quelle.
     const code = errorCode(caught);
-    const failed = await service.fail(input.wake_key, input.worker_id, code, { operations: 1 }, evidence, 0);
+    // CC-5 L0 (dette X14) : jetons réels de l'échec quand l'adaptateur les a
+    // mesurés ; sans mesure, l'appel a eu lieu (operations: 1), jetons inconnus → 0.
+    const partial = usageOf(caught);
+    const failed = await service.fail(input.wake_key, input.worker_id, code,
+      partial ? { input_tokens: partial.input_tokens ?? 0, output_tokens: partial.output_tokens ?? 0, operations: 1 } : { operations: 1 },
+      evidence, 0);
     return { status: 'attempt_failed', invocation: failed, error: code };
   }
   if (neuronLedger) await settleNeurons(db, neuronLedger, worst, adapter.neuronsFor(result.usage));

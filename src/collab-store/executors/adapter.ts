@@ -11,6 +11,7 @@
  * aucune clé n'est manipulée par un agent ni stockée dans le store (§6.3).
  */
 import { StateContractError } from '../../collab/contracts';
+import { providerTimeoutMs } from './fetch-timeout';
 
 export interface LlmUsage {
   input_tokens: number;
@@ -69,6 +70,9 @@ export const FREE_MODEL_RATES: Readonly<Record<string, { input_per_m: number; ou
  */
 export const MODEL_CALL_OPTIONS: Readonly<Record<string, Record<string, unknown>>> = {
   '@cf/zai-org/glm-4.7-flash': { chat_template_kwargs: { enable_thinking: false } },
+  // CC-5 L0 (X4) : gemma-4-26b raisonne par défaut sur Workers AI — sans cette
+  // option, le raisonnement consomme max_tokens et le corps revient vide.
+  '@cf/google/gemma-4-26b-a4b-it': { chat_template_kwargs: { enable_thinking: false } },
 };
 
 /**
@@ -88,11 +92,37 @@ export const WORKERS_AI_PAID_ONLY_MODELS: readonly string[] = [
 
 const MODEL_RE = /^@cf\/[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}$/i;
 export const MAX_OUTPUT_TOKENS = 2048;
-const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_DATA = 60_000;
 
 function adapterError(code: string, message: string): StateContractError {
   return new StateContractError(code, message, 'executor');
+}
+
+/**
+ * CC-5 L0 (dette X14) : usage partiel porté par une erreur de fournisseur.
+ * Un appel qui échoue a pu consommer des jetons ; l'adaptateur attache sa
+ * mesure partielle à l'erreur pour éviter le faux 0/0 du ledger. Aucun texte
+ * du fournisseur ne transite ici : uniquement des compteurs vérifiés.
+ */
+export function attachUsage<T extends Error>(error: T, usage: Partial<LlmUsage>): T {
+  (error as T & { usage?: Partial<LlmUsage> }).usage = usage;
+  return error;
+}
+
+/** Relit défensivement l'usage attaché par attachUsage ; null si absent ou non numérique. */
+export function usageOf(error: unknown): Partial<LlmUsage> | null {
+  const usage = (error as { usage?: unknown } | undefined)?.usage;
+  if (usage === null || typeof usage !== 'object') return null;
+  const candidate = usage as Record<string, unknown>;
+  const input = typeof candidate.input_tokens === 'number' && Number.isSafeInteger(candidate.input_tokens) && candidate.input_tokens >= 0
+    ? candidate.input_tokens : undefined;
+  const output = typeof candidate.output_tokens === 'number' && Number.isSafeInteger(candidate.output_tokens) && candidate.output_tokens >= 0
+    ? candidate.output_tokens : undefined;
+  if (input === undefined && output === undefined) return null;
+  return {
+    ...(input !== undefined ? { input_tokens: input } : {}),
+    ...(output !== undefined ? { output_tokens: output } : {}),
+  };
 }
 
 /** `workers-ai:@cf/vendor/model` → modèle ; tout autre fournisseur ou modèle payant est refusé. */
@@ -178,10 +208,18 @@ export function readWorkersAiOutput(raw: unknown): { text: string; usage: LlmUsa
     text = Array.isArray(choices) ? choices[0]?.message?.content : undefined;
   }
   const usage = (value.usage ?? {}) as Record<string, unknown>;
+  // CC-5 L0 (dette X14) : usage calculé AVANT les gardes d'échec pour que
+  // l'erreur le porte — un appel éconduit a pu consommer des jetons.
+  const usageOut: LlmUsage = { input_tokens: nonNegativeInt(usage.prompt_tokens), output_tokens: nonNegativeInt(usage.completion_tokens) };
   if (typeof text !== 'string') {
-    throw adapterError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur sans texte exploitable (' + responseDiagnostic(value, usage) + ').');
+    throw attachUsage(adapterError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur sans texte exploitable (' + responseDiagnostic(value, usage) + ').'), usageOut);
   }
-  return { text, usage: { input_tokens: nonNegativeInt(usage.prompt_tokens), output_tokens: nonNegativeInt(usage.completion_tokens) } };
+  // CC-5 L0 (X4) : corps vide — le raisonnement du modèle peut épuiser le
+  // plafond et laisser le texte vide : échec typé, usage attaché.
+  if (!text.trim()) {
+    throw attachUsage(adapterError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur avec contenu vide.'), usageOut);
+  }
+  return { text, usage: usageOut };
 }
 
 /** Diagnostic sans contenu du fournisseur : seulement des champs techniques bornés. */
@@ -227,7 +265,7 @@ export function createWorkersAiAdapter(ai: WorkersAiBinding, attestationRef: str
       const raw = await withTimeout(ai.run(model, {
         ...MODEL_CALL_OPTIONS[model], messages: envelope(input.control, input.data), max_tokens: input.max_tokens,
       }),
-        options.timeout_ms ?? DEFAULT_TIMEOUT_MS);
+        providerTimeoutMs(WORKERS_AI_PROVIDER, options.timeout_ms));
       const { text, usage } = readWorkersAiOutput(raw);
       return { text, usage, provider: WORKERS_AI_PROVIDER, model };
     },

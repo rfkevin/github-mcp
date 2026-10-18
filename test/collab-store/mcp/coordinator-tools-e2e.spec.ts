@@ -194,7 +194,8 @@ describe('CC-4 A4 — coordinateur → workers gratuits', () => {
 
     const replay = await actor.call('collab_dispatch_task', injected);
     expect(replay.structuredContent).toMatchObject({ status: 'replayed', state: 'succeeded', replayed: true });
-    expect(replay.structuredContent.output).toBeUndefined();
+    // CC-5 L0 (X14) : la sortie conservée est restituée au rejeu.
+    expect(replay.structuredContent.output).toBe('worker-output-1');
     expect(fake.calls).toHaveLength(1);
 
     fake.setMode('fail');

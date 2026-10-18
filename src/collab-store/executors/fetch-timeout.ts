@@ -17,6 +17,27 @@ export function clampTimeoutMs(value: number | undefined, maxMs = 30_000): numbe
   return Math.min(Math.max(Math.trunc(value ?? maxMs), 1), maxMs);
 }
 
+/**
+ * CC-5 L0 (dette X14) : délai par fournisseur au lieu de 30 s fixes. Chaque
+ * fournisseur garde un défaut et un plafond ; une valeur explicite reste
+ * bornée par le plafond. Fournisseur inconnu : 30 s (comportement historique).
+ */
+export const PROVIDER_TIMEOUT_MS: Readonly<Record<string, { default_ms: number; max_ms: number }>> = {
+  groq: { default_ms: 30_000, max_ms: 60_000 },
+  gemini: { default_ms: 60_000, max_ms: 120_000 },
+  zai: { default_ms: 90_000, max_ms: 120_000 },
+  openrouter: { default_ms: 60_000, max_ms: 120_000 },
+  deepseek: { default_ms: 60_000, max_ms: 120_000 },
+  xai: { default_ms: 60_000, max_ms: 120_000 },
+  'workers-ai': { default_ms: 60_000, max_ms: 120_000 },
+};
+
+/** Délai effectif d'un appel fournisseur : défaut par fournisseur, valeur explicite clampée au plafond. */
+export function providerTimeoutMs(provider: string, value?: number): number {
+  const policy = PROVIDER_TIMEOUT_MS[provider] ?? { default_ms: 30_000, max_ms: 30_000 };
+  return Math.min(Math.max(Math.trunc(value ?? policy.default_ms), 1), policy.max_ms);
+}
+
 export async function fetchWithTimeout(
   fetchImpl: typeof fetch,
   url: string,

@@ -11,7 +11,7 @@
  */
 
 import { estimateTokens } from '../contracts/memory';
-import { INVOCATION_SCHEMA_0006 } from '../invocations/schema';
+import { INVOCATION_MIGRATION_0010, INVOCATION_SCHEMA_0006 } from '../invocations/schema';
 
 export const CANONICAL_SCHEMA_SQL = [
   '-- CC-3 C1 — 0001_init.sql : portable standard SQL (D1 + stock SQLite).',
@@ -344,6 +344,12 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
   }
   if (!memColumns.results.some(column => column.name === 'expires_cycle')) {
     await db.batch(STORE_MIGRATION_0004.map(statement => db.prepare(statement)));
+  }
+  // CC-5 L0 (X14, sortie conservée au rejeu) : colonne output_text pour les D1
+  // existants ; idempotent par inspection structurelle (pattern 0002-0004).
+  const invColumns = await db.prepare('PRAGMA table_info(invocations)').all<{ name: string }>();
+  if (!invColumns.results.some(column => column.name === 'output_text')) {
+    await db.batch([db.prepare(INVOCATION_MIGRATION_0010)]);
   }
   // Exact backfill for pre-0003 rows (review Sol, F3): idempotent, only
   // NULL costs are touched. It is replayed at EVERY cold bootstrap, not

@@ -31,6 +31,7 @@ export const INVOCATION_SCHEMA_0006 = [
     "  lease_owner TEXT NOT NULL DEFAULT '',",
     '  lease_expires_at INTEGER,',
     "  output_hash TEXT NOT NULL DEFAULT '',",
+    "  output_text TEXT NOT NULL DEFAULT '',",
     "  last_error TEXT NOT NULL DEFAULT '',",
     '  usage_input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (usage_input_tokens >= 0),',
     '  usage_output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (usage_output_tokens >= 0),',
@@ -63,3 +64,10 @@ export const INVOCATION_SCHEMA_0006 = [
   ].join(' '),
   'CREATE TABLE IF NOT EXISTS invocation_guard (ok INTEGER NOT NULL CHECK (ok = 1))',
 ] as const;
+
+
+/**
+ * CC-5 L0 (dette X14) : sortie conservée bornée pour le rejeu. Colonne ajoutée
+ * aux D1 existants par ALTER idempotent, câblé côté store/schema.ts (0010).
+ */
+export const INVOCATION_MIGRATION_0010 = "ALTER TABLE invocations ADD COLUMN output_text TEXT NOT NULL DEFAULT ''";

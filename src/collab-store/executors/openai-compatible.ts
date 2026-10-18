@@ -10,7 +10,7 @@ import {
   assertGenerateInput, envelope, readWorkersAiOutput, zeroCostAdapter,
   type LlmAdapter, type LlmInput,
 } from './adapter';
-import { clampTimeoutMs, executorError, fetchWithTimeout, readUpstreamJson, requireSecret } from './fetch-timeout';
+import { executorError, fetchWithTimeout, providerTimeoutMs, readUpstreamJson, requireSecret } from './fetch-timeout';
 
 export const OPENROUTER_PROVIDER = 'openrouter';
 export const GROQ_PROVIDER = 'groq';
@@ -217,7 +217,7 @@ export function createOpenAiCompatibleAdapter(
   const config = PROVIDERS[parsed.provider];
   const secret = requireSecret(env[config.secret]);
   const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = clampTimeoutMs(options.timeout_ms);
+  const timeoutMs = providerTimeoutMs(parsed.provider, options.timeout_ms);
   const modelKey = parsed.provider + ':' + parsed.model;
   return zeroCostAdapter(parsed.provider, parsed.model, async (input: LlmInput) => {
     assertGenerateInput(input);
@@ -239,10 +239,9 @@ export function createOpenAiCompatibleAdapter(
       body: JSON.stringify(body),
     }, timeoutMs);
     const raw = await readUpstreamJson(response);
+    // CC-5 L0 : la garde « contenu vide » vit dans readWorkersAiOutput (même
+    // code, même message), où l'usage est déjà calculé et attaché à l'erreur.
     const { text, usage } = readWorkersAiOutput(raw);
-    if (!text.trim()) {
-      throw executorError('EXECUTOR_BAD_RESPONSE', 'Réponse du fournisseur avec contenu vide.');
-    }
     return { text, usage, provider: parsed.provider, model: parsed.model };
   });
 }
