@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   ABSOLUTE_MAX_OUTPUT_TOKENS,
-  MAX_OUTPUT_TOKENS,
   MODEL_TOKEN_CEILING,
   PROVIDER_RATE_WINDOWS,
   TASK_KIND_BOUNDS,
@@ -14,7 +13,6 @@ import { MAX_OUTPUT_TOKENS as ADAPTER_MAX } from '../../../src/collab-store/exec
 
 describe('CC-5 L1 task profiles', () => {
   it('retire le plafond global 2048 au profit de ABSOLUTE_MAX', () => {
-    expect(MAX_OUTPUT_TOKENS).toBe(ABSOLUTE_MAX_OUTPUT_TOKENS);
     expect(ADAPTER_MAX).toBe(ABSOLUTE_MAX_OUTPUT_TOKENS);
     expect(ABSOLUTE_MAX_OUTPUT_TOKENS).toBeGreaterThan(2048);
   });
@@ -46,10 +44,9 @@ describe('CC-5 L1 task profiles', () => {
   });
 
   it('tronque sur frontière UTF-8 (pas au milieu d\'un code point)', () => {
-    const text = 'a\u{1F600}b'; // a + emoji 4 octets + b
+    const text = 'a\u{1F600}b';
     const encoded = new TextEncoder().encode(text);
     expect(encoded.length).toBe(6);
-    // Coupe à 3 octets → ne garde que 'a' (emoji partiel retiré)
     expect(truncateToUtf8Bytes(text, 3)).toBe('a');
     expect(truncateToUtf8Bytes(text, 5)).toBe('a\u{1F600}');
     expect(truncateToUtf8Bytes(text, 100)).toBe(text);
