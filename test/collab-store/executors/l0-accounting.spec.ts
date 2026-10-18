@@ -19,11 +19,6 @@ const CONTROL = 'Résume les données en une phrase.';
 let seq = 0;
 const tag = (base: string) => 'l0-' + base + '-' + Date.now().toString(36) + '-' + ++seq;
 
-async function trap(promise: Promise<unknown>): Promise<string> {
-  try { await promise; } catch (error) { return (error as { code: string }).code; }
-  return 'NO_ERROR';
-}
-
 function capture(throwing: () => unknown): unknown {
   try { throwing(); } catch (error) { return error; }
   throw new Error('le cas devait lever');
@@ -180,6 +175,5 @@ describe('CC-5 L0 — garde coroutine : usageOf ne lit que des compteurs', () =>
     expect(usageOf(attachUsage(new Error('x'), {}))).toBeNull();
     expect(usageOf({ usage: 'corrompu' })).toBeNull();
     expect(usageOf(null)).toBeNull();
-    expect(await trap(Promise.reject(Object.assign(new Error('y'), { code: 'Z' })))).toBe('Z');
   });
 });
