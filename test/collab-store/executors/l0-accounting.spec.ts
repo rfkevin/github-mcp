@@ -72,7 +72,8 @@ describe('CC-5 L0 — usage réel sur échec (X14)', () => {
     expect(usageOf(blank)).toEqual({ input_tokens: 12, output_tokens: 3 });
     const nullish = capture(() => readWorkersAiOutput({ choices: [{ message: { content: null } }], usage: { prompt_tokens: 5 } }));
     expect(nullish).toMatchObject({ code: 'EXECUTOR_BAD_RESPONSE' });
-    expect(usageOf(nullish)).toEqual({ input_tokens: 5 });
+    // readWorkersAiOutput attache toujours les deux compteurs (0 si absents).
+    expect(usageOf(nullish)).toEqual({ input_tokens: 5, output_tokens: 0 });
     expect(usageOf(new Error('sans usage'))).toBeNull();
   });
 
