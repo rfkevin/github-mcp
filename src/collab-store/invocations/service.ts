@@ -41,6 +41,8 @@ export function invocationReservationId(invocationId: string, attemptNo: number)
 
 /** 1 centime = 10 000 micro-unités (cost_microunits, A1). */
 const MICROUNITS_PER_CENT = 10_000;
+/** CC-5 L0 (X14) : borne de la sortie conservée pour le rejeu (64 KiB). */
+export const MAX_OUTPUT_TEXT = 65_536;
 
 export interface InvocationServiceOptions {
   now?: () => Date;
@@ -195,9 +197,12 @@ export class InvocationService {
     costCents = 0,
   ): Promise<InvocationRecord> {
     const outputHash = await sha256Hex(typeof output === 'string' ? output : String(output));
+    // CC-5 L0 (X14) : l'empreinte couvre la sortie COMPLÈTE ; seul le texte
+    // conservé pour le rejeu est borné.
     return this.settle(wakeKey, workerId, {
       success: true,
       outputHash,
+      outputText: (typeof output === 'string' ? output : String(output)).slice(0, MAX_OUTPUT_TEXT),
       error: '',
       usage: normalizeInvocationUsage(usage),
       evidenceRefs,
@@ -218,6 +223,7 @@ export class InvocationService {
     return this.settle(wakeKey, workerId, {
       success: false,
       outputHash: '',
+      outputText: '',
       error: message,
       usage: normalizeInvocationUsage(usage),
       evidenceRefs,
@@ -243,6 +249,8 @@ export class InvocationService {
     result: {
       success: boolean;
       outputHash: string;
+      /** CC-5 L0 (X14) : texte conservé borné ('' pour un échec ou un retry). */
+      outputText: string;
       error: string;
       usage: InvocationUsage;
       evidenceRefs: string[];
@@ -283,12 +291,15 @@ export class InvocationService {
           'UPDATE invocations SET state = ?4, consecutive_failures = ?5, output_hash = ?6, last_error = ?7,',
           ' finished_at = ?8, lease_owner = \'\', lease_expires_at = NULL,',
           ' usage_input_tokens = usage_input_tokens + ?9, usage_output_tokens = usage_output_tokens + ?10,',
-          ' usage_operations = usage_operations + ?11, cost_microunits = cost_microunits + ?13, evidence_refs = ?12',
+          ' usage_operations = usage_operations + ?11, cost_microunits = cost_microunits + ?13, evidence_refs = ?12,',
+          // CC-5 L0 (X14) : sortie conservée bornée, dernier bind du lot.
+          ' output_text = ?14',
           ' WHERE wake_key = ?1 AND lease_owner = ?2',
         ].join(' ')).bind(
           wakeKey, workerId, now, nextState, failures, result.outputHash, result.error,
           nextState === 'queued' ? null : now,
           result.usage.input_tokens, result.usage.output_tokens, result.usage.operations, evidence, costMicro,
+          result.outputText,
         ),
         this.db.prepare([
           'UPDATE invocation_attempts SET state = ?4, finished_at = ?3, output_hash = ?5, error = ?6,',

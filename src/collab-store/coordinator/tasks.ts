@@ -1,9 +1,9 @@
 /**
  * CC-4 A4 (#121) — délégation d'une tâche LLM par un coordinateur autorisé.
  * Le brief est une mission non fiable bornée et neutralisée ; les matériaux
- * restent des données passées à envelope() par l'adaptateur. Aucune entrée ou
- * sortie brute n'est persistée : événement source et A1 ne gardent que hashes,
- * usage et provenance.
+ * restent des données passées à envelope() par l'adaptateur. L'événement
+ * source ne garde que des hashes ; depuis CC-5 L0 (X14), A1 conserve la
+ * sortie bornée pour le rejeu — jamais de second appel fournisseur.
  */
 import { StateContractError } from '../../collab/contracts';
 import { opIdClientFor, parseOpId } from '../contracts';
@@ -132,8 +132,8 @@ function resultOf(invocation: InvocationRecord, status: CoordinatorDispatchResul
 
 /**
  * Crée l'événement source + invocation A1 puis exécute immédiatement. Rejouer
- * le même op_id restitue uniquement l'état durable : jamais une seconde requête
- * fournisseur et jamais la sortie précédente (elle n'est pas stockée).
+ * le même op_id restitue l'état durable sans seconde requête fournisseur ;
+ * depuis CC-5 L0 (X14), la sortie conservée bornée est aussi restituée.
  */
 export async function dispatchCoordinatorTask(db: D1Database, factory: AdapterFactory,
   input: CoordinatorDispatchInput): Promise<CoordinatorDispatchResult> {
@@ -190,7 +190,9 @@ export async function dispatchCoordinatorTask(db: D1Database, factory: AdapterFa
     });
     if (appended.status === 'duplicate') {
       if (!appended.invocation) throw new CollabStoreError('INVOCATION_INCONSISTENT', 'Rejeu sans invocation A1 associée.');
-      return resultOf(appended.invocation, 'replayed', true, 0);
+      // CC-5 L0 (X14) : la sortie conservée est restituée au rejeu (jamais de second appel fournisseur).
+      const stored = appended.invocation.state === 'succeeded' ? appended.invocation.output_text : undefined;
+      return resultOf(appended.invocation, 'replayed', true, 0, stored || undefined);
     }
     if (appended.status === 'stale') continue;
     if (appended.status === 'quota_exhausted') {

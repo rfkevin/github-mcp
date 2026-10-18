@@ -76,6 +76,8 @@ export interface InvocationRecord {
   lease_owner: string;
   lease_expires_at: number | null;
   output_hash: string;
+  /** CC-5 L0 (X14) : sortie conservée bornée (64 KiB) pour le rejeu ; vide pour un échec. */
+  output_text: string;
   last_error: string;
   usage_input_tokens: number;
   usage_output_tokens: number;
