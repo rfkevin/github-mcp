@@ -43,13 +43,26 @@ export function bindingPayload(binding: OwnerRequestBinding): Record<string, unk
  * Garde transactionnelle (ownerAppend : ?1 clé, ?2 cycle, ?3 révision, puis ?4…) :
  * demande non tranchée ET dernier acte du même type inchangé.
  */
-export function bindingGuard(binding: OwnerRequestBinding, previousKeyPrefix: string): { sql: string; binds: unknown[] } {
+export function bindingGuard(binding: OwnerRequestBinding, previousKeyPrefix: string, proof?: OwnerProof): { sql: string; binds: unknown[] } {
+  const delegated = proof?.kind === 'delegated' ? [
+    'AND EXISTS (SELECT 1 FROM delegated_mandates m WHERE m.cycle_id = ?2 AND m.participant_id = ?7 AND m.epoch = ?8 AND m.family_id = COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?7), ?7))',
+    'AND EXISTS (SELECT 1 FROM delegated_approvals a WHERE a.request_id = ?4 AND a.cycle_id = ?2 AND a.epoch = ?8 AND a.used = 0 AND a.reviewer_pid = ?9 AND a.reviewer_family = ?10 AND a.params_hash = ?11 AND a.expires_at = ?12 AND a.max_cost_cents = ?13)',
+    "AND NOT EXISTS (SELECT 1 FROM owner_flags WHERE name = 'halt' AND value = '1')",
+    'AND ?12 > unixepoch()',
+    "AND EXISTS (SELECT 1 FROM participants WHERE participant_id = ?7 AND status = 'active')",
+    "AND EXISTS (SELECT 1 FROM participants WHERE participant_id = ?9 AND status = 'active')",
+    'AND COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?9), ?9) = ?10',
+    'AND COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?7), ?7) != ?10',
+    'AND EXISTS (SELECT 1 FROM budget_envelopes WHERE scope = ?2 AND limit_cents - reserved_cents - spent_cents >= ?13)',
+  ].join(' ') : '';
   return {
     sql: [
       'NOT EXISTS (SELECT 1 FROM owner_decisions WHERE request_id = ?4)',
       "AND COALESCE((SELECT MAX(seq) FROM events WHERE cycle_id = ?2 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?5)) = ?5), 0) = ?6",
+      delegated,
     ].join(' '),
-    binds: [binding.request_id, previousKeyPrefix, binding.expected_previous_seq ?? 0],
+    binds: [binding.request_id, previousKeyPrefix, binding.expected_previous_seq ?? 0,
+      ...(proof?.kind === 'delegated' ? [proof.subject, proof.epoch, proof.reviewer_pid, proof.reviewer_family, proof.params_hash, proof.expires_at, proof.max_cost_cents] : [])],
   };
 }
 
@@ -57,7 +70,12 @@ export function bindingGuard(binding: OwnerRequestBinding, previousKeyPrefix: st
 export function bindingStatements(db: D1Database, binding: OwnerRequestBinding, proof: OwnerProof, eventKey: string,
   now?: () => Date): D1PreparedStatement[] {
   const at = Math.floor((now?.() ?? new Date()).getTime() / 1000);
-  return [db.prepare([
+  return [
+    ...(proof.kind === 'delegated' ? [
+      db.prepare('UPDATE delegated_approvals SET used = 1 WHERE request_id = ?1 AND used = 0').bind(binding.request_id),
+      db.prepare('UPDATE budget_envelopes SET spent_cents = spent_cents + ?2 WHERE scope = ?1').bind(proof.subject.split(':')[0] === '' ? '' : proof.request_id.split(':')[0], proof.max_cost_cents),
+    ] : []),
+    db.prepare([
     'INSERT INTO owner_decisions (request_id, decision, access_subject, at, event_seq)',
     "VALUES (?1, 'approve', ?2, ?3, (SELECT seq FROM events WHERE idempotency_key = ?4))",
   ].join(' ')).bind(binding.request_id, proof.kind + ':' + proof.subject, at, eventKey)];
