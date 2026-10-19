@@ -130,7 +130,7 @@ export async function installPhaseDefinitions(db: D1Database, input: {
     payload: { action: 'install_phases', cycle_id: cycleId, definitions_sha256: digest, previous_install_seq: previous?.seq ?? null,
       definitions: definitions.map(({ cycle_id: _cycle, ...def }) => def), ...(binding ? bindingPayload(binding) : {}) },
     proof: input.proof,
-    ...(binding ? { extraGuard: bindingGuard(binding, PHASE_INSTALL_KEY_PREFIX + cycleId + ':') } : {}),
+    ...(binding ? { extraGuard: bindingGuard(binding, PHASE_INSTALL_KEY_PREFIX + cycleId + ':', input.proof) } : {}),
     sideEffects: eventKey => [
       ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
       db.prepare('DELETE FROM phase_definitions WHERE cycle_id = ?1').bind(cycleId),

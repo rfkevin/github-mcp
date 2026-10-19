@@ -73,7 +73,7 @@ export function bindingStatements(db: D1Database, binding: OwnerRequestBinding, 
   return [
     ...(proof.kind === 'delegated' ? [
       db.prepare('UPDATE delegated_approvals SET used = 1 WHERE request_id = ?1 AND used = 0').bind(binding.request_id),
-      db.prepare('UPDATE budget_envelopes SET spent_cents = spent_cents + ?2 WHERE scope = ?1').bind(proof.subject.split(':')[0] === '' ? '' : proof.request_id.split(':')[0], proof.max_cost_cents),
+      db.prepare('UPDATE budget_envelopes SET spent_cents = spent_cents + ?2 WHERE scope = ?1').bind(proof.cycle_id, proof.max_cost_cents),
     ] : []),
     db.prepare([
     'INSERT INTO owner_decisions (request_id, decision, access_subject, at, event_seq)',
