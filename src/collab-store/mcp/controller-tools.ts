@@ -4,6 +4,7 @@ import type { CollabToolContext } from './context';
 import { collabFailure } from './result';
 import { previewNextActions } from '../controller/next-actions';
 import { CollabStoreError } from '../store/collab-store';
+import { adjustPhase, SOFT_PHASE_OPS, SOFT_REASON_MAX, SOFT_REASON_MIN } from '../phases/soft';
 
 /**
  * CC-5 L3d — lecture des prochaines actions du contrôleur pour l'appelant.
@@ -26,6 +27,33 @@ export function registerControllerTools(server: McpServer, context: CollabToolCo
       return { content: [{ type: 'text' as const, text: JSON.stringify(view) }] };
     } catch (error) {
       return collabFailure(error, 'Lecture des prochaines actions impossible.', {}, context.fallback);
+    }
+  });
+  server.registerTool('collab_phase_adjust', {
+    title: 'Phases souples (coordinateur CC-5)',
+    description: 'CC-5 L3d B1 : réorganisation du cycle par le coordinateur qui tient le mandat actif (nommé par Kevin sur /owner) — round.add (nouveau tour de la phase courante), phase.reopen (rouvrir une phase antérieure, target_phase obligatoire), phase.skip (sauter la phase courante si facultative). Justification obligatoire, journalisée. Le code vérifie dans le lot : mandat, HALT, révision et phase, au plus 3 tours par phase et 10 réorganisations par cycle, jamais de saut de P5, d\'une phase à conditions de sortie ni d\'un tour scellé. Une nouvelle ronde repart de zéro ; les scellés de la ronde quittée sont révélés. D12 inchangé. op_id strict {client}:{cycle}:{op}:{n} ; rejeu = duplicate.',
+    inputSchema: {
+      cycle: z.string().min(1).max(64),
+      expected_rev: z.number().int().min(0),
+      op: z.enum(SOFT_PHASE_OPS),
+      target_phase: z.string().min(1).max(8).optional(),
+      reason: z.string().min(SOFT_REASON_MIN).max(SOFT_REASON_MAX),
+      op_id: z.string().min(1).max(253),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => {
+    try {
+      const identity = await context.identity();
+      if (identity.status !== 'registered') {
+        throw new CollabStoreError('UNREGISTERED_CLIENT', 'collab_phase_adjust : client non associé à un participant enregistré.');
+      }
+      const outcome = await adjustPhase(context.db, {
+        cycle_id: input.cycle, participant_id: identity.participant_id, op: input.op, target_phase: input.target_phase,
+        expected_revision: input.expected_rev, reason: input.reason, op_id: input.op_id,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(outcome) }] };
+    } catch (error) {
+      return collabFailure(error, 'Réorganisation de phase impossible.', {}, context.fallback);
     }
   });
 }

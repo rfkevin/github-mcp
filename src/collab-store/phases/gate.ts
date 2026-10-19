@@ -50,7 +50,9 @@ async function findReplay(
 ): Promise<{ seq: number } | null> {
   return db.prepare([
     "SELECT seq FROM events WHERE cycle_id = ?1 AND type = 'phase.advance'",
-    'AND expected_rev = ?2 AND json_valid(payload_json)',
+    // CC-5 l3d 2c-1 : seules les avances par policy rejouent une avance par policy
+    // (une réorganisation du coordinateur n'est pas la même intention).
+    "AND role = 'policy' AND expected_rev = ?2 AND json_valid(payload_json)",
     "AND json_extract(payload_json, '$.to') = ?3 LIMIT 1",
   ].join(' ')).bind(cycleId, expectedRevision, nextPhase).first<{ seq: number }>();
 }
