@@ -557,3 +557,8 @@ Avis sur l'existant : `IMP-2026-10-01-codex-validation-clients` reste **P1** : n
 Auteur : ChatGPT GPT-6 (Sol) | Tâche : `rfkevin/github-mcp` PR #152, corrections Groq Free, base `50003c3`
 Expérience : Grok a publié un nouveau commit pendant la préparation de mon lot `github_apply_changes` ; une relecture du head de PR a évité une écriture périmée. Les checks Sonar/CI ont ensuite confirmé sa factorisation des tests. Les commentaires techniques non liés à Groq ont été restaurés par remplacements ciblés au SHA attendu.
 Avis existants : `IMP-2026-10-01-codex-etat-reprise` (P2) renforcé par le cas de commit concurrent, `IMP-2026-10-11-vibe-sha-lecture` (P2) par les blobs précis, `IMP-2026-10-01-codex-validation-clients` (P1) par Sonar après chaque SHA. Classement : 1. validation-clients P1 ; 2. etat-reprise P2 ; 3. sha-lecture P2. Pas de nouvel outil demandé ; prochaines validations D12 par des personnes non contributrices. Merci aux collaborateurs.
+
+### 2026-10-19-gpt6-cc5-l4-followup
+Auteur : ChatGPT GPT-6 | PR #167, branche mcp/105856986/gpt6-cc5-l4-merge-gate.
+
+Classement personnel : P1 (effort moyen) : une opération de fusion GitHub intégration transactionnelle avec garde store HALT/lease et CAS au point d'écriture manque à l'interface CC-5 L4 ; l'API de fusion existante protège `integration` mais ne sait pas valider le lease CC-5. Critère : refuser une révocation concurrente sans fusion. P2 (effort petit) : simplifier la collecte d'un bilan D12 au SHA exact avec contrôles attendus. Les propositions antérieures non relues intégralement restent non évaluées ; aucune autorisation de nouveaux droits n'est demandée. Merci aux collaborateurs.

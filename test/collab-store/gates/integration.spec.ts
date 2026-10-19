@@ -53,3 +53,12 @@ describe('L4 integration orchestration', () => {
     expect(unconfirmed.closeAfterMerge).not.toHaveBeenCalled();
   });
 });
+
+describe('L4 confirmed merge with failed closure', () => {
+  it('reports closure failure without retrying merge', async () => {
+    const port = fixture();
+    port.closeAfterMerge.mockRejectedValueOnce(new Error('GitHub close failed'));
+    expect(await executeIntegration(port)).toEqual({ state: 'closure_failed', mergeSha: merged, closed: false });
+    expect(port.merge).toHaveBeenCalledTimes(1);
+  });
+});
