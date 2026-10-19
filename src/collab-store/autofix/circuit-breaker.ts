@@ -6,8 +6,7 @@ export async function stableProblemId(signature: string): Promise<string> {
  return sha256Hex(normalized);
 }
 export function rotateCorrector(eligible: readonly string[], previous: string | null): string | null {
- const pool=[...new Set(eligible)].filter(x=>/^[a-z0-9_-]{1,120}$/i.test(x));
- pool.sort();
+ const pool=[...new Set(eligible)].filter(x=>/^[a-z0-9_-]{1,120}$/i.test(x)).toSorted();
  if (!pool.length) return null;
  return previous===null ? pool[0] : pool[(pool.indexOf(previous)+1)%pool.length];
 }
