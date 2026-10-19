@@ -153,3 +153,8 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `src/collab-store/executors/profiles.ts` : fiches endpoints, quotas du jour, stats A1 7 jours et notes owner ; `owner/executor-notes.ts` écrit ces notes seulement depuis `/owner`.
 - `src/collab-store/mcp/{context,tools,schemas}.ts` : `collab_dispatch_task` et `collab_list_executors`, factory fournisseur et quotas liés au contexte OAuth serveur.
 - Tests : `test/collab-store/mcp/coordinator-tools-e2e.spec.ts` + catalogue MCP ; grant/revoke, halt, limites, injection, replay, quota, provenance, stats et notes.
+
+## CC-5 L3 — contrôleur déterministe (incrément 1)
+
+- `src/collab-store/controller/` : `rules.ts` (`nextActors`, règles pures et déterministes : réveils, `merge_ready`, `unblock`, `advance_phase` ; D12 au head/base exacts), `facts.ts` (soumissions et verdicts extraits des `evidence.add`, défensif), `snapshot.ts` (instantané en un lot D1, familles d'identité #126, dépendances du dernier état importé), `journal.ts` (table interne `controller_decisions`, append-only par triggers, idempotente), `run.ts` (`runController` : modes `active`, `halted`, `degraded`, n'exécute rien).
+- Tests : `test/collab-store/controller/{rules,run}.spec.ts`. Contrat : `docs/collaboration/cc5/l3-controller.md`.
