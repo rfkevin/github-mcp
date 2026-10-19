@@ -277,6 +277,7 @@ export async function decideOwnerRequest(db: D1Database, input: {
   now?: () => Date;
 }): Promise<OwnerDecisionOutcome> {
   await ensureSchema(db);
+  if (input.proof.kind === 'delegated' && input.decision !== 'approve') throw new CollabStoreError('DELEGATED_FORBIDDEN', 'Delegated proof only permits executable approvals.');
   if (input.decision !== 'approve') {
     // Un refus d'une demande dont l'approbation a déjà été EXÉCUTÉE (décision portée par l'acte lié,
     // hors clé owner-decision:) : déjà tranché, rien n'est écrit. Les autres cas suivent decisions.ts.
@@ -291,12 +292,20 @@ export async function decideOwnerRequest(db: D1Database, input: {
   }
   const request = await resolveRequestTarget(db, input);
   const parsed = await parseOwnerRequest(request.payload_json);
-  if (parsed.kind === 'plain') return recordOwnerDecision(db, input);
+  if (parsed.kind === 'plain') {
+    if (input.proof.kind === 'delegated') throw new CollabStoreError('DELEGATED_FORBIDDEN', 'Plain owner requests are not delegable.');
+    return recordOwnerDecision(db, input);
+  }
   if (parsed.kind === 'invalid') {
     throw new CollabStoreError('EXECUTABLE_REQUEST_INVALID', 'Demande exécutable invalide, non approuvable : ' + parsed.reason
       + ' Refusez-la ; l’agent doit redéposer une demande valide.');
   }
   const req = parsed.request;
+  if (input.proof.kind === 'delegated') {
+    const { assertDelegatedAction } = await import('./delegation-policy');
+    assertDelegatedAction({ action: req.action, params: req.params, cycleId: req.cycle_id, envelopeCents: req.max_cost_cents });
+    if (input.proof.request_id !== req.request_id || input.proof.params_hash !== req.payload_sha256 || input.proof.expires_at !== req.expires_at || input.proof.max_cost_cents !== req.max_cost_cents) throw new CollabStoreError('DELEGATED_MISMATCH', 'Delegated proof binding mismatch.');
+  }
   // Double soumission du même formulaire : la décision déjà liée à CETTE demande est renvoyée telle quelle.
   const prior = await decidedRequestOf(db, req.request_id);
   if (prior) {
