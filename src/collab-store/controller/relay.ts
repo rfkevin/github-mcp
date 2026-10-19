@@ -51,6 +51,7 @@ const ACTION_TEXT: Record<Decision['action'], string> = {
   test: 'tester (verdict D12)',
   renew_verdict: 'renouveler son verdict au couple courant',
   address_feedback: 'traiter les corrections demandées',
+  address_correction: 'traiter la demande de correction du coordinateur',
   answer_question: 'répondre à une question',
   renew_or_close_question: 'renouveler ou clore sa question',
   merge: 'fusionner vers l\'intégration',
@@ -108,8 +109,9 @@ async function firstSeen(db: D1Database, key: string): Promise<number | null> {
 /** Message pour un échec répété du passage programmé (file des échecs, 24 h). */
 export function failureMessage(scope: string, error: string, hours: number, lastAt: number): string {
   const target = scope === RESEARCH_SCOPE ? 'chercheur L5' : 'cycle ' + scope;
-  return 'Kevin — vérifier le passage programmé (' + target + ') : échec ' + error + ' sur ' + hours
-    + (hours > 1 ? ' heures' : ' heure') + ' depuis 24 h, dernier à '
+  // `hours` = tranches horaires où un échec a été consigné (une ligne par heure), pas la durée de la panne.
+  return 'Kevin — vérifier le passage programmé (' + target + ') : échec ' + error + ' consigné sur ' + hours
+    + (hours > 1 ? ' heures distinctes' : ' heure') + ' (24 h glissantes), dernier à '
     + new Date(lastAt * 1000).toISOString().slice(11, 16) + ' UTC.';
 }
 

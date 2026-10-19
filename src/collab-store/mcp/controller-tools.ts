@@ -5,6 +5,7 @@ import { collabFailure } from './result';
 import { previewNextActions } from '../controller/next-actions';
 import { CollabStoreError } from '../store/collab-store';
 import { adjustPhase, SOFT_PHASE_OPS, SOFT_REASON_MAX, SOFT_REASON_MIN } from '../phases/soft';
+import { CORRECTION_ITEM_MAX, CORRECTION_ITEMS_MAX, CORRECTION_REASON_MAX, requestCorrection } from '../controller/corrections';
 
 /**
  * CC-5 L3d — lecture des prochaines actions du contrôleur pour l'appelant.
@@ -54,6 +55,33 @@ export function registerControllerTools(server: McpServer, context: CollabToolCo
       return { content: [{ type: 'text' as const, text: JSON.stringify(outcome) }] };
     } catch (error) {
       return collabFailure(error, 'Réorganisation de phase impossible.', {}, context.fallback);
+    }
+  });
+  server.registerTool('collab_request_correction', {
+    title: 'Demande de correction ciblée (coordinateur CC-5)',
+    description: 'CC-5 L3d B1 : le coordinateur qui tient le mandat actif du cycle demande à l\'auteur d\'une tâche 1 à 10 corrections précises. Ce n\'est pas un verdict D12 et cela ne compte jamais comme avis. L\'auteur est réveillé (collab_next_actions : address_correction) jusqu\'à sa prochaine soumission avec head/base ; tant que la demande est ouverte, la tâche n\'est pas annoncée merge_ready. Garde dans le lot : mandat, HALT, cycle ouvert à la révision attendue, tâche existante et non terminée. op_id strict {client}:{cycle}:{op}:{n} ; rejeu = duplicate.',
+    inputSchema: {
+      cycle: z.string().min(1).max(64),
+      expected_rev: z.number().int().min(0),
+      task: z.string().min(1).max(64),
+      items: z.array(z.string().min(1).max(CORRECTION_ITEM_MAX)).min(1).max(CORRECTION_ITEMS_MAX),
+      reason: z.string().max(CORRECTION_REASON_MAX).optional(),
+      op_id: z.string().min(1).max(253),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => {
+    try {
+      const identity = await context.identity();
+      if (identity.status !== 'registered') {
+        throw new CollabStoreError('UNREGISTERED_CLIENT', 'collab_request_correction : client non associé à un participant enregistré.');
+      }
+      const outcome = await requestCorrection(context.db, {
+        cycle_id: input.cycle, participant_id: identity.participant_id, task_id: input.task, items: input.items,
+        reason: input.reason, expected_revision: input.expected_rev, op_id: input.op_id,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(outcome) }] };
+    } catch (error) {
+      return collabFailure(error, 'Demande de correction impossible.', {}, context.fallback);
     }
   });
 }
