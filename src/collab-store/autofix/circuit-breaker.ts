@@ -6,11 +6,12 @@ export async function stableProblemId(signature: string): Promise<string> {
  return sha256Hex(normalized);
 }
 export function rotateCorrector(eligible: readonly string[], previous: string | null): string | null {
- const unique=[...new Set(eligible)];
- const valid=unique.filter(x=>/^[a-z0-9_-]{1,120}$/i.test(x));
- const pool=valid.toSorted();
+ const pool=[...new Set(eligible)].filter(x=>/^[a-z0-9_-]{1,120}$/i.test(x));
  if (!pool.length) return null;
- return previous===null ? pool[0] : pool[(pool.indexOf(previous)+1)%pool.length];
+ const first=pool.reduce((a,b)=>a<b?a:b);
+ if (previous===null) return first;
+ const later=pool.filter(id=>id>previous);
+ return later.length ? later.reduce((a,b)=>a<b?a:b) : first;
 }
 export const AUTOFIX_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS cc5_autofix_problems (
