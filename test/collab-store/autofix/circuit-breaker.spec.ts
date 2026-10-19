@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
-import { AUTOFIX_SCHEMA, claimAutoFix, stableProblemId, rotateCorrector, type AutoFixClaim } from '../../../src/collab-store/autofix/circuit-breaker';
+import { AUTOFIX_SCHEMA, claimAutoFix, claimAutoFixForFailure, stableProblemId, rotateCorrector, type AutoFixClaim } from '../../../src/collab-store/autofix/circuit-breaker';
 
 const db=(env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 let serial=0;
@@ -19,6 +19,20 @@ beforeEach(async()=>{
  await db.prepare('INSERT INTO cycles(cycle_id,status) VALUES (?1,?2)').bind(base.cycle,'open').run();
 });
 describe('L6 D2 circuit breaker',()=>{
+ it('trusted roster creates stable ID and rotates author, irrespective of API writer',async()=>{
+  const failure={cycle:base.cycle,signature:'FAILED TEST L6',failureRef:'ci:job:1',now:base.now};
+  const policy={
+   correctors:[{id:'gpt6',family:'openai',channel:'api' as const},{id:'claude',family:'anthropic',channel:'trusted' as const}],
+   reviewer:{id:'grok',family:'xai',channel:'trusted' as const},
+   tester:{id:'vibe',family:'zhipu',channel:'trusted' as const},
+  };
+  expect((await claimAutoFixForFailure(db,failure,policy)).accepted).toBe(true);
+  expect((await claimAutoFixForFailure(db,{...failure,signature:' failed  test l6 '},policy)).accepted).toBe(true);
+  expect((await claimAutoFixForFailure(db,failure,policy)).accepted).toBe(false);
+  const rows=await db.prepare('SELECT corrector FROM cc5_autofix_attempts WHERE cycle=?1 ORDER BY attempt').bind(base.cycle).all<{corrector:string}>();
+  expect(rows.results.map(x=>x.corrector)).toEqual(['claude','gpt6']);
+  expect((await claimAutoFixForFailure(db,{...failure,signature:'another failure'}, {...policy,reviewer:{...policy.reviewer,channel:'api'}})).accepted).toBe(false);
+ });
  it('stable ID and corrector rotation',async()=>{
   expect(await stableProblemId(' CI  FAIL ')).toBe(await stableProblemId('ci fail'));
   expect(rotateCorrector(['gpt6','grok','claude'],'gpt6')).toBe('grok');
