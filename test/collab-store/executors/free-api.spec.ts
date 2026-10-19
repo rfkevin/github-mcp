@@ -385,6 +385,33 @@ describe('CC-4 A3 — aucun appel sans garantie de gratuité ni sur erreur local
     expect(await service.getByWakeKey(large.wake_key)).toMatchObject({ state: 'queued', attempt_count: 0, consecutive_failures: 0 });
     expect(await quota(capKey)).toBe(1);
   });
+
+  it('CC-5 L1 N1 : task_kind probe borne à 256 ; absent → default 2048 (appelant serveur)', async () => {
+    const endpointId = uniq('ep');
+    await activeEndpoint(db, endpointId, { tools: ['llm.generate'], network_providers: ['workers-ai'], token_ceiling: 4096 });
+    const { ai, calls } = fakeAi();
+    const now = freshDay();
+    const probeInv = await invocationFor(db, endpointId);
+    expect(await codeOf(dispatchFreeInvocation(db, workersAiFactory(ai), {
+      wake_key: probeInv.wake_key, worker_id: 'w', control: CONTROL,
+      input_packet: '{"packet":"a3"}', max_tokens: 2000, task_kind: 'probe', now,
+    }))).toBe('NO_ERROR');
+    expect(calls[0].input).toMatchObject({ max_tokens: 256 });
+
+    const defaultInv = await invocationFor(db, endpointId);
+    expect(await codeOf(dispatchFreeInvocation(db, workersAiFactory(ai), {
+      wake_key: defaultInv.wake_key, worker_id: 'w', control: CONTROL,
+      input_packet: '{"packet":"a3"}', max_tokens: 3000, now, // task_kind absent → default
+    }))).toBe('NO_ERROR');
+    expect(calls[1].input).toMatchObject({ max_tokens: 2048 });
+
+    const mismatchInv = await invocationFor(db, endpointId);
+    expect(await codeOf(dispatchFreeInvocation(db, workersAiFactory(ai), {
+      wake_key: mismatchInv.wake_key, worker_id: 'w', control: CONTROL,
+      input_packet: '{"packet":"a3"}', max_tokens: 3000, task_kind: 'not-a-kind', now,
+    }))).toBe('NO_ERROR');
+    expect(calls[2].input).toMatchObject({ max_tokens: 2048 });
+  });
 });
 
 describe('CC-4 A3 — arrêt d’urgence', () => {

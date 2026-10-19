@@ -5,6 +5,14 @@
  * le plafond global fixe 2048. Le plafond effectif est
  * min(plafond modèle, borne task_kind, plafond endpoint, demandé).
  *
+ * task_kind : fourni exclusivement par le code serveur de confiance
+ * (dispatchFreeInvocation n'est pas exposé aux agents). Absent / inconnu →
+ * 'default' (2048) est une politique volontaire, pas un trou de sécurité.
+ *
+ * thinking (off/low/medium) : table déclarative pour un câblage futur par
+ * adaptateur. L1 n'applique que les plafonds de jetons ; le contrôle de
+ * raisonnement reste fixe par modèle (MODEL_CALL_OPTIONS / MODEL_REQUEST_OPTIONS).
+ *
  * Les chiffres externes (RPM/RPD) sont des instantanés datés 2026-10-18,
  * à revalider le jour d'activation (X12). Aucune dépense.
  */

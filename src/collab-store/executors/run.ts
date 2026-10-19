@@ -261,7 +261,12 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
   control: string;
   input_packet: string;
   max_tokens: number;
-  /** CC-5 L1 : type de tâche pour resolveEffectiveMaxTokens (optionnel). */
+  /**
+   * CC-5 L1 — type de tâche pour resolveEffectiveMaxTokens.
+   * Provenance : code serveur de confiance uniquement (jamais un agent / client).
+   * Absent ou inconnu → normalizeTaskKind → 'default' (2048) : politique voulue.
+   * Pour un probe strict, l'appelant serveur DOIT passer task_kind: 'probe'.
+   */
   task_kind?: string;
   lease_seconds?: number;
   daily_cap?: number;

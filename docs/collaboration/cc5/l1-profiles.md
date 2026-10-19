@@ -29,13 +29,19 @@ Source : `src/collab-store/executors/task-profiles.ts`.
 
 ## 2. Réflexion / reasoning
 
+**Périmètre L1 = plafonds de jetons.** `thinkingForTaskKind` est déclaré (table `TASK_KIND_BOUNDS`) mais **non câblé** dans `LlmInput` / `dispatchFreeInvocation` : les paramètres de raisonnement restent **fixes par modèle**, indépendants de `review` / `design` / `diagnose`.
+
 | Fournisseur / modèle | Contrôle | Valeur L1 |
 | --- | --- | --- |
 | Workers AI glm / gemma | `chat_template_kwargs.enable_thinking` | `false` (L0) |
 | Z.AI glm-4.7-flash | `thinking.type` | `disabled` |
 | Groq openai/gpt-oss-20b | `reasoning_effort` | **`low`** (L1, suite diagnostic X4) |
 
-Aucun changement de forme de requête hors allowlist free. xAI / DeepSeek / OpenRouter paid restent dormants.
+Aucun changement de forme de requête hors allowlist free. xAI / DeepSeek / OpenRouter paid restent dormants. Câblage thinking × task_kind = lot ultérieur.
+
+## 2bis. Provenance de `task_kind`
+
+`dispatchFreeInvocation({ task_kind? })` est appelé **uniquement par le code serveur de confiance** (jamais un agent). Absent ou valeur inconnue → `normalizeTaskKind` → `default` (2048) : **politique voulue**. Pour un probe strict, l'appelant serveur doit passer `task_kind: 'probe'` (borne 256).
 
 ## 3. Fenêtres de débit (instantanés 2026-10-18)
 
