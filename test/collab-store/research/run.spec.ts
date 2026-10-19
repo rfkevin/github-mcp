@@ -28,7 +28,7 @@ interface SeedMemory {
 async function seedMemory(row: SeedMemory): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO memory_entries (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, uses, last_used_rev, token_cost) VALUES (?1, 1, ?2, ?3, ?4, '["seed"]', 'observed', 'active', 'l5-author', 'l5-reviewer', ?5, ?6, ?7)",
+      "INSERT INTO memory_entries (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid, uses, last_used_rev, token_cost) VALUES (?1, 1, ?2, ?3, ?4, '[]', 'observed', 'active', 'l5-author', 'l5-reviewer', ?5, ?6, ?7)",
     )
     .bind(row.id, row.scope, row.kind, row.text, row.uses ?? 0, row.last_used_rev ?? null, estimateTokens(row.text))
     .run();
