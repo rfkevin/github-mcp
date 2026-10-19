@@ -1,4 +1,4 @@
-/** CC-5 L4: guarded orchestration; integration adapter must enforce atomic SHA/lease fencing. */
+/** CC-5 L4: guarded orchestration; privileged adapter enforces CAS at merge. */
 import { evaluateMergeGate, type MergeCandidate, type GateVerdict } from './merge-gate';
 import type { ControllerSnapshot } from '../controller/rules';
 
@@ -12,7 +12,8 @@ export interface IntegrationPort {
 export type IntegrationOutcome =
   | { state: 'denied'; verdict: GateVerdict }
   | { state: 'merged'; mergeSha: string; closed: boolean }
-  | { state: 'unconfirmed'; mergeSha: string | null; closed: false };
+  | { state: 'unconfirmed'; mergeSha: string | null; closed: false }
+  | { state: 'closure_failed'; mergeSha: string; closed: false };
 
 export async function executeIntegration(port: IntegrationPort): Promise<IntegrationOutcome> {
   const first = await port.inspect();
@@ -28,6 +29,7 @@ export async function executeIntegration(port: IntegrationPort): Promise<Integra
   if (!result.merged || !result.mergeSha) return { state: 'unconfirmed', mergeSha: null, closed: false };
   if (!await port.confirmMerged(result.mergeSha))
     return { state: 'unconfirmed', mergeSha: result.mergeSha, closed: false };
-  await port.closeAfterMerge(result.mergeSha);
+  try { await port.closeAfterMerge(result.mergeSha); }
+  catch { return { state: 'closure_failed', mergeSha: result.mergeSha, closed: false }; }
   return { state: 'merged', mergeSha: result.mergeSha, closed: true };
 }
