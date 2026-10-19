@@ -15,6 +15,7 @@
  */
 import { runResearchPass, type ResearchPassStatus } from '../research/run';
 import { ensureSchema } from '../store/schema';
+import { RESEARCH_SCOPE, recordFailure } from './failures';
 import { runController, type ControllerRunResult } from './run';
 
 export const SCHEDULED_CYCLE_LIMIT = 20;
@@ -32,6 +33,8 @@ export interface ScheduledCycleResult { cycle_id: string; mode: ControllerRunRes
 export interface ScheduledRunResult {
   cycles: ScheduledCycleResult[];
   research: { pass_id: string; status: ResearchPassStatus | 'failed' };
+  /** l3d 2b-2b : lignes ajoutées à la file des échecs pendant ce passage. */
+  failures_recorded: number;
 }
 
 export async function runScheduledControllers(db: D1Database, options: { now?: () => Date } = {}): Promise<ScheduledRunResult> {
@@ -56,5 +59,19 @@ export async function runScheduledControllers(db: D1Database, options: { now?: (
   } catch {
     status = 'failed';
   }
-  return { cycles, research: { pass_id: passId, status } };
+  // l3d 2b-2b : file des échecs (une ligne par heure et par portée/code) ; jamais bloquant.
+  const at = Math.floor(now().getTime() / 1000);
+  let failuresRecorded = 0;
+  const failed = [
+    ...cycles.filter(cycle => cycle.mode === 'degraded').map(cycle => ({ scope: cycle.cycle_id, error: cycle.error ?? 'CONTROLLER_RUN_FAILED' })),
+    ...(status === 'failed' ? [{ scope: RESEARCH_SCOPE, error: 'RESEARCH_PASS_FAILED' }] : []),
+  ];
+  for (const failure of failed) {
+    try {
+      if (await recordFailure(db, { ...failure, now: at })) failuresRecorded += 1;
+    } catch {
+      // la file est une aide à la visibilité : son indisponibilité n'interrompt pas le passage
+    }
+  }
+  return { cycles, research: { pass_id: passId, status }, failures_recorded: failuresRecorded };
 }
