@@ -146,11 +146,32 @@ viendra avec le déclenchement Cron. `UPDATE` et `DELETE` sont refusés par trig
   vérifications et le lot) et un changement de rôles entre dépôt et approbation à révision inchangée. Contre-épreuves : contrôle des rôles retiré de la garde, D12 logique retiré, révision non
   réalignée — chacune fait échouer au moins un test.
 
-## Hors incrément 2b-2c (suite de l3d)
+## Incrément 2c-1 — phases souples B1 (coordinateur)
+
+Contrat : plan CC-5 v0.3 B1 (seq 260) et précisions v0.4 C1 (seq 264). L'IA décide quoi faire, le code vérifie et exécute.
+
+- `src/collab-store/phases/soft.ts` (`adjustPhase`) et l'outil MCP `collab_phase_adjust`
+  (`src/collab-store/mcp/controller-tools.ts`) : `round.add`, `phase.reopen`, `phase.skip`, réservés au titulaire du
+  mandat L3c du cycle (famille #126 comprise), avec une justification journalisée.
+- **Une seule frontière de ronde** : chaque opération s'écrit comme un `phase.advance` de rôle `coordinator`
+  (`payload.op` typé). `phaseEntrySeq` (CR-F01), la garde « une proposition par ronde », le scellement par phase et
+  l'export CC-STATE-1 la lisent déjà : une nouvelle ronde repart de zéro, et les scellés de la ronde quittée sont
+  révélés, jamais rouverts.
+- **Garde dans le lot** : mandat à l'époque lue, HALT, révision et phase du cycle, au plus 3 tours par phase et
+  10 réorganisations par cycle (valeurs par défaut du plan ; au-delà, arbitrage de Kevin), scellé non révélé pour un saut.
+- **Non contournable** : jamais de saut de P5, d'une phase à conditions de sortie ni d'un tour scellé ; conditions
+  d'entrée de la cible respectées ; D12 inchangé (verdicts liés au couple head/base).
+- `phases/gate.ts` : le rejeu d'une avance par policy ne reconnaît plus que les `phase.advance` de rôle `policy`.
+  Sans cela, une réorganisation à la même révision et vers la même phase passait pour un `duplicate`.
+- Hors chemins protégés : `owner/`, `identity/`, `store/` et `gates/` sont seulement lus (mandat, familles, HALT).
+- Tests : `test/collab-store/phases/soft.spec.ts` (12), plus le cas HALT (avant et pendant le lot) dans
+  `test/collab-store/owner/automation-halt-budget.spec.ts`.
+
+## Hors incrément 2c-1 (suite de l3d)
 
 - Déclenchement par webhook GitHub, puis exécution des décisions derrière les gates existantes
   (avance par policy, dispatch A1 des workers).
-- Phases souples B1 (`round.add`, `phase.reopen`, `phase.skip`, `correction.request`).
+- `correction.request` (demande de correction ciblée du coordinateur), incrément 2c-2.
 - Mesure : décisions par passage, réveils manuels évités (W0).
 
 ## Choix d'exécution — instantané du 2026-10-19 (à revalider le jour de l'activation, X12)
