@@ -25,6 +25,7 @@
  */
 import { previewNextActions } from './next-actions';
 import { decisionKey } from './journal';
+import { RESEARCH_SCOPE, recentFailures } from './failures';
 import type { Decision } from './rules';
 
 export const RELAY_CYCLE_LIMIT = 20;
@@ -37,7 +38,7 @@ export interface RelayLine {
   /** Libellé lisible (participants.display_label, « Kevin », « coordinateur … »). */
   label: string;
   task_id: string | null;
-  action: Decision['action'];
+  action: Decision['action'] | 'check_controller';
   /** Message prêt à relayer. */
   message: string;
   /** Première écriture de la décision dans le journal (secondes), null si pas encore journalisée. */
@@ -104,11 +105,31 @@ async function firstSeen(db: D1Database, key: string): Promise<number | null> {
   }
 }
 
-export async function relayLines(db: D1Database): Promise<RelayLine[]> {
+/** Message pour un échec répété du passage programmé (file des échecs, 24 h). */
+export function failureMessage(scope: string, error: string, hours: number, lastAt: number): string {
+  const target = scope === RESEARCH_SCOPE ? 'chercheur L5' : 'cycle ' + scope;
+  return 'Kevin — vérifier le passage programmé (' + target + ') : échec ' + error + ' sur ' + hours
+    + (hours > 1 ? ' heures' : ' heure') + ' depuis 24 h, dernier à '
+    + new Date(lastAt * 1000).toISOString().slice(11, 16) + ' UTC.';
+}
+
+export async function relayLines(db: D1Database, options: { now?: () => Date } = {}): Promise<RelayLine[]> {
   const { results: cycles } = await db.prepare("SELECT cycle_id FROM cycles WHERE status = 'open' ORDER BY cycle_id LIMIT ?1")
     .bind(RELAY_CYCLE_LIMIT).all<{ cycle_id: string }>();
   const names = await labels(db);
   const out: RelayLine[] = [];
+  // Les échecs passent en tête : ce sont des alertes d'exploitation pour Kevin.
+  // l3d 2b-2b : échecs du passage programmé des dernières 24 h (lecture seule, fail-soft).
+  try {
+    const now = Math.floor((options.now?.() ?? new Date()).getTime() / 1000);
+    for (const failure of await recentFailures(db, now)) {
+      if (out.length >= RELAY_LINE_LIMIT) break;
+      out.push({ cycle_id: failure.scope, actor: 'owner', label: 'Kevin', task_id: null, action: 'check_controller',
+        message: failureMessage(failure.scope, failure.error, failure.hours, failure.last_at), since: failure.first_at });
+    }
+  } catch {
+    // file illisible : aucune ligne d'échec, le reste de la section est conservé
+  }
   for (const { cycle_id } of cycles) {
     let view;
     try {

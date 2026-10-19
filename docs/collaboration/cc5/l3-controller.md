@@ -108,11 +108,30 @@ viendra avec le déclenchement Cron. `UPDATE` et `DELETE` sont refusés par trig
   qui écrit, cycles fermés inclus, panne de mandat prise pour une vacance, écriture ajoutée, libellé coordinateur
   retiré — chacune fait échouer au moins un test.
 
-## Hors incrément 2b-2a (suite de l3d)
+## Incrément 2b-2b (premier volet) — file des échecs du passage programmé
+
+- `controller/failures.ts` : table interne `controller_failures`, **append-only** (triggers), une ligne par
+  (portée, code, heure UTC) grâce à une clé dérivée en `INSERT OR IGNORE` : la fréquence du Cron ne change pas la
+  taille de la file (au plus 24 lignes par jour et par couple portée/code). Portée = identifiant du cycle, ou
+  `research:l5` pour le chercheur. Code borné (`[A-Z0-9_]{1,64}`, sinon `UNKNOWN_ERROR`) : jamais de message brut.
+- Écriture depuis `runScheduledControllers` pour chaque cycle en mode `degraded` et pour un passage du chercheur
+  en échec ; HALT relu dans la requête d'écriture (`WHERE NOT halt`) ; **fail-soft** : une file indisponible
+  n'interrompt pas le passage (`failures_recorded` = 0). Aucun nouvel essai automatique : le passage suivant
+  réessaie de lui-même.
+- Visibilité : `relayLines` place **en tête** de « À relayer » une ligne par (portée, code) des dernières 24 h,
+  adressée à Kevin (« vérifier le passage programmé … : échec X sur n heures depuis 24 h, dernier à HH:MM UTC »).
+  Lecture seule (SELECT uniquement, testé) ; file illisible → aucune ligne d'échec, le reste de la section reste.
+- Choix : table D1 plutôt que Cloudflare Queues — aucun réveil asynchrone à porter tant que le contrôleur ne fait
+  que journaliser ; Queues reste l'option pour l'exécution réelle des décisions.
+- Aucun chemin protégé modifié (lecture de la constante `HALT_ACTIVE_SQL` seulement).
+- Tests : `test/collab-store/controller/l3d-2b2b.spec.ts` (11). Contre-épreuves : garde HALT retirée, clé à la
+  seconde au lieu de l'heure, file non isolée dans le passage, échecs placés en fin de liste, lecture des échecs
+  non isolée — chacune fait échouer au moins un test.
+
+## Hors incrément 2b-2b, premier volet (suite de l3d)
 
 - Déclenchement par webhook GitHub, puis exécution des décisions derrière les gates existantes
   (avance par policy, dispatch A1 des workers).
-- File des échecs (Queues, voir le comparatif ci-dessous).
 - Phases souples B1 (`round.add`, `phase.reopen`, `phase.skip`, `correction.request`) et réattribution (C1, contrat A08).
 - Mesure : décisions par passage, réveils manuels évités (W0).
 
