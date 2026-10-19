@@ -11,6 +11,7 @@
  */
 
 import { estimateTokens } from '../contracts/memory';
+import { MERGE_INTENT_SCHEMA } from '../gates/merge-intent';
 import { INVOCATION_MIGRATION_0010, INVOCATION_SCHEMA_0006 } from '../invocations/schema';
 
 export const CANONICAL_SCHEMA_SQL = [
@@ -331,6 +332,8 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     ...STORE_MIGRATION_0008.map(statement => db.prepare(statement)),
     // CC-4 #126 (0009) : équivalences d'identité owner-only, sans réécriture historique.
     ...STORE_MIGRATION_0009.map(statement => db.prepare(statement)),
+    // CC-5 L4: persistent one-shot merge intents and short-lived fencing leases.
+    ...MERGE_INTENT_SCHEMA.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.
