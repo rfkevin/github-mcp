@@ -140,11 +140,15 @@ describe('CC-5 L2 (test GPT-6) — fenêtre visible et trim du paquet', () => {
     for (let i = 0; i < 6; i++) {
       seqs.push(await seedEvent(cycleId, 'clarify.ask', 'agent:b', JSON.stringify({ question: 'Q prioritaire ' + i + ' ?' })));
     }
+    // Dimensionnement (échec CI au head ed198ef) : le trim global s’arrête dès
+    // que le budget est satisfait — une seule question de l’appelant doit le
+    // dépasser, et les questions du journal seules doivent y tenir (sinon le
+    // refus est PACKET_BUDGET_TOO_SMALL, pas un trim).
     const packet = await buildRolePacket(db, { cycle: cycleId, participant_id: 'agent:a' }, {
       c0BaselineTokens: 100,
-      approvedBudgetTokens: 400,
+      approvedBudgetTokens: 225,
       refs: Array.from({ length: 40 }, (_, i) => 'https://example.invalid/' + i + '/' + 'x'.repeat(120)),
-      openQuestions: Array.from({ length: 10 }, (_, i) => 'question de l’appelant ' + i + ' ' + 'y'.repeat(80)),
+      openQuestions: Array.from({ length: 10 }, (_, i) => 'question de l’appelant ' + i + ' ' + 'y'.repeat(600)),
       memoryOverride: Array.from({ length: 5 }, (_, i) => ({
         id: 'mem-gpt6-' + i, version: 1, scope: 'common', kind: 'fact',
         text: 'entrée mémoire ' + i + ' ' + 'z'.repeat(80), confidence: 'observed',
