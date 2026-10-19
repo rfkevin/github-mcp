@@ -18,6 +18,7 @@ export async function claimMergeIntent(db: D1Database, input: MergeIntent): Prom
   if (!/^[a-f0-9]{40}$/.test(input.head) || !/^[a-f0-9]{40}$/.test(input.base) ||
       !/^[a-z0-9_-]+$/i.test(input.cycle) || !/^[a-z0-9_-]+$/i.test(input.task) ||
       !Number.isSafeInteger(input.pr) || input.pr <= 0 || !Number.isSafeInteger(input.now)) return false;
+  await db.batch(MERGE_INTENT_SCHEMA.map(statement => db.prepare(statement)));
   const result = await db.prepare(`INSERT OR IGNORE INTO cc5_merge_intents
     (cycle,task,pr,head,base,claimed_at,expires_at)
     SELECT ?1,?2,?3,?4,?5,?6,?7
