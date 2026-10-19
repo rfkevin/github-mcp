@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
-import { AUTOFIX_SCHEMA, claimAutoFix, type AutoFixClaim } from '../../../src/collab-store/autofix/circuit-breaker';
+import { AUTOFIX_SCHEMA, claimAutoFix, stableProblemId, rotateCorrector, type AutoFixClaim } from '../../../src/collab-store/autofix/circuit-breaker';
 
 const db=(env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 let serial=0;
@@ -8,6 +8,7 @@ const base:AutoFixClaim={
  cycle:'l6pilot',problemId:'a'.repeat(64),failureRef:'ci:failed:first',
  now:1792410000,corrector:'gpt6',reviewer:'grok',tester:'vibe',
  correctorFamily:'openai',reviewerFamily:'xai',testerFamily:'zhipu',
+ correctorChannel:'api',reviewerChannel:'trusted',testerChannel:'trusted',
 };
 beforeEach(async()=>{
  await db.batch([
@@ -19,6 +20,15 @@ beforeEach(async()=>{
  await db.prepare('INSERT INTO cycles(cycle_id,status) VALUES (?1,?2)').bind(base.cycle,'open').run();
 });
 describe('L6 D2 circuit breaker',()=>{
+ it('stable ID and corrector rotation',async()=>{
+  expect(await stableProblemId(' CI  FAIL ')).toBe(await stableProblemId('ci fail'));
+  expect(rotateCorrector(['gpt6','grok','claude'],'gpt6')).toBe('grok');
+ });
+ it('API corrector cannot review or test',async()=>{
+  expect((await claimAutoFix(db,{...base,reviewerChannel:'api' as 'trusted'})).accepted).toBe(false);
+  expect((await claimAutoFix(db,{...base,testerChannel:'api' as 'trusted'})).accepted).toBe(false);
+  expect((await claimAutoFix(db,base)).accepted).toBe(true);
+ });
  it('registers the first failure once and limits a stable problem to two attempts',async()=>{
   expect((await claimAutoFix(db,base)).attempt).toBe(1);
   expect((await claimAutoFix(db,{...base,failureRef:'second failure'})).attempt).toBe(2);

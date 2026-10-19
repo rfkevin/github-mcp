@@ -1,4 +1,15 @@
 /** CC-5 L6 D2 — throwaway pilot only; no automatic code execution or merge. */
+import { sha256Hex } from '../store/hash';
+export async function stableProblemId(signature: string): Promise<string> {
+ const normalized=signature.trim().replace(/\s+/g,' ').toLowerCase();
+ if (!normalized || normalized.length>4096) throw new Error('INVALID_PROBLEM_SIGNATURE');
+ return sha256Hex(normalized);
+}
+export function rotateCorrector(eligible: readonly string[], previous: string | null): string | null {
+ const pool=[...new Set(eligible)].filter(x=>/^[a-z0-9_-]{1,120}$/i.test(x)).sort();
+ if (!pool.length) return null;
+ return previous===null ? pool[0] : pool[(pool.indexOf(previous)+1)%pool.length];
+}
 export const AUTOFIX_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS cc5_autofix_problems (
     cycle TEXT NOT NULL, problem_id TEXT NOT NULL, first_failure_at INTEGER NOT NULL,
@@ -15,6 +26,7 @@ export interface AutoFixClaim {
   cycle: string; problemId: string; failureRef: string; now: number;
   corrector: string; reviewer: string; tester: string;
   correctorFamily: string; reviewerFamily: string; testerFamily: string;
+  correctorChannel: 'api' | 'trusted'; reviewerChannel: 'trusted'; testerChannel: 'trusted';
 }
 export interface AutoFixClaimResult { accepted: boolean; attempt: number | null; dayUtc: string }
 
@@ -31,7 +43,9 @@ export async function claimAutoFix(db: D1Database, input: AutoFixClaim): Promise
       ![input.corrector,input.reviewer,input.tester,
         input.correctorFamily,input.reviewerFamily,input.testerFamily].every(x=>valid.test(x)) ||
       new Set([input.correctorFamily,input.reviewerFamily,input.testerFamily]).size !== 3 ||
-      new Set([input.corrector,input.reviewer,input.tester]).size !== 3) {
+      new Set([input.corrector,input.reviewer,input.tester]).size !== 3 ||
+      !['api','trusted'].includes(input.correctorChannel) ||
+      input.reviewerChannel !== 'trusted' || input.testerChannel !== 'trusted') {
     return {accepted:false,attempt:null,dayUtc:''};
   }
   const dayUtc = new Date(input.now * 1000).toISOString().slice(0,10);
