@@ -68,11 +68,27 @@ viendra avec le déclenchement Cron. `UPDATE` et `DELETE` sont refusés par trig
   échec isolé par cycle). Inerte sauf `CONTROLLER_CRON_ENABLED="true"` **et** store monté. Environnement cc3-test :
   Cron `*/15 * * * *` déclaré, drapeau à `"false"` ; Kevin l'active quand il le souhaite.
 
-## Hors incrément 2a (suite de l3d)
+## Incrément 2b-1 — rappels bornés et passage du chercheur
+
+- **Rappels** (`journal.ts`) : une décision encore active au même épisode (même `decision_key`) reçoit une ligne
+  `rule: 'reminder'` par tranche de `REMINDER_INTERVAL_S` (6 h) depuis sa première écriture, au plus `REMINDER_MAX` (3).
+  Clé du rappel = sha256(clé ‖ `reminder` ‖ tranche) en `INSERT OR IGNORE` : une ligne par tranche, quel que soit le
+  nombre de passages. Un saut d'horloge donne au plus un rappel (tranche plafonnée). Un nouvel épisode repart de zéro.
+  Fencing HALT identique aux décisions : relu dans le même `db.batch`, INSERT conditionnés `WHERE NOT halt`.
+  `runController` renvoie `reminded` à côté de `recorded`. Le rappel ne fait que journaliser : la relance effective
+  (ligne « à relayer » sur `/owner`, dispatch) viendra en 2b-2.
+- **Chercheur L5** (`scheduled.ts`) : après les cycles, `runResearchPass(db, { passId: 'rp-daily-AAAA-MM-JJ', now })`,
+  passage global (sans cycle), au plus un par jour UTC grâce à l'idempotence par `passId` de L5 ; un passage `halted`
+  n'est pas consommé (reprise le même jour après levée du HALT). Échec isolé : statut `failed`, les cycles ne sont pas
+  affectés. Le résultat devient `{ cycles, research: { pass_id, status } }`. Remplace l'interface `runScheduledResearch`
+  envisagée au plan de la vague 3 (seq 347) : L5 n'a rien à ajouter.
+- Tests : `test/collab-store/controller/l3d-2b1.spec.ts` (8). Contre-épreuves faites : sans fencing, sans plafond,
+  clé de rappel non déterministe, chercheur non isolé, `passId` aléatoire — chacune fait échouer au moins un test.
+
+## Hors incrément 2b-1 (suite de l3d)
 
 - Déclenchement par webhook GitHub, puis exécution des décisions derrière les gates existantes
   (avance par policy, dispatch A1 des workers, ligne « à relayer » sur `/owner` pour les agents de chat).
-- Rappel périodique d'une décision restée sans suite (aujourd'hui une décision n'est journalisée qu'une fois par épisode).
 - File des échecs (Queues, voir le comparatif ci-dessous).
 - Phases souples B1 (`round.add`, `phase.reopen`, `phase.skip`, `correction.request`) et réattribution (C1, contrat A08).
 - Mesure : décisions par passage, réveils manuels évités (W0).
