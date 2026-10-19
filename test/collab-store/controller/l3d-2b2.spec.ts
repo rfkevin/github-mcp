@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { readDecisions, relayLines, relayMessage, runController, type Decision } from '../../../src/collab-store/controller';
 import { dashboardPage, type DashboardData } from '../../../src/collab-store/owner/page';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
-import { insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
+import { insertCycleRow, insertEventRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
 
 // CC-5 L3d (incrément 2b-2a) — lignes « à relayer » sur /owner, en lecture seule.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
@@ -108,5 +108,124 @@ describe('CC-5 L3d 2b-2a — section « À relayer » de /owner', () => {
     expect(section).toContain('2023-11-14 22:13 UTC');
     expect(section).not.toMatch(/<form|<script|<input/);
     expect(dashboardPage({ mode: 'secret', secret: 'fixture-secret-0123456789abcdefghijkl' }, data([]))).toContain('Rien à relayer.');
+  });
+});
+
+// --- Corrections revue GPT-6 / test Vibe (#174) ---
+
+const STATE = [
+  '# T state', 'schema_version: CC-STATE-1', 'workflow_id: CC-T', 'revision: 2', 'base_revision: 1', 'next_action: test',
+  'canonical_ref: main', 'based_on_sha: abc1234', 'phase: P6', 'framing_version: F', 'framing_ref: x', 'plan_version: P',
+  'plan_ref: x', 'execution_ref: x', 'contract_ref: x', 'acceptance_ref: x', '',
+  '## Owner decisions', '- Kevin, test.', '',
+  '## Roles', '| Actor | Scoped acceptance/assignment | Pending evidence |', '| --- | --- | --- |', '| A | author | x |', '',
+  '## Tasks', '| id | status | owner | role | reviewer | tester | owned_paths | dependencies | blocker | version | ref | next_action |',
+  '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+  '| l0 | done | A | author | B | C | none | none | none | 1 | x | x |',
+  '| l1 | blocked | B | author | C | A | none | l0 | none | 1 | x | x |', '',
+  '## Evidence', '| source | state |', '| --- | --- |', '| x | y |', '',
+].join('\n');
+
+/** Cycle dont la tâche l1 est débloquable : décision « unblock » adressée au coordinateur. */
+async function seedUnblock(cycle: string): Promise<void> {
+  await insertCycleRow(db, cycle, 'P6');
+  await insertPhaseDefinition(db, cycle, 'P6', []);
+  await insertTaskRow(db, { taskId: 'l0', cycle, owner: 'u-a', reviewer: 'u-b', tester: 'u-c' });
+  await insertTaskRow(db, { taskId: 'l1', cycle, owner: 'u-b', reviewer: 'u-c', tester: 'u-a' });
+  await db.prepare("UPDATE tasks SET status = 'done' WHERE cycle_id = ?1 AND task_id = 'l0'").bind(cycle).run();
+  await db.prepare("UPDATE tasks SET status = 'blocked' WHERE cycle_id = ?1 AND task_id = 'l1'").bind(cycle).run();
+  await insertEventRow(db, { cycle, type: 'owner.decision', participant: 'owner', role: 'owner',
+    payload: { action: 'import_state', content: STATE }, key: 'owner-state-import:' + cycle + ':seed' });
+}
+
+const MANDATES = 'CREATE TABLE IF NOT EXISTS delegated_mandates (cycle_id TEXT PRIMARY KEY, participant_id TEXT, family_id TEXT, epoch INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)';
+const coordinatorLines = async (cycle: string, target: D1Database = db) =>
+  (await relayLines(target)).filter(line => line.cycle_id === cycle && line.action === 'open_task');
+
+describe('CC-5 L3d 2b-2a — décisions du coordinateur (revue #174)', () => {
+  it('mandat présent : la ligne vise le titulaire, libellé « (coordinateur) »', async () => {
+    const cycle = uniq('coord-held');
+    await seedUnblock(cycle);
+    await ensureSchema(db);
+    await db.prepare("INSERT OR IGNORE INTO participants (participant_id, display_label, status) VALUES ('relay-coord', 'Coord Relay', 'active')").run();
+    await db.prepare(MANDATES).run();
+    await db.prepare("INSERT INTO delegated_mandates (cycle_id, participant_id, family_id, epoch, updated_at) VALUES (?1, 'relay-coord', 'relay-coord', 1, 0)").bind(cycle).run();
+    expect(await coordinatorLines(cycle)).toEqual([expect.objectContaining({ actor: 'relay-coord', label: 'Coord Relay (coordinateur)', task_id: 'l1' })]);
+  });
+
+  it('poste vacant : la ligne revient à Kevin, libellé explicite', async () => {
+    const cycle = uniq('coord-vacant');
+    await seedUnblock(cycle);
+    await db.prepare(MANDATES).run();
+    expect(await coordinatorLines(cycle)).toEqual([expect.objectContaining({ actor: 'owner', label: 'Kevin (poste de coordinateur vacant)', task_id: 'l1' })]);
+  });
+
+  it('mandat illisible : aucune ligne coordinateur (jamais attribuée à tort), les autres lignes restent', async () => {
+    const cycle = uniq('coord-broken');
+    await seedUnblock(cycle);
+    await db.prepare(MANDATES).run();
+    const broken = new Proxy(db, {
+      get(target, prop) {
+        if (prop === 'prepare') {
+          return (sql: string) => {
+            if (/FROM delegated_mandates/.test(sql)) throw new Error('boom');
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    await ensureSchema(broken);
+    expect(await coordinatorLines(cycle, broken)).toEqual([]);
+    expect(await coordinatorLines(cycle)).toHaveLength(1);
+  });
+});
+
+describe('CC-5 L3d 2b-2a — lecture seule stricte (revue #174)', () => {
+  it('schéma amorcé : relayLines n\'émet que des SELECT (aucun INSERT/UPDATE/DELETE/DDL)', async () => {
+    const cycle = uniq('strict');
+    await seedUnblock(cycle);
+    await db.prepare(MANDATES).run();
+    const statements: string[] = [];
+    let recording = false;
+    const spy = new Proxy(db, {
+      get(target, prop) {
+        if (prop === 'prepare') {
+          return (sql: string) => {
+            if (recording) statements.push(sql);
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    await ensureSchema(spy); // amorçage fait avant, comme sur /owner
+    recording = true;
+    const lines = await relayLines(spy);
+    recording = false;
+    expect(lines.some(line => line.cycle_id === cycle)).toBe(true);
+    expect(statements.length).toBeGreaterThan(0);
+    const writes = statements.filter(sql => !/^\s*SELECT\b/i.test(sql));
+    expect(writes).toEqual([]);
+  });
+});
+
+describe('CC-5 L3d 2b-2a — /owner inchangé hors section (revue #174)', () => {
+  it('mêmes sections et mêmes formulaires avec ou sans lignes à relayer', () => {
+    const config = { mode: 'secret' as const, secret: 'fixture-secret-0123456789abcdefghijkl' };
+    const base: DashboardData = { pending: { items: [], total: 0, next_before: null }, participants: [], clients: [] };
+    const without = dashboardPage(config, base);
+    const withRelay = dashboardPage(config, { ...base, relay: [
+      { cycle_id: 'c', actor: 'x', label: 'X', task_id: 'l0', action: 'implement', message: 'm', since: null },
+    ] });
+    const count = (html: string, re: RegExp) => (html.match(re) ?? []).length;
+    expect(count(withRelay, /<form\b/g)).toBe(count(without, /<form\b/g));
+    expect(count(withRelay, /<h2>/g)).toBe(count(without, /<h2>/g));
+    for (const heading of ['Demandes en attente', 'Automatisation', 'Mandat coordinateur par cycle (CC-5)']) {
+      expect(withRelay).toContain(heading);
+    }
+    expect(withRelay.replace(/<h2>À relayer[\s\S]*?(?=<h2>)/, '')).toBe(without.replace(/<h2>À relayer[\s\S]*?(?=<h2>)/, ''));
   });
 });

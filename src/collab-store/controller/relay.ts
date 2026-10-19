@@ -7,11 +7,21 @@
  * messages courts à copier, avec l'ancienneté de la décision (première ligne
  * du journal, si le passage programmé l'a déjà écrite).
  *
- * Rien n'est écrit, rien n'est exécuté. Les décisions « policy:* » (avance de
- * phase automatique) ne demandent aucun relais et sont omises. Fail-closed :
- * un cycle illisible est simplement absent de la liste (jamais d'erreur sur la
- * page owner). HALT : le contrôleur ne rend aucune décision, la liste du cycle
- * est donc vide.
+ * Rien n'est écrit, rien n'est exécuté : aucune donnée n'est insérée,
+ * modifiée ni supprimée. Frontière exacte (revue GPT-6 / test Vibe #174) : le
+ * chemin de lecture réutilise des fonctions qui appellent `ensureSchema`
+ * (amorçage idempotent `CREATE … IF NOT EXISTS`, mis en cache par isolat).
+ * Sur /owner cet amorçage a déjà eu lieu avant cette section ; une fois le
+ * schéma amorcé, `relayLines` n'émet que des SELECT (prouvé par test sur
+ * toutes les requêtes préparées).
+ *
+ * Les décisions « policy:* » (avance de phase automatique) ne demandent aucun
+ * relais et sont omises. Fail-closed : un cycle illisible est absent de la
+ * liste (jamais d'erreur sur la page owner) ; si le mandat de coordinateur est
+ * illisible, les décisions « coordinator » du cycle sont omises plutôt
+ * qu'attribuées à tort (la vacance n'est retenue que si la table des mandats
+ * n'existe pas encore ou ne contient pas le cycle). HALT : le contrôleur ne
+ * rend aucune décision, la liste du cycle est donc vide.
  */
 import { previewNextActions } from './next-actions';
 import { decisionKey } from './journal';
@@ -68,6 +78,22 @@ async function labels(db: D1Database): Promise<Map<string, string>> {
   return new Map(rows.results.map(row => [row.participant_id, row.display_label]));
 }
 
+type MandateRead = { ok: true; holder: string | null } | { ok: false };
+
+/** Titulaire du mandat L3c du cycle ; ok:false si la lecture échoue (aucune attribution). */
+async function mandateHolder(db: D1Database, cycleId: string): Promise<MandateRead> {
+  try {
+    const table = await db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'delegated_mandates'")
+      .first<{ ok: number }>();
+    if (!table) return { ok: true, holder: null };
+    const row = await db.prepare('SELECT participant_id FROM delegated_mandates WHERE cycle_id = ?1')
+      .bind(cycleId).first<{ participant_id: string | null }>();
+    return { ok: true, holder: row?.participant_id ?? null };
+  } catch {
+    return { ok: false };
+  }
+}
+
 async function firstSeen(db: D1Database, key: string): Promise<number | null> {
   try {
     const row = await db.prepare('SELECT MIN(created_at) AS at FROM controller_decisions WHERE decision_key = ?1')
@@ -91,15 +117,11 @@ export async function relayLines(db: D1Database): Promise<RelayLine[]> {
       continue;
     }
     if (view.mode !== 'active') continue;
-    let holder: string | null = null;
-    try {
-      holder = (await db.prepare('SELECT participant_id FROM delegated_mandates WHERE cycle_id = ?1')
-        .bind(cycle_id).first<{ participant_id: string | null }>())?.participant_id ?? null;
-    } catch {
-      holder = null;
-    }
+    const mandate = await mandateHolder(db, cycle_id);
     for (const decision of view.all ?? []) {
       if (decision.actor.startsWith('policy:')) continue;
+      if (decision.actor === 'coordinator' && !mandate.ok) continue;
+      const holder = mandate.ok ? mandate.holder : null;
       const actor = decision.actor === 'coordinator' ? (holder ?? 'owner') : decision.actor;
       const label = actor === 'owner'
         ? (decision.actor === 'coordinator' ? 'Kevin (poste de coordinateur vacant)' : 'Kevin')

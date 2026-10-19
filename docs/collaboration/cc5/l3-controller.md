@@ -93,13 +93,20 @@ viendra avec le déclenchement Cron. `UPDATE` et `DELETE` sont refusés par trig
   « Kevin », titulaire du mandat L3c pour les décisions `coordinator`, « Kevin (poste de coordinateur vacant) »
   sinon), action, tâche, couple head/base abrégé, cycle et motif. « Depuis » = première écriture de la décision
   dans le journal (null tant que le passage programmé ne l'a pas journalisée).
-- Rien n'est écrit ni exécuté (ni journal, ni révision) ; les décisions `policy:*` sont omises ; HALT ou cycle
-  illisible → aucune ligne pour ce cycle ; une panne n'empêche jamais la page (`.catch(() => [])`).
+- Rien n'est écrit ni exécuté : aucune donnée insérée, modifiée ni supprimée. Frontière exacte (revue #174) : le
+  chemin de lecture réutilise des fonctions qui appellent `ensureSchema` (amorçage idempotent `CREATE … IF NOT EXISTS`,
+  en cache par isolat, déjà fait par le reste de /owner) ; schéma amorcé, `relayLines` n'émet **que des SELECT**
+  (test sur toutes les requêtes préparées). Les décisions `policy:*` sont omises ; HALT ou cycle illisible → aucune
+  ligne pour ce cycle ; une panne n'empêche jamais la page (`.catch(() => [])`).
+- Mandat de coordinateur : table absente ou cycle sans mandat → « Kevin (poste de coordinateur vacant) » ; mandat
+  **illisible** → les décisions `coordinator` du cycle sont omises (jamais attribuées à tort).
 - /owner : section « À relayer (n) » après les demandes en attente, sans formulaire ni script, valeurs échappées.
   **Chemins protégés touchés** : `src/collab-store/owner/{handler,page}.ts` (lecture et rendu seulement) → fusion
   par Kevin à la main.
-- Tests : `test/collab-store/controller/l3d-2b2.spec.ts` (8). Contre-épreuves : sans échappement, aperçu remplacé
-  par un passage qui écrit, cycles fermés inclus — chacune fait échouer au moins un test.
+- Tests : `test/collab-store/controller/l3d-2b2.spec.ts` (13 : mandat présent, vacant et illisible ; seules des
+  requêtes SELECT ; /owner identique hors section). Contre-épreuves : sans échappement, aperçu remplacé par un passage
+  qui écrit, cycles fermés inclus, panne de mandat prise pour une vacance, écriture ajoutée, libellé coordinateur
+  retiré — chacune fait échouer au moins un test.
 
 ## Hors incrément 2b-2a (suite de l3d)
 
