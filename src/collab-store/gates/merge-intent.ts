@@ -40,6 +40,8 @@ export async function reconcileMergeIntent(db: D1Database, input: MergeIntent,
   if (row.state !== 'claimed') return row.state as 'merged'|'expired'|'uncertain';
   const state = observedMergeSha && /^[a-f0-9]{40}$/.test(observedMergeSha)
     ? 'merged' : now >= row.expires_at ? 'expired' : 'uncertain';
+  // Keep an unexpired unconfirmed intent observable for later reconciliation.
+  if (state === 'uncertain') return state;
   await db.prepare(`UPDATE cc5_merge_intents SET state=?1,merge_sha=?2
     WHERE cycle=?3 AND task=?4 AND head=?5 AND base=?6 AND state='claimed'`)
     .bind(state,state==='merged'?observedMergeSha:null,input.cycle,input.task,input.head,input.base).run();
