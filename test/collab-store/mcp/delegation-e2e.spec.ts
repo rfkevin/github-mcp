@@ -48,7 +48,7 @@ describe('L3c real delegated owner path', () => {
   });
   it('M3 forged reviewer family: append approval rejects same logical identity', async () => {
     const f = await fixture();
-    await db.prepare('INSERT OR REPLACE INTO participant_identity_families (participant_id, family_id) VALUES (?1, ?2)').bind('l3c-review', 'l3c-coord').run();
+    await db.prepare('INSERT OR REPLACE INTO participant_identity_families (participant_id, family_id, updated_at) VALUES (?1, ?2, ?3)').bind('l3c-review', 'l3c-coord', Math.floor(Date.now() / 1000)).run();
     try {
       await expect(approval(f, 'l3c-review')).rejects.toThrow();
       expect((await tool(f.cycle, f.requestId, 'l3c-coord')).isError).toBe(true);
@@ -68,7 +68,7 @@ describe('L3c real delegated owner path', () => {
   it('HALT rejects authenticated execution after independent approval', async () => {
     const f = await fixture();
     expect((await approval(f, 'l3c-review')).status).toBe('applied');
-    await db.prepare("INSERT OR REPLACE INTO owner_flags (name, value) VALUES ('halt', '1')").run();
+    await db.prepare("INSERT OR REPLACE INTO owner_flags (name, value, updated_at) VALUES ('halt', '1', strftime('%s','now'))").run();
     try { expect((await tool(f.cycle, f.requestId, 'l3c-coord')).isError).toBe(true); }
     finally { await db.prepare("DELETE FROM owner_flags WHERE name = 'halt'").run(); }
   });
