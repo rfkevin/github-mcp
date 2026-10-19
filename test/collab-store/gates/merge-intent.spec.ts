@@ -7,7 +7,8 @@ const fixture=(changes:number,row:{state:string;expires_at:number}|null=null)=>{
  const first=vi.fn(async()=>row);
  const bind=vi.fn(()=>({run,first}));
  const prepare=vi.fn((_sql:string)=>({bind}));
- return {db:{prepare} as unknown as D1Database,prepare,bind};
+ const batch=vi.fn(async()=>[]);
+ return {db:{prepare,batch} as unknown as D1Database,prepare,bind};
 };
 describe('L4 D1 claim',()=>{
  it('rejects invalid input without writing',async()=>{
@@ -18,7 +19,7 @@ describe('L4 D1 claim',()=>{
  it('single-use claim checks HALT and lease in atomic INSERT',async()=>{
   const f=fixture(1);
   expect(await claimMergeIntent(f.db,intent)).toBe(true);
-  const sql=f.prepare.mock.calls[0][0];
+  const sql=f.prepare.mock.calls.at(-1)![0];
   expect(sql).toContain('INSERT OR IGNORE');
   expect(sql).toContain('owner_flags');
   expect(sql).toContain('cc5_merge_leases');
