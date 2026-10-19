@@ -32,18 +32,25 @@ coordinateur IA ; le code garantit les invariants : HALT, D12 au head et à la b
 
 Seuls l'auteur, le relecteur et le testeur de la tâche comptent ; un tiers ne débloque jamais une fusion.
 Une soumission exige une PR citée (adresse `/pull/N` ou numéro `pr` entier positif) **et** les deux SHA ;
-un payload illisible ne produit aucun fait.
+un payload illisible ne produit aucun fait. Les preuves sont lues sur **tout le cycle** : un réimport d'état
+(CC-STATE-1) ne fait disparaître ni soumission ni verdict ; seule la règle D12 (head et base exacts) décide
+de leur validité (revue R1).
 
 ## Journal de décision (A3a)
 
 Chaque ligne porte cycle, révision lue, type, acteur visé, tâche, action, règle, objet (SHA ou phase),
-raison, empreinte de l'instantané et date. La clé d'idempotence ne dépend que du contenu de la décision :
-rejouer le même état n'écrit rien (pas de double réveil) ; un nouvel état (nouveau head, verdict renouvelé)
-écrit une nouvelle ligne. `UPDATE` et `DELETE` sont refusés par trigger.
+raison, empreinte de l'instantané et date. La clé d'idempotence combine le contenu de la décision et son
+**épisode** : révision de la ligne `tasks` (incrémentée à chaque claim, statut ou transfert), seq de la
+soumission courante et du dernier verdict de chaque vérificateur. Rejouer le même état n'écrit rien (pas de
+double réveil) ; une transition de la tâche ou un nouveau fait réarme la décision, même si elle revient à
+l'identique (revue R3). Le rappel périodique d'une décision restée sans suite n'est pas couvert ici : il
+viendra avec le déclenchement Cron. `UPDATE` et `DELETE` sont refusés par trigger.
 
 ## Modes (A3c)
 
-- `halted` : arrêt d'urgence posé → aucune décision, rien n'est journalisé.
+- `halted` : arrêt d'urgence posé → aucune décision, rien n'est journalisé. HALT est relu **dans le lot
+  d'écriture** (même transaction D1) et chaque insertion est conditionnée à son absence : un arrêt posé
+  entre l'instantané et l'écriture n'écrit rien (revue R2).
 - `degraded` : instantané ou journal indisponible, état importé illisible → aucune décision.
   Le fonctionnement manuel actuel (relais de Kevin, demandes owner) reste la voie normale, sans perte d'état.
 

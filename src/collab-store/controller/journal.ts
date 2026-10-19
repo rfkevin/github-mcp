@@ -43,35 +43,49 @@ export async function ensureControllerJournal(db: D1Database): Promise<void> {
     db.prepare('CREATE INDEX IF NOT EXISTS controller_decisions_cycle ON controller_decisions (cycle_id, id)')]);
 }
 
-/** Clé stable : cycle + contenu de la décision (jamais la révision ni l'heure). */
+/**
+ * Clé stable : cycle + contenu de la décision + épisode (jamais la révision du
+ * cycle ni l'heure). Même état rejoué → même clé ; transition de la tâche ou
+ * nouveau fait → nouvel épisode, donc nouvelle ligne (réveil réarmé).
+ */
 export async function decisionKey(cycleId: string, decision: Decision): Promise<string> {
   return sha256Hex([cycleId, decision.kind, decision.actor, decision.task_id ?? '', decision.action,
-    decision.rule, decision.subject].join('\u001f'));
+    decision.rule, decision.subject, decision.episode].join('\u001f'));
 }
 
-export interface JournalResult { recorded: Decision[]; already: Decision[] }
+export interface JournalResult { halted: boolean; recorded: Decision[]; already: Decision[] }
 
-/** Enregistre les décisions nouvelles en un lot ; les décisions déjà vues sont signalées, jamais réécrites. */
+const HALT_SET = "EXISTS (SELECT 1 FROM owner_flags WHERE name = 'halt' AND value = '1')";
+
+/**
+ * Enregistre les décisions nouvelles en un lot ; les décisions déjà vues sont
+ * signalées, jamais réécrites. HALT est relu DANS le lot d'écriture (même
+ * transaction D1) et chaque insertion est conditionnée à son absence : un
+ * arrêt posé après l'instantané n'écrit aucune décision (fencing, A3c).
+ */
 export async function recordDecisions(db: D1Database, input: {
   cycleId: string; revision: number; stateHash: string; decisions: Decision[]; now: number;
 }): Promise<JournalResult> {
   await ensureControllerJournal(db);
-  if (input.decisions.length === 0) return { recorded: [], already: [] };
+  if (input.decisions.length === 0) return { halted: false, recorded: [], already: [] };
   const keys = await Promise.all(input.decisions.map(decision => decisionKey(input.cycleId, decision)));
   const placeholders = keys.map((_, index) => '?' + (index + 1)).join(', ');
   const seen = await db.prepare('SELECT decision_key FROM controller_decisions WHERE decision_key IN (' + placeholders + ')')
     .bind(...keys).all<{ decision_key: string }>();
   const known = new Set(seen.results.map(row => row.decision_key));
   const fresh = input.decisions.map((decision, index) => ({ decision, key: keys[index] })).filter(item => !known.has(item.key));
-  if (fresh.length) {
-    await db.batch(fresh.map(({ decision, key }) => db.prepare([
+  const already = input.decisions.filter((_, index) => known.has(keys[index]));
+  const results = await db.batch([
+    db.prepare('SELECT CASE WHEN ' + HALT_SET + ' THEN 1 ELSE 0 END AS halted'),
+    ...fresh.map(({ decision, key }) => db.prepare([
       'INSERT OR IGNORE INTO controller_decisions',
       '(cycle_id, decision_key, revision, kind, actor, task_id, action, rule, subject, reason, state_hash, created_at)',
-      'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)',
+      'SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12 WHERE NOT ' + HALT_SET,
     ].join(' ')).bind(input.cycleId, key, input.revision, decision.kind, decision.actor, decision.task_id ?? '',
-      decision.action, decision.rule, decision.subject, decision.reason, input.stateHash, input.now)));
-  }
-  return { recorded: fresh.map(item => item.decision), already: input.decisions.filter((_, index) => known.has(keys[index])) };
+      decision.action, decision.rule, decision.subject, decision.reason, input.stateHash, input.now)),
+  ]);
+  if ((results[0].results as Array<{ halted: number }>)[0]?.halted === 1) return { halted: true, recorded: [], already };
+  return { halted: false, recorded: fresh.map(item => item.decision), already };
 }
 
 export interface JournalRow {

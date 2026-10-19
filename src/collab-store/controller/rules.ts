@@ -27,6 +27,13 @@ export interface Decision {
   rule: string;
   /** Objet de la décision : head soumis, phase cible… sert à la clé d'idempotence. */
   subject: string;
+  /**
+   * Épisode : faits dont la décision découle (révision de la tâche, seq de la
+   * soumission et des verdicts). Il entre dans la clé d'idempotence : le même
+   * état rejoué n'écrit rien, mais toute transition de la tâche (statut,
+   * réattribution) ou tout nouveau fait réarme la décision.
+   */
+  episode: string;
   reason: string;
 }
 
@@ -38,6 +45,8 @@ export interface VerdictFact { participant: string; verdict: Verdict; head: stri
 export interface TaskFacts {
   task_id: string;
   status: string;
+  /** Révision de la ligne `tasks` (incrémentée à chaque claim, statut, transfert). */
+  revision: number;
   owner: string;
   reviewer: string;
   tester: string;
@@ -76,8 +85,14 @@ function bindsTo(fact: VerdictFact | null, submission: Submission): boolean {
   return !!fact && fact.seq > submission.seq && fact.head === submission.head && fact.base === submission.base;
 }
 
+/** Épisode d'une tâche : sa révision, la soumission courante et le dernier verdict de chaque vérificateur. */
+function taskEpisode(task: TaskFacts): string {
+  const latest = (who: string) => latestFrom(task.verdicts, who)?.seq ?? 0;
+  return ['r' + task.revision, 's' + (task.submission?.seq ?? 0), 'v' + latest(task.reviewer) + ',' + latest(task.tester)].join(':');
+}
+
 function wake(task: TaskFacts, actor: string, action: WakeAction, rule: string, subject: string, reason: string): Decision {
-  return { kind: 'wake', actor, task_id: task.task_id, action, rule, subject, reason };
+  return { kind: 'wake', actor, task_id: task.task_id, action, rule, subject, episode: taskEpisode(task), reason };
 }
 
 function verifierDecision(task: TaskFacts, submission: Submission, who: string, label: 'review' | 'test'): Decision | null {
@@ -101,8 +116,9 @@ function taskDecisions(task: TaskFacts, byId: Map<string, TaskFacts>): Decision[
   if (task.status === 'blocked') {
     if (task.dependencies.length === 0) return [];
     const ready = task.dependencies.every(dep => FINISHED.has(byId.get(dep)?.status ?? ''));
+    const episode = ['r' + task.revision, ...task.dependencies.map(dep => dep + '@' + (byId.get(dep)?.revision ?? 0))].join(':');
     return ready ? [{ kind: 'unblock', actor: 'coordinator', task_id: task.task_id, action: 'open_task',
-      rule: 'dependencies-done', subject: task.dependencies.join(','), reason: 'Toutes les dépendances sont terminées.' }] : [];
+      rule: 'dependencies-done', subject: task.dependencies.join(','), episode, reason: 'Toutes les dépendances sont terminées.' }] : [];
   }
   if (!ACTIVE.has(task.status)) return [];
   const submission = task.submission;
@@ -117,7 +133,7 @@ function taskDecisions(task: TaskFacts, byId: Map<string, TaskFacts>): Decision[
   }
   if (bound.every(fact => bindsTo(fact, submission) && fact!.verdict === 'positive')) {
     return [{ kind: 'merge_ready', actor: 'owner', task_id: task.task_id, action: 'merge', rule: 'two-positive-verdicts',
-      subject, reason: 'Relecteur et testeur positifs au même head/base : fusion vers l\'intégration à faire.' }];
+      subject, episode: taskEpisode(task), reason: 'Relecteur et testeur positifs au même head/base : fusion vers l\'intégration à faire.' }];
   }
   const out: Decision[] = [];
   const review = verifierDecision(task, submission, task.reviewer, 'review');
@@ -140,7 +156,7 @@ export function nextActors(snapshot: ControllerSnapshot): { mode: ControllerMode
   const target = nextPhase(snapshot.phase);
   if (snapshot.auto_advance !== 'none' && snapshot.outputs_satisfied && target) {
     decisions.push({ kind: 'advance_phase', actor: 'policy:' + snapshot.auto_advance, task_id: null, action: 'advance',
-      rule: 'outputs-satisfied', subject: snapshot.phase + '->' + target, reason: 'Sorties attendues satisfaites.' });
+      rule: 'outputs-satisfied', subject: snapshot.phase + '->' + target, episode: 'phase:' + snapshot.phase, reason: 'Sorties attendues satisfaites.' });
   }
   decisions.sort((a, b) => decisionOrder(a).localeCompare(decisionOrder(b)));
   return { mode: 'active', decisions };

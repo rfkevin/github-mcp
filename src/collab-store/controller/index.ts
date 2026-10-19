@@ -2,4 +2,4 @@ export { nextActors, type ControllerSnapshot, type Decision, type DecisionKind, 
 export { taskEvidence, parseDependencies, type EvidenceEvent } from './facts';
 export { readControllerSnapshot } from './snapshot';
 export { recordDecisions, readDecisions, decisionKey, ensureControllerJournal, type JournalRow } from './journal';
-export { runController, snapshotHash, type ControllerRunResult } from './run';
+export { runController, snapshotHash, type ControllerRunResult, type ControllerRunOptions } from './run';

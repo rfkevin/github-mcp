@@ -7,7 +7,7 @@ const BASE = 'b'.repeat(40);
 const HEAD2 = 'c'.repeat(40);
 
 function task(overrides: Partial<TaskFacts> = {}): TaskFacts {
-  return { task_id: 't1', status: 'accepted', owner: 'vibe', reviewer: 'grok', tester: 'claude', dependencies: [],
+  return { task_id: 't1', status: 'accepted', revision: 1, owner: 'vibe', reviewer: 'grok', tester: 'claude', dependencies: [],
     submission: null, verdicts: [], ...overrides };
 }
 
@@ -85,6 +85,16 @@ describe('CC-5 L3 — nextActors', () => {
       .toMatchObject([{ kind: 'advance_phase', subject: 'P1->P2' }]);
     expect(nextActors(snapshot([], { phase: 'P1', auto_advance: 'none', outputs_satisfied: true })).decisions).toEqual([]);
     expect(nextActors(snapshot([], { phase: 'P6', auto_advance: 'p6', outputs_satisfied: true })).decisions).toEqual([]);
+  });
+
+  it('épisode : même état → même épisode ; nouvelle révision de tâche ou nouveau verdict → nouvel épisode', () => {
+    const base = nextActors(snapshot([task({ submission: submitted })])).decisions;
+    expect(nextActors(snapshot([task({ submission: submitted })])).decisions).toEqual(base);
+    const bumped = nextActors(snapshot([task({ submission: submitted, revision: 3 })])).decisions;
+    expect(bumped.map(d => d.episode)).not.toEqual(base.map(d => d.episode));
+    const verdict = nextActors(snapshot([task({ submission: submitted, verdicts: [
+      { participant: 'grok', verdict: 'unknown', head: HEAD, base: BASE, seq: 11 }] })])).decisions;
+    expect(verdict.find(d => d.actor === 'claude')?.episode).not.toEqual(base.find(d => d.actor === 'claude')?.episode);
   });
 
   it('déterministe : même instantané, mêmes décisions dans le même ordre', () => {

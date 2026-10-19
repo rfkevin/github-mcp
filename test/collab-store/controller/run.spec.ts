@@ -103,6 +103,50 @@ describe('CC-5 L3 — runController (D1)', () => {
     expect(await runController(db, cycle)).toMatchObject({ mode: 'degraded', decisions: [], recorded: 0 });
   });
 
+  it('R1 — un réimport d\'état ne fait disparaître ni soumission ni verdict : merge_ready reste reconnu', async () => {
+    const cycle = uniq('reimport');
+    await seed(cycle);
+    await evidence(cycle, 'l3-vibe', { task: 'l0', pr: 9, head: HEAD, base: BASE }, 1);
+    await evidence(cycle, 'l3-grok', { task: 'l0', state: 'AGREE', head: HEAD, base: BASE }, 2);
+    await evidence(cycle, 'l3-claude', { task: 'l0', state: 'PASS', head: HEAD, base: BASE }, 3);
+    expect((await runController(db, cycle)).decisions).toMatchObject([{ kind: 'merge_ready' }]);
+    await insertEventRow(db, { cycle, type: 'owner.decision', participant: 'owner', role: 'owner',
+      payload: { action: 'import_state', content: STATE }, key: 'owner-state-import:' + cycle + ':again' });
+    const after = await runController(db, cycle);
+    expect(after.decisions).toMatchObject([{ kind: 'merge_ready', subject: HEAD + '..' + BASE }]);
+    expect(after.recorded).toBe(0);
+  });
+
+  it('R2 — HALT posé entre l\'instantané et l\'écriture : rien n\'est journalisé, mode halted', async () => {
+    const cycle = uniq('halt-race');
+    await seed(cycle);
+    try {
+      const result = await runController(db, cycle, { afterSnapshot: () => setHalt(true) });
+      expect(result).toMatchObject({ mode: 'halted', decisions: [], recorded: 0 });
+      expect(await readDecisions(db, cycle)).toHaveLength(0);
+    } finally {
+      await setHalt(false);
+    }
+    expect(await runController(db, cycle)).toMatchObject({ mode: 'active', recorded: 1 });
+  });
+
+  it('R3 — nouvel épisode : la tâche repasse par un autre état puis revient, le réveil est réémis', async () => {
+    const cycle = uniq('rearm');
+    await seed(cycle);
+    await evidence(cycle, 'l3-vibe', { task: 'l0', pr: 9, head: HEAD, base: BASE }, 1);
+    expect((await runController(db, cycle)).recorded).toBe(2);
+    expect((await runController(db, cycle)).recorded).toBe(0);
+    const setStatus = (status: string) => db.prepare('UPDATE tasks SET status = ?1, revision = revision + 1 WHERE cycle_id = ?2 AND task_id = ?3')
+      .bind(status, cycle, 'l0').run();
+    await setStatus('blocked');
+    expect((await runController(db, cycle)).decisions).toEqual([]);
+    await setStatus('in_progress');
+    const back = await runController(db, cycle);
+    expect(back.decisions.map(d => d.action).sort()).toEqual(['review', 'test']);
+    expect(back.recorded).toBe(2);
+    expect(await readDecisions(db, cycle)).toHaveLength(4);
+  });
+
   it('journal append-only : modification et suppression refusées', async () => {
     const cycle = uniq('append');
     await seed(cycle);

@@ -35,7 +35,13 @@ function errorCode(error: unknown): string {
   return typeof code === 'string' ? code : 'CONTROLLER_SNAPSHOT_UNAVAILABLE';
 }
 
-export async function runController(db: D1Database, cycleId: string, options: { now?: () => Date } = {}): Promise<ControllerRunResult> {
+export interface ControllerRunOptions {
+  now?: () => Date;
+  /** Point d'injection de test : exécuté entre l'instantané et l'écriture (course HALT, R2). */
+  afterSnapshot?: () => Promise<void>;
+}
+
+export async function runController(db: D1Database, cycleId: string, options: ControllerRunOptions = {}): Promise<ControllerRunResult> {
   let snapshot: ControllerSnapshot;
   try {
     snapshot = await readControllerSnapshot(db, cycleId, async id => (await inspectPhase(db, id)).outputsSatisfied);
@@ -46,9 +52,12 @@ export async function runController(db: D1Database, cycleId: string, options: { 
   if (mode === 'halted') return { mode: 'halted', revision: snapshot.revision, decisions: [], recorded: 0 };
   const now = Math.floor((options.now?.() ?? new Date()).getTime() / 1000);
   try {
+    await options.afterSnapshot?.();
     const journal = await recordDecisions(db, {
       cycleId, revision: snapshot.revision, stateHash: await snapshotHash(snapshot), decisions, now,
     });
+    // HALT posé après l'instantané : rien n'a été écrit, aucune décision n'est rendue.
+    if (journal.halted) return { mode: 'halted', revision: snapshot.revision, decisions: [], recorded: 0 };
     return { mode: 'active', revision: snapshot.revision, decisions, recorded: journal.recorded.length };
   } catch {
     // Fail-closed : une décision non journalisée n'existe pas.
