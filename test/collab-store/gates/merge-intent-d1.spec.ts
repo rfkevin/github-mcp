@@ -55,6 +55,18 @@ describe('CC-5 L4: real D1 claim and reconciliation', () => {
     expect(await reconcileMergeIntent(db,intent,sha('c'),intent.now+20)).toBe('merged');
     expect(await reconcileMergeIntent(db,intent,null,intent.now+500)).toBe('merged');
   });
+  it('BASE_CHANGED expired attempt permits a new head/base and lease for the same PR', async () => {
+    const i1 = await setup();
+    const H2=sha('c'), B2=sha('d');
+    expect(await claimMergeIntent(db, i1)).toBe(true);
+    expect(await reconcileMergeIntent(db, i1, null, i1.now+301)).toBe('expired');
+    await db.prepare('UPDATE cc5_merge_leases SET head=?2,base=?3,expires_at=?4 WHERE cycle=?1')
+      .bind(i1.cycle,H2,B2,i1.now+2000).run();
+    expect(await claimMergeIntent(db, { ...i1, head: H2, base: B2, now: i1.now+500 })).toBe(true);
+    const row=await db.prepare("SELECT count(*) AS n FROM cc5_merge_intents WHERE cycle=?1 AND state='claimed'")
+      .bind(i1.cycle).first<{n:number}>();
+    expect(row?.n).toBe(1);
+  });
   it('orphan intent expires without ever creating a new claim', async () => {
     const intent = await setup();
     expect(await claimMergeIntent(db,intent)).toBe(true);
