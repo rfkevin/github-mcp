@@ -192,6 +192,15 @@ export class CollabStore {
       );
     }
 
+    // CC-5 L2 (X13, review Claude R2) : adressage des questions ouvertes.
+    // Pré-checks lecture seule avant le batch, fail-closed : un refus ne
+    // consomme ni révision ni quota et n'écrit rien du tout.
+    if (event.type === 'clarify.ask') {
+      await this.validateClarifyAsk(event);
+    } else if (event.type === 'clarify.answer') {
+      await this.validateClarifyAnswer(event);
+    }
+
     let sealedInsert: D1PreparedStatement | null = null;
     let proposalRound: { phase: string; entrySeq: number; logicalIdentity: string } | null = null;
     if (event.type === 'proposal.submit') {
@@ -393,6 +402,92 @@ export class CollabStore {
       ...(memoryEffect ? { memory: memoryEffect.summary } : {}),
       ...(storedInvocation ? { invocation: storedInvocation } : {}),
     };
+  }
+
+  // CC-5 L2 (X13, review Claude R2) : clarify.ask — `to` optionnel adresse la
+  // question à un participant ou à un rôle (owner/reviewer/tester) ; un rôle
+  // exige `task` et la tâche doit exister dans le cycle. Sans `to` (ou payload
+  // illisible), la question est publique — comportement inchangé.
+  private async validateClarifyAsk(event: StoreEvent): Promise<void> {
+    let payload: Record<string, unknown> | null = null;
+    try {
+      payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const to = payload?.to;
+    if (to === undefined || to === null) return;
+    if (typeof to !== 'string' || !to || to.length > 128) {
+      throw new CollabStoreError(
+        'CLARIFY_TO_INVALID',
+        'clarify.ask : « to » doit être un participant (« claude ») ou un rôle (« owner », « reviewer », « tester ») — chaîne de 1 à 128 caractères.',
+      );
+    }
+    if (to === 'owner' || to === 'reviewer' || to === 'tester') {
+      const task = payload?.task;
+      if (typeof task !== 'string' || !task) {
+        throw new CollabStoreError(
+          'CLARIFY_TO_REQUIRES_TASK',
+          'clarify.ask : un adressage par rôle (« ' + to + ' ») exige « task » — la question est adressée au titulaire du rôle sur cette tâche.',
+        );
+      }
+      const row = await this.db.prepare('SELECT task_id FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
+        .bind(event.cycle_id, task).first();
+      if (!row) {
+        throw new CollabStoreError(
+          'TASK_UNKNOWN',
+          'clarify.ask : tâche « ' + task + ' » inconnue dans le cycle « ' + event.cycle_id + ' » (adressage par rôle « ' + to + ' »).',
+        );
+      }
+    }
+  }
+
+  // CC-5 L2 (X13, review Claude R2) : seul l'auteur d'une question adressée ou
+  // son destinataire (identité logique comprise) peut déposer le
+  // clarify.answer qui la ferme. Une réponse orpheline (ask_seq inconnu ou
+  // illisible) reste acceptée et ne ferme rien ; une question publique reste
+  // fermable par tous — comportements inchangés.
+  private async validateClarifyAnswer(event: StoreEvent): Promise<void> {
+    let payload: Record<string, unknown> | null = null;
+    try {
+      payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const askSeq = payload?.ask_seq;
+    if (typeof askSeq !== 'number' || !Number.isInteger(askSeq)) return;
+    const ask = await this.db.prepare(
+      EVENT_SELECT + " WHERE cycle_id = ?1 AND seq = ?2 AND type = 'clarify.ask' LIMIT 1",
+    ).bind(event.cycle_id, askSeq).first<StoredStoreEvent>();
+    if (!ask) return; // orpheline : acceptée, ne ferme rien
+    const equivalents = new Set(await equivalentParticipantIds(this.db, event.participant_id));
+    if (equivalents.has(ask.participant_id)) return; // l'auteur (ou sa famille logique)
+    let askPayload: Record<string, unknown> | null = null;
+    try {
+      askPayload = JSON.parse(ask.payload_json) as Record<string, unknown>;
+    } catch {
+      return; // question illisible : publique
+    }
+    const to = askPayload?.to;
+    if (typeof to !== 'string' || !to) return; // sans adressage : tous
+    let addressee: string | null = null;
+    if (to === 'owner' || to === 'reviewer' || to === 'tester') {
+      const task = askPayload?.task;
+      if (typeof task === 'string' && task) {
+        const row = await this.db.prepare('SELECT owner_pid, reviewer_pid, tester_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
+          .bind(event.cycle_id, task).first<{ owner_pid: string; reviewer_pid: string; tester_pid: string }>();
+        if (row) addressee = to === 'owner' ? row.owner_pid : to === 'reviewer' ? row.reviewer_pid : row.tester_pid;
+      }
+    } else {
+      addressee = to;
+    }
+    if (addressee && equivalents.has(addressee)) return; // le destinataire (ou sa famille)
+    throw new CollabStoreError(
+      'CLARIFY_ANSWER_FORBIDDEN',
+      'La question #' + askSeq + ' de « ' + ask.participant_id + ' » est adressée' +
+        (addressee ? ' à « ' + addressee + ' »' : ' à un rôle sans tâche résolvable') +
+        ' : seul le destinataire ou l’auteur peut la fermer (clarify.answer).',
+    );
   }
 
   /**

@@ -11,6 +11,9 @@ export const EVENT_TYPES = [
   'task.status',
   'task.handoff',
   'checkpoint',
+  // CC-5 L2 : protocole de clarification — ask sans réponse = question ouverte.
+  'clarify.ask',
+  'clarify.answer',
   'evidence.add',
   'objection.open',
   'objection.resolve',
