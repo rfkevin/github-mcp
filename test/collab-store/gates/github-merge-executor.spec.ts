@@ -19,8 +19,7 @@ function fixture() {
   const mergeIntoTemporary=vi.fn(async()=>sha);
   const fastForwardBase=vi.fn(async()=>undefined);
   const deleteTemporaryBranch=vi.fn(async()=>undefined);
-  const github={readHeads,createTemporaryBranch,mergeIntoTemporary,fastForwardBase,deleteTemporaryBranch}
-    satisfies MergeGitHubPort;
+  const github: MergeGitHubPort = {readHeads,createTemporaryBranch,mergeIntoTemporary,fastForwardBase,deleteTemporaryBranch};
   const db={prepare:vi.fn(()=>({bind:()=>({run:async()=>({meta:{changes:1}})})}))} as unknown as D1Database;
   const inspect=vi.fn(async()=>({snapshot,candidate}));
   const intent={cycle:'cycle',task:'l4',pr:167,head,base,now:100};
