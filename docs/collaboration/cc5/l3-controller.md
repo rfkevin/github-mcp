@@ -119,7 +119,8 @@ viendra avec le déclenchement Cron. `UPDATE` et `DELETE` sont refusés par trig
   n'interrompt pas le passage (`failures_recorded` = 0). Aucun nouvel essai automatique : le passage suivant
   réessaie de lui-même.
 - Visibilité : `relayLines` place **en tête** de « À relayer » une ligne par (portée, code) des dernières 24 h,
-  adressée à Kevin (« vérifier le passage programmé … : échec X sur n heures depuis 24 h, dernier à HH:MM UTC »).
+  adressée à Kevin (« vérifier le passage programmé … : échec X consigné sur n heures distinctes (24 h glissantes), dernier à HH:MM UTC » ;
+  n compte les tranches horaires où un échec a été consigné, pas la durée de la panne).
   Lecture seule (SELECT uniquement, testé) ; file illisible → aucune ligne d'échec, le reste de la section reste.
 - Choix : table D1 plutôt que Cloudflare Queues — aucun réveil asynchrone à porter tant que le contrôleur ne fait
   que journaliser ; Queues reste l'option pour l'exécution réelle des décisions.
@@ -170,11 +171,26 @@ Contrat : plan CC-5 v0.3 B1 (seq 260) et précisions v0.4 C1 (seq 264). L'IA dé
 - Tests : `test/collab-store/phases/soft.spec.ts` (15, dont les courses sur le mandat et sur les définitions), plus le cas HALT (avant et pendant le lot) dans
   `test/collab-store/owner/automation-halt-budget.spec.ts`.
 
-## Hors incrément 2c-1 (suite de l3d)
+## Incrément 2c-2 — demande de correction ciblée (coordinateur)
+
+- `src/collab-store/controller/corrections.ts` (`requestCorrection`) et l'outil MCP `collab_request_correction` : le
+  titulaire du mandat L3c du cycle demande à l'auteur d'une tâche 1 à 10 corrections précises. Ce n'est pas un verdict
+  D12. L'événement `correction.request` est écrit par le serveur seulement (type absent d'`EVENT_TYPES`).
+- **Garde dans le lot** : mandat à l'époque lue, HALT, cycle ouvert à la révision attendue, tâche existante et non
+  terminée (les protections jugées sur une lecture sont reprises dans le lot, leçon de la revue #178).
+- **Contrôleur** (`rules.ts`, `snapshot.ts`) : la dernière demande par tâche est lue dans l'instantané (500 au plus) ;
+  tant que l'auteur n'a pas soumis APRÈS elle, il reçoit `address_correction` (au lieu de `implement` ou
+  `address_feedback`), relecteur et testeur restent réveillés, et `merge_ready` est retenu (retarder, jamais autoriser).
+  L'épisode de la tâche inclut la demande (`:c<seq>`) seulement quand elle existe : les clés déjà journalisées ne changent pas.
+- Message d'échec du passage programmé reformulé (réserve ChatGPT, 2b-2b) : « consigné sur n heures distinctes
+  (24 h glissantes) ».
+- Tests : `test/collab-store/controller/l3d-2c2.spec.ts` (14, dont une course réelle : tâche terminée pendant le lot),
+  plus le cas HALT dans `test/collab-store/owner/automation-halt-budget.spec.ts`.
+
+## Hors incrément 2c-2 (suite de l3d)
 
 - Déclenchement par webhook GitHub, puis exécution des décisions derrière les gates existantes
   (avance par policy, dispatch A1 des workers).
-- `correction.request` (demande de correction ciblée du coordinateur), incrément 2c-2.
 - Mesure : décisions par passage, réveils manuels évités (W0).
 
 ## Choix d'exécution — instantané du 2026-10-19 (à revalider le jour de l'activation, X12)
