@@ -6,7 +6,7 @@ describe('L4 evidence and issue closure', () => {
   it('records exact D12 refs and blocks invalid targets', () => {
     const item = gateEvidence('l4', { allowed: false, reasons: ['halt'], head: SHA, base: SHA },
       'https://github.com/rfkevin/github-mcp/pull/167');
-    expect(item).toMatchObject({ task: 'l4', verdict: 'BLOCK', reasons: ['halt'], head: SHA, base: SHA });
+    expect(item).toMatchObject({ gate_task: 'l4', verdict: 'BLOCK', reasons: ['halt'], head: SHA, base: SHA });
     expect(() => gateEvidence('../l4', { allowed: true, reasons: [], head: SHA, base: SHA }, item.source)).toThrow();
   });
   it('never closes unconfirmed PRs or invalid issue targets', async () => {
