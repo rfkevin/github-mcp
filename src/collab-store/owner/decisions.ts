@@ -216,6 +216,7 @@ export async function ownerAppend(db: D1Database, input: {
   now?: () => Date;
 }): Promise<OwnerWriteResult> {
   await ensureSchema(db);
+  if (input.proof.kind === 'delegated' && (!input.extraGuard || input.cycleId !== input.proof.cycle_id || input.payload.action !== 'install_phases' || !input.key.startsWith('owner:phases:'))) throw new CollabStoreError('DELEGATED_FORBIDDEN', 'Delegated proof requires transaction-bound authorization.');
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
   const payloadJson = JSON.stringify({ ...input.payload, proof_kind: input.proof.kind });
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
@@ -286,6 +287,7 @@ export async function recordOwnerDecision(db: D1Database, input: {
   cycle_id?: string;
   now?: () => Date;
 }): Promise<OwnerWriteResult & { decision: Decision; memory_resume?: PauseOccurrence }> {
+  if (input.proof.kind === 'delegated') throw new CollabStoreError('DELEGATED_FORBIDDEN', 'Plain owner decisions cannot use delegated proof.');
   if (!REQUEST_ID_RE.test(input.request_id)) throw new CollabStoreError('INVALID_REQUEST_ID', 'Identifiant de demande invalide.');
   if (!DECISIONS.includes(input.decision as Decision)) throw new CollabStoreError('INVALID_DECISION', 'Décision : approve ou deny.');
   const decision = input.decision as Decision;

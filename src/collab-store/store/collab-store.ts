@@ -20,6 +20,7 @@ import { isMemoryEventType, prepareMemoryEvent } from '../memory/journal-lifecyc
 import { redactEventsFor } from './visibility';
 import { revealProposalPayloads } from './sealed-reveal';
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
+import { prepareDelegationApproval } from './delegation-approval';
 import { describeInvocation, type InvocationDescriptor, type InvocationIntent, type InvocationRecord } from '../invocations/contracts';
 import { invocationByWakeKey, invocationInsertStatement } from '../invocations/repository';
 import {
@@ -259,6 +260,8 @@ export class CollabStore {
     // l'effet mémoire (champ memory), un refus n'écrit rien du tout (ni
     // journal, ni mémoire). Les pre-checks typés sont read-only : les rejeter
     // ici reste fail-closed, et les rejouer re-diagnostique un échec.
+    const delegationApprovalStatements = event.type === 'delegation.approve'
+      ? await prepareDelegationApproval(this.db, event) : [];
     const memoryEffect = isMemoryEventType(event.type)
       ? await prepareMemoryEvent(this.db, event, nextRevision)
       : null;
@@ -314,6 +317,7 @@ export class CollabStore {
     const statements: D1PreparedStatement[] = [
       ...journal,
       ...(memoryEffect ? memoryEffect.statements : []),
+      ...delegationApprovalStatements,
       // CR-F04 (#96) : les hypothèses de CE cycle que la nouvelle révision
       // rend échues passent retired dans la même transaction (après l'effet
       // mémoire : l'index de vérification ci-dessus est inchangé).

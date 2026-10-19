@@ -19,6 +19,7 @@ import { capabilityMatrix } from '../executors/registry';
 import { parseDailyCap, parseNeuronBudget, probeEndpoint, providerAdapterFactory, type ProviderAdapterEnv } from '../executors/run';
 import { runOwnerTrial } from './trials';
 import { listActiveCoordinators } from './coordinators';
+import { appointCycleCoordinator } from './delegation-execution';
 import { setExecutorNotes } from './executor-notes';
 import { listIdentityFamilies } from '../identity/families';
 
@@ -55,7 +56,7 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes'] as const;
+const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator'] as const;
 
 /** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
 async function dashboardData(db: D1Database, before?: number) {
@@ -134,6 +135,16 @@ export async function handleOwnerRequest(
         // CR-F02 : reprise mémoire appliquée dans la transaction de la décision.
         + (result.memory_resume ? ' Activations mémoire reprises pour le scope ' + result.memory_resume.scope
           + ' (occurrence ' + result.memory_resume.occurrence + ').' : ''), error: false };
+    } else if (action === 'appoint_cycle_coordinator') {
+      const vacancy = field('participant_id').trim() === '';
+      const result = await appointCycleCoordinator(db, {
+        cycleId: field('cycle_id').trim(),
+        participantId: vacancy ? null : field('participant_id').trim(),
+        familyId: vacancy ? null : field('family_id').trim(),
+        expectedEpoch: Number(field('expected_epoch')),
+        proof, op,
+      });
+      message = { text: 'Mandat du cycle mis à jour (seq ' + result.event.seq + ').', error: false };
     } else if (action === 'register') {
       const result = await registerParticipant(db, { participant_id: field('participant_id'), display_label: field('display_label'), proof, op });
       message = { text: 'Participant enregistré (seq ' + result.event.seq + ').', error: false };

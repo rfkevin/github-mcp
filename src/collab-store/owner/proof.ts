@@ -5,7 +5,7 @@
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import type { OwnerChannelConfig } from './config';
 
-export type OwnerProof = { kind: 'access' | 'secret'; subject: string };
+export type OwnerProof = { kind: 'access' | 'secret'; subject: string } | { kind: 'delegated'; subject: string; cycle_id: string; epoch: number; request_id: string; reviewer_pid: string; reviewer_family: string; expires_at: number; params_hash: string; max_cost_cents: number }; 
 
 const ACCESS_HEADER = 'Cf-Access-Jwt-Assertion';
 const JWKS_CACHE = new Map<string, JWTVerifyGetKey>();

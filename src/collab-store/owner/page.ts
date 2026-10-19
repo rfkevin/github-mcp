@@ -117,6 +117,14 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
       : '')
     + automationSection(data.halted ?? false, data.budget, secret)
     + coordinatorSection(data.coordinators ?? [])
+    + '<h2>Mandat coordinateur par cycle (CC-5)</h2>'
+    + '<p class="note">Nomination owner uniquement. Laisser participant et famille vides révoque le mandat. Époque attendue obligatoire.</p>'
+    + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="appoint_cycle_coordinator">'
+    + '<label>Cycle <input type="text" name="cycle_id" required></label>'
+    + '<label>Participant (vide = révocation) <input type="text" name="participant_id"></label>'
+    + '<label>Famille logique (vide = révocation) <input type="text" name="family_id"></label>'
+    + '<label>Époque attendue <input type="number" name="expected_epoch" min="0" required></label>'
+    + secret + '<p><button type="submit">Nommer ou révoquer</button></p></form></fieldset>'
     + executorSection(data.executors ?? [], secret)
     + '<h2>Participants</h2>'
     + (participants ? '<table><tr><th>Identifiant</th><th>Libellé (affichage)</th><th>Statut</th></tr>' + participants + '</table>' : '<p class="note">Aucun participant.</p>')

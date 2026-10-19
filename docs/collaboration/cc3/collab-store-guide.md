@@ -40,6 +40,12 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 
 ## 3. Outils de `/collab/mcp`
 
+### `collab_delegate_owner`
+- **CC-5 L3c** : outil exceptionnel de délégation owner ; entrée limitée à `cycle` et `request_id`. L'identité du coordinateur est issue du jeton OAuth, jamais du payload.
+- L'owner doit nommer explicitement le coordinateur du cycle. Une autre identité active et d'une autre famille doit avoir enregistré `delegation.approve` pour la demande exacte, non expirée. Mandat, epoch, HALT, budget, empreinte, précondition `previous_seq` et approbation non consommée sont revérifiés dans le même lot D1 CAS que l'acte et `owner.decision` ; le journal conserve `proof_kind: delegated`.
+- **Périmètre actuellement exécutable** : `install_phases` uniquement. `import_state` est refusé tant qu'un vérificateur de diff structuré n'existe pas. Toute autre action sans exécuteur owner sûr est refusée, et fusion, déploiement, délégation de droits, secrets, HALT et budgets restent réservés à Kevin.
+- Aucun jeton OAuth ne donne accès à `/owner`. Les rejets sont fail-closed, sans effet de bord.
+
 ### `collab_get_context`
 - **Entrée** : `cycle` (ou `issue` / `repository` / `task`) ; identité toujours dérivée du jeton serveur (jamais un `participant_id` client).
 - **Sortie** : phase, statut et révision du cycle, tâches, `caller`, `resolved`, `packet` (rôle, mémoire I6, questions ouvertes L2, budget) et `delta` optionnel.
@@ -293,6 +299,8 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | --- | --- | --- | --- |
 | `PARTICIPANT_MISMATCH` | C5 | `participant_id` différent de l’identité dérivée du jeton | Utiliser `caller.participant_id` |
 | `UNREGISTERED_CLIENT` | C5 | Client non associé : seul `owner.request` est permis | Demander l’association (K6) |
+| `DELEGATED_FORBIDDEN` | CC-5 L3c | Preuve déléguée utilisée hors d'un exécuteur owner autorisé | Soumettre une demande valide et obtenir mandat et approbation indépendants |
+| `DELEGATED_MISMATCH` | CC-5 L3c | La preuve ne correspond pas au payload, à l'expiration ou au coût approuvés | Redéposer une demande exacte |
 | `OWNER_DECISION_FORBIDDEN` | C1 | Un agent ne peut pas écrire `owner.decision` | Écrire un `owner.request` |
 | `ALREADY_DECIDED` | C5 | Demande déjà tranchée, ou identifiant déjà tranché pour une autre demande (`seq`) | Aucune action ; l’agent redépose sous un nouvel identifiant |
 | `UNKNOWN_REQUEST` | C5 | Aucune demande en attente avec cet identifiant | Vérifier `request_id` |

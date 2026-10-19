@@ -20,6 +20,7 @@ export const EVENT_TYPES = [
   'proposal.submit',
   'phase.request',
   'owner.request',
+  'delegation.approve',
   'memory.propose',
   'memory.review',
   'memory.consolidate',
