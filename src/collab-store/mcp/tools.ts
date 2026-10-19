@@ -19,6 +19,7 @@ import { dispatchCoordinatorTask } from '../coordinator/tasks';
 import { listExecutorProfiles } from '../executors/profiles';
 import { isCoordinator } from '../owner/coordinators';
 import { registerDelegationTools } from './delegation-tools';
+import { registerControllerTools } from './controller-tools';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -35,6 +36,7 @@ export function createCollabServer(context: CollabToolContext): McpServer {
 
 export function registerCollabStoreTools(server: McpServer, context: CollabToolContext): void {
   registerDelegationTools(server, context);
+  registerControllerTools(server, context);
   const collabFailure = (error: unknown, fallback: string, extra: Record<string, unknown> = {}) =>
     failure(error, fallback, extra, context.fallback);
 

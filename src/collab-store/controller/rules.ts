@@ -15,7 +15,8 @@ export type DecisionKind =
   | 'unblock'         // dépendances terminées : le coordinateur doit ouvrir la tâche
   | 'advance_phase';  // sorties attendues satisfaites : avance par policy possible
 
-export type WakeAction = 'implement' | 'review' | 'test' | 'renew_verdict' | 'address_feedback';
+export type WakeAction = 'implement' | 'review' | 'test' | 'renew_verdict' | 'address_feedback'
+  | 'answer_question' | 'renew_or_close_question';
 
 export interface Decision {
   kind: DecisionKind;
@@ -57,6 +58,19 @@ export interface TaskFacts {
   verdicts: VerdictFact[];
 }
 
+/**
+ * Question ouverte (L2, X13) : `clarify.ask` sans `clarify.answer` liée.
+ * `addressee` est l'identité logique du destinataire résolu (participant ou
+ * titulaire du rôle sur la tâche), null pour une question publique.
+ */
+export interface QuestionFact {
+  seq: number;
+  author: string;
+  addressee: string | null;
+  /** Révision du cycle au moment de la question (expected_rev de l'append). */
+  asked_at_revision: number;
+}
+
 export interface ControllerSnapshot {
   cycle_id: string;
   revision: number;
@@ -65,7 +79,16 @@ export interface ControllerSnapshot {
   auto_advance: string;
   outputs_satisfied: boolean;
   tasks: TaskFacts[];
+  /** Questions ouvertes du cycle (absent = aucune, compatibilité incrément 1). */
+  questions?: QuestionFact[];
 }
+
+/**
+ * X13 : une question ouverte expire après ce nombre de révisions du cycle.
+ * Le contrôleur ne la ferme pas (il n'exécute rien) : il demande à son auteur
+ * de la renouveler ou de la clore.
+ */
+export const QUESTION_TTL_REVISIONS = 40;
 
 export type ControllerMode = 'active' | 'halted';
 
@@ -143,6 +166,26 @@ function taskDecisions(task: TaskFacts, byId: Map<string, TaskFacts>): Decision[
   return out;
 }
 
+/** X13 : réveil du destinataire d'une question adressée, puis expiration par révision. */
+function questionDecisions(snapshot: ControllerSnapshot): Decision[] {
+  const out: Decision[] = [];
+  for (const question of snapshot.questions ?? []) {
+    const subject = 'ask#' + question.seq;
+    if (snapshot.revision - question.asked_at_revision >= QUESTION_TTL_REVISIONS) {
+      out.push({ kind: 'wake', actor: question.author, task_id: null, action: 'renew_or_close_question',
+        rule: 'question-expired', subject, episode: 'expired',
+        reason: 'Question ouverte depuis ' + QUESTION_TTL_REVISIONS + ' révisions ou plus : la renouveler ou la clore.' });
+      continue;
+    }
+    if (question.addressee && question.addressee !== question.author) {
+      out.push({ kind: 'wake', actor: question.addressee, task_id: null, action: 'answer_question',
+        rule: 'question-open', subject, episode: 'open',
+        reason: 'Question #' + question.seq + ' de ' + question.author + ' en attente de ta réponse (clarify.answer).' });
+    }
+  }
+  return out;
+}
+
 function nextPhase(phase: string): string | null {
   const index = (PHASES as readonly string[]).indexOf(phase);
   return index >= 0 && index + 1 < PHASES.length ? PHASES[index + 1] : null;
@@ -152,7 +195,7 @@ function nextPhase(phase: string): string | null {
 export function nextActors(snapshot: ControllerSnapshot): { mode: ControllerMode; decisions: Decision[] } {
   if (snapshot.halted) return { mode: 'halted', decisions: [] };
   const byId = new Map(snapshot.tasks.map(task => [task.task_id, task]));
-  const decisions = snapshot.tasks.flatMap(task => taskDecisions(task, byId));
+  const decisions = [...snapshot.tasks.flatMap(task => taskDecisions(task, byId)), ...questionDecisions(snapshot)];
   const target = nextPhase(snapshot.phase);
   if (snapshot.auto_advance !== 'none' && snapshot.outputs_satisfied && target) {
     decisions.push({ kind: 'advance_phase', actor: 'policy:' + snapshot.auto_advance, task_id: null, action: 'advance',
@@ -163,5 +206,5 @@ export function nextActors(snapshot: ControllerSnapshot): { mode: ControllerMode
 }
 
 function decisionOrder(decision: Decision): string {
-  return [decision.task_id ?? '~', decision.kind, decision.actor, decision.action].join('|');
+  return [decision.task_id ?? '~', decision.kind, decision.actor, decision.action, decision.subject].join('|');
 }
