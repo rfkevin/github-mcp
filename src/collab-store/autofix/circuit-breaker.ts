@@ -76,3 +76,43 @@ export async function claimAutoFix(db: D1Database, input: AutoFixClaim): Promise
     .bind(input.cycle,input.problemId).first<{attempt:number}>();
   return {accepted:true,attempt:row?.attempt ?? null,dayUtc};
 }
+
+/** Trusted owner-provided roster. Never accept family or channel from a proposed fix. */
+export interface AutoFixPrincipal { id:string; family:string; channel:'api'|'trusted' }
+export interface AutoFixTrustedPolicy {
+  correctors: readonly AutoFixPrincipal[];
+  reviewer: AutoFixPrincipal;
+  tester: AutoFixPrincipal;
+}
+export interface AutoFixFailure {
+  cycle:string; signature:string; failureRef:string; now:number;
+}
+/**
+ * Single pilot entry point: stable fingerprint and rotating corrector derived
+ * from a trusted roster, not from agent-authored JSON. No fix is executed.
+ */
+export async function claimAutoFixForFailure(
+  db:D1Database, failure:AutoFixFailure, policy:AutoFixTrustedPolicy,
+):Promise<AutoFixClaimResult> {
+  const problemId=await stableProblemId(failure.signature);
+  if (policy.reviewer.channel!=='trusted' || policy.tester.channel!=='trusted') {
+    return {accepted:false,attempt:null,dayUtc:''};
+  }
+  const eligible=policy.correctors.filter(p=>
+    p.id!==policy.reviewer.id && p.id!==policy.tester.id &&
+    p.family!==policy.reviewer.family && p.family!==policy.tester.family);
+  if (eligible.length===0) return {accepted:false,attempt:null,dayUtc:''};
+  await db.batch(AUTOFIX_SCHEMA.map(sql=>db.prepare(sql)));
+  const previous=await db.prepare(`SELECT corrector FROM cc5_autofix_attempts
+    WHERE cycle=?1 AND problem_id=?2 ORDER BY attempt DESC LIMIT 1`)
+    .bind(failure.cycle,problemId).first<{corrector:string}>();
+  const next=rotateCorrector(eligible.map(p=>p.id),previous?.corrector??null);
+  const principal=eligible.find(p=>p.id===next);
+  if (!principal) return {accepted:false,attempt:null,dayUtc:''};
+  return claimAutoFix(db,{
+    cycle:failure.cycle,problemId,failureRef:failure.failureRef,now:failure.now,
+    corrector:principal.id,correctorFamily:principal.family,correctorChannel:principal.channel,
+    reviewer:policy.reviewer.id,reviewerFamily:policy.reviewer.family,reviewerChannel:'trusted',
+    tester:policy.tester.id,testerFamily:policy.tester.family,testerChannel:'trusted',
+  });
+}
