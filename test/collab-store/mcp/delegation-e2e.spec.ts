@@ -13,7 +13,7 @@ const ownerProof = { kind: 'secret' as const, subject: 'owner-secret' };
 let n = 0;
 const unique = (tag: string) => 'l3c-real-' + tag + '-' + (++n);
 
-async function fixture() {
+async function fixture(options: { appoint?: boolean; expiresOffset?: number; alteredHash?: boolean } = {}) {
   await ensureSchema(db);
   const cycle = unique('cycle');
   const requestId = unique('req');
@@ -21,12 +21,12 @@ async function fixture() {
   for (const pid of ['l3c-coord', 'l3c-author', 'l3c-review', 'l3c-outsider']) {
     await db.prepare("INSERT INTO participants (participant_id, display_label) VALUES (?1, ?1) ON CONFLICT(participant_id) DO NOTHING").bind(pid).run();
   }
-  await appointCycleCoordinator(db, {cycleId: cycle, participantId: 'l3c-coord', familyId: 'l3c-coord', expectedEpoch: 0, proof: ownerProof, op: unique('appoint')});
+  if (options.appoint !== false) await appointCycleCoordinator(db, {cycleId: cycle, participantId: 'l3c-coord', familyId: 'l3c-coord', expectedEpoch: 0, proof: ownerProof, op: unique('appoint')});
   const params = {cycle_id: cycle, definitions: ''};
   const hash = await executablePayloadSha256('install_phases', params);
-  const expires = Math.floor(Date.now() / 1000) + 3600;
+  const expires = Math.floor(Date.now() / 1000) + (options.expiresOffset ?? 3600);
   const store = new CollabStore(db);
-  const ask = await store.appendEvent({cycle_id: cycle, type: 'owner.request', participant_id: 'l3c-author', expected_rev: await store.currentRevision(cycle), op_id: 'l3c-author:' + cycle + ':ask:1', payload_json: JSON.stringify({request_id: requestId, summary: 'install phases', action: 'install_phases', params, payload_sha256: hash, preconditions: {previous_seq: null}, expires_at: expires, max_cost_cents: 0, reason: 'test', risk: 'test', rollback: 'test'})});
+  const ask = await store.appendEvent({cycle_id: cycle, type: 'owner.request', participant_id: 'l3c-author', expected_rev: await store.currentRevision(cycle), op_id: 'l3c-author:' + cycle + ':ask:1', payload_json: JSON.stringify({request_id: requestId, summary: 'install phases', action: 'install_phases', params, payload_sha256: options.alteredHash ? 'f'.repeat(64) : hash, preconditions: {previous_seq: null}, expires_at: expires, max_cost_cents: 0, reason: 'test', risk: 'test', rollback: 'test'})});
   expect(ask.status).toBe('applied');
   return {cycle, requestId, store, expires};
 }
@@ -41,6 +41,37 @@ async function tool(cycle: string, requestId: string, participant: string) {
 }
 
 describe('L3c real delegated owner path', () => {
+  it('M3 vacancy: authenticated MCP cannot execute without owner appointment', async () => {
+    const f = await fixture({appoint: false});
+    expect((await tool(f.cycle, f.requestId, 'l3c-coord')).isError).toBe(true);
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type = 'owner.decision'").bind(f.cycle).first()).toMatchObject({n: 0});
+  });
+  it('M3 forged reviewer family: append approval rejects same logical identity', async () => {
+    const f = await fixture();
+    await db.prepare('INSERT OR REPLACE INTO participant_identity_families (participant_id, family_id) VALUES (?1, ?2)').bind('l3c-review', 'l3c-coord').run();
+    try {
+      await expect(approval(f, 'l3c-review')).rejects.toThrow();
+      expect((await tool(f.cycle, f.requestId, 'l3c-coord')).isError).toBe(true);
+      expect(await db.prepare('SELECT COUNT(*) AS n FROM delegated_approvals WHERE request_id = ?1').bind(f.requestId).first()).toMatchObject({n: 0});
+    } finally {
+      await db.prepare('DELETE FROM participant_identity_families WHERE participant_id = ?1').bind('l3c-review').run();
+    }
+  });
+  it('rejects expired request without owner decision', async () => {
+    const f = await fixture({expiresOffset: -60});
+    expect((await tool(f.cycle, f.requestId, 'l3c-coord')).isError).toBe(true);
+  });
+  it('rejects altered request digest without approval', async () => {
+    const f = await fixture({alteredHash: true});
+    expect((await tool(f.cycle, f.requestId, 'l3c-coord')).isError).toBe(true);
+  });
+  it('HALT rejects authenticated execution after independent approval', async () => {
+    const f = await fixture();
+    expect((await approval(f, 'l3c-review')).status).toBe('applied');
+    await db.prepare("INSERT OR REPLACE INTO owner_flags (name, value) VALUES ('halt', '1')").run();
+    try { expect((await tool(f.cycle, f.requestId, 'l3c-coord')).isError).toBe(true); }
+    finally { await db.prepare("DELETE FROM owner_flags WHERE name = 'halt'").run(); }
+  });
   it('owner appointment -> owner.request -> independent approval -> MCP execution -> installed phases and delegated proof, no envelope', async () => {
     const f = await fixture();
     expect((await approval(f, 'l3c-review')).status).toBe('applied');
