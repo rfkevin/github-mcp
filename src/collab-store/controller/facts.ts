@@ -24,6 +24,8 @@ const PR_RE = /\/pull\/\d+/;
 
 interface EvidencePayload {
   task?: unknown;
+  task_id?: unknown;
+  pr?: unknown;
   state?: unknown;
   source?: unknown;
   review?: unknown;
@@ -42,6 +44,12 @@ function parse(json: string): EvidencePayload | null {
 }
 
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
+
+/** Champ d'un sous-objet (`pr.head_sha`…), sinon chaîne vide. */
+function nested(value: unknown, key: string): string {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? text((value as Record<string, unknown>)[key]) : '';
+}
 
 function sha(structured: unknown, pattern: RegExp, haystack: string): string | null {
   const direct = text(structured).toLowerCase();
@@ -73,12 +81,12 @@ export function taskEvidence(taskId: string, roles: { owner: string; reviewer: s
   const verdicts: VerdictFact[] = [];
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const payload = parse(event.payload_json);
-    if (!payload || text(payload.task) !== taskId) continue;
+    if (!payload || (text(payload.task) || text(payload.task_id)) !== taskId) continue;
     const haystack = [text(payload.source), text(payload.state), text(payload.review)].join('\n');
-    const head = sha(payload.head, HEAD_RE, haystack);
-    const base = sha(payload.base, BASE_RE, haystack);
+    const head = sha(text(payload.head) || nested(payload.pr, 'head_sha'), HEAD_RE, haystack);
+    const base = sha(text(payload.base) || nested(payload.pr, 'base_sha'), BASE_RE, haystack);
     if (event.participant === roles.owner) {
-      const citesPr = PR_RE.test(event.evidence_ref) || PR_RE.test(haystack);
+      const citesPr = PR_RE.test(event.evidence_ref) || PR_RE.test(haystack) || PR_RE.test(nested(payload.pr, 'url'));
       if (citesPr && head && base) submission = { head, base, seq: event.seq };
       continue;
     }

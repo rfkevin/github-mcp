@@ -116,6 +116,13 @@ describe('CC-5 L3 — faits extraits des événements', () => {
     ]);
   });
 
+  it('forme structurée {task_id, pr:{url, head_sha, base_sha}} reconnue (format observé sur L1)', () => {
+    const facts = taskEvidence('l1', roles, [{ seq: 4, participant: 'vibe', evidence_ref: '',
+      payload_json: payload({ task_id: 'l1', verdict: 'ready_for_review',
+        pr: { url: 'https://github.com/o/r/pull/163', head_sha: HEAD, base_sha: BASE } }) }]);
+    expect(facts.submission).toEqual({ head: HEAD, base: BASE, seq: 4 });
+  });
+
   it('une soumission sans PR ou sans base n\'existe pas', () => {
     expect(taskEvidence('l0', roles, [{ seq: 1, participant: 'vibe', evidence_ref: '',
       payload_json: payload({ task: 'l0', review: 'head ' + HEAD + ' base ' + BASE }) }]).submission).toBeNull();
