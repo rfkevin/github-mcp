@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { CollabToolContext } from './context';
 import { collabFailure } from './result';
-import { bindDelegatedRequest } from '../owner/delegation-binding';
+import { executeBoundDelegation } from '../owner/delegation-dispatch';
 import { DelegationDenied } from '../owner/delegation-policy';
 
 /** Only cycle and request_id are client-supplied. Fail-closed until fixed dispatch exists. */
@@ -16,8 +16,8 @@ export function registerDelegationTools(server: McpServer, context: CollabToolCo
     try {
       const identity = await context.identity();
       if (identity.status !== 'registered') throw new DelegationDenied('registered_coordinator_required');
-      const bound = await bindDelegatedRequest(context.db, input, identity.participant_id);
-      throw new DelegationDenied('executor_not_yet_wired:' + bound.action);
+      const result = await executeBoundDelegation(context.db, input, identity.participant_id);
+      return { content: [{type: 'text' as const, text: JSON.stringify({status: result.status, seq: result.event.seq, decision: result.decision})}] };
     } catch (error) {
       return collabFailure(error, 'Exécution déléguée refusée.');
     }
