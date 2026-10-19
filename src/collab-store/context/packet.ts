@@ -101,6 +101,27 @@ async function loadVisibleActiveMemory(
   return results.filter(row => memoryVisible(row.scope, ctx));
 }
 
+// CC-5 L2 : questions ouvertes du journal — clarify.ask sans clarify.answer lié
+// (payload $.ask_seq). Borné à 50, seq croissant, question tronquée à 400.
+export async function loadOpenQuestions(db: D1Database, cycleId: string): Promise<string[]> {
+  await ensureSchema(db);
+  const { results } = await db.prepare([
+    'SELECT a.seq, a.participant_id, a.payload_json',
+    "FROM events a WHERE a.cycle_id = ?1 AND a.type = 'clarify.ask'",
+    "AND NOT EXISTS (SELECT 1 FROM events r WHERE r.cycle_id = a.cycle_id AND r.type = 'clarify.answer'",
+    "AND json_extract(r.payload_json, '$.ask_seq') = a.seq)",
+    'ORDER BY a.seq LIMIT 50',
+  ].join(' ')).bind(cycleId).all<{ seq: number; participant_id: string; payload_json: string }>();
+  return results.map(row => {
+    let question = '';
+    try {
+      question = String((JSON.parse(row.payload_json) as { question?: unknown }).question ?? '');
+    } catch {
+      question = '';
+    }
+    return '#' + row.seq + ' (' + row.participant_id + ') ' + question.slice(0, 400);
+  });
+}
 export async function buildRolePacket(
   db: D1Database,
   input: ResolveContextInput,
@@ -116,7 +137,9 @@ export async function buildRolePacket(
   if (!cycle) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + resolved.cycle_id);
 
   const maxTokens = effectiveBudget(options);
-  const openQuestions = [...(options.openQuestions ?? [])];
+  // CC-5 L2 : questions ouvertes du journal en tête — elles survivent au trim.
+  const journalQuestions = await loadOpenQuestions(db, resolved.cycle_id);
+  const openQuestions = [...journalQuestions, ...(options.openQuestions ?? [])];
   while (estimateTokens(openQuestions) > OPEN_QUESTIONS_BUDGET && openQuestions.length) openQuestions.pop();
 
   const equivalents = await equivalentParticipantIds(db, input.participant_id);

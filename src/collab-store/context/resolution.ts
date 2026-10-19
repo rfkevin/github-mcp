@@ -53,7 +53,7 @@ async function resolveCycleId(db: D1Database, input: ResolveContextInput): Promi
     if (results.length === 0) {
       throw new CollabStoreError(
         'NO_ACTIVE_CYCLE',
-        'Aucun cycle ouvert où « ' + input.participant_id + ' » tient un rôle. Fournissez issue ou cycle.',
+        'Aucun cycle ouvert où « ' + input.participant_id + ' » tient un rôle' + (input.task ? ' sur la tâche « ' + input.task + ' »' : '') + '. Fournissez issue ou cycle.',
       );
     }
     if (results.length > 1) {
@@ -93,7 +93,8 @@ async function resolveCycleId(db: D1Database, input: ResolveContextInput): Promi
   return results[0].cycle_id;
 }
 
-function participationOf(row: Omit<ResolvedTask, 'participation'>, participantIds: ReadonlySet<string>): Participation | null {
+// CC-5 L2 : Pick partiel — réutilisable sur un SELECT restreint (task fournie inconnue/non tenue).
+function participationOf(row: Pick<ResolvedTask, 'owner_pid' | 'reviewer_pid' | 'tester_pid'>, participantIds: ReadonlySet<string>): Participation | null {
   if (participantIds.has(row.owner_pid)) return 'owner';
   if (participantIds.has(row.reviewer_pid)) return 'reviewer';
   if (participantIds.has(row.tester_pid)) return 'tester';
@@ -127,7 +128,25 @@ export async function resolveContextTarget(db: D1Database, input: ResolveContext
   if (candidates.length > 1) {
     throw new CollabStoreError(
       'AMBIGUOUS_TASK',
-      'Plusieurs tâches correspondent : ' + candidates.map(row => row.task_id + ' (' + row.participation + ')').join(', ') + '.'
+      'Plusieurs tâches correspondent : ' + candidates.map(row => row.task_id + ' (' + row.participation + ')').join(', ') + '.' +
+        ' Fournissez task: « ' + candidates[0].task_id + ' » (ou un autre identifiant listé) pour sélectionner.'
+    );
+  }
+  if (input.task && candidates.length === 0) {
+    // CC-5 L2 : un task fourni mais absent ou non tenu échoue explicitement —
+    // jamais un packet sans tâche quand le participant a nommé la sienne.
+    const task = await db.prepare(
+      'SELECT owner_pid, reviewer_pid, tester_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2'
+    ).bind(cycleId, input.task).first<Pick<ResolvedTask, 'owner_pid' | 'reviewer_pid' | 'tester_pid'>>();
+    if (!task) {
+      throw new CollabStoreError('TASK_UNKNOWN', 'Tâche « ' + input.task + ' » inconnue dans le cycle « ' + cycleId + ' ».');
+    }
+    const held = participationOf(task, equivalentSet);
+    throw new CollabStoreError(
+      'TASK_NOT_HELT',
+      held
+        ? 'Sur la tâche « ' + input.task + ' » du cycle « ' + cycleId + ' », vous êtes ' + held + (input.role ? ', pas ' + input.role : '') + '.'
+        : 'Vous ne tenez aucun rôle sur la tâche « ' + input.task + ' » du cycle « ' + cycleId + ' ».',
     );
   }
   return { cycle_id: cycleId, task: candidates[0] ?? null };
