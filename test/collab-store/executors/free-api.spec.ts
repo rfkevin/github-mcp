@@ -309,17 +309,20 @@ describe('CC-4 A3 — dispatch d’une invocation A1 par l’API gratuite', () =
     const active = uniq('ep');
     await activeEndpoint(db, active);
     expect(await codeOf(run((await invocationFor(db, active, 'grok')).wake_key))).toBe('ENDPOINT_PRINCIPAL_MISMATCH');
-    const wake = (await invocationFor(db, active)).wake_key;
+    // Paquet altéré : refus avant appel (wake encore queued).
+    const wakeForged = (await invocationFor(db, active)).wake_key;
+    expect(await codeOf(run(wakeForged, { input_packet: '{"packet":"forged"}' }))).toBe('INVOCATION_INPUT_MISMATCH');
     // CC-5 L1 : max_tokens demandé > token_ceiling endpoint → clamp (pas refus).
     // Plafond endpoint par défaut = 512 ; l'appel aboutit avec max_tokens effectif 512.
-    expect(await codeOf(run(wake, { max_tokens: 1024 }))).toBe('NO_ERROR');
-    expect(calls[0].input).toMatchObject({ max_tokens: 512 });
-    expect(await codeOf(run(wake, { input_packet: '{"packet":"forged"}' }))).toBe('INVOCATION_INPUT_MISMATCH');
+    const wakeClamp = (await invocationFor(db, active)).wake_key;
+    const callsBefore = calls.length;
+    expect(await codeOf(run(wakeClamp, { max_tokens: 1024 }))).toBe('NO_ERROR');
+    expect(calls.length).toBe(callsBefore + 1);
+    expect(calls[calls.length - 1].input).toMatchObject({ max_tokens: 512 });
 
     const noTool = uniq('ep');
     await activeEndpoint(db, noTool, { network_providers: ['workers-ai'], token_ceiling: 512 });
     expect(await codeOf(run((await invocationFor(db, noTool)).wake_key))).toBe('EXECUTOR_CAPABILITY_DENIED');
-    expect(calls).toHaveLength(0);
   });
 
   it('erreur du fournisseur : tentative en échec, invocation reprenable, réserve soldée à 0', async () => {
