@@ -6,6 +6,7 @@ import { opIdClientFor } from '../../../src/collab-store/contracts';
 import { registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { decideOwnerRequest, executablePayloadSha256, latestOwnerActSeq, parseOwnerRequest } from '../../../src/collab-store/owner/executable';
 import { reassignTask } from '../../../src/collab-store/owner/task-reassign';
+import { assertDelegatedAction } from '../../../src/collab-store/owner/delegation-policy';
 import { previewNextActions } from '../../../src/collab-store/controller';
 import { insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
 
@@ -43,8 +44,10 @@ async function taskRow(cycle: string) {
 /** Dépose une demande reassign_task (dans un cycle de demandes séparé) ; renvoie de quoi l'approuver. */
 async function fileRequest(w: World, roles: { owner_pid: string; reviewer_pid: string; tester_pid: string }, extra: Record<string, unknown> = {}) {
   const action = 'reassign_task' as const;
-  const revision = (await taskRow(w.cycle))!.revision;
-  const params = { cycle_id: w.cycle, task_id: 't0', ...roles, expected_revision: revision, ...extra };
+  const current = (await taskRow(w.cycle))!;
+  // Rôles d'origine figés au dépôt (revue GPT-6 #177) : ils entrent dans l'empreinte approuvée.
+  const params = { cycle_id: w.cycle, task_id: 't0', ...roles, expected_revision: current.revision,
+    expected_owner_pid: current.owner_pid, expected_reviewer_pid: current.reviewer_pid, expected_tester_pid: current.tester_pid, ...extra };
   const sha = await executablePayloadSha256(action, params);
   const requestCycle = uniq('req-cycle');
   const requestId = uniq('req');
@@ -97,6 +100,17 @@ describe('CC-5 l3d 2b-2c — reassign_task (demande exécutable)', () => {
     expect(await taskRow(w.cycle)).toMatchObject({ owner_pid: w.a });
   });
 
+  it('rôles changés entre le dépôt et l\'approbation, révision inchangée : refus, aucun effet', async () => {
+    const w = await world();
+    const req = await fileRequest(w, { owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.c });
+    const before = (await taskRow(w.cycle))!;
+    // Changement de rôles qui ne touche PAS la révision : seule la figeaison des rôles au dépôt peut le détecter.
+    await db.prepare("UPDATE tasks SET reviewer_pid = ?2 WHERE cycle_id = ?1 AND task_id = 't0'").bind(w.cycle, w.d).run();
+    expect((await taskRow(w.cycle))!.revision).toBe(before.revision);
+    expect(await codeOf(approve(req))).toBe('OWNER_PRECONDITION_FAILED');
+    expect(await taskRow(w.cycle)).toMatchObject({ owner_pid: w.a, reviewer_pid: w.d, tester_pid: w.c, revision: before.revision });
+  });
+
   it('course : rôles changés entre les vérifications et le lot d\'écriture → garde SQL, aucun effet', async () => {
     const w = await world();
     const req = await fileRequest(w, { owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.c });
@@ -119,18 +133,24 @@ describe('CC-5 l3d 2b-2c — reassign_task (demande exécutable)', () => {
     await ensureSchema(racing);
     armed = true;
     const code = await codeOf(reassignTask(racing, { params: { cycle_id: w.cycle, task_id: 't0', owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.a,
-      expected_revision: 1 }, proof, binding: { request_id: req.requestId, request_seq: req.seq, payload_sha256: req.sha, expected_previous_seq: null } }));
+      expected_revision: 1, expected_owner_pid: w.a, expected_reviewer_pid: w.b, expected_tester_pid: w.c }, proof, binding: { request_id: req.requestId, request_seq: req.seq, payload_sha256: req.sha, expected_previous_seq: null } }));
     expect(code).toBe('OWNER_PRECONDITION_FAILED');
     expect(await taskRow(w.cycle)).toMatchObject({ owner_pid: w.c, reviewer_pid: w.b, tester_pid: w.c });
   });
 
   it('D12 : rôles en double → demande invalide, non approuvable', async () => {
     const w = await world();
-    const params = { cycle_id: w.cycle, task_id: 't0', owner_pid: w.b, reviewer_pid: w.b, tester_pid: w.c, expected_revision: 1 };
-    const parsed = await parseOwnerRequest(JSON.stringify({ request_id: 'x', action: 'reassign_task', params,
+    const held = { expected_owner_pid: w.a, expected_reviewer_pid: w.b, expected_tester_pid: w.c };
+    const parse = async (params: Record<string, unknown>) => parseOwnerRequest(JSON.stringify({ request_id: 'x', action: 'reassign_task', params,
       payload_sha256: await executablePayloadSha256('reassign_task', params), preconditions: { previous_seq: null },
       reason: 'r', risk: 'r', rollback: 'r' }));
-    expect(parsed).toMatchObject({ kind: 'invalid' });
+    expect(await parse({ cycle_id: w.cycle, task_id: 't0', owner_pid: w.b, reviewer_pid: w.b, tester_pid: w.c, expected_revision: 1, ...held }))
+      .toMatchObject({ kind: 'invalid' });
+    // Sans les rôles lus au dépôt, la demande n'est pas approuvable.
+    expect(await parse({ cycle_id: w.cycle, task_id: 't0', owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.c, expected_revision: 1 }))
+      .toMatchObject({ kind: 'invalid' });
+    expect(await parse({ cycle_id: w.cycle, task_id: 't0', owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.c, expected_revision: 1, ...held }))
+      .toMatchObject({ kind: 'executable' });
   });
 
   it('D12 logique : deux membres d\'une même famille → refus à l\'approbation', async () => {
@@ -166,13 +186,22 @@ describe('CC-5 l3d 2b-2c — reassign_task (demande exécutable)', () => {
 
   it('champ inconnu → demande invalide ; preuve déléguée → DELEGATED_FORBIDDEN', async () => {
     const w = await world();
-    const params = { cycle_id: w.cycle, task_id: 't0', owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.c, expected_revision: 1, status: 'done' };
+    const params = { cycle_id: w.cycle, task_id: 't0', owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.c, expected_revision: 1,
+      expected_owner_pid: w.a, expected_reviewer_pid: w.b, expected_tester_pid: w.c, status: 'done' };
     expect(await parseOwnerRequest(JSON.stringify({ request_id: 'x', action: 'reassign_task', params,
       payload_sha256: await executablePayloadSha256('reassign_task', params), preconditions: { previous_seq: null },
       reason: 'r', risk: 'r', rollback: 'r' }))).toMatchObject({ kind: 'invalid' });
     const delegated = { kind: 'delegated', subject: w.a, cycle_id: w.cycle } as unknown as typeof proof;
-    expect(await codeOf(reassignTask(db, { params: { cycle_id: w.cycle, task_id: 't0', owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.c, expected_revision: 1 },
+    expect(await codeOf(reassignTask(db, { params: { cycle_id: w.cycle, task_id: 't0', owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.c, expected_revision: 1,
+      expected_owner_pid: w.a, expected_reviewer_pid: w.b, expected_tester_pid: w.c },
       proof: delegated, binding: { request_id: 'x', request_seq: 1, payload_sha256: 'a'.repeat(64), expected_previous_seq: null } }))).toBe('DELEGATED_FORBIDDEN');
     expect(await taskRow(w.cycle)).toMatchObject({ owner_pid: w.a });
+    // Politique L3c alignée sur la garde owner (revue GPT-6 #177), y compris en approbation imbriquée.
+    const policy = { cycleId: w.cycle, envelopeCents: 0 };
+    const full = { cycle_id: w.cycle, task_id: 't0', owner_pid: w.d, reviewer_pid: w.b, tester_pid: w.c, expected_revision: 1,
+      expected_owner_pid: w.a, expected_reviewer_pid: w.b, expected_tester_pid: w.c };
+    expect(() => assertDelegatedAction({ ...policy, action: 'reassign_task', params: full })).toThrow('owner_guard_not_delegable');
+    expect(() => assertDelegatedAction({ ...policy, action: 'approve_owner_request',
+      params: { request_id: 'r1', target_action: 'reassign_task', target_params: full } })).toThrow('owner_guard_not_delegable');
   });
 });
