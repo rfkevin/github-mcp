@@ -128,4 +128,62 @@ describe('L5 research pass (real D1, read-only over the canonical registry)', ()
       await db.prepare("DELETE FROM owner_flags WHERE name = 'halt'").run();
     }
   });
+
+  it('unknown cycle is refused with a typed ResearchError, nothing written (T2)', async () => {
+    await ensureSchema(db, true);
+    await ensureResearchSchema(db, true);
+    const passId = unique('unknown-cycle');
+    await expect(
+      runResearchPass(db, { passId, cycleId: 'l5-cycle-qui-n-existe-pas' }),
+    ).rejects.toMatchObject({ code: 'UNKNOWN_CYCLE' });
+    const stored = await db.prepare('SELECT COUNT(*) AS c FROM research_passes WHERE pass_id = ?1').bind(passId).first<{ c: number }>();
+    expect(stored?.c).toBe(0);
+  });
+
+  it('HALT raised between the pre-check and the write batch halts the pass (race, injection, T1)', async () => {
+    await ensureSchema(db, true);
+    await ensureResearchSchema(db, true);
+    const cycle = await seedCycle();
+    const passId = unique('race');
+    const armHalt = async () => {
+      await db.prepare("INSERT OR REPLACE INTO owner_flags (name, value, updated_at) VALUES ('halt', '1', strftime('%s','now'))").run();
+    };
+    const wrap = (stmt: D1PreparedStatement): D1PreparedStatement =>
+      ({
+        bind: (...values: unknown[]) => {
+          const bound = stmt.bind(...(values as Parameters<typeof stmt.bind>));
+          return {
+            all: async () => { await armHalt(); return bound.all(); },
+            first: async () => { await armHalt(); return bound.first(); },
+            run: async () => { await armHalt(); return bound.run(); },
+          };
+        },
+        all: async () => { await armHalt(); return stmt.all(); },
+        first: async () => { await armHalt(); return stmt.first(); },
+        run: async () => { await armHalt(); return stmt.run(); },
+      }) as unknown as D1PreparedStatement;
+    const armed = new Proxy(db, {
+      get(target, prop) {
+        if (prop === 'prepare') {
+          return (sql: string) => {
+            const stmt = target.prepare(sql);
+            return sql.includes('GROUP BY scope, kind') ? wrap(stmt) : stmt;
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    try {
+      const pass = await runResearchPass(armed, { passId, cycleId: cycle });
+      expect(pass.status).toBe('halted');
+      expect(pass.findings_count).toBe(0);
+      const passes = await db.prepare('SELECT COUNT(*) AS c FROM research_passes WHERE pass_id = ?1').bind(passId).first<{ c: number }>();
+      expect(passes?.c).toBe(0);
+      const findings = await db.prepare('SELECT COUNT(*) AS c FROM research_findings WHERE pass_id = ?1').bind(passId).first<{ c: number }>();
+      expect(findings?.c).toBe(0);
+    } finally {
+      await db.prepare("DELETE FROM owner_flags WHERE name = 'halt'").run();
+    }
+  });
 });

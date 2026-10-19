@@ -19,11 +19,17 @@ testeur : Claude. Base : `mcp/105856986/cc3-integration`. Chemins possédés :
 - **Résumé d'archivage par cycle** (`cycleArchiveSummary`) : plage seq du
   journal, empreinte sha256, stats mémoire ; fail-closed sur cycle inconnu ;
   le résumé n'est JAMAIS une source d'autorité (notice explicite, D3-b).
+  `store_memory_families` est une vue GLOBALE du store (tous scopes actifs),
+  pas une mémoire du cycle (T3, test indépendant Claude).
 
 ## Invariants
 
 - **HALT** (owner_flags, canal owner) : un passage retourne `halted` et
-  n'écrit RIEN (test).
+  n'écrit RIEN (test) ; le drapeau est RE-LU dans le même lot D1 que
+  l'écriture (`HALT_ACTIVE_SQL`, insertions conditionnées, pattern revue
+  #115 R1) ; test de course par injection (T1).
+- **Cycle inconnu** : un `cycleId` fourni absent de `cycles` →
+  ResearchError `UNKNOWN_CYCLE`, aucune écriture (T2, test).
 - **Idempotence** : même `passId` rejoué → passage original renvoyé
   (`duplicate`), aucune seconde écriture (test). Le contrôleur L3d peut donc
   rejouer un déclencheur identique sans doublon.
@@ -49,7 +55,7 @@ testeur : Claude. Base : `mcp/105856986/cc3-integration`. Chemins possédés :
 
 ## Interfaces pour les autres lots
 
-- **L3d (contrôleur, cron)** : appeler `runResearchPass(db, { passId: <idempotent par déclencheur>, cycleId })` ; traiter `halted` sans écriture ; consommer `listFindings(db, { cycleId, sinceSeq })` pour le backlog.
+- **L3d (contrôleur, cron)** : appeler `runResearchPass(db, { passId: <idempotent par déclencheur>, cycleId })` — le cycleId doit exister (`UNKNOWN_CYCLE` sinon, T2) ; traiter `halted` sans écriture ; consommer `listFindings(db, { cycleId, sinceSeq })` pour le backlog.
 - **L3b (assembleur de contexte)** : consommer `archiveCandidates(db)` et `archiveFirstCompare` ; câbler l'incrément du compteur `uses` à la construction du paquet (aujourd'hui `uses` n'est incrémenté que par `recordRefute`) ; injecter les findings `archive_first` comme liste d'archivage prioritaire.
 - **Digest /owner** : `listFindings(db, { kind })` borné (≤500), résumés internes non autoritaires.
 

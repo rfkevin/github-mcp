@@ -5,14 +5,17 @@
  * qui écrit le passage (research_passes) et ses findings (research_findings).
  * Jamais d'écriture dans events ni memory_entries.
  * Fail-closed : HALT (owner_flags, canal owner) → status 'halted', AUCUNE
- * écriture. Idempotent par pass_id : un rejeu renvoie le passage original
+ * écriture ; le drapeau est RE-LU dans le même lot D1 que l'écriture
+ * (HALT_ACTIVE_SQL, insertions conditionnées, pattern revue #115 R1, T1).
+ * Cycle fourni inconnu → ResearchError UNKNOWN_CYCLE, aucune écriture (T2).
+ * Idempotent par pass_id : un rejeu renvoie le passage original
  * (status 'duplicate') sans seconde écriture — le compteur du contrôleur
  * L3d peut rejouer un déclencheur identique sans doublon.
  */
 import { DEFAULT_SCOPE_ENTRY_CAPS, scopeEntryCap, type ScopeEntryCaps } from '../memory/hygiene';
 import { sha256Hex } from '../memory/pause-resume';
-import { isAutomationHalted } from '../owner/automation';
-import { ensureResearchSchema, type ResearchFindingKind } from './schema';
+import { HALT_ACTIVE_SQL, isAutomationHalted } from '../owner/automation';
+import { ensureResearchSchema, ResearchError, type ResearchFindingKind } from './schema';
 import { archiveCandidates, duplicateGroups, journalEventCounts, scopeMemoryStats } from './snapshot';
 
 export type ResearchPassStatus = 'recorded' | 'duplicate' | 'halted';
@@ -75,6 +78,13 @@ export async function runResearchPass(db: D1Database, input: ResearchPassInput =
   const cycleId = input.cycleId ?? null;
   if (await isAutomationHalted(db)) {
     return { pass_id: passId, at, cycle_id: cycleId, status: 'halted', findings: {}, findings_count: 0, snapshot_sha256: '' };
+  }
+  // T2 : cycle fourni inconnu → refus typé, aucune écriture (fail-closed, D3).
+  if (cycleId != null) {
+    const known = await db.prepare('SELECT 1 AS ok FROM cycles WHERE cycle_id = ?1').bind(cycleId).first();
+    if (!known) {
+      throw new ResearchError('UNKNOWN_CYCLE', 'runResearchPass: unknown cycle ' + cycleId + ' (fail-closed, D3).');
+    }
   }
   const existing = await researchPass(db, passId);
   if (existing) return { ...existing, status: 'duplicate' };
@@ -140,16 +150,22 @@ export async function runResearchPass(db: D1Database, input: ResearchPassInput =
   const findings: Partial<Record<ResearchFindingKind, number>> = {};
   for (const finding of planned) findings[finding.kind] = (findings[finding.kind] ?? 0) + 1;
   try {
-    await db.batch([
+    const results = await db.batch([
+      db.prepare('SELECT ' + HALT_ACTIVE_SQL + ' AS halted'),
       db
-        .prepare('INSERT INTO research_passes (pass_id, cycle_id, at, findings_count, snapshot_sha256, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
+        .prepare('INSERT INTO research_passes (pass_id, cycle_id, at, findings_count, snapshot_sha256, status) SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE NOT ' + HALT_ACTIVE_SQL)
         .bind(passId, cycleId, at, planned.length, snapshotSha256, 'recorded'),
       ...planned.map(finding =>
         db
-          .prepare('INSERT INTO research_findings (pass_id, cycle_id, kind, scope, detail_json, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
+          .prepare('INSERT INTO research_findings (pass_id, cycle_id, kind, scope, detail_json, at) SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE NOT ' + HALT_ACTIVE_SQL)
           .bind(passId, cycleId, finding.kind, finding.scope, JSON.stringify(finding.detail), at),
       ),
     ]);
+    // T1 : le drapeau HALT est RE-LU dans le même lot D1 que l'écriture (pattern revue #115 R1).
+    const headRows = (results[0]?.results ?? []) as Array<{ halted: number | null }>;
+    if (headRows[0]?.halted) {
+      return { pass_id: passId, at, cycle_id: cycleId, status: 'halted', findings: {}, findings_count: 0, snapshot_sha256: '' };
+    }
   } catch (error) {
     // Un passage concurrent du même pass_id a pu gagner (PK) : juger l'état durable.
     const winner = await researchPass(db, passId);

@@ -26,7 +26,8 @@ export interface CycleArchiveSummary {
   seq_to: number | null;
   events: number;
   origin_memory_entries: number;
-  memory_families: CycleArchiveMemoryFamily[];
+  /** Vue GLOBALE du store (tous scopes actifs, sans filtre de cycle) — T3. */
+  store_memory_families: CycleArchiveMemoryFamily[];
   archive_sha256: string;
   notice: string;
 }
@@ -52,6 +53,7 @@ export async function cycleArchiveSummary(db: D1Database, cycleId: string): Prom
     .prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE expires_cycle = ?1')
     .bind(cycleId)
     .first<{ n: number }>();
+  // T3 : vue GLOBALE du store (tous scopes actifs) — pas une mémoire du cycle.
   const { results } = await db
     .prepare(
       "SELECT scope, COUNT(*) AS entries, SUM(COALESCE(token_cost, 0)) AS tokens, SUM(uses) AS uses FROM memory_entries WHERE status = 'active' GROUP BY scope",
@@ -79,7 +81,7 @@ export async function cycleArchiveSummary(db: D1Database, cycleId: string): Prom
     seq_to: range?.seq_to ?? null,
     events: range?.events ?? 0,
     origin_memory_entries: origin?.n ?? 0,
-    memory_families: [...byFamily.values()].sort((a, b) => a.family.localeCompare(b.family)),
+    store_memory_families: [...byFamily.values()].sort((a, b) => a.family.localeCompare(b.family)),
     notice: ARCHIVE_SUMMARY_NOTICE,
   };
   return { ...summary, archive_sha256: await sha256Hex(JSON.stringify(summary)) };
