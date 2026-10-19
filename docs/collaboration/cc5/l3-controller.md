@@ -158,13 +158,16 @@ Contrat : plan CC-5 v0.3 B1 (seq 260) et précisions v0.4 C1 (seq 264). L'IA dé
   l'export CC-STATE-1 la lisent déjà : une nouvelle ronde repart de zéro, et les scellés de la ronde quittée sont
   révélés, jamais rouverts.
 - **Garde dans le lot** : mandat à l'époque lue, HALT, révision et phase du cycle, au plus 3 tours par phase et
-  10 réorganisations par cycle (valeurs par défaut du plan ; au-delà, arbitrage de Kevin), scellé non révélé pour un saut.
+  10 réorganisations par cycle (valeurs par défaut du plan ; au-delà, arbitrage de Kevin), scellé non révélé pour un saut,
+  P5 refusé en SQL, et **définitions source et cible identiques à celles lues** (CAS, revue GPT-6 #178) : les protections
+  du saut et les conditions d'entrée ne se contournent pas en modifiant une définition pendant l'opération. Définition
+  illisible : refus (fail-closed). Rejeu : l'intention comprend op, raison, révision attendue et cible explicite.
 - **Non contournable** : jamais de saut de P5, d'une phase à conditions de sortie ni d'un tour scellé ; conditions
   d'entrée de la cible respectées ; D12 inchangé (verdicts liés au couple head/base).
 - `phases/gate.ts` : le rejeu d'une avance par policy ne reconnaît plus que les `phase.advance` de rôle `policy`.
   Sans cela, une réorganisation à la même révision et vers la même phase passait pour un `duplicate`.
 - Hors chemins protégés : `owner/`, `identity/`, `store/` et `gates/` sont seulement lus (mandat, familles, HALT).
-- Tests : `test/collab-store/phases/soft.spec.ts` (12), plus le cas HALT (avant et pendant le lot) dans
+- Tests : `test/collab-store/phases/soft.spec.ts` (15, dont les courses sur le mandat et sur les définitions), plus le cas HALT (avant et pendant le lot) dans
   `test/collab-store/owner/automation-halt-budget.spec.ts`.
 
 ## Hors incrément 2c-1 (suite de l3d)
