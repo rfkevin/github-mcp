@@ -26,7 +26,11 @@
  *   - `phase.skip` : jamais P5 (validation owner), ni une phase qui porte des
  *     conditions de sortie (gates), ni un tour scellé (sortie `proposal.submit`
  *     attendue ou scellé non révélé) ;
- *   - cible avec définition et conditions d'entrée satisfaites.
+ *   - cible avec définition et conditions d'entrée satisfaites ;
+ *   - définitions source et cible inchangées depuis leur lecture (CAS dans le
+ *     lot, revue GPT-6 #178) : les protections ci-dessus ne peuvent pas être
+ *     contournées en modifiant une définition pendant l'opération. Une
+ *     définition illisible est refusée (fail-closed), jamais lue comme vide.
  * D12 n'est pas touché : les verdicts restent liés à leur couple head/base ;
  * s'ils changent après une réouverture, les anciens verdicts sont caducs.
  */
@@ -84,13 +88,16 @@ function phaseIndex(phase: Phase): number {
   return PHASES.indexOf(phase);
 }
 
-function parseList(raw: string): unknown[] {
+/** Fail-closed (revue GPT-6 #178) : une définition illisible ne vaut jamais « aucune condition ». */
+function parseList(raw: string, phase: Phase, field: string): unknown[] {
+  let value: unknown;
   try {
-    const value = JSON.parse(raw) as unknown;
-    return Array.isArray(value) ? value : [];
+    value = JSON.parse(raw) as unknown;
   } catch {
-    return [];
+    value = null;
   }
+  if (!Array.isArray(value)) fail('SOFT_PHASE_PROTECTED', 'Définition de ' + phase + ' illisible (' + field + ') : aucune réorganisation, à corriger par Kevin.');
+  return value;
 }
 
 /** Validation des entrées (forme seulement) ; lève SOFT_PHASE_INVALID. */
@@ -114,12 +121,18 @@ export function validateSoftPhaseInput(input: SoftPhaseInput): { op: SoftPhaseOp
   return { op: input.op, reason, key: SOFT_KEY_PREFIX + input.op_id };
 }
 
-async function replay(db: D1Database, key: string, op: SoftPhaseOp, target: string | undefined, reason: string): Promise<SoftPhaseResult | null> {
+/**
+ * Intention d'un op_id : op, raison, révision attendue et cible explicite. La cible implicite (round.add, phase.skip)
+ * est fixée par la phase du cycle à la révision attendue : la même révision redonne la même cible (revue GPT-6 #178).
+ */
+async function replay(db: D1Database, key: string, op: SoftPhaseOp, target: string | undefined, reason: string,
+  expectedRevision: number): Promise<SoftPhaseResult | null> {
   const row = await db.prepare('SELECT seq, expected_rev, payload_json FROM events WHERE idempotency_key = ?1')
     .bind(key).first<{ seq: number; expected_rev: number; payload_json: string }>();
   if (!row) return null;
   const payload = JSON.parse(row.payload_json) as { op: SoftPhaseOp; from: Phase; to: Phase; reason: string };
-  if (payload.op !== op || payload.reason !== reason || (target !== undefined && payload.to !== target)) {
+  if (payload.op !== op || payload.reason !== reason || row.expected_rev !== expectedRevision
+    || (target !== undefined && payload.to !== target)) {
     fail('IDEMPOTENCY_CONFLICT', 'Même op_id, intention différente : incrémentez le compteur n.');
   }
   return { status: 'duplicate', revision: row.expected_rev + 1, event_seq: row.seq, op: payload.op, from: payload.from, to: payload.to };
@@ -178,7 +191,7 @@ export async function adjustPhase(db: D1Database, input: SoftPhaseInput): Promis
   const { op, reason, key } = validateSoftPhaseInput(input);
   // Garde d'identité avant tout effet, rejeu compris (même règle que collab_phase_advance).
   const epoch = await holderEpoch(db, input.cycle_id, input.participant_id);
-  const replayed = await replay(db, key, op, input.target_phase, reason);
+  const replayed = await replay(db, key, op, input.target_phase, reason, input.expected_revision);
   if (replayed) return replayed;
   await assertAutomationRunning(db);
 
@@ -196,17 +209,17 @@ export async function adjustPhase(db: D1Database, input: SoftPhaseInput): Promis
 
   if (op === 'phase.skip') {
     if (from === OWNER_VALIDATION_PHASE) fail('SOFT_PHASE_PROTECTED', 'P5 (validation de Kevin) ne se saute jamais.');
-    if (parseList(source.exit_conditions).length > 0) {
+    if (parseList(source.exit_conditions, from, 'exit_conditions').length > 0) {
       fail('SOFT_PHASE_PROTECTED', from + ' porte des conditions de sortie (gate) : phase non facultative.');
     }
-    const sealedOutput = parseList(source.expected_outputs)
+    const sealedOutput = parseList(source.expected_outputs, from, 'expected_outputs')
       .some(output => (output as { kind?: unknown })?.kind === 'proposal.submit');
     const unrevealed = await db.prepare('SELECT 1 AS ok FROM sealed_items WHERE cycle_id = ?1 AND phase = ?2 AND revealed_at IS NULL LIMIT 1')
       .bind(input.cycle_id, from).first<{ ok: number }>();
     if (sealedOutput || unrevealed) fail('SOFT_PHASE_SEALED', from + ' est un tour scellé : il ne se saute pas.');
   }
   const evaluate = input.conditionsSatisfied ?? (async (conditions: string[]) => conditions.length === 0);
-  if (op !== 'round.add' && !await evaluate(parseList(target.entry_conditions) as string[])) {
+  if (op !== 'round.add' && !await evaluate(parseList(target.entry_conditions, to, 'entry_conditions') as string[])) {
     fail('PHASE_ENTRY_CONDITIONS_UNMET', 'Conditions d\'entrée de ' + to + ' non remplies.');
   }
 
@@ -228,7 +241,10 @@ export async function adjustPhase(db: D1Database, input: SoftPhaseInput): Promis
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
   const payload = { op, from, to, reason, mandate_epoch: epoch, extra_rounds: op === 'phase.skip' ? null : extraRounds + 1 };
   const logical = (n: number) => 'COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?' + n + '), ?' + n + ')';
-  // ?1 cycle, ?2 clé, ?3 révision, ?4 phase source, ?5 appelant, ?6 époque, ?7 budget cycle, ?8 tours max, ?9 cible, ?10 skip.
+  // ?1 cycle, ?2 clé, ?3 révision, ?4 phase source, ?5 appelant, ?6 époque, ?7 budget cycle, ?8 tours max, ?9 cible, ?10 skip,
+  // ?11..?13 définition source lue (entrée, sorties, sortie), ?14..?16 définition cible lue.
+  // Revue GPT-6 #178 : les protections du saut et les conditions d'entrée de la cible ont été jugées sur ces définitions ;
+  // le lot exige qu'elles n'aient pas changé (CAS), et refuse P5 en SQL. Toute modification entre-temps annule l'opération.
   const guard = [
     'INSERT INTO collab_store_guard (ok)',
     'SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM events WHERE idempotency_key = ?2)',
@@ -240,12 +256,19 @@ export async function adjustPhase(db: D1Database, input: SoftPhaseInput): Promis
     'AND (' + SOFT_COUNT_SQL + ') < ?7',
     'AND (?10 = 1 OR (' + EXTRA_ROUNDS_SQL + ') < ?8)',
     'AND (?10 = 0 OR NOT EXISTS (SELECT 1 FROM sealed_items WHERE cycle_id = ?1 AND phase = ?4 AND revealed_at IS NULL))',
+    "AND (?10 = 0 OR ?4 != 'P5')",
+    'AND EXISTS (SELECT 1 FROM phase_definitions WHERE cycle_id = ?1 AND phase = ?4',
+    '  AND entry_conditions = ?11 AND expected_outputs = ?12 AND exit_conditions = ?13)',
+    'AND EXISTS (SELECT 1 FROM phase_definitions WHERE cycle_id = ?1 AND phase = ?9',
+    '  AND entry_conditions = ?14 AND expected_outputs = ?15 AND exit_conditions = ?16)',
     'THEN 1 ELSE 0 END',
   ].join(' ');
   try {
     await db.batch([
       db.prepare(guard).bind(input.cycle_id, key, input.expected_revision, from, input.participant_id, epoch,
-        SOFT_OPS_PER_CYCLE_MAX, SOFT_EXTRA_ROUNDS_MAX, to, op === 'phase.skip' ? 1 : 0),
+        SOFT_OPS_PER_CYCLE_MAX, SOFT_EXTRA_ROUNDS_MAX, to, op === 'phase.skip' ? 1 : 0,
+        source.entry_conditions, source.expected_outputs, source.exit_conditions,
+        target.entry_conditions, target.expected_outputs, target.exit_conditions),
       db.prepare([
         'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
         "VALUES (?1, ?2, 'phase.advance', ?3, '', 'coordinator', ?4, ?5, ?6, '')",
@@ -260,13 +283,13 @@ export async function adjustPhase(db: D1Database, input: SoftPhaseInput): Promis
       db.prepare('DELETE FROM collab_store_guard'),
     ]);
   } catch (error) {
-    const winner = await replay(db, key, op, input.target_phase, reason).catch(() => null);
+    const winner = await replay(db, key, op, input.target_phase, reason, input.expected_revision).catch(() => null);
     if (winner) return winner;
     await assertAutomationRunning(db);
     const current = await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(input.cycle_id).first<{ revision: number }>();
     if ((current?.revision ?? 0) !== input.expected_revision) fail('STALE', 'Le cycle a bougé pendant la réorganisation.');
     if (error instanceof Error && /CHECK constraint/i.test(error.message)) {
-      fail('SOFT_PHASE_PRECONDITION_FAILED', 'Mandat, budget ou scellé changé pendant l\'opération : rien n\'est écrit. Relisez l\'état et réessayez.');
+      fail('SOFT_PHASE_PRECONDITION_FAILED', 'Mandat, budget, scellé ou définition de phase changé pendant l\'opération : rien n\'est écrit. Relisez l\'état et réessayez.');
     }
     throw error;
   }

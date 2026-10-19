@@ -188,6 +188,56 @@ describe('CC-5 l3d 2c-1 — phases souples B1', () => {
     expect(await countEvents(db, w.cycle, 'phase.advance')).toBe(0);
   });
 
+  it('course (revue GPT-6 #178) : définition modifiée entre les vérifications et le lot, révision inchangée → rien écrit', async () => {
+    /** Base qui exécute `sql` juste avant le LOT D'ÉCRITURE (6 instructions) ; les lots d'amorçage passent avant les vérifications. */
+    const racingWith = (sql: string, cycle: string) => new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === 'batch') {
+          return async (statements: D1PreparedStatement[]) => {
+            if (statements.length === 6) await target.prepare(sql).bind(cycle).run();
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    // Saut d'une phase devenue gardée (conditions de sortie) pendant l'opération.
+    const gated = await world('P3');
+    const gate = racingWith("UPDATE phase_definitions SET exit_conditions = '[\"owner_validated\"]' WHERE cycle_id = ?1 AND phase = 'P3'", gated.cycle);
+    expect(await codeOf(adjustPhase(gate, input(gated, { op: 'phase.skip' })))).toBe('SOFT_PHASE_PRECONDITION_FAILED');
+    // Saut d'un tour devenu scellé (sortie proposal.submit attendue).
+    const sealed = await world('P3');
+    const seal = racingWith("UPDATE phase_definitions SET expected_outputs = '[{\"role\":\"author\",\"kind\":\"proposal.submit\",\"count\":1}]' WHERE cycle_id = ?1 AND phase = 'P3'", sealed.cycle);
+    expect(await codeOf(adjustPhase(seal, input(sealed, { op: 'phase.skip' })))).toBe('SOFT_PHASE_PRECONDITION_FAILED');
+    // Réouverture vers une cible dont les conditions d'entrée apparaissent pendant l'opération.
+    const reopen = await world('P4');
+    const entry = racingWith("UPDATE phase_definitions SET entry_conditions = '[\"needs_owner\"]' WHERE cycle_id = ?1 AND phase = 'P2'", reopen.cycle);
+    expect(await codeOf(adjustPhase(entry, input(reopen, { op: 'phase.reopen', target_phase: 'P2' })))).toBe('SOFT_PHASE_PRECONDITION_FAILED');
+    for (const w of [gated, sealed, reopen]) {
+      expect(await countEvents(db, w.cycle, 'phase.advance')).toBe(0);
+      expect((await cycleRow(w.cycle)).revision).toBe(w.rev);
+    }
+  });
+
+  it('définition illisible : fail-closed, jamais lue comme « aucune condition » (revue GPT-6 #178)', async () => {
+    const w = await world('P3');
+    await db.prepare("UPDATE phase_definitions SET exit_conditions = '{pas du json' WHERE cycle_id = ?1 AND phase = 'P3'").bind(w.cycle).run();
+    expect(await codeOf(adjustPhase(db, input(w, { op: 'phase.skip' })))).toBe('SOFT_PHASE_PROTECTED');
+    const v = await world('P4');
+    await db.prepare("UPDATE phase_definitions SET entry_conditions = '\"texte\"' WHERE cycle_id = ?1 AND phase = 'P2'").bind(v.cycle).run();
+    expect(await codeOf(adjustPhase(db, input(v, { op: 'phase.reopen', target_phase: 'P2' })))).toBe('SOFT_PHASE_PROTECTED');
+    for (const x of [w, v]) expect(await countEvents(db, x.cycle, 'phase.advance')).toBe(0);
+  });
+
+  it('rejeu du même op_id avec une autre révision attendue → IDEMPOTENCY_CONFLICT (intention = op, raison, révision, cible)', async () => {
+    const w = await world();
+    const first = input(w, { op: 'round.add' });
+    await adjustPhase(db, first);
+    expect(await codeOf(adjustPhase(db, { ...first, expected_revision: w.rev + 1 }))).toBe('IDEMPOTENCY_CONFLICT');
+    expect(await countEvents(db, w.cycle, 'phase.advance')).toBe(1);
+  });
+
   it('une réorganisation n\'est jamais prise pour le rejeu d\'une avance par policy (findReplay limité au rôle policy)', async () => {
     const w = await world('P3');
     await adjustPhase(db, input(w, { op: 'phase.skip' })); // rev 1 → 2, P3 → P4
