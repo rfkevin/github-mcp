@@ -25,6 +25,13 @@ describe('CC-5 L4: real D1 claim and reconciliation', () => {
     const row = await db.prepare('SELECT count(*) AS n FROM cc5_merge_intents WHERE cycle=?1').bind(intent.cycle).first<{n:number}>();
     expect(row?.n).toBe(1);
   });
+  it('parallel D1 claims have exactly one winner', async () => {
+    const intent = await setup();
+    const outcomes = await Promise.all([claimMergeIntent(db,intent),claimMergeIntent(db,intent)]);
+    expect(outcomes.sort()).toEqual([false,true]);
+    const row = await db.prepare('SELECT count(*) AS n FROM cc5_merge_intents WHERE cycle=?1').bind(intent.cycle).first<{n:number}>();
+    expect(row?.n).toBe(1);
+  });
   it('HALT blocks a claim, and lifting HALT allows only the first', async () => {
     const intent = await setup();
     await db.prepare("INSERT INTO owner_flags(name,value,updated_at) VALUES ('halt','1',0) ON CONFLICT(name) DO UPDATE SET value='1'").run();

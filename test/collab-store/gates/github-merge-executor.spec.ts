@@ -44,6 +44,14 @@ describe('L4 base CAS executor',()=>{
     await expect(writer.mergeUnderFence({head,base},verify)).rejects.toThrow('BASE_OR_HEAD_CHANGED');
     expect(f.mergeIntoTemporary).not.toHaveBeenCalled();
   });
+  it('rejects a base advance after temporary merge, immediately before PATCH',async()=>{
+    const f=fixture();f.readHeads.mockResolvedValueOnce({head,base})
+      .mockResolvedValueOnce({head,base:'d'.repeat(40)});
+    const writer=createGitHubMergeExecutor({...f,enabled:true});
+    await expect(writer.mergeUnderFence({head,base},verify)).rejects.toThrow('L4_PRE_PATCH_DENIED');
+    expect(f.mergeIntoTemporary).toHaveBeenCalledTimes(1);
+    expect(f.fastForwardBase).not.toHaveBeenCalled();
+  });
   it('rejects HALT between claim and PATCH',async()=>{
     const f=fixture();f.inspect.mockResolvedValueOnce({snapshot,candidate})
       .mockResolvedValueOnce({snapshot:{...snapshot,halted:true},candidate});
