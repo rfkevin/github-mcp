@@ -70,6 +70,18 @@ export async function runAgentPilot(db: D1Database, input: PilotInput): Promise<
     return { status: 'denied', reason };
   }
 
+  // Incrément 1 : le bail ne couvre que la fenêtre d'assemblage (N2 Vibe).
+  // Pas de throw dans finally (Sonar S1163 / Reliability) : release sur le
+  // chemin nominal avant return ; en cas d'échec d'assemblage, tenter le
+  // release sans masquer la raison primaire.
+  const releaseNow = input.now !== undefined ? input.now + 1 : undefined;
+  const releaseArgs = {
+    cycleId: input.cycleId,
+    participantId: input.participantId,
+    taskId: input.taskId,
+    workerId: input.workerId,
+    now: releaseNow,
+  };
   try {
     const packet = await assembleAgentContext(db, {
       participantId: input.participantId,
@@ -79,6 +91,7 @@ export async function runAgentPilot(db: D1Database, input: PilotInput): Promise<
       lastSeenSeq: input.lastSeenSeq,
     });
     const serialized = serializeAgentPacket(packet);
+    await releaseAgentLease(db, releaseArgs);
     return {
       status: 'assembled',
       packet,
@@ -86,25 +99,17 @@ export async function runAgentPilot(db: D1Database, input: PilotInput): Promise<
       packet_bytes: new TextEncoder().encode(serialized).byteLength,
     };
   } catch (error) {
+    try {
+      await releaseAgentLease(db, releaseArgs);
+    } catch {
+      // Ne pas masquer l'erreur d'assemblage (ni agent_lease_not_held, ni D1).
+    }
+    if (error instanceof AgentDenied) {
+      return { status: 'denied', reason: error.reason };
+    }
     const reason = error instanceof Error && 'code' in error
       ? String((error as { code?: string }).code ?? error.message)
       : 'assemble_failed';
     return { status: 'denied', reason };
-  } finally {
-    // Incrément 1 : le bail ne couvre que la fenêtre d'assemblage (N2 Vibe).
-    // Échec de release non silencieux sauf bail déjà absent.
-    try {
-      await releaseAgentLease(db, {
-        cycleId: input.cycleId,
-        participantId: input.participantId,
-        taskId: input.taskId,
-        workerId: input.workerId,
-        now: input.now !== undefined ? input.now + 1 : undefined,
-      });
-    } catch (error) {
-      if (!(error instanceof AgentDenied && error.reason === 'agent_lease_not_held')) {
-        if (!(error instanceof AgentDenied)) throw error;
-      }
-    }
   }
 }

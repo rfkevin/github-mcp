@@ -107,8 +107,11 @@ export async function acquireAgentLease(db: D1Database, input: {
       input.cycleId, input.participantId, input.taskId ?? '', key,
       input.workerId, expiresAt, now,
     ).run();
-  } catch {
-    throw new AgentDenied('agent_lease_held');
+  } catch (error) {
+    // Uniquement la course sur l'index unique partiel → held ; le reste remonte.
+    const message = error instanceof Error ? error.message : String(error);
+    if (/UNIQUE|constraint/i.test(message)) throw new AgentDenied('agent_lease_held');
+    throw error;
   }
   return { lease_key: key, worker_id: input.workerId, expires_at: expiresAt };
 }
