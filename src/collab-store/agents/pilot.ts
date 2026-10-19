@@ -91,12 +91,20 @@ export async function runAgentPilot(db: D1Database, input: PilotInput): Promise<
       : 'assemble_failed';
     return { status: 'denied', reason };
   } finally {
-    await releaseAgentLease(db, {
-      cycleId: input.cycleId,
-      participantId: input.participantId,
-      taskId: input.taskId,
-      workerId: input.workerId,
-      now: input.now !== undefined ? input.now + 1 : undefined,
-    }).catch(() => undefined);
+    // Incrément 1 : le bail ne couvre que la fenêtre d'assemblage (N2 Vibe).
+    // Échec de release non silencieux sauf bail déjà absent.
+    try {
+      await releaseAgentLease(db, {
+        cycleId: input.cycleId,
+        participantId: input.participantId,
+        taskId: input.taskId,
+        workerId: input.workerId,
+        now: input.now !== undefined ? input.now + 1 : undefined,
+      });
+    } catch (error) {
+      if (!(error instanceof AgentDenied && error.reason === 'agent_lease_not_held')) {
+        if (!(error instanceof AgentDenied)) throw error;
+      }
+    }
   }
 }

@@ -55,12 +55,12 @@ export function assertNotD12Verdict(payload: unknown): void {
     throw new AgentDenied('invalid_payload');
   }
   const record = payload as Record<string, unknown>;
+  // state | verdict | review : fail-closed si le texte ressemble à un verdict D12
+  // (y compris un « OK » libre en tête — N4 revue Vibe, documenté).
   const state = typeof record.state === 'string' ? record.state
     : typeof record.verdict === 'string' ? record.verdict
       : typeof record.review === 'string' ? record.review : '';
-  const hasSha = (typeof record.head === 'string' && /^[0-9a-f]{40}$/i.test(record.head))
-    || (typeof record.base === 'string' && /^[0-9a-f]{40}$/i.test(record.base));
-  if (D12_VERDICT.test(state.trim()) || (hasSha && D12_VERDICT.test(state))) {
+  if (state && D12_VERDICT.test(state.trim())) {
     throw new AgentDenied('d12_verdict_forbidden_on_api_channel');
   }
   // evidence.add avec kind test_verdict / review_verdict explicite

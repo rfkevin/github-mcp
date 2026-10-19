@@ -39,7 +39,7 @@ describe('CC-5 L3b — bail agent fencing', () => {
     expect(again.worker_id).toBe('w2');
   });
 
-  it('journal append-only : UPDATE refusé', async () => {
+  it('UPDATE libre et DELETE refusés ; transition active→released seule autorisée', async () => {
     await ensureSchema(db);
     const cycleId = cycle();
     await acquireAgentLease(db, {
@@ -47,6 +47,9 @@ describe('CC-5 L3b — bail agent fencing', () => {
     });
     await expect(
       db.prepare("UPDATE agent_leases SET status = 'x' WHERE cycle_id = ?1").bind(cycleId).run(),
+    ).rejects.toThrow();
+    await expect(
+      db.prepare('DELETE FROM agent_leases WHERE cycle_id = ?1').bind(cycleId).run(),
     ).rejects.toThrow();
   });
 });
