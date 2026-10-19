@@ -9,6 +9,7 @@ import { collabStoreEnabled, type CollabStoreEnv } from './collab-store/store/co
 import { collabMcpHandler } from './collab-store/mcp/handler';
 import { parseFallbackState, storeFallback } from './collab-store/export/fallback';
 import { OWNER_PATH, handleOwnerRequest, type OwnerRouteEnv } from './collab-store/owner/handler';
+import { controllerCronEnabled, runScheduledControllers } from './collab-store/controller/scheduled';
 
 export default {
   async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
@@ -109,6 +110,15 @@ export default {
     }
     // Retain the existing friendly HTML 404 for non-OAuth paths.
     return authHandler.fetch(request, authEnv);
+  },
+
+  // CC-5 L3d — passage programmé du contrôleur : inerte sauf CONTROLLER_CRON_ENABLED="true"
+  // et store monté. Il ne fait que journaliser des décisions (aucune action, aucune dépense).
+  async scheduled(_controller: ScheduledController, env: AppEnv, ctx: ExecutionContext): Promise<void> {
+    const store = env as AppEnv & CollabStoreEnv & { CONTROLLER_CRON_ENABLED?: string };
+    if (!controllerCronEnabled(store.CONTROLLER_CRON_ENABLED)) return;
+    if (!collabStoreEnabled(store.COLLAB_STORE_ENABLED) || !store.COLLAB_DB) return;
+    ctx.waitUntil(runScheduledControllers(store.COLLAB_DB).then(() => undefined));
   },
 } satisfies ExportedHandler<AppEnv>;
 

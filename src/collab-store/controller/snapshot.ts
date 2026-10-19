@@ -14,9 +14,54 @@ import { STATE_IMPORT_KEY_PREFIX } from '../export/state-export';
 import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { taskEvidence, parseDependencies, type EvidenceEvent } from './facts';
-import type { ControllerSnapshot, TaskFacts } from './rules';
+import type { ControllerSnapshot, QuestionFact, TaskFacts } from './rules';
 
 interface TaskRow { task_id: string; status: string; revision: number; owner_pid: string; reviewer_pid: string; tester_pid: string }
+interface ClarifyRow { seq: number; type: string; participant_id: string; payload_json: string; expected_rev: number }
+
+/** Plafond de lecture des événements clarify par passage (paquet borné, D3). */
+const CLARIFY_SCAN_LIMIT = 2000;
+
+function payloadOf(json: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(json) as unknown;
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Questions ouvertes (X13) : clarify.ask sans clarify.answer liée. Le store
+ * refuse déjà les réponses non autorisées (CLARIFY_ANSWER_FORBIDDEN) : toute
+ * réponse enregistrée ferme sa question. Destinataire = participant nommé ou
+ * titulaire du rôle sur la tâche, ramené à son identité logique.
+ */
+export function openQuestions(rows: ClarifyRow[], tasks: TaskRow[], logical: (pid: string) => string): QuestionFact[] {
+  const answered = new Set<number>();
+  for (const row of rows) {
+    if (row.type !== 'clarify.answer') continue;
+    const askSeq = payloadOf(row.payload_json)?.ask_seq;
+    if (typeof askSeq === 'number' && Number.isInteger(askSeq)) answered.add(askSeq);
+  }
+  const byTask = new Map(tasks.map(task => [task.task_id, task]));
+  const out: QuestionFact[] = [];
+  for (const row of rows) {
+    if (row.type !== 'clarify.ask' || answered.has(row.seq)) continue;
+    const payload = payloadOf(row.payload_json);
+    const to = typeof payload?.to === 'string' ? payload.to : '';
+    let addressee: string | null = null;
+    if (to === 'owner' || to === 'reviewer' || to === 'tester') {
+      const task = typeof payload?.task === 'string' ? byTask.get(payload.task) : undefined;
+      if (task) addressee = to === 'owner' ? task.owner_pid : to === 'reviewer' ? task.reviewer_pid : task.tester_pid;
+    } else if (to) {
+      addressee = to;
+    }
+    out.push({ seq: row.seq, author: logical(row.participant_id), addressee: addressee ? logical(addressee) : null,
+      asked_at_revision: row.expected_rev });
+  }
+  return out;
+}
 
 function dependenciesFromState(content: string | null): Map<string, string[]> {
   const out = new Map<string, string[]>();
@@ -34,7 +79,7 @@ function dependenciesFromState(content: string | null): Map<string, string[]> {
 
 /**
  * Lit cycle, HALT, définition de phase, tâches, familles, dernier import et
- * événements evidence.add du cycle dans un seul lot ; `outputsSatisfied`
+ * événements evidence.add et clarify du cycle dans un seul lot ; `outputsSatisfied`
  * est fourni par l'appelant (moteur de phase existant).
  */
 export async function readControllerSnapshot(db: D1Database, cycleId: string,
@@ -43,7 +88,7 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
   const importKey = STATE_IMPORT_KEY_PREFIX + cycleId + ':';
   const importSeq = "COALESCE((SELECT MAX(seq) FROM events WHERE cycle_id = ?1 AND type = 'owner.decision'"
     + " AND participant_id = 'owner' AND substr(idempotency_key, 1, length(?2)) = ?2), 0)";
-  const [cycle, halt, def, tasks, families, imported, evidence] = await db.batch([
+  const [cycle, halt, def, tasks, families, imported, evidence, clarify] = await db.batch([
     db.prepare('SELECT phase, revision FROM cycles WHERE cycle_id = ?1').bind(cycleId),
     db.prepare("SELECT value FROM owner_flags WHERE name = 'halt'"),
     db.prepare('SELECT auto_advance FROM phase_definitions WHERE cycle_id = ?1 AND phase = (SELECT phase FROM cycles WHERE cycle_id = ?1)').bind(cycleId),
@@ -51,6 +96,8 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
     db.prepare('SELECT participant_id, family_id FROM participant_identity_families'),
     db.prepare('SELECT payload_json FROM events WHERE seq = ' + importSeq).bind(cycleId, importKey),
     db.prepare("SELECT seq, participant_id, payload_json, evidence_ref FROM events WHERE cycle_id = ?1 AND type = 'evidence.add' ORDER BY seq")
+      .bind(cycleId),
+    db.prepare("SELECT seq, type, participant_id, payload_json, expected_rev FROM events WHERE cycle_id = ?1 AND type IN ('clarify.ask', 'clarify.answer') ORDER BY seq DESC LIMIT " + CLARIFY_SCAN_LIMIT)
       .bind(cycleId),
   ]);
   const cycleRow = (cycle.results as Array<{ phase: string; revision: number }>)[0];
@@ -77,5 +124,6 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
     auto_advance: autoAdvance,
     outputs_satisfied: autoAdvance === 'none' ? false : await outputsSatisfied(cycleId),
     tasks: taskFacts,
+    questions: openQuestions([...(clarify.results as ClarifyRow[])].reverse(), tasks.results as TaskRow[], logical),
   };
 }
