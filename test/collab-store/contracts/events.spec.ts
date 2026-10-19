@@ -19,7 +19,8 @@ const base = {
 describe('CC-3 C1 store events', () => {
   it('accepts every declared event type with accept+reject coverage', () => {
     const types = [
-      'task.claim', 'task.status', 'task.handoff', 'checkpoint', 'evidence.add',
+      'task.claim', 'task.status', 'task.handoff', 'checkpoint',
+      'clarify.ask', 'clarify.answer', 'evidence.add',
       'objection.open', 'objection.resolve', 'proposal.submit', 'phase.request',
       'owner.request', 'memory.propose', 'memory.review', 'memory.consolidate',
       'memory.retire', 'manual_op.log',

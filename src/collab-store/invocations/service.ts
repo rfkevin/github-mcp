@@ -15,6 +15,7 @@ import {
   assertAutomationRunning, assertCents, assertReservable, assertReservationInput, budgetReservation,
   GLOBAL_BUDGET_SCOPE, HALT_ACTIVE_SQL, reserveStatements, settleStatements,
 } from '../owner/automation';
+import { truncateToUtf8Bytes } from '../executors/task-profiles';
 
 const WORKER_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const MAX_FAILURES = 2;
@@ -41,7 +42,7 @@ export function invocationReservationId(invocationId: string, attemptNo: number)
 
 /** 1 centime = 10 000 micro-unités (cost_microunits, A1). */
 const MICROUNITS_PER_CENT = 10_000;
-/** CC-5 L0 (X14) : borne de la sortie conservée pour le rejeu (64 KiB). */
+/** CC-5 L0/L1 (X14) : borne de la sortie conservée pour le rejeu (64 KiB, frontière UTF-8). */
 export const MAX_OUTPUT_TEXT = 65_536;
 
 export interface InvocationServiceOptions {
@@ -117,8 +118,6 @@ export class InvocationService {
     if (current.state !== 'queued' && current.state !== 'expired') {
       throw operationalError('INVOCATION_INCONSISTENT', 'invocation state is not leaseable: ' + current.state);
     }
-    // CC-4 A2 (revue #115 R3) : arrêt d'urgence — aucune nouvelle tentative ne démarre.
-    // Pré-check lisible ; la garde du lot ci-dessous le revérifie dans la transaction.
     await assertAutomationRunning(this.db);
     const reservationId = invocationReservationId(current.invocation_id, current.attempt_count + 1);
     assertReservationInput(reservationId, scope, cents);
@@ -142,14 +141,12 @@ export class InvocationService {
           ' FROM invocations WHERE wake_key = ?1',
         ].join(' ')).bind(wakeKey, now),
         this.db.prepare('DELETE FROM invocation_guard'),
-        // CC-4 A2 (revue #115 R4) : réserve du pire cas dans le MÊME lot que le lease.
         ...reserveStatements(this.db, { reservation_id: reservationId, scope, cents, at: now }),
       ]);
     } catch (error) {
       const winner = await this.requireWake(wakeKey);
       if (winner.state === 'succeeded' || winner.state === 'failed') return { status: 'terminal', invocation: winner };
       if (winner.state === 'leased' || winner.state === 'running') return { status: 'busy', invocation: winner };
-      // Ni gagnant ni rejeu : arrêt d'urgence (AUTOMATION_HALTED) puis budget (BUDGET_INSUFFICIENT).
       await assertReservable(this.db, scope, cents);
       throw error;
     }
@@ -181,7 +178,6 @@ export class InvocationService {
       if (current.state !== 'leased' || current.lease_owner !== workerId || (current.lease_expires_at ?? 0) <= now) {
         throw operationalError('INVOCATION_LEASE_LOST', 'lease is no longer valid before running');
       }
-      // CC-4 A2 : arrêt posé après le lease — l'exécution ne démarre pas (le bail expirera sans coût).
       await assertAutomationRunning(this.db);
       throw error;
     }
@@ -197,12 +193,11 @@ export class InvocationService {
     costCents = 0,
   ): Promise<InvocationRecord> {
     const outputHash = await sha256Hex(typeof output === 'string' ? output : String(output));
-    // CC-5 L0 (X14) : l'empreinte couvre la sortie COMPLÈTE ; seul le texte
-    // conservé pour le rejeu est borné.
+    // CC-5 L0/L1 (X14) : empreinte = sortie COMPLÈTE ; texte conservé borné UTF-8.
     return this.settle(wakeKey, workerId, {
       success: true,
       outputHash,
-      outputText: (typeof output === 'string' ? output : String(output)).slice(0, MAX_OUTPUT_TEXT),
+      outputText: truncateToUtf8Bytes(typeof output === 'string' ? output : String(output), MAX_OUTPUT_TEXT),
       error: '',
       usage: normalizeInvocationUsage(usage),
       evidenceRefs,
@@ -249,7 +244,6 @@ export class InvocationService {
     result: {
       success: boolean;
       outputHash: string;
-      /** CC-5 L0 (X14) : texte conservé borné ('' pour un échec ou un retry). */
       outputText: string;
       error: string;
       usage: InvocationUsage;
@@ -267,7 +261,6 @@ export class InvocationService {
     const failures = result.success ? 0 : current.consecutive_failures + 1;
     const nextState = result.success ? 'succeeded' : failures >= MAX_FAILURES ? 'failed' : 'queued';
     const evidence = evidenceJson(result.evidenceRefs);
-    // CC-4 A2 (revue #115 R4) : solde de la réserve de cette tentative, dans le même lot.
     assertCents(result.costCents, 'cost_cents');
     const reservationId = invocationReservationId(current.invocation_id, current.attempt_count);
     const reservation = await budgetReservation(this.db, reservationId);
@@ -292,7 +285,6 @@ export class InvocationService {
           ' finished_at = ?8, lease_owner = \'\', lease_expires_at = NULL,',
           ' usage_input_tokens = usage_input_tokens + ?9, usage_output_tokens = usage_output_tokens + ?10,',
           ' usage_operations = usage_operations + ?11, cost_microunits = cost_microunits + ?13, evidence_refs = ?12,',
-          // CC-5 L0 (X14) : sortie conservée bornée, dernier bind du lot.
           ' output_text = ?14',
           ' WHERE wake_key = ?1 AND lease_owner = ?2',
         ].join(' ')).bind(
@@ -328,13 +320,10 @@ export class InvocationService {
         || record.lease_expires_at === null || record.lease_expires_at > now) return false;
     const failures = record.consecutive_failures + 1;
     const nextState = failures >= MAX_FAILURES ? 'failed' : 'expired';
-    // CC-4 A2 (revue #115 R4) : solde de la réserve. Une tentative « running » a pu
-    // consommer : on compte le pire cas réservé ; « leased » n'a rien exécuté : 0.
     const reservationId = invocationReservationId(record.invocation_id, record.attempt_count);
     const reservation = await budgetReservation(this.db, reservationId);
     const countedCents = reservation && reservation.status === 'reserved' && record.state === 'running'
       ? reservation.reserved_cents : 0;
-    // Revue #115 R5 : le coût compté au budget est aussi porté au ledger A1 (invocation + tentative), même lot.
     const countedMicro = countedCents * MICROUNITS_PER_CENT;
     const settleBudget = reservation && reservation.status === 'reserved'
       ? settleStatements(this.db, { reservation_id: reservationId, scope: reservation.scope,

@@ -101,6 +101,89 @@ async function loadVisibleActiveMemory(
   return results.filter(row => memoryVisible(row.scope, ctx));
 }
 
+// CC-5 L2 : questions ouvertes du journal — clarify.ask sans clarify.answer lié
+// (payload $.ask_seq). Borné à 50 questions visibles (filtrage X13 avant
+// limite, correction test GPT-6 L2), seq croissant, question tronquée à 400.
+// X13 (review Claude R2) : une question adressée (payload $.to = participant,
+// ou rôle owner/reviewer/tester avec $.task) n'est rendue qu'à son auteur et
+// à son destinataire — le titulaire du rôle sur la tâche citée. Sans $.to ou
+// sans viewer, comportement inchangé (question publique).
+export const CLARIFY_ROLES = ['owner', 'reviewer', 'tester'] as const;
+
+export interface OpenQuestionViewer {
+  /** Identités logiques équivalentes du lecteur (familles #126 comprises). */
+  participantIds: ReadonlySet<string>;
+}
+
+export function clarifyVisible(
+  row: { participant_id: string; payload_json: string },
+  viewer: OpenQuestionViewer,
+  taskRoles: ReadonlyMap<string, { owner_pid: string; reviewer_pid: string; tester_pid: string }>,
+): boolean {
+  if (viewer.participantIds.has(row.participant_id)) return true; // l'auteur
+  let payload: Record<string, unknown> | null = null;
+  try {
+    payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+  } catch {
+    return true; // payload illisible : question publique
+  }
+  const to = payload?.to;
+  if (typeof to !== 'string' || !to) return true; // sans adressage : tous
+  if ((CLARIFY_ROLES as readonly string[]).includes(to)) {
+    const task = payload?.task;
+    if (typeof task !== 'string' || !task) return false; // rôle sans tâche : auteur seul
+    const roles = taskRoles.get(task);
+    if (!roles) return false; // tâche inconnue : auteur seul
+    const holder = to === 'owner' ? roles.owner_pid : to === 'reviewer' ? roles.reviewer_pid : roles.tester_pid;
+    return viewer.participantIds.has(holder);
+  }
+  return viewer.participantIds.has(to); // participant
+}
+
+export async function loadOpenQuestions(db: D1Database, cycleId: string, viewer?: OpenQuestionViewer): Promise<string[]> {
+  await ensureSchema(db);
+  // GPT-6 (L2) : le filtrage de visibilité précède la limite — la fenêtre
+  // rend 50 questions visibles, jamais 50 lignes brutes : des adressages
+  // aux tiers ne peuvent pas masquer une question visible plus récente.
+  const fetchPage = (afterSeq: number) => db.prepare([
+    'SELECT a.seq, a.participant_id, a.payload_json',
+    "FROM events a WHERE a.cycle_id = ?1 AND a.type = 'clarify.ask'",
+    "AND NOT EXISTS (SELECT 1 FROM events r WHERE r.cycle_id = a.cycle_id AND r.type = 'clarify.answer'",
+    "AND json_extract(r.payload_json, '$.ask_seq') = a.seq)",
+    'AND a.seq > ?2 ORDER BY a.seq LIMIT 50',
+  ].join(' ')).bind(cycleId, afterSeq)
+    .all<{ seq: number; participant_id: string; payload_json: string }>();
+  if (!viewer) {
+    const { results } = await fetchPage(0);
+    return results.map(formatOpenQuestion);
+  }
+  // X13 : les adressages par rôle se résolvent sur les tâches du cycle.
+  const tasks = await db.prepare('SELECT task_id, owner_pid, reviewer_pid, tester_pid FROM tasks WHERE cycle_id = ?1')
+    .bind(cycleId).all<{ task_id: string; owner_pid: string; reviewer_pid: string; tester_pid: string }>();
+  const taskRoles = new Map<string, { owner_pid: string; reviewer_pid: string; tester_pid: string }>(tasks.results.map(task => [task.task_id, task]));
+  const visible: { seq: number; participant_id: string; payload_json: string }[] = [];
+  let afterSeq = 0;
+  while (visible.length < 50) {
+    const { results } = await fetchPage(afterSeq);
+    if (results.length === 0) break;
+    afterSeq = results[results.length - 1].seq;
+    for (const row of results) {
+      if (visible.length >= 50) break;
+      if (clarifyVisible(row, viewer, taskRoles)) visible.push(row);
+    }
+  }
+  return visible.map(formatOpenQuestion);
+}
+
+function formatOpenQuestion(row: { seq: number; participant_id: string; payload_json: string }): string {
+  let question = '';
+  try {
+    question = String((JSON.parse(row.payload_json) as { question?: unknown }).question ?? '');
+  } catch {
+    question = '';
+  }
+  return '#' + row.seq + ' (' + row.participant_id + ') ' + question.slice(0, 400);
+}
 export async function buildRolePacket(
   db: D1Database,
   input: ResolveContextInput,
@@ -116,10 +199,19 @@ export async function buildRolePacket(
   if (!cycle) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + resolved.cycle_id);
 
   const maxTokens = effectiveBudget(options);
-  const openQuestions = [...(options.openQuestions ?? [])];
-  while (estimateTokens(openQuestions) > OPEN_QUESTIONS_BUDGET && openQuestions.length) openQuestions.pop();
-
   const equivalents = await equivalentParticipantIds(db, input.participant_id);
+  // CC-5 L2 : questions ouvertes du journal en tête — elles survivent au trim.
+  // X13 (review Claude R2) : une question adressée n'est rendue qu'à son
+  // auteur et à son destinataire, le rôle se résout sur la tâche citée.
+  const journalQuestions = await loadOpenQuestions(db, resolved.cycle_id, { participantIds: new Set(equivalents) });
+  const openQuestions = [...journalQuestions, ...(options.openQuestions ?? [])];
+  // Limite dédiée : les questions fournies par l'appelant cèdent d'abord
+  // (fin de liste), puis les questions du journal les plus récentes (§9).
+  // GPT-6 (L2) : les questions du journal retenues ici sont prioritaires —
+  // le trim global ne les écarte jamais silencieusement.
+  while (estimateTokens(openQuestions) > OPEN_QUESTIONS_BUDGET && openQuestions.length) openQuestions.pop();
+  const priorityQuestionCount = Math.min(journalQuestions.length, openQuestions.length);
+
   const visibilityCtx = {
     participantId: input.participant_id,
     participantIds: new Set(equivalents),
@@ -162,8 +254,12 @@ export async function buildRolePacket(
   }
 
   const trim = () => estimateTokens({ ...packet, budget: { ...packet.budget, estimated_tokens: 0 } });
+  // GPT-6 (L2) : une question du journal retenue dans la limite dédiée n'est
+  // jamais écartée par le trim global. Ordre de sacrifice : refs, puis
+  // questions fournies par l'appelant, puis mémoire ; au-delà, refus
+  // explicite PACKET_BUDGET_TOO_SMALL (jamais de perte silencieuse).
   while (trim() > maxTokens && packet.refs.items.length) packet.refs.items.pop();
-  while (trim() > maxTokens && packet.open_questions.length) packet.open_questions.pop();
+  while (trim() > maxTokens && packet.open_questions.length > priorityQuestionCount) packet.open_questions.pop();
   while (trim() > maxTokens && packet.memory.length) {
     const dropped = packet.memory.pop()!;
     excluded.push(dropped.id + '@' + dropped.version);
