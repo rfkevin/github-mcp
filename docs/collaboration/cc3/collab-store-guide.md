@@ -126,6 +126,13 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Définitions de phase** : installées par Kevin sur `/owner` (opération K-phases). Sans elles, `PHASE_DEFINITION_MISSING`.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `PHASE_ADVANCE_FORBIDDEN`, `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
 
+### `collab_next_actions`
+- **CC-5 L3d** : « que dois-je faire maintenant ? ». Entrée : `cycle`, et `all` optionnel (toutes les décisions du cycle, dont `merge_ready` pour Kevin). Identité toujours dérivée du jeton serveur ; client non associé → `UNREGISTERED_CLIENT`.
+- **Sortie** : `mode` (`active`, `halted`, `degraded`), `revision`, `participant` (identité logique, famille #126 comprise), `coordinator` (vrai si l'appelant tient le mandat actif L3c du cycle), `mine` (décisions qui le visent, plus les décisions `coordinator` s'il tient le mandat), `others` (nombre des autres décisions) et `all` si demandé.
+- **Décisions possibles** : `implement`, `review`, `test`, `renew_verdict` (verdict périmé ou sans head/base), `address_feedback` (verdict négatif au head courant), `answer_question` (question `clarify.ask` adressée à l'appelant), `renew_or_close_question` (question ouverte depuis au moins 40 révisions du cycle, X13), `open_task` (coordinateur : dépendances terminées), `merge` (Kevin : deux verdicts positifs au même head/base).
+- **Lecture seule** : calculé sur l'état courant, rien n'est journalisé ni exécuté (le journal `controller_decisions` est écrit par le passage programmé, désactivé par défaut : `CONTROLLER_CRON_ENABLED="true"` l'active). HALT → `halted` sans décision ; instantané illisible → `degraded` sans décision.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `STORE_UNAVAILABLE`.
+
 ### Identités logiques équivalentes (#126)
 
 Un identifiant de participant reste l’identité **historique** inscrite dans les événements, tâches, mémoires et preuves. L’owner peut toutefois relier plusieurs identifiants actifs à une même `family_id` logique via une demande exécutable `set_identity_family`. Exemple voulu par Kevin : `gpt6` et `sol` restent visibles séparément, mais appartiennent tous deux à la famille `chatgpt`.
