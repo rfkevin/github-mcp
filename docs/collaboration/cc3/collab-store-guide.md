@@ -531,3 +531,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | HTTP 503 « Métadonnées du client indisponibles » | Métadonnées OAuth du client momentanément illisibles | Réessayer après `Retry-After` |
 | HTTP 503 `STORE_UNAVAILABLE` | `COLLAB_DB` absent ou en panne | Section 5 |
 | `/owner` répond 
+
+### Codes d'erreur du gate CC-5 L4 (complément à la section 7)
+
+Le gate L4 est désactivé par défaut et ne doit jamais transformer un refus en fusion implicite. Codes émis par l'adaptateur et l'exécuteur : `L4_INVALID_TARGET` (cible PR invalide), `L4_TARGET_CHANGED` (SHA ou tâche modifiés), `L4_CLOSURE_NOT_CONFIRMED` (fermeture non attestée), `L4_MERGE_DISABLED` (activation owner absente), `L4_GATE_DENIED` (contrôles D12/CI/HALT/lease insuffisants), `L4_CLAIM_DENIED` (intention D1 refusée ou déjà consommée), `BASE_OR_HEAD_CHANGED` (SHA GitHub divergents), `L4_INVALID_MERGE_SHA` (SHA de fusion invalide), `L4_PRE_PATCH_DENIED` (contrôles périmés avant PATCH), `L4_REST_TARGET_INVALID` (paramètres du port GitHub invalides), `L4_INVALID_BASE` (base invalide), `L4_TEMP_MISMATCH` (branche temporaire inattendue), `L4_MERGE_RESULT_UNKNOWN` (fusion temporaire non confirmée), `L4_INVALID_REF_SHA` (ref GitHub invalide), `L4_INVALID_HEAD` (head PR invalide), `BASE_CHANGED` (PATCH GitHub refusé, notamment HTTP 422). La réconciliation des intentions ne relance jamais une fusion.
