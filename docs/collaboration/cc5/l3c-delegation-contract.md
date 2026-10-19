@@ -43,4 +43,4 @@ Le lot atomique doit vérifier le mandat courant, la non-révocation, la validit
 
 ## État de cette branche
 
-Ce document décrit les invariants de sécurité ; **il ne constitue pas l'implémentation exécutable L3c**. Le code, les tests négatifs et la CI au SHA final restent nécessaires avant toute validation D12. Ne pas fusionner cette branche sur la seule base de ce document. Kevin reste seul autorisé à fusionner les chemins protégés.
+L'implémentation L3c est présente dans cette branche : mandat owner, approbation indépendante et exécution déléguée `install_phases` avec garde transactionnelle. Les autres actions non prises en charge restent refusées. La CI du SHA final, la revue indépendante Vibe et les tests Grok sont requis avant sortie du brouillon. Kevin reste seul autorisé à fusionner les chemins protégés.
