@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
+import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { AUTOFIX_SCHEMA, claimAutoFix, stableProblemId, rotateCorrector, type AutoFixClaim } from '../../../src/collab-store/autofix/circuit-breaker';
 
 const db=(env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
@@ -11,11 +12,9 @@ const base:AutoFixClaim={
  correctorChannel:'api',reviewerChannel:'trusted',testerChannel:'trusted',
 };
 beforeEach(async()=>{
- await db.batch([
- db.prepare('CREATE TABLE IF NOT EXISTS cycles (cycle_id TEXT PRIMARY KEY,status TEXT)'),
- db.prepare('CREATE TABLE IF NOT EXISTS owner_flags (name TEXT PRIMARY KEY,value TEXT)'),
- ...AUTOFIX_SCHEMA.map(s=>db.prepare(s)),
- ]);
+ await ensureSchema(db);
+ await db.batch(AUTOFIX_SCHEMA.map(s=>db.prepare(s)));
+ await db.prepare("INSERT INTO owner_flags(name,value,updated_at) VALUES ('halt','0',0) ON CONFLICT(name) DO UPDATE SET value='0'").run();
  base.cycle='l6pilot-'+(++serial);
  await db.prepare('INSERT INTO cycles(cycle_id,status) VALUES (?1,?2)').bind(base.cycle,'open').run();
 });
@@ -52,9 +51,9 @@ describe('L6 D2 circuit breaker',()=>{
   expect((await claimAutoFix(db,{...base,tester:'gpt6'})).accepted).toBe(false);
  });
  it('HALT blocks both first-failure registration and claim in the same batch',async()=>{
-  await db.prepare("INSERT INTO owner_flags VALUES ('halt','1')").run();
+  await db.prepare("UPDATE owner_flags SET value='1' WHERE name='halt'").run();
   expect((await claimAutoFix(db,base)).accepted).toBe(false);
-  const row=await db.prepare('SELECT count(*) AS n FROM cc5_autofix_problems').first<{n:number}>();
+  const row=await db.prepare('SELECT count(*) AS n FROM cc5_autofix_problems WHERE cycle=?1').bind(base.cycle).first<{n:number}>();
   expect(row?.n).toBe(0);
  });
 });
