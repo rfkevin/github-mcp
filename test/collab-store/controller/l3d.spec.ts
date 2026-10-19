@@ -162,10 +162,10 @@ describe('CC-5 L3d — passage programmé', () => {
     const closed = uniq('sched-closed');
     await seed(open);
     await insertCycleRow(db, closed, 'P6', 'closed');
-    const results = await runScheduledControllers(db);
+    const { cycles: results } = await runScheduledControllers(db);
     expect(results.find(r => r.cycle_id === open)).toMatchObject({ mode: 'active', recorded: 1 });
     expect(results.some(r => r.cycle_id === closed)).toBe(false);
-    expect((await runScheduledControllers(db)).find(r => r.cycle_id === open)).toMatchObject({ recorded: 0 });
+    expect((await runScheduledControllers(db)).cycles.find(r => r.cycle_id === open)).toMatchObject({ recorded: 0 });
   });
 
   it('handler scheduled du Worker : inerte sans CONTROLLER_CRON_ENABLED="true"', async () => {

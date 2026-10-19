@@ -16,7 +16,7 @@ import { nextActors, type ControllerSnapshot, type Decision } from './rules';
 import { readControllerSnapshot } from './snapshot';
 
 export type ControllerRunResult =
-  | { mode: 'active'; revision: number; decisions: Decision[]; recorded: number }
+  | { mode: 'active'; revision: number; decisions: Decision[]; recorded: number; reminded: number }
   | { mode: 'halted'; revision: number; decisions: []; recorded: 0 }
   | { mode: 'degraded'; error: string; decisions: []; recorded: 0 };
 
@@ -58,7 +58,7 @@ export async function runController(db: D1Database, cycleId: string, options: Co
     });
     // HALT posé après l'instantané : rien n'a été écrit, aucune décision n'est rendue.
     if (journal.halted) return { mode: 'halted', revision: snapshot.revision, decisions: [], recorded: 0 };
-    return { mode: 'active', revision: snapshot.revision, decisions, recorded: journal.recorded.length };
+    return { mode: 'active', revision: snapshot.revision, decisions, recorded: journal.recorded.length, reminded: journal.reminded.length };
   } catch {
     // Fail-closed : une décision non journalisée n'existe pas.
     return { mode: 'degraded', error: 'CONTROLLER_JOURNAL_UNAVAILABLE', decisions: [], recorded: 0 };
