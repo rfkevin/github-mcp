@@ -9,7 +9,8 @@ import {
 } from '../../collab/contracts';
 
 export const TASK_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
-const PID_RE = /^[a-z0-9][a-z0-9:_-]{0,127}$/i;
+export const TASK_PID_RE = /^[a-z0-9][a-z0-9:_-]{0,127}$/i;
+const PID_RE = TASK_PID_RE;
 
 export interface TaskAssignment {
   task_id: string;
