@@ -85,10 +85,26 @@ viendra avec le déclenchement Cron. `UPDATE` et `DELETE` sont refusés par trig
 - Tests : `test/collab-store/controller/l3d-2b1.spec.ts` (8). Contre-épreuves faites : sans fencing, sans plafond,
   clé de rappel non déterministe, chercheur non isolé, `passId` aléatoire — chacune fait échouer au moins un test.
 
-## Hors incrément 2b-1 (suite de l3d)
+## Incrément 2b-2a — lignes « à relayer » sur /owner
+
+- `controller/relay.ts` : `relayLines(db)` lit en **lecture seule** les décisions courantes du contrôleur
+  (`previewNextActions`, `all`) pour au plus `RELAY_CYCLE_LIMIT` (20) cycles ouverts et rend au plus
+  `RELAY_LINE_LIMIT` (50) messages prêts à copier : destinataire lisible (`participants.display_label`,
+  « Kevin », titulaire du mandat L3c pour les décisions `coordinator`, « Kevin (poste de coordinateur vacant) »
+  sinon), action, tâche, couple head/base abrégé, cycle et motif. « Depuis » = première écriture de la décision
+  dans le journal (null tant que le passage programmé ne l'a pas journalisée).
+- Rien n'est écrit ni exécuté (ni journal, ni révision) ; les décisions `policy:*` sont omises ; HALT ou cycle
+  illisible → aucune ligne pour ce cycle ; une panne n'empêche jamais la page (`.catch(() => [])`).
+- /owner : section « À relayer (n) » après les demandes en attente, sans formulaire ni script, valeurs échappées.
+  **Chemins protégés touchés** : `src/collab-store/owner/{handler,page}.ts` (lecture et rendu seulement) → fusion
+  par Kevin à la main.
+- Tests : `test/collab-store/controller/l3d-2b2.spec.ts` (8). Contre-épreuves : sans échappement, aperçu remplacé
+  par un passage qui écrit, cycles fermés inclus — chacune fait échouer au moins un test.
+
+## Hors incrément 2b-2a (suite de l3d)
 
 - Déclenchement par webhook GitHub, puis exécution des décisions derrière les gates existantes
-  (avance par policy, dispatch A1 des workers, ligne « à relayer » sur `/owner` pour les agents de chat).
+  (avance par policy, dispatch A1 des workers).
 - File des échecs (Queues, voir le comparatif ci-dessous).
 - Phases souples B1 (`round.add`, `phase.reopen`, `phase.skip`, `correction.request`) et réattribution (C1, contrat A08).
 - Mesure : décisions par passage, réveils manuels évités (W0).

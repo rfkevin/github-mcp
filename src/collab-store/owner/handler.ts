@@ -22,6 +22,7 @@ import { listActiveCoordinators } from './coordinators';
 import { appointCycleCoordinator } from './delegation-execution';
 import { setExecutorNotes } from './executor-notes';
 import { listIdentityFamilies } from '../identity/families';
+import { relayLines } from '../controller/relay';
 
 export const OWNER_PATH = '/owner';
 // CC-3 C6 : un import d'état CC-STATE-1 (≤ 256 Kio) passe par ce formulaire ; marge pour l'encodage.
@@ -69,6 +70,8 @@ async function dashboardData(db: D1Database, before?: number) {
     budget: await budgetEnvelope(db),
     coordinators: await listActiveCoordinators(db),
     executors: await capabilityMatrix(db),
+    // CC-5 l3d 2b-2a : messages à relayer (lecture seule ; une panne n'empêche jamais la page).
+    relay: await relayLines(db).catch(() => []),
   };
 }
 

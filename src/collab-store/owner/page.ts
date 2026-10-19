@@ -2,6 +2,7 @@
  * CC-3 C5 — /owner HTML. No script, no remote resource, no secret echoed:
  * every password field is rendered empty.
  */
+import type { RelayLine } from '../controller/relay';
 import type { OwnerChannelConfig } from './config';
 import type { DescribedPendingPage, PendingWithExecutable } from './executable';
 import type { BudgetEnvelope } from './automation';
@@ -90,6 +91,8 @@ export interface DashboardData {
   coordinators?: Array<{ participant_id: string; display_label: string; event_seq: number | null; updated_at: number }>;
   /** CC-4 A3/A4 : matrice des endpoints d'exécution (§4.1), avec notes owner. */
   executors?: CapabilityRow[];
+  /** CC-5 l3d 2b-2a : décisions courantes du contrôleur à relayer aux agents (lecture seule). */
+  relay?: RelayLine[];
 }
 
 export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): string {
@@ -115,6 +118,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
         + '<input type="hidden" name="before" value="' + data.pending.next_before + '">' + secret
         + '<p><button type="submit">Demandes plus anciennes</button></p></form>'
       : '')
+    + relaySection(data.relay ?? [])
     + automationSection(data.halted ?? false, data.budget, secret)
     + coordinatorSection(data.coordinators ?? [])
     + '<h2>Mandat coordinateur par cycle (CC-5)</h2>'
@@ -238,6 +242,15 @@ function identityFamilySection(rows: Array<{ family_id: string; members: string[
   return '<h2>Identités logiques</h2><p class="note">Les identifiants restent distincts dans l’historique, mais une même famille compte comme un seul principal D12 et partage les droits de reprise.</p>'
     + (body ? '<table><tr><th>Identité</th><th>Identifiants historiques</th><th>Décision owner</th></tr>' + body + '</table>'
       : '<p class="note">Aucune équivalence configurée.</p>');
+}
+
+function relaySection(rows: RelayLine[]): string {
+  const body = rows.map(row => '<tr><td>' + escapeHtml(row.label) + '</td><td>' + escapeHtml(row.message) + '</td><td>'
+    + (row.since === null ? '—' : escapeHtml(new Date(row.since * 1000).toISOString().slice(0, 16).replace('T', ' ')) + ' UTC')
+    + '</td></tr>').join('');
+  return '<h2>À relayer (' + rows.length + ')</h2>'
+    + '<p class="note">Décisions courantes du contrôleur, en lecture seule : rien n’est envoyé ni exécuté. Copier le message à l’agent concerné.</p>'
+    + (body ? '<table><tr><th>Pour</th><th>Message</th><th>Depuis</th></tr>' + body + '</table>' : '<p class="note">Rien à relayer.</p>');
 }
 
 function coordinatorSection(rows: Array<{ participant_id: string; display_label: string; event_seq: number | null }>): string {
