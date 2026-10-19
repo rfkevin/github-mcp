@@ -126,6 +126,18 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Définitions de phase** : installées par Kevin sur `/owner` (opération K-phases). Sans elles, `PHASE_DEFINITION_MISSING`.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `PHASE_ADVANCE_FORBIDDEN`, `PHASE_TRANSITION_FORBIDDEN`, `PHASE_ENTRY_CONDITIONS_UNMET`, `PHASE_DEFINITION_MISSING`, `POLICY_NOT_AUTHORIZED`, `PHASE_OUTPUTS_INCOMPLETE`, `PHASE_EXIT_CONDITIONS_UNMET`, `STALE`.
 
+### `collab_phase_adjust`
+- **CC-5 L3d, phases souples B1** : le workflow P1–P6 devient une boîte à outils pilotée par le coordinateur. Réservé au participant qui tient le **mandat actif du cycle** (nommé par Kevin sur `/owner`, famille #126 comprise) ; identité issue du jeton serveur. Sinon `UNREGISTERED_CLIENT` ou `SOFT_PHASE_FORBIDDEN`, sans effet.
+- **Entrée** : `cycle`, `expected_rev`, `op`, `reason` (10 à 500 caractères, journalisée), `op_id` strict `{client}:{cycle}:{op}:{n}` (votre participant, ce cycle), `target_phase` (obligatoire pour `phase.reopen`, sinon déduite et vérifiée).
+- **Opérations** :
+  - `round.add` : nouveau tour de la phase courante (par exemple un second tour de P2 sans consensus) ;
+  - `phase.reopen` : retour à une phase antérieure ;
+  - `phase.skip` : passage à la phase suivante quand la phase courante est facultative.
+- **Effet** : un `phase.advance` de rôle `coordinator` avec `{op, from, to, reason, mandate_epoch, extra_rounds}`, et la révision du cycle avance. La nouvelle ronde repart de zéro : sorties attendues comptées depuis cet événement, une nouvelle proposition par participant possible. Les scellés de la ronde quittée sont révélés, jamais rouverts. D12 n'est pas touché : un verdict reste lié à son couple head/base.
+- **Vérifié dans le lot d'écriture** : mandat à l'époque lue, HALT absent (`AUTOMATION_HALTED`), cycle ouvert à la révision et à la phase attendues (`STALE`), au plus **3 tours par phase** (`round.add` et `phase.reopen` comptent pour la phase visée) et **10 réorganisations par cycle** (`SOFT_PHASE_LIMIT` : résumer le désaccord et demander l'arbitrage de Kevin). Les définitions de phase source et cible doivent être **identiques à celles lues** (CAS dans le lot) : les protections du saut et les conditions d'entrée ne se contournent pas en modifiant une définition pendant l'opération. Un changement entre les vérifications et l'écriture donne `SOFT_PHASE_PRECONDITION_FAILED`, rien n'est écrit. Une définition illisible est refusée (`SOFT_PHASE_PROTECTED`, fail-closed). Rejeu : l'intention d'un `op_id` comprend `op`, `reason`, `expected_rev` et la cible explicite ; une différence donne `IDEMPOTENCY_CONFLICT`.
+- **Non contournable** : `phase.skip` refuse P5, la validation de Kevin (`SOFT_PHASE_PROTECTED`), une phase qui porte des conditions de sortie (`SOFT_PHASE_PROTECTED`) et un tour scellé, c'est-à-dire une sortie `proposal.submit` attendue ou un scellé non révélé (`SOFT_PHASE_SEALED`). La cible doit avoir une définition et des conditions d'entrée satisfaites.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `SOFT_PHASE_FORBIDDEN`, `SOFT_PHASE_INVALID`, `SOFT_PHASE_LIMIT`, `SOFT_PHASE_PROTECTED`, `SOFT_PHASE_SEALED`, `SOFT_PHASE_PRECONDITION_FAILED`, `PHASE_DEFINITION_MISSING`, `PHASE_ENTRY_CONDITIONS_UNMET`, `INVALID_OP_ID`, `IDEMPOTENCY_CONFLICT`, `AUTOMATION_HALTED`, `UNKNOWN_CYCLE`, `STALE`.
+
 ### `collab_next_actions`
 - **CC-5 L3d** : « que dois-je faire maintenant ? ». Entrée : `cycle`, et `all` optionnel (toutes les décisions du cycle, dont `merge_ready` pour Kevin). Identité toujours dérivée du jeton serveur ; client non associé → `UNREGISTERED_CLIENT`.
 - **Sortie** : `mode` (`active`, `halted`, `degraded`), `revision`, `participant` (identité logique, famille #126 comprise), `coordinator` (vrai si l'appelant tient le mandat actif L3c du cycle), `mine` (décisions qui le visent, plus les décisions `coordinator` s'il tient le mandat), `others` (nombre des autres décisions) et `all` si demandé.
@@ -427,6 +439,12 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `PHASE_OUTPUTS_INCOMPLETE` | C3 | Sorties attendues non produites par des participants distincts | Compléter |
 | `PHASE_EXIT_CONDITIONS_UNMET` | C3 | Conditions de sortie non remplies | — |
 | `POLICY_NOT_AUTHORIZED` | C3 | Politique d’avance non autorisée pour cette phase | `phase.request` |
+| `SOFT_PHASE_FORBIDDEN` | CC-5 l3d | `collab_phase_adjust` appelé par un participant qui ne tient pas le mandat actif du cycle | Passer par le coordinateur nommé, ou demander à Kevin |
+| `SOFT_PHASE_INVALID` | CC-5 l3d | Réorganisation mal formée : op inconnue, justification hors 10–500 caractères, cible incohérente (reopen vers une phase non antérieure, rien après P6), cycle fermé | Corriger l'entrée |
+| `SOFT_PHASE_LIMIT` | CC-5 l3d | 3 tours déjà atteints pour la phase visée, ou 10 réorganisations pour le cycle | Résumer le désaccord et demander l'arbitrage de Kevin |
+| `SOFT_PHASE_PROTECTED` | CC-5 l3d | `phase.skip` de P5 (validation owner) ou d'une phase à conditions de sortie, ou définition de phase illisible (fail-closed) | Faire la phase, ou faire corriger la définition par Kevin |
+| `SOFT_PHASE_SEALED` | CC-5 l3d | `phase.skip` d'un tour scellé (sortie `proposal.submit` attendue ou scellé non révélé) | Terminer le tour scellé |
+| `SOFT_PHASE_PRECONDITION_FAILED` | CC-5 l3d | Mandat, budget, scellé ou définition de phase changé entre les vérifications et le lot d'écriture : rien n'est écrit | Relire l'état et réessayer |
 | `NO_ACTIVE_CYCLE` | A0/L2 | Sans issue ni cycle : aucun cycle ouvert où le participant tient un rôle (y compris sur la tâche nommée par `task`, précisée dans le message) | Fournir `issue` ou `cycle` |
 | `AMBIGUOUS_CYCLE` | A0 | Sans issue ni cycle : plusieurs cycles ouverts avec un rôle (liste dans le message) | Fournir `issue`, `cycle` ou filtrer par `task` |
 | `UNKNOWN_ISSUE` | C3 | Aucun cycle pour cette issue | — |

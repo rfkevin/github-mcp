@@ -6,6 +6,9 @@ import {
 } from '../../../src/collab-store/owner/automation';
 import { advanceGuarded } from '../../../src/collab-store/phases/gate';
 import { installPhaseDefinitions } from '../../../src/collab-store/owner/phase-install';
+import { adjustPhase } from '../../../src/collab-store/phases/soft';
+import { registerParticipant } from '../../../src/collab-store/owner/decisions';
+import { appointCycleCoordinator } from '../../../src/collab-store/owner/delegation-execution';
 
 // CC-4 A2 (github-mcp#113, plan §6.5/§7) — arrêt d'urgence et enveloppe budgétaire.
 // Base dédiée (COLLAB_DB_C6_RESTORE) : le drapeau halt est global à une base, il ne
@@ -60,6 +63,36 @@ describe('CC-4 A2 — arrêt d’urgence', () => {
       .toBe('AUTOMATION_HALTED');
     expect(posed).toBe(true);
     expect(await db.prepare('SELECT revision, phase FROM cycles WHERE cycle_id = ?1').bind(cycle).first()).toEqual(before);
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type = 'phase.advance'").bind(cycle)
+      .first<{ n: number }>()).toEqual({ n: 0 });
+  });
+  it('CC-5 l3d 2c-1 : HALT arrête aussi les phases souples du coordinateur, posé avant ou pendant (garde dans le lot)', async () => {
+    const cycle = uniq('soft');
+    const holder = uniq('coord');
+    await registerParticipant(db, { participant_id: holder, display_label: holder, proof, op: uniq('reg') });
+    await installPhaseDefinitions(db, { cycle_id: cycle, definitions: JSON.stringify([{ phase: 'P1' }, { phase: 'P2' }, { phase: 'P3' }]), proof });
+    await appointCycleCoordinator(db, { cycleId: cycle, participantId: holder, familyId: holder, expectedEpoch: 0, proof, op: uniq('appoint') });
+    const state = async () => (await db.prepare('SELECT revision, phase FROM cycles WHERE cycle_id = ?1').bind(cycle)
+      .first<{ revision: number; phase: string }>())!;
+    const before = await state();
+    let k = 0;
+    const skip = (extra: Record<string, unknown> = {}) => adjustPhase(db, { cycle_id: cycle, participant_id: holder, op: 'phase.skip',
+      expected_revision: before.revision, reason: 'P1 sans objet pour ce cycle.', op_id: holder + ':' + cycle + ':soft:' + (++k), ...extra });
+
+    await setAutomationHalt(db, { halted: true, proof, op: uniq('halt') });
+    expect(await codeOf(skip())).toBe('AUTOMATION_HALTED');
+    expect(await state()).toEqual(before);
+    await setAutomationHalt(db, { halted: false, proof, op: uniq('resume') });
+
+    let posed = false;
+    // Le hook des conditions d'entrée s'exécute après le pré-check HALT et avant le lot d'écriture.
+    const conditionsSatisfied = async () => {
+      if (!posed) { posed = true; await setAutomationHalt(db, { halted: true, proof, op: uniq('toctou-halt') }); }
+      return true;
+    };
+    expect(await codeOf(skip({ conditionsSatisfied }))).toBe('AUTOMATION_HALTED');
+    expect(posed).toBe(true);
+    expect(await state()).toEqual(before);
     expect(await db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type = 'phase.advance'").bind(cycle)
       .first<{ n: number }>()).toEqual({ n: 0 });
   });
