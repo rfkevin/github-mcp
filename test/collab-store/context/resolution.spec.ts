@@ -65,3 +65,44 @@ describe('CC-3 C3 — issue -> cycle -> participant -> task', () => {
       .rejects.toMatchObject({ code: 'INVALID_ISSUE_REF' });
   });
 });
+
+
+describe('CC-5 L2 — sélection de tâche explicite', () => {
+  it('TASK_UNKNOWN : un task fourni absent du cycle échoue explicitement', async () => {
+    const cycle = await setup();
+    await expect(resolveContextTarget(db, { cycle, participant_id: 'vibe', task: 'ghost' }))
+      .rejects.toMatchObject({ code: 'TASK_UNKNOWN' });
+  });
+
+  it('TASK_NOT_HELT : la tâche existe mais le participant ne la tient pas', async () => {
+    const cycle = await setup();
+    await expect(resolveContextTarget(db, { cycle, participant_id: 'grok', task: 'c3' }))
+      .rejects.toMatchObject({
+        code: 'TASK_NOT_HELT',
+        message: expect.stringContaining('« c3 »'),
+      });
+  });
+
+  it('TASK_NOT_HELT précise le rôle tenu quand un role différent est exigé', async () => {
+    const cycle = await setup();
+    await expect(resolveContextTarget(db, { cycle, participant_id: 'vibe', task: 'c3', role: 'reviewer' }))
+      .rejects.toMatchObject({
+        code: 'TASK_NOT_HELT',
+        message: expect.stringContaining('vous êtes tester, pas reviewer'),
+      });
+  });
+
+  it('AMBIGUOUS_TASK suggère la sélection au lieu de rendre un packet sans tâche', async () => {
+    const cycle = await setup();
+    await db.prepare([
+      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
+      "VALUES ('c6', ?1, 'muse', 'claude', 'vibe', 'proposed', '[]', '', '', 1)",
+    ].join(' ')).bind(cycle).run();
+    const outcome = await resolveContextTarget(db, { cycle, participant_id: 'vibe' })
+      .then(() => null, e => e as { code: string; message: string });
+    expect(outcome).not.toBeNull();
+    expect(outcome!.code).toBe('AMBIGUOUS_TASK');
+    expect(outcome!.message).toContain('c3 (tester)');
+    expect(outcome!.message).toContain('Fournissez task');
+  });
+});

@@ -370,3 +370,47 @@ describe('F5 A09 — collab_get_context packet + mémoire', () => {
     expect((exp.structuredContent.content as string).length).toBeGreaterThan(0);
   });
 });
+
+
+describe('CC-5 L2 — clarify et sélection explicite (outils réels)', () => {
+  it('clarify.ask alimente packet.open_questions, clarify.answer la ferme', async () => {
+    const handlers = registry(makeContext());
+    const cycleId = cycle('clarify');
+    const ask = await handlers.get('collab_append_event')!({
+      cycle: cycleId, expected_rev: 0, op_id: 'agent.a:' + cycleId + ':ask:1', type: 'clarify.ask',
+      participant_id: 'agent:a', payload_json: JSON.stringify({ question: 'Question L2 ?', subject: 'clarify', task: 't1' }),
+    });
+    if (ask.isError) throw new Error('clarify.ask: ' + JSON.stringify(ask.structuredContent));
+    const askSeq = (ask.structuredContent.event as { seq: number }).seq;
+    const ctx1 = await handlers.get('collab_get_context')!({ cycle: cycleId });
+    if (ctx1.isError) throw new Error('get_context après ask : ' + JSON.stringify(ctx1.structuredContent));
+    const open1 = (ctx1.structuredContent.packet as { open_questions: string[] }).open_questions;
+    expect(open1).toHaveLength(1);
+    expect(open1[0]).toBe('#' + askSeq + ' (agent:a) Question L2 ?');
+    const ans = await handlers.get('collab_append_event')!({
+      cycle: cycleId, expected_rev: 1, op_id: 'agent.a:' + cycleId + ':ans:1', type: 'clarify.answer',
+      participant_id: 'agent:a', payload_json: JSON.stringify({ ask_seq: askSeq, answer: 'réponse L2' }),
+    });
+    if (ans.isError) throw new Error('clarify.answer: ' + JSON.stringify(ans.structuredContent));
+    const ctx2 = await handlers.get('collab_get_context')!({ cycle: cycleId });
+    if (ctx2.isError) throw new Error('get_context après answer : ' + JSON.stringify(ctx2.structuredContent));
+    expect((ctx2.structuredContent.packet as { open_questions: string[] }).open_questions).toHaveLength(0);
+  });
+
+  it('task fourni : TASK_NOT_HELT si non tenu, TASK_UNKNOWN si absent', async () => {
+    const handlers = registry(makeContext());
+    const cycleId = cycle('select');
+    await handlers.get('collab_append_event')!(appendInput(cycleId, 0, 'cp:1'));
+    await bindings.COLLAB_DB_C2.prepare([
+      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
+      "VALUES ('t1', ?1, 'agent:b', 'agent:c', 'agent:d', 'in_progress', '[]', '', '', 1)",
+    ].join(' ')).bind(cycleId).run();
+    const held = await handlers.get('collab_get_context')!({ cycle: cycleId, task: 't1' });
+    expect(held.isError).toBe(true);
+    expect((held.structuredContent.error as { code: string }).code).toBe('TASK_NOT_HELT');
+    expect((held.structuredContent.error as { message: string }).message).toContain('« t1 »');
+    const ghost = await handlers.get('collab_get_context')!({ cycle: cycleId, task: 'ghost' });
+    expect(ghost.isError).toBe(true);
+    expect((ghost.structuredContent.error as { code: string }).code).toBe('TASK_UNKNOWN');
+  });
+});
