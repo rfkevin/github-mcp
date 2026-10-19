@@ -2,7 +2,8 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
 import { AUTOFIX_SCHEMA, claimAutoFix, type AutoFixClaim } from '../../../src/collab-store/autofix/circuit-breaker';
 
-const db=env.DB;
+const db=(env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
+let serial=0;
 const base:AutoFixClaim={
  cycle:'l6pilot',problemId:'a'.repeat(64),failureRef:'ci:failed:first',
  now:1792410000,corrector:'gpt6',reviewer:'grok',tester:'vibe',
@@ -14,11 +15,8 @@ beforeEach(async()=>{
  db.prepare('CREATE TABLE IF NOT EXISTS owner_flags (name TEXT PRIMARY KEY,value TEXT)'),
  ...AUTOFIX_SCHEMA.map(s=>db.prepare(s)),
  ]);
- await db.prepare('DELETE FROM cc5_autofix_attempts').run();
- await db.prepare('DELETE FROM cc5_autofix_problems').run();
- await db.prepare('DELETE FROM cycles').run();
- await db.prepare('DELETE FROM owner_flags').run();
- await db.prepare("INSERT INTO cycles VALUES ('l6pilot','open')").run();
+ base.cycle='l6pilot-'+(++serial);
+ await db.prepare('INSERT INTO cycles(cycle_id,status) VALUES (?1,?2)').bind(base.cycle,'open').run();
 });
 describe('L6 D2 circuit breaker',()=>{
  it('registers the first failure once and limits a stable problem to two attempts',async()=>{
