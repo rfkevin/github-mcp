@@ -5,7 +5,8 @@ const base = { cycleId: 'cc5-auto2-infra', envelopeCents: 0 };
 const params: Record<string, Record<string, unknown>> = {
   import_state: { cycle_id: base.cycleId, markdown: 'state' },
   install_phases: { cycle_id: base.cycleId, definitions: '[]' },
-  reassign_task: { cycle_id: base.cycleId, task_id: 'l3c', owner_pid: 'a', reviewer_pid: 'b', tester_pid: 'c' },
+  reassign_task: { cycle_id: base.cycleId, task_id: 'l3c', owner_pid: 'a', reviewer_pid: 'b', tester_pid: 'c',
+    expected_revision: 1, expected_owner_pid: 'd', expected_reviewer_pid: 'e', expected_tester_pid: 'f' },
   open_round: { cycle_id: base.cycleId, round_id: 'r2' },
   change_phase: { cycle_id: base.cycleId, phase: 'P6' },
   close_issue: { repository: 'rfkevin/github-mcp', issue_number: 154 },

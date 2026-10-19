@@ -128,11 +128,29 @@ viendra avec le déclenchement Cron. `UPDATE` et `DELETE` sont refusés par trig
   seconde au lieu de l'heure, file non isolée dans le passage, échecs placés en fin de liste, lecture des échecs
   non isolée — chacune fait échouer au moins un test.
 
-## Hors incrément 2b-2b, premier volet (suite de l3d)
+## Incrément 2b-2c — réattribution d'une tâche (acte owner exécutable)
+
+- `src/collab-store/owner/task-reassign.ts` (**chemin protégé owner**) : action exécutable `reassign_task`
+  (`EXECUTABLE_ACTIONS`), même circuit que `install_phases` : un agent dépose la demande, Kevin l'approuve sur `/owner`.
+- Garde dans le lot d'écriture : demande non tranchée et dernière réattribution de la tâche inchangée
+  (`previous_seq`), CAS sur la tâche (révision attendue **et** rôles lus au dépôt, figés dans les paramètres
+  `expected_owner_pid` / `expected_reviewer_pid` / `expected_tester_pid`, donc dans l'empreinte approuvée — revue
+  GPT-6 #177 : un changement de rôles sans changement de révision suffit à refuser), tâche ouverte (ni `done` ni
+  `verified` ; `blocked` reste réattribuable), trois participants
+  actifs, trois identités logiques distinctes (familles #126). La tâche prend la révision du cycle : l'épisode change,
+  les réveils sont réarmés pour les nouveaux titulaires (testé avec `previewNextActions`).
+- Non délégable (preuve déléguée refusée) : la garde déléguée de `binding.ts` ne couvre que `install_phases` ; l'étendre
+  est une révision du contrat l3c. La politique déclarative `delegation-policy.ts` refuse aussi
+  (`owner_guard_not_delegable`), y compris en approbation imbriquée. Un acte de Kevin n'est pas bloqué par HALT (comme `import_state`).
+- Tests : `test/collab-store/owner/task-reassign.spec.ts` (11), dont une course réelle (rôles changés entre les
+  vérifications et le lot) et un changement de rôles entre dépôt et approbation à révision inchangée. Contre-épreuves : contrôle des rôles retiré de la garde, D12 logique retiré, révision non
+  réalignée — chacune fait échouer au moins un test.
+
+## Hors incrément 2b-2c (suite de l3d)
 
 - Déclenchement par webhook GitHub, puis exécution des décisions derrière les gates existantes
   (avance par policy, dispatch A1 des workers).
-- Phases souples B1 (`round.add`, `phase.reopen`, `phase.skip`, `correction.request`) et réattribution (C1, contrat A08).
+- Phases souples B1 (`round.add`, `phase.reopen`, `phase.skip`, `correction.request`).
 - Mesure : décisions par passage, réveils manuels évités (W0).
 
 ## Choix d'exécution — instantané du 2026-10-19 (à revalider le jour de l'activation, X12)

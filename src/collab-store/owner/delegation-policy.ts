@@ -35,7 +35,8 @@ const PROTECTED = /delegat|grant|owner decision|owner decisions|owner decisions|
 const FIELDS: Record<DelegatedAction, readonly string[]> = {
   import_state: ['cycle_id', 'markdown'],
   install_phases: ['cycle_id', 'definitions'],
-  reassign_task: ['cycle_id', 'task_id', 'owner_pid', 'reviewer_pid', 'tester_pid'],
+  reassign_task: ['cycle_id', 'task_id', 'owner_pid', 'reviewer_pid', 'tester_pid',
+    'expected_revision', 'expected_owner_pid', 'expected_reviewer_pid', 'expected_tester_pid'],
   open_round: ['cycle_id', 'round_id'],
   change_phase: ['cycle_id', 'phase'],
   close_issue: ['repository', 'issue_number'],
@@ -62,6 +63,11 @@ export function assertDelegatedAction(input: DelegationPolicyInput): DelegatedAc
     // No safe structured diff verifier yet: deny all state imports rather than risk a grant escalation.
     if (typeof markdown !== 'string' || !markdown.trim()) throw new DelegationDenied('invalid_state');
     throw new DelegationDenied('state_diff_verifier_required');
+  }
+  if (action === 'reassign_task') {
+    // CC-5 l3d 2b-2c : la garde owner refuse toute preuve déléguée (DELEGATED_FORBIDDEN) ; la politique
+    // déclarative s'aligne sur cette interdiction effective tant que le contrat l3c n'est pas révisé.
+    throw new DelegationDenied('owner_guard_not_delegable');
   }
   if (action === 'install_phases' && typeof input.params.definitions !== 'string') throw new DelegationDenied('invalid_phases');
   if (action === 'dispatch_task') {

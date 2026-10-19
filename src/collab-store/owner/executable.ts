@@ -35,8 +35,9 @@ import {
 } from './coordinators';
 import { latestIdentityFamilyActSeq, setIdentityFamily } from './identity-families';
 import { IDENTITY_FAMILY_RE } from '../identity/families';
+import { latestReassignActSeq, parseReassignParams, reassignTarget, reassignTask } from './task-reassign';
 
-export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator', 'set_identity_family'] as const;
+export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator', 'set_identity_family', 'reassign_task'] as const;
 export type ExecutableAction = (typeof EXECUTABLE_ACTIONS)[number];
 const SHA_RE = /^[0-9a-f]{64}$/;
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -131,6 +132,11 @@ function validateParams(action: ExecutableAction, params: Record<string, unknown
     }
     return familyId;
   }
+  if (action === 'reassign_task') {
+    // CC-5 l3d 2b-2c : cible = « cycle/tâche » (précondition par tâche).
+    const parsed = parseReassignParams(params);
+    return reassignTarget(parsed.cycle_id, parsed.task_id);
+  }
   const cycleId = params.cycle_id;
   if (typeof cycleId !== 'string' || !CYCLE_RE.test(cycleId)) throw new Error('params.cycle_id invalide.');
   if (action === 'install_phases') {
@@ -177,7 +183,7 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('params : objet requis.');
     const target = validateParams(action as ExecutableAction, params as Record<string, unknown>);
     const cycleId = action === 'register_endpoint' || action === 'grant_coordinator' || action === 'set_identity_family'
-      ? REGISTRY_CYCLE : target;
+      ? REGISTRY_CYCLE : action === 'reassign_task' ? String((params as Record<string, unknown>).cycle_id) : target;
     const declared = payload.payload_sha256;
     if (typeof declared !== 'string' || !SHA_RE.test(declared)) throw new Error('payload_sha256 : 64 caractères hexadécimaux requis.');
     const computed = await executablePayloadSha256(action as string, params);
@@ -207,6 +213,7 @@ export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction
   if (action === 'register_endpoint') return latestEndpointActSeq(db, cycleId);
   if (action === 'grant_coordinator') return latestCoordinatorActSeq(db, cycleId);
   if (action === 'set_identity_family') return latestIdentityFamilyActSeq(db, cycleId);
+  if (action === 'reassign_task') return latestReassignActSeq(db, cycleId);
   await ensureSchema(db);
   const prefix = (action === 'install_phases' ? PHASE_INSTALL_KEY_PREFIX : STATE_IMPORT_KEY_PREFIX) + cycleId + ':';
   const row = await db.prepare("SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?2)) = ?2")
@@ -244,6 +251,7 @@ export async function describePending(page: PendingPage, now: () => Date = () =>
     const req = parsed.request;
     const body = req.action === 'install_phases' ? String(req.params.definitions)
       : req.action === 'register_endpoint' || req.action === 'grant_coordinator' || req.action === 'set_identity_family'
+        || req.action === 'reassign_task'
         ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
     items.push({ ...item, executable: {
       action: req.action, cycle_id: req.cycle_id, target: req.target, payload_sha256: req.payload_sha256, previous_seq: req.previous_seq,
@@ -349,6 +357,12 @@ export async function decideOwnerRequest(db: D1Database, input: {
       action: req.action, cycle_id: REGISTRY_CYCLE,
       detail: 'famille ' + result.family_id + ' → [' + result.members.join(', ') + ']',
     } };
+  }
+  if (req.action === 'reassign_task') {
+    const result = await reassignTask(db, { params: req.params, proof: input.proof, binding, now: input.now });
+    const roles = (r: { owner_pid: string; reviewer_pid: string; tester_pid: string }) => r.owner_pid + ' / ' + r.reviewer_pid + ' / ' + r.tester_pid;
+    return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action, cycle_id: req.cycle_id,
+      detail: 'tâche ' + String(req.params.task_id) + ' : ' + roles(result.from) + ' → ' + roles(result.to) + ' (auteur / relecteur / testeur)' } };
   }
   if (req.action === 'install_phases') {
     const result = await installPhaseDefinitions(db, { cycle_id: req.cycle_id, definitions: String(req.params.definitions),
