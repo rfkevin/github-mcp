@@ -1,7 +1,7 @@
 /** CC-5 L4: one-shot D1 claim and fast-forward-only integration update. */
 import { evaluateMergeGate, type MergeCandidate } from './merge-gate';
 import type { ControllerSnapshot } from '../controller/rules';
-import { claimMergeIntent, MERGE_INTENT_TTL_SECONDS, type MergeIntent } from './merge-intent';
+import { claimMergeIntent, expireMergeIntent, reconcileMergeIntent, MERGE_INTENT_TTL_SECONDS, type MergeIntent } from './merge-intent';
 import type { FencedMergeExecutor } from './github-adapter';
 export const CC5_AUTO_MERGE_ENABLED = false;
 export interface MergeGitHubPort {
@@ -41,8 +41,19 @@ export function createGitHubMergeExecutor(config: MergeExecutionConfig): FencedM
           current.head !== expected.head || current.base !== expected.base ||
           last.candidate.now >= config.intent.now+MERGE_INTENT_TTL_SECONDS)
         throw new Error('L4_PRE_PATCH_DENIED');
-      await config.github.fastForwardBase(mergeSha);
+      try {
+        await config.github.fastForwardBase(mergeSha);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'BASE_CHANGED')
+          await expireMergeIntent(config.db,config.intent);
+        throw error;
+      }
+      await reconcileMergeIntent(config.db,config.intent,mergeSha,last.candidate.now);
       return { merged: true, mergeSha };
+    } catch (error) {
+      if (error instanceof Error && ['BASE_OR_HEAD_CHANGED','L4_PRE_PATCH_DENIED','L4_INVALID_MERGE_SHA'].includes(error.message))
+        await expireMergeIntent(config.db,config.intent);
+      throw error;
     } finally {
       if (temp) await config.github.deleteTemporaryBranch(temp).catch(() => undefined);
     }
