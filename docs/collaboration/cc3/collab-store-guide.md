@@ -477,6 +477,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `PEER_EVIDENCE_NOT_FOUND` | C4 | Preuve de pair absente du registre | Ajouter la preuve au registre |
 | `PEER_EVIDENCE_PRODUCER` | C4 | Le producteur de la preuve n’est pas le relecteur | Preuve produite par le relecteur |
 | `PEER_EVIDENCE_SELF` | C4 | La preuve vient de l’auteur de la mémoire | Preuve d’un pair distinct |
+| `INVALID_CONSOLIDATION_BINDING` | L5 | Liaison de résumé de consolidation invalide (evidence_ref D3 : `source_seq_from`/`source_seq_to`, `version`, `review_at` entiers sûrs, `source_hash` sha256 64) | Corriger la liaison via `consolidationBinding` ; en lecture, `parseConsolidationBinding` rend `null` |
 
 ### 7.5 État CC-STATE-1 : import et export (C6, L1)
 
