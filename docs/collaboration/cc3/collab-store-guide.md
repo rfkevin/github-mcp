@@ -576,3 +576,9 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 
 Le gate L4 est désactivé par défaut. Codes : `L4_INVALID_TARGET`, `L4_TARGET_CHANGED`, `L4_CLOSURE_NOT_CONFIRMED`, `L4_MERGE_DISABLED`, `L4_GATE_DENIED`, `L4_CLAIM_DENIED`, `BASE_OR_HEAD_CHANGED`, `L4_INVALID_MERGE_SHA`, `L4_PRE_PATCH_DENIED`, `L4_REST_TARGET_INVALID`, `L4_INVALID_BASE`, `L4_TEMP_MISMATCH`, `L4_MERGE_RESULT_UNKNOWN`, `L4_INVALID_REF_SHA`, `L4_INVALID_HEAD`, `BASE_CHANGED`. Une réconciliation ne relance jamais une fusion.
 
+
+### CC-5 L6 — code du pilote isolé
+
+| Code | Lot | Signification | Que faire |
+| --- | --- | --- | --- |
+| `INVALID_PROBLEM_SIGNATURE` | CC-5 L6 | Signature d'échec vide ou trop longue pour produire le `problem_id` SHA-256 stable | Fournir une signature canonique non vide, de 4096 caractères au plus |
