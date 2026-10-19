@@ -1,0 +1,64 @@
+/** CC-5 L6 D2 — throwaway pilot only; no automatic code execution or merge. */
+export const AUTOFIX_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS cc5_autofix_problems (
+    cycle TEXT NOT NULL, problem_id TEXT NOT NULL, first_failure_at INTEGER NOT NULL,
+    first_failure_ref TEXT NOT NULL, PRIMARY KEY(cycle,problem_id))`,
+  `CREATE TABLE IF NOT EXISTS cc5_autofix_attempts (
+    cycle TEXT NOT NULL, problem_id TEXT NOT NULL, attempt INTEGER NOT NULL,
+    day_utc TEXT NOT NULL, corrector TEXT NOT NULL, reviewer TEXT NOT NULL,
+    tester TEXT NOT NULL, claimed_at INTEGER NOT NULL,
+    PRIMARY KEY(cycle,problem_id,attempt))`,
+  'CREATE INDEX IF NOT EXISTS cc5_autofix_day ON cc5_autofix_attempts(cycle,day_utc)',
+] as const;
+
+export interface AutoFixClaim {
+  cycle: string; problemId: string; failureRef: string; now: number;
+  corrector: string; reviewer: string; tester: string;
+  correctorFamily: string; reviewerFamily: string; testerFamily: string;
+}
+export interface AutoFixClaimResult { accepted: boolean; attempt: number | null; dayUtc: string }
+
+/**
+ * One D1 batch: first failure registration + quota-controlled attempt.
+ * Both writes independently recheck HALT in their own INSERT statement.
+ * The INSERT ... SELECT counters are evaluated atomically by D1, not in JS.
+ */
+export async function claimAutoFix(db: D1Database, input: AutoFixClaim): Promise<AutoFixClaimResult> {
+  const valid = /^[a-z0-9_-]{1,120}$/i;
+  if (!valid.test(input.cycle) || !/^[a-f0-9]{64}$/.test(input.problemId) ||
+      !input.failureRef.trim() || input.failureRef.length > 512 ||
+      !Number.isSafeInteger(input.now) || input.now < 0 ||
+      ![input.corrector,input.reviewer,input.tester,
+        input.correctorFamily,input.reviewerFamily,input.testerFamily].every(x=>valid.test(x)) ||
+      new Set([input.correctorFamily,input.reviewerFamily,input.testerFamily]).size !== 3 ||
+      new Set([input.corrector,input.reviewer,input.tester]).size !== 3) {
+    return {accepted:false,attempt:null,dayUtc:''};
+  }
+  const dayUtc = new Date(input.now * 1000).toISOString().slice(0,10);
+  await db.batch(AUTOFIX_SCHEMA.map(sql=>db.prepare(sql)));
+  const [first, attempt] = await db.batch([
+    db.prepare(`INSERT OR IGNORE INTO cc5_autofix_problems
+      (cycle,problem_id,first_failure_at,first_failure_ref)
+      SELECT ?1,?2,?3,?4
+      WHERE EXISTS (SELECT 1 FROM cycles WHERE cycle_id=?1 AND status='open')
+        AND NOT EXISTS (SELECT 1 FROM owner_flags WHERE name='halt' AND value='1')`)
+      .bind(input.cycle,input.problemId,input.now,input.failureRef),
+    db.prepare(`INSERT OR IGNORE INTO cc5_autofix_attempts
+      (cycle,problem_id,attempt,day_utc,corrector,reviewer,tester,claimed_at)
+      SELECT ?1,?2,
+        (SELECT COUNT(*)+1 FROM cc5_autofix_attempts WHERE cycle=?1 AND problem_id=?2),
+        ?3,?4,?5,?6,?7
+      WHERE EXISTS (SELECT 1 FROM cycles WHERE cycle_id=?1 AND status='open')
+        AND EXISTS (SELECT 1 FROM cc5_autofix_problems WHERE cycle=?1 AND problem_id=?2)
+        AND NOT EXISTS (SELECT 1 FROM owner_flags WHERE name='halt' AND value='1')
+        AND (SELECT COUNT(*) FROM cc5_autofix_attempts WHERE cycle=?1 AND problem_id=?2) < 2
+        AND (SELECT COUNT(*) FROM cc5_autofix_attempts WHERE cycle=?1 AND day_utc=?3) < 5`)
+      .bind(input.cycle,input.problemId,dayUtc,input.corrector,input.reviewer,input.tester,input.now),
+  ]);
+  void first;
+  if (attempt.meta.changes !== 1) return {accepted:false,attempt:null,dayUtc};
+  const row=await db.prepare(`SELECT attempt FROM cc5_autofix_attempts
+    WHERE cycle=?1 AND problem_id=?2 ORDER BY attempt DESC LIMIT 1`)
+    .bind(input.cycle,input.problemId).first<{attempt:number}>();
+  return {accepted:true,attempt:row?.attempt ?? null,dayUtc};
+}
