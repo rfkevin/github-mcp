@@ -54,12 +54,27 @@ viendra avec le déclenchement Cron. `UPDATE` et `DELETE` sont refusés par trig
 - `degraded` : instantané ou journal indisponible, état importé illisible → aucune décision.
   Le fonctionnement manuel actuel (relais de Kevin, demandes owner) reste la voie normale, sans perte d'état.
 
-## Hors incrément 1 (suite du lot)
+## Incrément 2a (tâche l3d)
 
-- Déclenchement : Cron et webhook GitHub, puis exécution des décisions derrière les gates existantes
+- **Questions ouvertes (X13, reprise de la revue L2)** : l'instantané lit les `clarify.ask` sans `clarify.answer` liée
+  (2 000 événements clarify au plus par passage). Question adressée → `answer_question` pour le destinataire
+  (participant nommé, ou titulaire du rôle sur la tâche, ramené à sa famille) ; question publique ou adressée à soi →
+  aucun réveil. À partir de `QUESTION_TTL_REVISIONS` = 40 révisions du cycle, la question expire :
+  `renew_or_close_question` pour son auteur, plus de réveil du destinataire. Le contrôleur ne ferme rien lui-même.
+- **`collab_next_actions`** (outil MCP, lecture seule) : chaque agent obtient les décisions qui le visent, calculées sur
+  l'état courant, sans relais de Kevin ; les décisions `coordinator` vont au seul titulaire du mandat actif (L3c).
+  Rien n'est journalisé par cet outil.
+- **Passage programmé** : `scheduled()` du Worker appelle `runScheduledControllers` (20 cycles ouverts au plus, un
+  échec isolé par cycle). Inerte sauf `CONTROLLER_CRON_ENABLED="true"` **et** store monté. Environnement cc3-test :
+  Cron `*/15 * * * *` déclaré, drapeau à `"false"` ; Kevin l'active quand il le souhaite.
+
+## Hors incrément 2a (suite de l3d)
+
+- Déclenchement par webhook GitHub, puis exécution des décisions derrière les gates existantes
   (avance par policy, dispatch A1 des workers, ligne « à relayer » sur `/owner` pour les agents de chat).
+- Rappel périodique d'une décision restée sans suite (aujourd'hui une décision n'est journalisée qu'une fois par épisode).
+- File des échecs (Queues, voir le comparatif ci-dessous).
 - Phases souples B1 (`round.add`, `phase.reopen`, `phase.skip`, `correction.request`) et réattribution (C1, contrat A08).
-- Expiration par révision des `clarify.ask` (X13, reprise de la revue L2).
 - Mesure : décisions par passage, réveils manuels évités (W0).
 
 ## Choix d'exécution — instantané du 2026-10-19 (à revalider le jour de l'activation, X12)

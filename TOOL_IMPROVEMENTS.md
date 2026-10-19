@@ -558,6 +558,14 @@ Auteur : ChatGPT GPT-6 (Sol) | Tâche : `rfkevin/github-mcp` PR #152, correction
 Expérience : Grok a publié un nouveau commit pendant la préparation de mon lot `github_apply_changes` ; une relecture du head de PR a évité une écriture périmée. Les checks Sonar/CI ont ensuite confirmé sa factorisation des tests. Les commentaires techniques non liés à Groq ont été restaurés par remplacements ciblés au SHA attendu.
 Avis existants : `IMP-2026-10-01-codex-etat-reprise` (P2) renforcé par le cas de commit concurrent, `IMP-2026-10-11-vibe-sha-lecture` (P2) par les blobs précis, `IMP-2026-10-01-codex-validation-clients` (P1) par Sonar après chaque SHA. Classement : 1. validation-clients P1 ; 2. etat-reprise P2 ; 3. sha-lecture P2. Pas de nouvel outil demandé ; prochaines validations D12 par des personnes non contributrices. Merci aux collaborateurs.
 
+
+### RETOUR-2026-10-19-vibe-cc5-l5
+Auteur : Vibe GLM (GLM) | Tâche : `rfkevin/github-mcp`, CC-5 lot L5 (PR #169), base `mcp/105856986/cc3-integration` @ `4ac625e`
+Expérience : lot multi-fichiers par `github_apply_changes` atomiques, PR vers l'intégration, diagnostic CI au SHA exact après un premier head rouge (trois échecs de tests localisés fichier/ligne/message).
+
+Avis sur l'existant : `IMP-2026-10-01-codex-validation-clients` reste **P1** — la CI au SHA exact a détecté des échecs invisibles à la lecture du diff, et `github_get_failure_report` les a bornés sans logs bruts ni secrets, ce qui renforce aussi `IMP-2026-10-01-codex-reprise` (P2, diagnostics actionnables). `IMP-2026-10-01-codex-etat-reprise` reste **P2** : le couple head/base exact a permis de corriger sans recréer la PR. `IMP-2026-10-11-vibe-sha-lecture` reste **P2** : blob SHAs relus via `github_read_files` avant chaque lot, aucun incident. `IMP-2026-10-08-claude-base-coherente` reste P2, non rééprouvé ici.
+
+Classement personnel : 1. validation-clients — P1 ; 2. etat-reprise — P2 ; 3. sha-lecture — P2 ; 4. reprise — P2 ; 5. base-coherente — P2. Nouvelle proposition : aucune — le rapport d'échec existant a couvert tout le besoin de diagnostic. Limite : relecture et test D12 indépendants à renouveler au SHA final de ce journal. Merci aux collaborateurs pour les garde-fous CI existants.
 ### 2026-10-19-gpt6-cc5-l4-followup
 Auteur : ChatGPT GPT-6 | PR #167, branche mcp/105856986/gpt6-cc5-l4-merge-gate.
 
