@@ -25,6 +25,10 @@ export const AUTOFIX_SCHEMA = [
     day_utc TEXT NOT NULL, corrector TEXT NOT NULL, reviewer TEXT NOT NULL,
     tester TEXT NOT NULL, claimed_at INTEGER NOT NULL,
     PRIMARY KEY(cycle,problem_id,attempt))`,
+  ...['cc5_autofix_problems','cc5_autofix_attempts'].flatMap(table=>[
+    `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_u BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(ABORT, 'append-only'); END`,
+    `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_d BEFORE DELETE ON ${table} BEGIN SELECT RAISE(ABORT, 'append-only'); END`,
+  ]),
   'CREATE INDEX IF NOT EXISTS cc5_autofix_day ON cc5_autofix_attempts(cycle,day_utc)',
 ] as const;
 
@@ -41,7 +45,7 @@ export interface AutoFixClaimResult { accepted: boolean; attempt: number | null;
  * Both writes independently recheck HALT in their own INSERT statement.
  * The INSERT ... SELECT counters are evaluated atomically by D1, not in JS.
  */
-export async function claimAutoFix(db: D1Database, input: AutoFixClaim): Promise<AutoFixClaimResult> {
+async function claimAutoFix(db: D1Database, input: AutoFixClaim): Promise<AutoFixClaimResult> {
   const valid = /^[a-z0-9_-]{1,120}$/i;
   if (!valid.test(input.cycle) || !/^[a-f0-9]{64}$/.test(input.problemId) ||
       !input.failureRef.trim() || input.failureRef.length > 512 ||
@@ -54,7 +58,7 @@ export async function claimAutoFix(db: D1Database, input: AutoFixClaim): Promise
       input.reviewerChannel !== 'trusted' || input.testerChannel !== 'trusted') {
     return {accepted:false,attempt:null,dayUtc:''};
   }
-  const dayUtc = new Date(input.now * 1000).toISOString().slice(0,10);
+  const dayUtc = new Date().toISOString().slice(0,10);
   await db.batch(AUTOFIX_SCHEMA.map(sql=>db.prepare(sql)));
   const [first, attempt] = await db.batch([
     db.prepare(`INSERT OR IGNORE INTO cc5_autofix_problems
@@ -91,7 +95,7 @@ export interface AutoFixTrustedPolicy {
   tester: AutoFixPrincipal;
 }
 export interface AutoFixFailure {
-  cycle:string; signature:string; failureRef:string; now:number;
+  cycle:string; signature:string; failureRef:string;
 }
 /**
  * Single pilot entry point: stable fingerprint and rotating corrector derived
@@ -116,7 +120,7 @@ export async function claimAutoFixForFailure(
   const principal=eligible.find(p=>p.id===next);
   if (!principal) return {accepted:false,attempt:null,dayUtc:''};
   return claimAutoFix(db,{
-    cycle:failure.cycle,problemId,failureRef:failure.failureRef,now:failure.now,
+    cycle:failure.cycle,problemId,failureRef:failure.failureRef,now:Math.floor(Date.now()/1000),
     corrector:principal.id,correctorFamily:principal.family,correctorChannel:principal.channel,
     reviewer:policy.reviewer.id,reviewerFamily:policy.reviewer.family,reviewerChannel:'trusted',
     tester:policy.tester.id,testerFamily:policy.tester.family,testerChannel:'trusted',
