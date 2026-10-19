@@ -5,6 +5,7 @@
  * Groq Free : double condition Owner (GROQ_FREE_PROJECT_ATTESTED=true +
  * PUBLIC_ORIGIN CC3-test) imposée dans le constructeur ; sinon 0 fetch.
  * Z.AI glm-4.7-flash : thinking.disabled. xAI : 100 % paid dormant.
+ * CC-5 L1 : Groq gpt-oss-20b reasoning_effort=low (suite diagnostic X4).
  */
 import {
   assertGenerateInput, envelope, readWorkersAiOutput, zeroCostAdapter,
@@ -81,6 +82,10 @@ const PROVIDERS: Readonly<Record<OpenAiCompatibleProvider, ProviderConfig>> = {
 const ZAI_FREE_MODEL = 'glm-4.7-flash';
 const MODEL_REQUEST_OPTIONS: Readonly<Record<string, Record<string, unknown>>> = {
   [ZAI_PROVIDER + ':' + ZAI_FREE_MODEL]: { thinking: { type: 'disabled' } },
+  // CC-5 L1 (X4 suite) : gpt-oss-20b raisonne par défaut (medium) et peut
+  // épuiser max_tokens sur un brief lourd → content vide. effort low réduit
+  // le risque sans changer le contrat free (0 €).
+  [GROQ_PROVIDER + ':' + GROQ_FREE_MODEL]: { reasoning_effort: 'low' },
 };
 
 const FREE_MODELS: Readonly<Record<OpenAiCompatibleProvider, ReadonlySet<string>>> = {

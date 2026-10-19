@@ -12,6 +12,7 @@
  */
 import { StateContractError } from '../../collab/contracts';
 import { providerTimeoutMs } from './fetch-timeout';
+import { ABSOLUTE_MAX_OUTPUT_TOKENS } from './task-profiles';
 
 export interface LlmUsage {
   input_tokens: number;
@@ -91,7 +92,12 @@ export const WORKERS_AI_PAID_ONLY_MODELS: readonly string[] = [
 ];
 
 const MODEL_RE = /^@cf\/[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}$/i;
-export const MAX_OUTPUT_TOKENS = 2048;
+/**
+ * CC-5 L1 : l'ancien plafond global 2048 est retiré. La borne de sécurité est
+ * ABSOLUTE_MAX_OUTPUT_TOKENS (8192) ; le plafond effectif vient de
+ * resolveEffectiveMaxTokens (modèle × tâche × endpoint).
+ */
+export const MAX_OUTPUT_TOKENS = ABSOLUTE_MAX_OUTPUT_TOKENS;
 const MAX_DATA = 60_000;
 
 function adapterError(code: string, message: string): StateContractError {

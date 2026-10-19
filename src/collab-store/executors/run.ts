@@ -36,6 +36,7 @@ import {
   createGeminiAdapter, geminiFreeAttestedFromEnv, geminiProviderOf, type GeminiEnv,
 } from './gemini';
 import { loadEndpoint, PROBE_KEY_PREFIX, type StoredEndpoint } from './registry';
+import { resolveEffectiveMaxTokens } from './task-profiles';
 
 export const DEFAULT_DAILY_CAP = 50;
 /** Budget journalier de neurons du chemin gratuit (allocation Cloudflare : 10 000/jour, remise à 00:00 UTC). */
@@ -206,10 +207,7 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
     if (!ok) error = 'PROBE_OUTPUT_MISMATCH';
   } catch (caught) {
     error = errorCode(caught);
-    // Seuls nos propres messages (codes typés) sont conservés : jamais un texte libre du fournisseur.
     if (caught instanceof StateContractError || caught instanceof CollabStoreError) errorDetail = caught.message.slice(0, 300);
-    // CC-5 L0 (dette X14) : usage partiel attaché par l'adaptateur — une sonde
-    // échouée ne compte plus un faux 0/0.
     const partial = usageOf(caught);
     if (partial) usage = { input_tokens: partial.input_tokens ?? 0, output_tokens: partial.output_tokens ?? 0 };
   }
@@ -232,7 +230,6 @@ export async function probeEndpoint(db: D1Database, factory: AdapterFactory, inp
 export interface DispatchOutcome {
   status: 'succeeded' | 'attempt_failed' | 'busy' | 'terminal';
   invocation: InvocationRecord;
-  /** Texte produit ; depuis CC-5 L0 (X14) la version conservée bornée est restituée au rejeu. */
   output?: string;
   error?: string;
 }
@@ -264,6 +261,13 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
   control: string;
   input_packet: string;
   max_tokens: number;
+  /**
+   * CC-5 L1 — type de tâche pour resolveEffectiveMaxTokens.
+   * Provenance : code serveur de confiance uniquement (jamais un agent / client).
+   * Absent ou inconnu → normalizeTaskKind → 'default' (2048) : politique voulue.
+   * Pour un probe strict, l'appelant serveur DOIT passer task_kind: 'probe'.
+   */
+  task_kind?: string;
   lease_seconds?: number;
   daily_cap?: number;
   neuron_budget?: number;
@@ -274,8 +278,6 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
   const service = new InvocationService(db, { now: input.now });
   const invocation = await service.getByWakeKey(input.wake_key);
   if (!invocation) throw new CollabStoreError('INVOCATION_UNKNOWN', 'wake_key inconnu.');
-  // CC-5 L0 (X14) : au rejeu d'une invocation terminée, la sortie conservée
-  // (bornée) est restituée pour une invocation réussie ; jamais de second appel.
   if (invocation.state === 'succeeded' || invocation.state === 'failed') {
     return {
       status: 'terminal',
@@ -294,13 +296,18 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
       'L’endpoint ' + endpoint.endpoint_id + ' appartient à ' + endpoint.principal_id + ', pas à ' + invocation.principal_id + '.');
   }
   const adapter = factory(endpoint);
-  assertLlmCapabilities(endpoint, adapter.provider, input.max_tokens);
+  // CC-5 L1 : plafond effectif = min(absolu, modèle, task_kind, endpoint, demandé)
+  const effectiveMax = resolveEffectiveMaxTokens({
+    task_kind: input.task_kind,
+    model: adapter.model,
+    endpoint_ceiling: endpoint.capability_set.token_ceiling,
+    requested: input.max_tokens,
+  });
+  assertLlmCapabilities(endpoint, adapter.provider, effectiveMax);
   if (await sha256Hex(input.input_packet) !== invocation.input_hash) {
     throw new CollabStoreError('INVOCATION_INPUT_MISMATCH', 'Le paquet fourni ne correspond pas à l’empreinte enregistrée de l’invocation.');
   }
-  const call = { control: input.control, data: input.input_packet, max_tokens: input.max_tokens };
-  // Revue #117 R3 : validations locales AVANT quota et bail — une erreur de configuration
-  // ne consomme ni le plafond, ni une tentative A1, et n'appelle pas le fournisseur.
+  const call = { control: input.control, data: input.input_packet, max_tokens: effectiveMax };
   adapter.validate(call);
   const worst = adapter.worstCaseNeurons(call);
   const now = input.now?.() ?? new Date();
@@ -326,11 +333,7 @@ export async function dispatchFreeInvocation(db: D1Database, factory: AdapterFac
   try {
     result = await adapter.generate(call);
   } catch (caught) {
-    // Pire cas conservé : un appel interrompu (délai) a pu consommer chez le fournisseur.
-    // Seul l'échec du fournisseur devient une tentative échouée ; une erreur du store remonte telle quelle.
     const code = errorCode(caught);
-    // CC-5 L0 (dette X14) : jetons réels de l'échec quand l'adaptateur les a
-    // mesurés ; sans mesure, l'appel a eu lieu (operations: 1), jetons inconnus → 0.
     const partial = usageOf(caught);
     const failed = await service.fail(input.wake_key, input.worker_id, code,
       partial ? { input_tokens: partial.input_tokens ?? 0, output_tokens: partial.output_tokens ?? 0, operations: 1 } : { operations: 1 },
