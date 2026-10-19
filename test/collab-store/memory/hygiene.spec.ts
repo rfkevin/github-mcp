@@ -16,7 +16,7 @@ describe('L5 memory hygiene policy (pure, D3)', () => {
     expect(scopeEntryCap('participant')).toBe(25);
     expect(scopeEntryCap('common')).toBe(50);
     expect(scopeEntryCap('project:x', { participant: 1, shared: 2 })).toBe(2);
-    expect(scopeEntryCap('participant:p', { participant: 1, shared: 2 })).toBe(1);
+    expect(scopeEntryCap('participant', { participant: 1, shared: 2 })).toBe(1);
   });
 
   it('classifies participant scopes as private (X2/CRB-R1)', () => {

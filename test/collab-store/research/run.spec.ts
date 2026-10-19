@@ -57,7 +57,7 @@ describe('L5 research pass (real D1, read-only over the canonical registry)', ()
     await seedMemory({ id: tag + '-never-2', scope: 'participant:l5-agent', kind: 'observation', text: 'l5 never used two' });
     await seedMemory({ id: tag + '-invariant', scope: 'common', kind: 'invariant', text: 'l5 critical invariant' });
     const memoryProjection = 'SELECT id, version, scope, kind, text, status, uses, last_used_rev FROM memory_entries ORDER BY id, version';
-    const before = await db.prepare(memoryProjection).all();
+    const before = (await db.prepare(memoryProjection).all()).results;
     const pass = await runResearchPass(db, { passId: unique('pass'), cycleId: cycle, caps: { participant: 1, shared: 50 } });
     expect(pass.status).toBe('recorded');
     expect(pass.findings.scope_stats).toBe(1);
@@ -81,7 +81,7 @@ describe('L5 research pass (real D1, read-only over the canonical registry)', ()
     expect(ids.indexOf(tag + '-never-1')).toBeGreaterThanOrEqual(0);
     expect(ids.indexOf(tag + '-never-1')).toBeLessThan(ids.indexOf(tag + '-used'));
     // Read-only proof: the canonical registry is untouched by a research pass.
-    const after = await db.prepare(memoryProjection).all();
+    const after = (await db.prepare(memoryProjection).all()).results;
     expect(after).toEqual(before);
     const written = await db
       .prepare("SELECT COUNT(*) AS c FROM events WHERE cycle_id = ?1 AND type = 'research.pass'")
