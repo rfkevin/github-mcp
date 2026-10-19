@@ -3,7 +3,7 @@
  * Only the existing OAuth identity resolver may supply authenticatedPid.
  * Client payload never supplies an executor, SQL statements, family or mandate.
  */
-import { ensureSchema } from '../store/schema';
+import { activeMandate } from './delegation-execution';
 import { executablePayloadSha256, parseOwnerRequest } from './executable';
 import { assertDelegatedAction, DelegationDenied } from './delegation-policy';
 
@@ -29,7 +29,7 @@ export async function bindDelegatedRequest(
   authenticatedPid: string,
   now = Math.floor(Date.now() / 1000),
 ): Promise<BoundDelegation> {
-  await ensureSchema(db);
+  await activeMandate(db, input.cycle);
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(input.cycle) ||
       !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(input.request_id) ||
       !/^[a-z0-9][a-z0-9:_-]{0,127}$/i.test(authenticatedPid)) {

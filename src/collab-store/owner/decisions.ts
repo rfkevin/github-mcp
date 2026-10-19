@@ -287,6 +287,7 @@ export async function recordOwnerDecision(db: D1Database, input: {
   cycle_id?: string;
   now?: () => Date;
 }): Promise<OwnerWriteResult & { decision: Decision; memory_resume?: PauseOccurrence }> {
+  if (input.proof.kind === 'delegated') throw new CollabStoreError('DELEGATED_FORBIDDEN', 'Plain owner decisions cannot use delegated proof.');
   if (!REQUEST_ID_RE.test(input.request_id)) throw new CollabStoreError('INVALID_REQUEST_ID', 'Identifiant de demande invalide.');
   if (!DECISIONS.includes(input.decision as Decision)) throw new CollabStoreError('INVALID_DECISION', 'Décision : approve ou deny.');
   const decision = input.decision as Decision;
