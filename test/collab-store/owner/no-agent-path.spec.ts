@@ -30,7 +30,9 @@ describe('CC-3 C5 — aucun chemin agent vers owner.decision', () => {
       names.push(...(fixture.rpcResult(await response.text()) as { tools: Array<{ name: string }> }).tools.map(tool => tool.name));
     }
     expect(names.length).toBeGreaterThan(3);
-    expect(names.filter(name => /owner|decision|registry|participant/i.test(name))).toEqual([]);
+    // CC-5: the sole delegated-owner tool is intentionally exposed, but its
+    // authenticated mandate + independent approval must pass the owner CAS guard.
+    expect(names.filter(name => /owner|decision|registry|participant/i.test(name))).toEqual(['collab_delegate_owner']);
   });
 
   it('un jeton collab: ne peut pas forger owner.decision, ni en se déclarant owner ni sous sa propre identité', async () => {
