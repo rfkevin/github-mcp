@@ -8,10 +8,13 @@ export async function stableProblemId(signature: string): Promise<string> {
 export function rotateCorrector(eligible: readonly string[], previous: string | null): string | null {
  const pool=[...new Set(eligible)].filter(x=>/^[a-z0-9_-]{1,120}$/i.test(x));
  if (!pool.length) return null;
- const first=pool.reduce((a,b)=>a<b?a:b);
- if (previous===null) return first;
- const later=pool.filter(id=>id>previous);
- return later.length ? later.reduce((a,b)=>a<b?a:b) : first;
+ let first=pool[0];
+ let next:string|null=null;
+ for (const candidate of pool) {
+  if (candidate<first) first=candidate;
+  if (previous!==null && candidate>previous && (next===null || candidate<next)) next=candidate;
+ }
+ return previous===null ? first : (next??first);
 }
 export const AUTOFIX_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS cc5_autofix_problems (
