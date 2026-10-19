@@ -135,6 +135,8 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 
 ### Identités logiques équivalentes (#126)
 
+**Réattribuer une tâche (CC-5 l3d, `reassign_task`)** : demande exécutable déposée par un agent (`owner.request`, `action: "reassign_task"`, `params` = `{ cycle_id, task_id, owner_pid, reviewer_pid, tester_pid, expected_revision }`, `preconditions.previous_seq` = dernière réattribution de cette tâche, cible affichée `cycle/tâche`), approuvée par Kevin sur `/owner`. Dans le lot d’écriture : demande non tranchée, précondition inchangée, tâche à la révision attendue avec les mêmes rôles qu’au dépôt et non terminée (`TASK_CLOSED`), trois participants enregistrés actifs (`UNREGISTERED_PARTICIPANT`) et trois identités logiques distinctes (`DUPLICATE_LOGICAL_IDENTITY`). Tout écart : `OWNER_PRECONDITION_FAILED`, aucun effet. La tâche prend la révision du cycle : les réveils du contrôleur sont réarmés pour les nouveaux titulaires. Non délégable dans ce contrat (`DELEGATED_FORBIDDEN`) ; les verdicts déjà rendus restent attachés à leur couple SHA.
+
 Un identifiant de participant reste l’identité **historique** inscrite dans les événements, tâches, mémoires et preuves. L’owner peut toutefois relier plusieurs identifiants actifs à une même `family_id` logique via une demande exécutable `set_identity_family`. Exemple voulu par Kevin : `gpt6` et `sol` restent visibles séparément, mais appartiennent tous deux à la famille `chatgpt`.
 
 Cette équivalence s’applique aux droits de reprise et à D12 : un membre peut continuer une tâche attribuée à un autre membre, voir cette tâche dans son contexte, déclencher une phase quand un autre membre tient le rôle, et hériter d’un grant coordinateur actif de la famille. À l’inverse, deux membres de la même famille **ne sont jamais deux pairs D12 distincts** : ils ne peuvent pas occuper deux rôles auteur/reviewer/testeur de la même tâche, ne comptent qu’une fois dans les sorties de phase et ne peuvent pas déposer deux propositions dans la même ronde. L’approbation de `set_identity_family` est refusée avec `IDENTITY_FAMILY_D12_CONFLICT` tant qu’une tâche d’un cycle ouvert attribue déjà au moins deux rôles à de futurs membres de la famille ; la même condition est revérifiée dans le batch owner.
@@ -325,6 +327,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `BUDGET_INSUFFICIENT` | A2 | Réserve supérieure au reste de l’enveloppe (0 € par défaut) : rien n’est écrit | Rester sur un chemin gratuit, ou préparer une demande d’enveloppe pour Kevin |
 | `BUDGET_OVERRUN` | A2 | Coût réel déclaré supérieur à la réserve au solde | Corriger la mesure ; réserver le pire cas avant l’appel |
 | `INVALID_BUDGET_AMOUNT` | A2 | Montant non entier ou négatif (centimes) | Entier ≥ 0 |
+| `INVALID_REASSIGNMENT` | CC-5 l3d | Paramètres de `reassign_task` invalides (champs inconnus, rôles en double, révision attendue absente) | Redéposer une demande avec `cycle_id`, `task_id`, `owner_pid`, `reviewer_pid`, `tester_pid`, `expected_revision` |
 | `INVALID_BUDGET_SCOPE` | A2 | Scope budgétaire invalide | `[a-z0-9][a-z0-9:_-]{0,127}` |
 | `INVALID_RESERVATION_ID` | A2 | Identifiant de réservation invalide | 1 à 256 caractères `[A-Za-z0-9:._-]` |
 | `UNKNOWN_RESERVATION` | A2 | Solde d’une réservation inconnue | Vérifier l’identifiant |
@@ -355,6 +358,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `DUPLICATE_TASK_ROLE` | C1/C2 | D12 : auteur, reviewer et testeur doivent être distincts | Changer d’attribution |
 | `DUPLICATE_ROLE` | L1 | Rôle attribué deux fois | — |
 | `TASK_UNKNOWN` | C2/L2 | Tâche inconnue dans le cycle (événement tâche, ou `task` fourni à la résolution de contexte) | `task.claim` d’abord, ou corriger le `task` fourni |
+| `TASK_CLOSED` | CC-5 l3d | `reassign_task` sur une tâche `done` ou `verified` | Rien à réattribuer ; rouvrir la tâche par import d’état si nécessaire |
 | `TASK_FORBIDDEN` | F1 | Événement tâche émis hors des rôles autorisés (claim initial ≠ owner, réaffectation/handoff ≠ owner courant, status hors des trois rôles) | Voir la matrice en section 3 |
 | `TASK_NOT_HELD` | L2 | `task` fourni : la tâche existe mais vous ne la tenez pas (ou pas le rôle demandé) — le message dit le rôle tenu | Sélectionner une tâche listée par `AMBIGUOUS_TASK`, ou retirer `task`/`role` |
 | `CLARIFY_TO_INVALID` | L2 | `clarify.ask` : `to` présent mais mal formé (ni participant, ni rôle `owner`/`reviewer`/`tester` : chaîne de 1 à 128 caractères) | Corriger `to` ou l’omettre (question publique) |
