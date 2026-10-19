@@ -69,3 +69,46 @@ describe('CC-5 L2 — questions ouvertes du journal (clarify.ask/answer)', () =>
     expect(packet.open_questions[0]).toContain('#' + seqs[0] + ' ');
   });
 });
+
+describe('CC-5 L2 (X13, review Claude R2) — visibilité des questions adressées', () => {
+  async function seedTask(cycleId: string, taskId: string): Promise<void> {
+    await db.prepare([
+      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
+      "VALUES (?1, ?2, 'agent:own', 'agent:rev', 'agent:tst', 'in_progress', '[]', '', '', 1)",
+    ].join(' ')).bind(taskId, cycleId).run();
+  }
+
+  it('une question adressée à un participant n’est rendue qu’à son auteur et à son destinataire', async () => {
+    const cycleId = await seedCycle();
+    await seedEvent(cycleId, 'clarify.ask', 'agent:a', JSON.stringify({ question: 'Q adressée ?', to: 'agent:b' }));
+    expect(await loadOpenQuestions(db, cycleId, { participantIds: new Set(['agent:a']) })).toHaveLength(1); // auteur
+    expect(await loadOpenQuestions(db, cycleId, { participantIds: new Set(['agent:b']) })).toHaveLength(1); // destinataire
+    expect(await loadOpenQuestions(db, cycleId, { participantIds: new Set(['agent:c']) })).toHaveLength(0); // tiers
+  });
+
+  it('une question adressée à un rôle n’est rendue qu’au titulaire du rôle sur la tâche citée', async () => {
+    const cycleId = await seedCycle();
+    await seedTask(cycleId, 't1');
+    await seedEvent(cycleId, 'clarify.ask', 'agent:a', JSON.stringify({ question: 'Q rôle ?', to: 'reviewer', task: 't1' }));
+    expect(await loadOpenQuestions(db, cycleId, { participantIds: new Set(['agent:rev']) })).toHaveLength(1);
+    expect(await loadOpenQuestions(db, cycleId, { participantIds: new Set(['agent:own']) })).toHaveLength(0);
+    expect(await loadOpenQuestions(db, cycleId, { participantIds: new Set(['agent:a']) })).toHaveLength(1); // auteur
+  });
+
+  it('un adressage par rôle sans tâche résolvable reste visible à l’auteur seul ; sans viewer, tout est rendu', async () => {
+    const cycleId = await seedCycle();
+    await seedEvent(cycleId, 'clarify.ask', 'agent:a', JSON.stringify({ question: 'Q ?', to: 'reviewer' }));
+    expect(await loadOpenQuestions(db, cycleId, { participantIds: new Set(['agent:a']) })).toHaveLength(1);
+    expect(await loadOpenQuestions(db, cycleId, { participantIds: new Set(['agent:rev']) })).toHaveLength(0);
+    expect(await loadOpenQuestions(db, cycleId)).toHaveLength(1); // API interne sans viewer : pas de filtrage
+  });
+
+  it('buildRolePacket ne rend une question adressée qu’à son auteur et à son destinataire', async () => {
+    const cycleId = await seedCycle();
+    await seedEvent(cycleId, 'clarify.ask', 'agent:a', JSON.stringify({ question: 'Q packet ?', to: 'agent:b' }));
+    const packet = await buildRolePacket(db, { cycle: cycleId, participant_id: 'agent:b' }, { c0BaselineTokens: 100, approvedBudgetTokens: 6000 });
+    expect(packet.open_questions).toHaveLength(1);
+    const third = await buildRolePacket(db, { cycle: cycleId, participant_id: 'agent:c' }, { c0BaselineTokens: 100, approvedBudgetTokens: 6000 });
+    expect(third.open_questions).toHaveLength(0);
+  });
+});

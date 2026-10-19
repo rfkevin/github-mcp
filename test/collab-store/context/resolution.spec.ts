@@ -74,20 +74,20 @@ describe('CC-5 L2 — sélection de tâche explicite', () => {
       .rejects.toMatchObject({ code: 'TASK_UNKNOWN' });
   });
 
-  it('TASK_NOT_HELT : la tâche existe mais le participant ne la tient pas', async () => {
+  it('TASK_NOT_HELD : la tâche existe mais le participant ne la tient pas', async () => {
     const cycle = await setup();
     await expect(resolveContextTarget(db, { cycle, participant_id: 'grok', task: 'c3' }))
       .rejects.toMatchObject({
-        code: 'TASK_NOT_HELT',
+        code: 'TASK_NOT_HELD',
         message: expect.stringContaining('« c3 »'),
       });
   });
 
-  it('TASK_NOT_HELT précise le rôle tenu quand un role différent est exigé', async () => {
+  it('TASK_NOT_HELD précise le rôle tenu quand un role différent est exigé', async () => {
     const cycle = await setup();
     await expect(resolveContextTarget(db, { cycle, participant_id: 'vibe', task: 'c3', role: 'reviewer' }))
       .rejects.toMatchObject({
-        code: 'TASK_NOT_HELT',
+        code: 'TASK_NOT_HELD',
         message: expect.stringContaining('vous êtes tester, pas reviewer'),
       });
   });

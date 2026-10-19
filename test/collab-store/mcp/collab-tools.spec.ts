@@ -397,7 +397,7 @@ describe('CC-5 L2 — clarify et sélection explicite (outils réels)', () => {
     expect((ctx2.structuredContent.packet as { open_questions: string[] }).open_questions).toHaveLength(0);
   });
 
-  it('task fourni : TASK_NOT_HELT si non tenu, TASK_UNKNOWN si absent', async () => {
+  it('task fourni : TASK_NOT_HELD si non tenu, TASK_UNKNOWN si absent', async () => {
     const handlers = registry(makeContext());
     const cycleId = cycle('select');
     await handlers.get('collab_append_event')!(appendInput(cycleId, 0, 'cp:1'));
@@ -407,10 +407,21 @@ describe('CC-5 L2 — clarify et sélection explicite (outils réels)', () => {
     ].join(' ')).bind(cycleId).run();
     const held = await handlers.get('collab_get_context')!({ cycle: cycleId, task: 't1' });
     expect(held.isError).toBe(true);
-    expect((held.structuredContent.error as { code: string }).code).toBe('TASK_NOT_HELT');
+    expect((held.structuredContent.error as { code: string }).code).toBe('TASK_NOT_HELD');
     expect((held.structuredContent.error as { message: string }).message).toContain('« t1 »');
     const ghost = await handlers.get('collab_get_context')!({ cycle: cycleId, task: 'ghost' });
     expect(ghost.isError).toBe(true);
     expect((ghost.structuredContent.error as { code: string }).code).toBe('TASK_UNKNOWN');
+  });
+
+  it('clarify.ask : un adressage par rôle sans task est refusé (CLARIFY_TO_REQUIRES_TASK)', async () => {
+    const handlers = registry(makeContext());
+    const cycleId = cycle('clarify-to');
+    const res = await handlers.get('collab_append_event')!({
+      cycle: cycleId, expected_rev: 0, op_id: 'agent.a:' + cycleId + ':ask:1', type: 'clarify.ask',
+      participant_id: 'agent:a', payload_json: JSON.stringify({ question: 'Question adressée ?', to: 'reviewer' }),
+    });
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent.error as { code: string }).code).toBe('CLARIFY_TO_REQUIRES_TASK');
   });
 });

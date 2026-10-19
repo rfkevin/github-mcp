@@ -143,7 +143,7 @@ export async function resolveContextTarget(db: D1Database, input: ResolveContext
     }
     const held = participationOf(task, equivalentSet);
     throw new CollabStoreError(
-      'TASK_NOT_HELT',
+      'TASK_NOT_HELD',
       held
         ? 'Sur la tâche « ' + input.task + ' » du cycle « ' + cycleId + ' », vous êtes ' + held + (input.role ? ', pas ' + input.role : '') + '.'
         : 'Vous ne tenez aucun rôle sur la tâche « ' + input.task + ' » du cycle « ' + cycleId + ' ».',

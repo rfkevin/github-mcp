@@ -103,7 +103,43 @@ async function loadVisibleActiveMemory(
 
 // CC-5 L2 : questions ouvertes du journal — clarify.ask sans clarify.answer lié
 // (payload $.ask_seq). Borné à 50, seq croissant, question tronquée à 400.
-export async function loadOpenQuestions(db: D1Database, cycleId: string): Promise<string[]> {
+// X13 (review Claude R2) : une question adressée (payload $.to = participant,
+// ou rôle owner/reviewer/tester avec $.task) n'est rendue qu'à son auteur et
+// à son destinataire — le titulaire du rôle sur la tâche citée. Sans $.to ou
+// sans viewer, comportement inchangé (question publique).
+export const CLARIFY_ROLES = ['owner', 'reviewer', 'tester'] as const;
+
+export interface OpenQuestionViewer {
+  /** Identités logiques équivalentes du lecteur (familles #126 comprises). */
+  participantIds: ReadonlySet<string>;
+}
+
+export function clarifyVisible(
+  row: { participant_id: string; payload_json: string },
+  viewer: OpenQuestionViewer,
+  taskRoles: ReadonlyMap<string, { owner_pid: string; reviewer_pid: string; tester_pid: string }>,
+): boolean {
+  if (viewer.participantIds.has(row.participant_id)) return true; // l'auteur
+  let payload: Record<string, unknown> | null = null;
+  try {
+    payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+  } catch {
+    return true; // payload illisible : question publique
+  }
+  const to = payload?.to;
+  if (typeof to !== 'string' || !to) return true; // sans adressage : tous
+  if ((CLARIFY_ROLES as readonly string[]).includes(to)) {
+    const task = payload?.task;
+    if (typeof task !== 'string' || !task) return false; // rôle sans tâche : auteur seul
+    const roles = taskRoles.get(task);
+    if (!roles) return false; // tâche inconnue : auteur seul
+    const holder = to === 'owner' ? roles.owner_pid : to === 'reviewer' ? roles.reviewer_pid : roles.tester_pid;
+    return viewer.participantIds.has(holder);
+  }
+  return viewer.participantIds.has(to); // participant
+}
+
+export async function loadOpenQuestions(db: D1Database, cycleId: string, viewer?: OpenQuestionViewer): Promise<string[]> {
   await ensureSchema(db);
   const { results } = await db.prepare([
     'SELECT a.seq, a.participant_id, a.payload_json',
@@ -112,15 +148,33 @@ export async function loadOpenQuestions(db: D1Database, cycleId: string): Promis
     "AND json_extract(r.payload_json, '$.ask_seq') = a.seq)",
     'ORDER BY a.seq LIMIT 50',
   ].join(' ')).bind(cycleId).all<{ seq: number; participant_id: string; payload_json: string }>();
-  return results.map(row => {
-    let question = '';
+  if (!viewer) return results.map(formatOpenQuestion);
+  // X13 : les adressages par rôle se résolvent sur les tâches du cycle.
+  const roleAddressed = results.some(row => {
     try {
-      question = String((JSON.parse(row.payload_json) as { question?: unknown }).question ?? '');
+      const to = (JSON.parse(row.payload_json) as { to?: unknown })?.to;
+      return typeof to === 'string' && (CLARIFY_ROLES as readonly string[]).includes(to);
     } catch {
-      question = '';
+      return false;
     }
-    return '#' + row.seq + ' (' + row.participant_id + ') ' + question.slice(0, 400);
   });
+  let taskRoles = new Map<string, { owner_pid: string; reviewer_pid: string; tester_pid: string }>();
+  if (roleAddressed) {
+    const tasks = await db.prepare('SELECT task_id, owner_pid, reviewer_pid, tester_pid FROM tasks WHERE cycle_id = ?1')
+      .bind(cycleId).all<{ task_id: string; owner_pid: string; reviewer_pid: string; tester_pid: string }>();
+    taskRoles = new Map(tasks.results.map(task => [task.task_id, task]));
+  }
+  return results.filter(row => clarifyVisible(row, viewer, taskRoles)).map(formatOpenQuestion);
+}
+
+function formatOpenQuestion(row: { seq: number; participant_id: string; payload_json: string }): string {
+  let question = '';
+  try {
+    question = String((JSON.parse(row.payload_json) as { question?: unknown }).question ?? '');
+  } catch {
+    question = '';
+  }
+  return '#' + row.seq + ' (' + row.participant_id + ') ' + question.slice(0, 400);
 }
 export async function buildRolePacket(
   db: D1Database,
@@ -137,12 +191,14 @@ export async function buildRolePacket(
   if (!cycle) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + resolved.cycle_id);
 
   const maxTokens = effectiveBudget(options);
+  const equivalents = await equivalentParticipantIds(db, input.participant_id);
   // CC-5 L2 : questions ouvertes du journal en tête — elles survivent au trim.
-  const journalQuestions = await loadOpenQuestions(db, resolved.cycle_id);
+  // X13 (review Claude R2) : une question adressée n'est rendue qu'à son
+  // auteur et à son destinataire, le rôle se résout sur la tâche citée.
+  const journalQuestions = await loadOpenQuestions(db, resolved.cycle_id, { participantIds: new Set(equivalents) });
   const openQuestions = [...journalQuestions, ...(options.openQuestions ?? [])];
   while (estimateTokens(openQuestions) > OPEN_QUESTIONS_BUDGET && openQuestions.length) openQuestions.pop();
 
-  const equivalents = await equivalentParticipantIds(db, input.participant_id);
   const visibilityCtx = {
     participantId: input.participant_id,
     participantIds: new Set(equivalents),
