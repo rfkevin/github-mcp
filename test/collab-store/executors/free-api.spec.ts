@@ -310,7 +310,10 @@ describe('CC-4 A3 — dispatch d’une invocation A1 par l’API gratuite', () =
     await activeEndpoint(db, active);
     expect(await codeOf(run((await invocationFor(db, active, 'grok')).wake_key))).toBe('ENDPOINT_PRINCIPAL_MISMATCH');
     const wake = (await invocationFor(db, active)).wake_key;
-    expect(await codeOf(run(wake, { max_tokens: 1024 }))).toBe('EXECUTOR_CAPABILITY_DENIED');
+    // CC-5 L1 : max_tokens demandé > token_ceiling endpoint → clamp (pas refus).
+    // Plafond endpoint par défaut = 512 ; l'appel aboutit avec max_tokens effectif 512.
+    expect(await codeOf(run(wake, { max_tokens: 1024 }))).toBe('NO_ERROR');
+    expect(calls[0].input).toMatchObject({ max_tokens: 512 });
     expect(await codeOf(run(wake, { input_packet: '{"packet":"forged"}' }))).toBe('INVOCATION_INPUT_MISMATCH');
 
     const noTool = uniq('ep');
@@ -357,7 +360,7 @@ describe('CC-4 A3 — aucun appel sans garantie de gratuité ni sur erreur local
     expect(await quota(dayKey)).toBe(1); // usage simulé 40 + 6 jetons → 1 neuron
   });
 
-  it('max_tokens > 2048 ou paquet > 60 000 caractères : erreur locale, ni appel, ni tentative, ni quota consommé', async () => {
+  it('max_tokens au-delà des plafonds est clampé ; paquet > 60 000 caractères : erreur locale', async () => {
     const endpointId = uniq('ep');
     await activeEndpoint(db, endpointId, { tools: ['llm.generate'], network_providers: ['workers-ai'], token_ceiling: 4096 });
     const { ai, calls } = fakeAi();
@@ -366,15 +369,18 @@ describe('CC-4 A3 — aucun appel sans garantie de gratuité ni sur erreur local
     const big = 'y'.repeat(60_001);
     const invocation = await invocationFor(db, endpointId);
     const large = await invocationFor(db, endpointId, principalOf(endpointId), big);
+    // CC-5 L1 : demandé 8193 → clamp min(ABSOLUTE_MAX 8192, modèle, task default 2048, endpoint 4096, 8193) = 2048
     expect(await codeOf(dispatchFreeInvocation(db, workersAiFactory(ai), { wake_key: invocation.wake_key, worker_id: 'w', control: CONTROL,
-      input_packet: '{"packet":"a3"}', max_tokens: 2049, now }))).toBe('EXECUTOR_INVALID_LIMIT');
+      input_packet: '{"packet":"a3"}', max_tokens: 8193, now }))).toBe('NO_ERROR');
+    expect(calls[0].input).toMatchObject({ max_tokens: 2048 });
     expect(await codeOf(dispatchFreeInvocation(db, workersAiFactory(ai), { wake_key: large.wake_key, worker_id: 'w', control: CONTROL,
       input_packet: big, max_tokens: 256, now }))).toBe('EXECUTOR_INPUT_TOO_LARGE');
-    expect(calls).toHaveLength(0);
+    // 1 appel (clamp) + 0 pour le paquet trop grand
+    expect(calls).toHaveLength(1);
     const service = new InvocationService(db);
-    expect(await service.getByWakeKey(invocation.wake_key)).toMatchObject({ state: 'queued', attempt_count: 0, consecutive_failures: 0 });
+    expect(await service.getByWakeKey(invocation.wake_key)).toMatchObject({ state: 'succeeded' });
     expect(await service.getByWakeKey(large.wake_key)).toMatchObject({ state: 'queued', attempt_count: 0, consecutive_failures: 0 });
-    expect(await quota(capKey)).toBe(0);
+    expect(await quota(capKey)).toBe(1);
   });
 });
 
