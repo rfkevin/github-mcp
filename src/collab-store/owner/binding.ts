@@ -46,13 +46,14 @@ export function bindingPayload(binding: OwnerRequestBinding): Record<string, unk
 export function bindingGuard(binding: OwnerRequestBinding, previousKeyPrefix: string, proof?: OwnerProof): { sql: string; binds: unknown[] } {
   const delegated = proof?.kind === 'delegated' ? [
     'AND EXISTS (SELECT 1 FROM delegated_mandates m WHERE m.cycle_id = ?2 AND m.participant_id = ?7 AND m.epoch = ?8 AND m.family_id = COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?7), ?7))',
-    'AND EXISTS (SELECT 1 FROM delegated_approvals a WHERE a.request_id = ?4 AND a.cycle_id = ?2 AND a.epoch = ?8 AND a.used = 0 AND a.reviewer_pid = ?9 AND a.reviewer_family = ?10 AND a.params_hash = ?11 AND a.expires_at = ?12 AND a.max_cost_cents = ?13)',
+    "AND EXISTS (SELECT 1 FROM delegated_approvals a WHERE a.request_id = ?4 AND a.cycle_id = ?2 AND a.epoch = ?8 AND a.used = 0 AND a.action = 'install_phases' AND a.reviewer_pid = ?9 AND a.reviewer_family = ?10 AND a.params_hash = ?11 AND a.expires_at = ?12 AND a.max_cost_cents = ?13)",
     "AND NOT EXISTS (SELECT 1 FROM owner_flags WHERE name = 'halt' AND value = '1')",
     'AND ?12 > unixepoch()',
     "AND EXISTS (SELECT 1 FROM participants WHERE participant_id = ?7 AND status = 'active')",
     "AND EXISTS (SELECT 1 FROM participants WHERE participant_id = ?9 AND status = 'active')",
     'AND COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?9), ?9) = ?10',
     'AND COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?7), ?7) != ?10',
+    "AND EXISTS (SELECT 1 FROM events e WHERE e.seq = ?14 AND e.cycle_id = ?2 AND e.type = 'owner.request' AND e.participant_id != ?9 AND COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = e.participant_id), e.participant_id) != ?10)",
     'AND EXISTS (SELECT 1 FROM budget_envelopes WHERE scope = ?2 AND limit_cents - reserved_cents - spent_cents >= ?13)',
   ].join(' ') : '';
   return {
@@ -62,7 +63,7 @@ export function bindingGuard(binding: OwnerRequestBinding, previousKeyPrefix: st
       delegated,
     ].join(' '),
     binds: [binding.request_id, previousKeyPrefix, binding.expected_previous_seq ?? 0,
-      ...(proof?.kind === 'delegated' ? [proof.subject, proof.epoch, proof.reviewer_pid, proof.reviewer_family, proof.params_hash, proof.expires_at, proof.max_cost_cents] : [])],
+      ...(proof?.kind === 'delegated' ? [proof.subject, proof.epoch, proof.reviewer_pid, proof.reviewer_family, proof.params_hash, proof.expires_at, proof.max_cost_cents, binding.request_seq] : [])],
   };
 }
 

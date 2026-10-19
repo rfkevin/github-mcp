@@ -216,7 +216,7 @@ export async function ownerAppend(db: D1Database, input: {
   now?: () => Date;
 }): Promise<OwnerWriteResult> {
   await ensureSchema(db);
-  if (input.proof.kind === 'delegated' && (!input.extraGuard || input.cycleId !== input.proof.cycle_id)) throw new CollabStoreError('DELEGATED_FORBIDDEN', 'Delegated proof requires transaction-bound authorization.');
+  if (input.proof.kind === 'delegated' && (!input.extraGuard || input.cycleId !== input.proof.cycle_id || input.payload.action !== 'install_phases' || !input.key.startsWith('owner-phase-install:'))) throw new CollabStoreError('DELEGATED_FORBIDDEN', 'Delegated proof requires transaction-bound authorization.');
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
   const payloadJson = JSON.stringify({ ...input.payload, proof_kind: input.proof.kind });
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
