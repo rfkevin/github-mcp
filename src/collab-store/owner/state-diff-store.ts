@@ -46,3 +46,36 @@ export async function delegatedStateDiff(db: D1Database, input: {
   if ((latest?.seq ?? null) !== input.previous_seq) throw new DelegationDenied('state_precondition_stale');
   return classifyStateImport(latest?.content ?? null, input.markdown);
 }
+
+const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+export interface ResolvedImportPlan {
+  phase: string;
+  tasks: ReadonlyArray<{ task_id: string; owner_pid: string; reviewer_pid: string; tester_pid: string; owned_paths: string[] }>;
+  issue_refs: ReadonlyArray<{ repository: string; issue_number: number }>;
+}
+
+/**
+ * D13-5 (revue ChatGPT) : le classifieur compare du TEXTE, mais l'import réécrit `tasks` à partir de
+ * l'annuaire courant (étiquette -> participant). Pour une preuve DÉLÉGUÉE, la garde SQL du lot exige donc
+ * que le plan RÉSOLU ne change aucun droit : mêmes tâches avec les mêmes owner/reviewer/tester/chemins
+ * qu'en base, même phase, mêmes références d'issues, aucune issue prise à un autre cycle. Sinon le lot
+ * n'écrit rien (il faut Kevin). Évalué dans le même lot D1 que la décision.
+ */
+export function withResolvedPlanGuard(guard: { sql: string; binds: unknown[] }, plan: ResolvedImportPlan): { sql: string; binds: unknown[] } {
+  const first = guard.binds.length + 4; // les paramètres de garde commencent à ?4 (?1 clé, ?2 cycle, ?3 révision)
+  const sep = String.fromCharCode(31);
+  const rec = String.fromCharCode(30);
+  const taskFp = plan.tasks.map(t => [t.task_id, t.owner_pid ?? '', t.reviewer_pid ?? '', t.tester_pid ?? '', JSON.stringify(t.owned_paths)].join(sep))
+    .sort(byCodeUnit).join(rec);
+  const refs = [...plan.issue_refs].sort((a, b) => byCodeUnit(a.repository, b.repository) || a.issue_number - b.issue_number)
+    .map(ref => ref.repository + '#' + ref.issue_number);
+  const sql = [
+    guard.sql,
+    "AND COALESCE((SELECT group_concat(f, char(30)) FROM (SELECT task_id || char(31) || COALESCE(owner_pid, '') || char(31) || COALESCE(reviewer_pid, '') || char(31) || COALESCE(tester_pid, '') || char(31) || COALESCE(owned_paths, '') AS f FROM tasks WHERE cycle_id = ?2 ORDER BY task_id)), '') = ?" + first,
+    "AND COALESCE((SELECT phase FROM cycles WHERE cycle_id = ?2), '') = ?" + (first + 1),
+    "AND COALESCE((SELECT group_concat(r, char(30)) FROM (SELECT repository || '#' || issue_number AS r FROM cycle_issue_refs_v2 WHERE cycle_id = ?2 ORDER BY repository, issue_number)), '') = ?" + (first + 2),
+    "AND NOT EXISTS (SELECT 1 FROM cycle_issue_refs_v2 WHERE cycle_id != ?2 AND instr(?" + (first + 3) + ", char(30) || repository || '#' || issue_number || char(30)) > 0)",
+  ].join(' ');
+  return { sql, binds: [...guard.binds, taskFp, plan.phase, refs.join(rec), rec + refs.join(rec) + rec] };
+}

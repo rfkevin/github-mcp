@@ -13,6 +13,7 @@
 import { CollabStoreError, type StoredStoreEvent } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { ensureContextSchema } from '../context/schema';
+import { withResolvedPlanGuard } from './state-diff-store';
 import { loadLabelDirectory, DEFAULT_OWNER_LABEL } from '../export/labels';
 import { planStateImport, type ExportTarget } from '../export/state-import-plan';
 import { STATE_IMPORT_KEY_PREFIX } from '../export/state-export';
@@ -101,7 +102,8 @@ export async function importStateSnapshot(db: D1Database, input: {
       ...(binding ? bindingPayload(binding) : {}),
     },
     proof: input.proof,
-    ...(binding ? { extraGuard: bindingGuard(binding, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':', input.proof, 'import_state') } : {}),
+    ...(binding ? { extraGuard: (guard => input.proof.kind === 'delegated' ? withResolvedPlanGuard(guard, plan) : guard)(
+      bindingGuard(binding, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':', input.proof, 'import_state')) } : {}),
     sideEffects: eventKey => [
       ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
       db.prepare("UPDATE cycles SET phase = ?2, project = CASE WHEN project = '' THEN ?3 ELSE project END WHERE cycle_id = ?1")

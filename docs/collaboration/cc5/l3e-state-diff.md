@@ -58,6 +58,10 @@ table, documents illisibles).
   `target` sont interdits pour un import délégué.
 - Le garde SQL `bindingGuard` est paramétré par action (`install_phases` ou `import_state`) et `state-import.ts`
   lui transmet désormais la preuve déléguée (elle était auparavant ignorée sur ce chemin).
-- `delegation-policy.test.ts`, jamais collecté par vitest, est copié en `delegation-policy.spec.ts` (55 tests exécutés) ;
-  l'ancien fichier orphelin est à supprimer (`git rm`) par Kevin à la fusion, le MCP ne sait pas supprimer.
+- `delegation-policy.test.ts`, jamais collecté par vitest, est remplacé par `delegation-policy.spec.ts` (55 tests exécutés).
+- Garde du plan résolu (revue D12) : le classifieur compare du texte, mais l'import réécrit `tasks` depuis l'annuaire
+  courant. Pour une preuve déléguée, le lot D1 exige donc (`withResolvedPlanGuard`) que les tâches en base aient déjà
+  exactement les owner/reviewer/tester/chemins du plan résolu, que la phase soit inchangée, que les références
+  d'issues du cycle soient identiques et qu'aucune issue ne soit prise à un autre cycle. Toute dérive (annuaire
+  modifié, réattribution, phase avancée) => refus, Kevin importe.
 - Incrément 2b (séparé) : afficher le verdict sur /owner.

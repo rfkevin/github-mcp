@@ -42,7 +42,7 @@ function doc(o: { revision: number; header?: string[]; decisions?: string[]; tas
 
 interface Fixture { cycle: string; requestId: string; store: CollabStore; baseSeq: number; next: string }
 
-async function fixture(o: { next: string; appoint?: boolean; claimedPrevious?: number | null; base?: string; expiresOffset?: number }): Promise<Fixture> {
+async function fixture(o: { next: string; appoint?: boolean; claimedPrevious?: number | null; base?: string; expiresOffset?: number; noBase?: boolean }): Promise<Fixture> {
   await ensureSchema(db);
   const cycle = unique('cycle');
   const requestId = unique('req');
@@ -53,9 +53,12 @@ async function fixture(o: { next: string; appoint?: boolean; claimedPrevious?: n
   if (o.appoint !== false) {
     await appointCycleCoordinator(db, { cycleId: cycle, participantId: 'l3e2-coord', familyId: 'l3e2-coord', expectedEpoch: 0, proof: ownerProof, op: unique('appoint') });
   }
-  const base = await importStateSnapshot(db, { cycle_id: cycle, markdown: o.base ?? doc({ revision: 8 }), proof: ownerProof });
-  expect(base.status).toBe('applied');
-  const baseSeq = base.event.seq;
+  let baseSeq = 0;
+  if (!o.noBase) {
+    const base = await importStateSnapshot(db, { cycle_id: cycle, markdown: o.base ?? doc({ revision: 8 }), proof: ownerProof });
+    expect(base.status).toBe('applied');
+    baseSeq = base.event.seq;
+  }
   const params = { cycle_id: cycle, markdown: o.next };
   const hash = await executablePayloadSha256('import_state', params);
   const store = new CollabStore(db);
@@ -63,7 +66,7 @@ async function fixture(o: { next: string; appoint?: boolean; claimedPrevious?: n
     cycle_id: cycle, type: 'owner.request', participant_id: 'l3e2-author', expected_rev: await store.currentRevision(cycle),
     op_id: 'l3e2-author:' + cycle + ':ask:1',
     payload_json: JSON.stringify({ request_id: requestId, summary: 'import state', action: 'import_state', params, payload_sha256: hash,
-      preconditions: { previous_seq: o.claimedPrevious === undefined ? baseSeq : o.claimedPrevious },
+      preconditions: { previous_seq: o.claimedPrevious === undefined ? (o.noBase ? null : baseSeq) : o.claimedPrevious },
       expires_at: Math.floor(Date.now() / 1000) + (o.expiresOffset ?? 3600), max_cost_cents: 0, reason: 'test', risk: 'test', rollback: 'test' }),
   });
   expect(ask.status).toBe('applied');
@@ -178,26 +181,66 @@ describe('l3e 2a — import_state délégué : seulement si le verdict serveur e
   });
 
   it('premier import (aucun état précédent) : jamais délégué', async () => {
-    await ensureSchema(db);
-    const cycle = unique('first');
-    await db.prepare('INSERT INTO cycles (cycle_id) VALUES (?1)').bind(cycle).run();
-    for (const pid of ['l3e2-coord', 'l3e2-author', 'l3e2-review']) {
-      await db.prepare('INSERT INTO participants (participant_id, display_label) VALUES (?1, ?1) ON CONFLICT(participant_id) DO NOTHING').bind(pid).run();
-    }
-    await appointCycleCoordinator(db, { cycleId: cycle, participantId: 'l3e2-coord', familyId: 'l3e2-coord', expectedEpoch: 0, proof: ownerProof, op: unique('appoint') });
-    const params = { cycle_id: cycle, markdown: doc({ revision: 1 }) };
-    const store = new CollabStore(db);
-    const requestId = unique('req');
-    const ask = await store.appendEvent({ cycle_id: cycle, type: 'owner.request', participant_id: 'l3e2-author', expected_rev: await store.currentRevision(cycle),
-      op_id: 'l3e2-author:' + cycle + ':ask:1', payload_json: JSON.stringify({ request_id: requestId, summary: 'first', action: 'import_state', params,
-        payload_sha256: await executablePayloadSha256('import_state', params), preconditions: { previous_seq: null },
-        expires_at: Math.floor(Date.now() / 1000) + 3600, max_cost_cents: 0, reason: 'r', risk: 'r', rollback: 'r' }) });
-    expect(ask.status).toBe('applied');
-    const f: Fixture = { cycle, requestId, store, baseSeq: 0, next: params.markdown };
-    const before = await decisions(cycle);
+    const f = await fixture({ next: doc({ revision: 1 }), noBase: true });
+    const before = await decisions(f.cycle);
     await expect(approve(f)).rejects.toThrow();
     expect((await execute(f)).isError).toBe(true);
-    expect(await decisions(cycle)).toBe(before);
-    expect(await db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE cycle_id = ?1').bind(cycle).first()).toMatchObject({ n: 0 });
+    expect(await decisions(f.cycle)).toBe(before);
+    expect(await db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE cycle_id = ?1').bind(f.cycle).first()).toMatchObject({ n: 0 });
+  });
+
+  describe('plan résolu : aucun droit ne change sans Kevin (revue ChatGPT)', () => {
+    const OWNED = (status: string, version: number) => '| t1 | ' + status + ' | l3e2-author | author | none | none | src/x | none | none | ' + version + ' | ref | next |';
+    const sameText = async () => fixture({ base: doc({ revision: 8, tasks: [OWNED('accepted', 1)] }), next: doc({ revision: 9, tasks: [OWNED('done', 2)] }) });
+    const pids = async (cycle: string) => db.prepare('SELECT owner_pid, status FROM tasks WHERE cycle_id = ?1 AND task_id = ?2').bind(cycle, 't1').first<{ owner_pid: string; status: string }>();
+
+    it('témoin : sans dérive, le même texte reste direct et applique le statut', async () => {
+      const f = await sameText();
+      expect((await approve(f)).status).toBe('applied');
+      expect((await execute(f)).isError, 'direct').toBeFalsy();
+      expect(await pids(f.cycle)).toMatchObject({ owner_pid: 'l3e2-author', status: 'done' });
+    });
+
+    it('l’annuaire change entre le dernier import et l’exécution : même texte, autre participant => refusé', async () => {
+      const f = await sameText();
+      expect((await approve(f)).status).toBe('applied');
+      await db.prepare("UPDATE participants SET display_label = 'l3e2-old-author' WHERE participant_id = 'l3e2-author'").run();
+      await db.prepare("UPDATE participants SET display_label = 'l3e2-author' WHERE participant_id = 'l3e2-outsider'").run();
+      try {
+        const before = await decisions(f.cycle);
+        expect((await execute(f)).isError).toBe(true);
+        expect(await decisions(f.cycle)).toBe(before);
+        expect(await pids(f.cycle)).toMatchObject({ owner_pid: 'l3e2-author', status: 'accepted' });
+      } finally {
+        await db.prepare("UPDATE participants SET display_label = 'l3e2-author' WHERE participant_id = 'l3e2-author'").run();
+        await db.prepare("UPDATE participants SET display_label = 'l3e2-outsider' WHERE participant_id = 'l3e2-outsider'").run();
+      }
+    });
+
+    it('un droit changé en base depuis le dernier import (réattribution) ne peut pas être écrasé par un import délégué', async () => {
+      const f = await sameText();
+      expect((await approve(f)).status).toBe('applied');
+      await db.prepare("UPDATE tasks SET reviewer_pid = 'l3e2-outsider' WHERE cycle_id = ?1 AND task_id = 't1'").bind(f.cycle).run();
+      expect((await execute(f)).isError).toBe(true);
+      expect(await pids(f.cycle)).toMatchObject({ status: 'accepted' });
+    });
+
+    it('la phase du cycle changée depuis le dernier import n’est pas réinitialisée par un import délégué', async () => {
+      const f = await sameText();
+      expect((await approve(f)).status).toBe('applied');
+      await db.prepare("UPDATE cycles SET phase = 'P7' WHERE cycle_id = ?1").bind(f.cycle).run();
+      expect((await execute(f)).isError).toBe(true);
+      expect(await db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1').bind(f.cycle).first()).toMatchObject({ phase: 'P7' });
+    });
+
+    it('une issue référencée par un autre cycle ne lui est pas reprise par un import délégué', async () => {
+      const f = await sameText();
+      expect((await approve(f)).status).toBe('applied');
+      const other = unique('thief');
+      await db.prepare('INSERT INTO cycles (cycle_id) VALUES (?1)').bind(other).run();
+      await db.prepare('UPDATE cycle_issue_refs_v2 SET cycle_id = ?1 WHERE cycle_id = ?2').bind(other, f.cycle).run();
+      expect((await execute(f)).isError).toBe(true);
+      expect(await db.prepare('SELECT COUNT(*) AS n FROM cycle_issue_refs_v2 WHERE cycle_id = ?1').bind(f.cycle).first()).toMatchObject({ n: 0 });
+    });
   });
 });
