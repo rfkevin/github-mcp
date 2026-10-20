@@ -53,6 +53,9 @@ class Needs extends Error {}
 
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
+/** Tri explicite par unités de code (indépendant de la locale). */
+const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 function fail(reason: string): never {
   throw new Needs(reason);
 }
@@ -114,7 +117,7 @@ function rowsById(table: TableBlock, name: string): Map<string, string[]> {
 function checkHeaders(before: StateDocument, after: StateDocument, changes: string[]): void {
   const b = headersOf(before);
   const a = headersOf(after);
-  if (!same([...b.keys()].sort(), [...a.keys()].sort())) fail('clés de contrôle ajoutées ou retirées');
+  if (!same([...b.keys()].sort(byCodeUnit), [...a.keys()].sort(byCodeUnit))) fail('clés de contrôle ajoutées ou retirées');
   const changed: string[] = [];
   for (const [key, value] of a) {
     if (b.get(key) === value) continue;
@@ -133,7 +136,7 @@ function checkRoles(before: Section, after: Section, changes: string[]): void {
   if (column < 0) fail('Roles : colonne « ' + ROLES_ASSIGNMENT_COLUMN + ' » absente');
   const rowsBefore = rowsById(b, 'Roles');
   const rowsAfter = rowsById(a, 'Roles');
-  if (!same([...rowsBefore.keys()].sort(), [...rowsAfter.keys()].sort())) fail('Roles : acteurs ajoutés ou retirés');
+  if (!same([...rowsBefore.keys()].sort(byCodeUnit), [...rowsAfter.keys()].sort(byCodeUnit))) fail('Roles : acteurs ajoutés ou retirés');
   let touched = 0;
   for (const [actor, row] of rowsAfter) {
     const old = rowsBefore.get(actor)!;
