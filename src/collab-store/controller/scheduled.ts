@@ -32,12 +32,16 @@ export function scheduledResearchPassId(now: Date): string {
 export interface ScheduledCycleResult { cycle_id: string; mode: ControllerRunResult['mode']; recorded: number; reminded: number; error?: string }
 export interface ScheduledRunResult {
   cycles: ScheduledCycleResult[];
-  research: { pass_id: string; status: ResearchPassStatus | 'failed' };
+  research: { pass_id: string; status: ResearchPassStatus | 'failed' | 'skipped' };
   /** l3d 2b-2b : lignes ajoutées à la file des échecs pendant ce passage. */
   failures_recorded: number;
 }
 
-export async function runScheduledControllers(db: D1Database, options: { now?: () => Date } = {}): Promise<ScheduledRunResult> {
+/**
+ * `research: false` (webhook l3d 2d) : même passage du contrôleur, sans le chercheur L5 — il reste quotidien et
+ * n'est lancé que par le Cron. Par défaut (Cron), le chercheur passe au plus une fois par jour UTC.
+ */
+export async function runScheduledControllers(db: D1Database, options: { now?: () => Date; research?: boolean } = {}): Promise<ScheduledRunResult> {
   await ensureSchema(db);
   const { results } = await db.prepare("SELECT cycle_id FROM cycles WHERE status = 'open' ORDER BY cycle_id LIMIT ?1")
     .bind(SCHEDULED_CYCLE_LIMIT).all<{ cycle_id: string }>();
@@ -53,11 +57,15 @@ export async function runScheduledControllers(db: D1Database, options: { now?: (
   }
   const now = options.now ?? (() => new Date());
   const passId = scheduledResearchPassId(now());
-  let status: ResearchPassStatus | 'failed';
-  try {
-    status = (await runResearchPass(db, { passId, now })).status;
-  } catch {
-    status = 'failed';
+  let status: ResearchPassStatus | 'failed' | 'skipped';
+  if (options.research === false) {
+    status = 'skipped';
+  } else {
+    try {
+      status = (await runResearchPass(db, { passId, now })).status;
+    } catch {
+      status = 'failed';
+    }
   }
   // l3d 2b-2b : file des échecs (une ligne par heure et par portée/code) ; jamais bloquant.
   const at = Math.floor(now().getTime() / 1000);
