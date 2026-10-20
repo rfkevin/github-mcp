@@ -7,6 +7,7 @@ import {
 import { advanceGuarded } from '../../../src/collab-store/phases/gate';
 import { installPhaseDefinitions } from '../../../src/collab-store/owner/phase-install';
 import { adjustPhase } from '../../../src/collab-store/phases/soft';
+import { requestCorrection } from '../../../src/collab-store/controller/corrections';
 import { registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { appointCycleCoordinator } from '../../../src/collab-store/owner/delegation-execution';
 
@@ -95,6 +96,26 @@ describe('CC-4 A2 — arrêt d’urgence', () => {
     expect(await state()).toEqual(before);
     expect(await db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type = 'phase.advance'").bind(cycle)
       .first<{ n: number }>()).toEqual({ n: 0 });
+  });
+  it('CC-5 l3d 2c-2 : HALT arrête aussi les demandes de correction du coordinateur (pré-check et garde du lot)', async () => {
+    const cycle = uniq('corr');
+    const holder = uniq('coord');
+    await registerParticipant(db, { participant_id: holder, display_label: holder, proof, op: uniq('reg') });
+    await installPhaseDefinitions(db, { cycle_id: cycle, definitions: JSON.stringify([{ phase: 'P1' }]), proof });
+    await db.prepare([
+      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
+      "VALUES ('t0', ?1, 'auteur', 'relecteur', ?2, 'in_progress', '[]', '', '', 1)",
+    ].join(' ')).bind(cycle, holder).run();
+    await appointCycleCoordinator(db, { cycleId: cycle, participantId: holder, familyId: holder, expectedEpoch: 0, proof, op: uniq('appoint') });
+    const rev = (await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(cycle).first<{ revision: number }>())!.revision;
+    const ask = () => requestCorrection(db, { cycle_id: cycle, participant_id: holder, task_id: 't0', items: ['Point A'],
+      expected_revision: rev, op_id: holder + ':' + cycle + ':corr:1' });
+    await setAutomationHalt(db, { halted: true, proof, op: uniq('halt') });
+    expect(await codeOf(ask())).toBe('AUTOMATION_HALTED');
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type = 'correction.request'").bind(cycle)
+      .first<{ n: number }>()).toEqual({ n: 0 });
+    await setAutomationHalt(db, { halted: false, proof, op: uniq('resume') });
+    expect((await ask()).status).toBe('applied');
   });
 });
 

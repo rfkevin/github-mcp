@@ -16,7 +16,7 @@ export type DecisionKind =
   | 'advance_phase';  // sorties attendues satisfaites : avance par policy possible
 
 export type WakeAction = 'implement' | 'review' | 'test' | 'renew_verdict' | 'address_feedback'
-  | 'answer_question' | 'renew_or_close_question';
+  | 'answer_question' | 'renew_or_close_question' | 'address_correction';
 
 export interface Decision {
   kind: DecisionKind;
@@ -42,6 +42,8 @@ export type Verdict = 'positive' | 'negative' | 'unknown';
 
 export interface Submission { head: string; base: string; seq: number }
 export interface VerdictFact { participant: string; verdict: Verdict; head: string | null; base: string | null; seq: number }
+/** CC-5 l3d 2c-2 : dernière demande de correction du coordinateur sur la tâche. */
+export interface CorrectionFact { seq: number; items: number }
 
 export interface TaskFacts {
   task_id: string;
@@ -56,6 +58,8 @@ export interface TaskFacts {
   submission: Submission | null;
   /** Verdicts du relecteur et du testeur, du plus ancien au plus récent. */
   verdicts: VerdictFact[];
+  /** Dernière `correction.request` du coordinateur (absent = aucune). */
+  correction?: CorrectionFact | null;
 }
 
 /**
@@ -111,7 +115,10 @@ function bindsTo(fact: VerdictFact | null, submission: Submission): boolean {
 /** Épisode d'une tâche : sa révision, la soumission courante et le dernier verdict de chaque vérificateur. */
 function taskEpisode(task: TaskFacts): string {
   const latest = (who: string) => latestFrom(task.verdicts, who)?.seq ?? 0;
-  return ['r' + task.revision, 's' + (task.submission?.seq ?? 0), 'v' + latest(task.reviewer) + ',' + latest(task.tester)].join(':');
+  const parts = ['r' + task.revision, 's' + (task.submission?.seq ?? 0), 'v' + latest(task.reviewer) + ',' + latest(task.tester)];
+  // Une demande de correction réarme les décisions de la tâche ; sans demande, les clés existantes sont inchangées.
+  if (task.correction) parts.push('c' + task.correction.seq);
+  return parts.join(':');
 }
 
 function wake(task: TaskFacts, actor: string, action: WakeAction, rule: string, subject: string, reason: string): Decision {
@@ -145,6 +152,18 @@ function taskDecisions(task: TaskFacts, byId: Map<string, TaskFacts>): Decision[
   }
   if (!ACTIVE.has(task.status)) return [];
   const submission = task.submission;
+  // 2c-2 : demande du coordinateur ouverte tant que l'auteur n'a pas soumis APRÈS elle. Elle remplace le réveil de
+  // l'auteur (implement / address_feedback) et retient merge_ready ; relecteur et testeur restent réveillés.
+  const correction = task.correction && (!submission || submission.seq < task.correction.seq) ? task.correction : null;
+  if (correction) {
+    const corrective = wake(task, task.owner, 'address_correction', 'correction-requested', 'corr#' + correction.seq,
+      'Le coordinateur demande ' + correction.items + (correction.items > 1 ? ' corrections ciblées' : ' correction ciblée')
+      + ' (correction.request #' + correction.seq + ') : corriger puis soumettre à nouveau.');
+    if (!submission) return [corrective];
+    const pending = [verifierDecision(task, submission, task.reviewer, 'review'), verifierDecision(task, submission, task.tester, 'test')]
+      .filter((decision): decision is Decision => decision !== null);
+    return [corrective, ...pending];
+  }
   if (!submission) {
     return [wake(task, task.owner, 'implement', 'no-submission', 'none', 'Tâche ouverte sans soumission de l\'auteur.')];
   }

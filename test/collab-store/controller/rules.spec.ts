@@ -1,19 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { nextActors, taskEvidence, parseDependencies, type ControllerSnapshot, type TaskFacts } from '../../../src/collab-store/controller';
+import { nextActors, taskEvidence, parseDependencies } from '../../../src/collab-store/controller';
+import { snapshot, task } from './fixtures';
 
 // CC-5 L3 — règles pures du contrôleur : déterministes, fail-closed, D12 au head/base exacts.
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
 const HEAD2 = 'c'.repeat(40);
-
-function task(overrides: Partial<TaskFacts> = {}): TaskFacts {
-  return { task_id: 't1', status: 'accepted', revision: 1, owner: 'vibe', reviewer: 'grok', tester: 'claude', dependencies: [],
-    submission: null, verdicts: [], ...overrides };
-}
-
-function snapshot(tasks: TaskFacts[], overrides: Partial<ControllerSnapshot> = {}): ControllerSnapshot {
-  return { cycle_id: 'c', revision: 7, phase: 'P6', halted: false, auto_advance: 'none', outputs_satisfied: false, tasks, ...overrides };
-}
 
 const submitted = { head: HEAD, base: BASE, seq: 10 };
 

@@ -14,13 +14,27 @@ import { STATE_IMPORT_KEY_PREFIX } from '../export/state-export';
 import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { taskEvidence, parseDependencies, type EvidenceEvent } from './facts';
-import type { ControllerSnapshot, QuestionFact, TaskFacts } from './rules';
+import type { ControllerSnapshot, CorrectionFact, QuestionFact, TaskFacts } from './rules';
 
 interface TaskRow { task_id: string; status: string; revision: number; owner_pid: string; reviewer_pid: string; tester_pid: string }
 interface ClarifyRow { seq: number; type: string; participant_id: string; payload_json: string; expected_rev: number }
 
 /** Plafond de lecture des événements clarify par passage (paquet borné, D3). */
 const CLARIFY_SCAN_LIMIT = 2000;
+
+/** Dernière demande de correction par tâche (événements écrits par le serveur seulement). Payload illisible : ignoré. */
+export function latestCorrections(rows: Array<{ seq: number; payload_json: string }>): Map<string, CorrectionFact> {
+  const out = new Map<string, CorrectionFact>();
+  for (const row of rows) {
+    const payload = payloadOf(row.payload_json);
+    const task = typeof payload?.task === 'string' ? payload.task : '';
+    const items = Array.isArray(payload?.items) ? payload.items.length : 0;
+    if (!task || items === 0) continue;
+    const known = out.get(task);
+    if (!known || row.seq > known.seq) out.set(task, { seq: row.seq, items });
+  }
+  return out;
+}
 
 function payloadOf(json: string): Record<string, unknown> | null {
   try {
@@ -88,7 +102,7 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
   const importKey = STATE_IMPORT_KEY_PREFIX + cycleId + ':';
   const importSeq = "COALESCE((SELECT MAX(seq) FROM events WHERE cycle_id = ?1 AND type = 'owner.decision'"
     + " AND participant_id = 'owner' AND substr(idempotency_key, 1, length(?2)) = ?2), 0)";
-  const [cycle, halt, def, tasks, families, imported, evidence, clarify] = await db.batch([
+  const [cycle, halt, def, tasks, families, imported, evidence, clarify, corrections] = await db.batch([
     db.prepare('SELECT phase, revision FROM cycles WHERE cycle_id = ?1').bind(cycleId),
     db.prepare("SELECT value FROM owner_flags WHERE name = 'halt'"),
     db.prepare('SELECT auto_advance FROM phase_definitions WHERE cycle_id = ?1 AND phase = (SELECT phase FROM cycles WHERE cycle_id = ?1)').bind(cycleId),
@@ -99,6 +113,14 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
       .bind(cycleId),
     db.prepare("SELECT seq, type, participant_id, payload_json, expected_rev FROM events WHERE cycle_id = ?1 AND type IN ('clarify.ask', 'clarify.answer') ORDER BY seq DESC LIMIT " + CLARIFY_SCAN_LIMIT)
       .bind(cycleId),
+    // Dernière demande PAR TÂCHE (une ligne par tâche, sans plafond global : revue GPT-6 #179 — une limite sur les
+    // N dernières demandes du cycle pouvait masquer la demande encore ouverte d'une tâche moins active).
+    db.prepare([
+      'SELECT e.seq, e.payload_json FROM events e JOIN (',
+      "  SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'correction.request' AND json_valid(payload_json)",
+      "  GROUP BY json_extract(payload_json, '$.task')",
+      ') latest ON latest.seq = e.seq',
+    ].join(' ')).bind(cycleId),
   ]);
   const cycleRow = (cycle.results as Array<{ phase: string; revision: number }>)[0];
   if (!cycleRow) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + cycleId);
@@ -108,12 +130,13 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
   const importPayload = (imported.results as Array<{ payload_json: string }>)[0]?.payload_json;
   const content = importPayload ? (JSON.parse(importPayload) as { content?: string }).content ?? null : null;
   const deps = dependenciesFromState(content);
+  const correctionByTask = latestCorrections(corrections.results as Array<{ seq: number; payload_json: string }>);
   const events: EvidenceEvent[] = (evidence.results as Array<{ seq: number; participant_id: string; payload_json: string; evidence_ref: string }>)
     .map(row => ({ seq: row.seq, participant: logical(row.participant_id), payload_json: row.payload_json, evidence_ref: row.evidence_ref ?? '' }));
   const taskFacts: TaskFacts[] = (tasks.results as TaskRow[]).map(row => {
     const roles = { owner: logical(row.owner_pid), reviewer: logical(row.reviewer_pid), tester: logical(row.tester_pid) };
     return { task_id: row.task_id, status: row.status, revision: row.revision, ...roles, dependencies: deps.get(row.task_id) ?? [],
-      ...taskEvidence(row.task_id, roles, events) };
+      ...taskEvidence(row.task_id, roles, events), correction: correctionByTask.get(row.task_id) ?? null };
   });
   const autoAdvance = (def.results as Array<{ auto_advance: string }>)[0]?.auto_advance ?? 'none';
   return {

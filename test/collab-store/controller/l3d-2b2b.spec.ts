@@ -53,8 +53,8 @@ describe('CC-5 L3d 2b-2b — code d\'échec et message (purs)', () => {
   });
 
   it('message lisible : portée (cycle ou chercheur), code, heures, dernière heure UTC', () => {
-    expect(failureMessage('cc5', 'UNKNOWN_CYCLE', 1, T0)).toBe('Kevin — vérifier le passage programmé (cycle cc5) : échec UNKNOWN_CYCLE sur 1 heure depuis 24 h, dernier à 08:00 UTC.');
-    expect(failureMessage(RESEARCH_SCOPE, 'RESEARCH_PASS_FAILED', 3, T0)).toContain('(chercheur L5) : échec RESEARCH_PASS_FAILED sur 3 heures');
+    expect(failureMessage('cc5', 'UNKNOWN_CYCLE', 1, T0)).toBe('Kevin — vérifier le passage programmé (cycle cc5) : échec UNKNOWN_CYCLE consigné sur 1 heure (24 h glissantes), dernier à 08:00 UTC.');
+    expect(failureMessage(RESEARCH_SCOPE, 'RESEARCH_PASS_FAILED', 3, T0)).toContain('(chercheur L5) : échec RESEARCH_PASS_FAILED consigné sur 3 heures distinctes (24 h glissantes)');
   });
 });
 
@@ -135,7 +135,7 @@ describe('CC-5 L3d 2b-2b — échecs dans « À relayer »', () => {
     const lines = await relayLines(db, { now: () => new Date(base * 1000) });
     const mine = lines.filter(line => line.cycle_id === scope);
     expect(mine).toEqual([expect.objectContaining({ actor: 'owner', label: 'Kevin', action: 'check_controller', since: base - 7200 })]);
-    expect(mine[0].message).toContain('échec X_ERR sur 2 heures');
+    expect(mine[0].message).toContain('échec X_ERR consigné sur 2 heures distinctes');
     const firstOther = lines.findIndex(line => line.action !== 'check_controller');
     const lastFailure = lines.map(line => line.action).lastIndexOf('check_controller');
     expect(lines.some(line => line.cycle_id === working)).toBe(true);

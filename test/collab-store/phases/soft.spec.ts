@@ -8,6 +8,7 @@ import { registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { appointCycleCoordinator } from '../../../src/collab-store/owner/delegation-execution';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { countEvents, countSealed, insertCycleRow, insertEventRow, insertPhaseDefinition, insertTaskRow, makeDatedStore } from '../a0-helpers';
+import { codeOf } from '../coordinator-helpers';
 
 // CC-5 l3d (incrément 2c-1) — phases souples B1 (round.add, phase.reopen, phase.skip) par le coordinateur mandaté.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
@@ -15,11 +16,6 @@ const proof = { kind: 'secret' as const, subject: 'owner-secret' };
 let n = 0;
 const uniq = (label: string) => (label + '-' + (++n) + '-' + Date.now().toString(36)).slice(0, 48);
 const PHASES = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'];
-
-async function codeOf(promise: Promise<unknown>): Promise<string> {
-  try { await promise; } catch (error) { return (error as { code?: string }).code ?? 'UNKNOWN'; }
-  return 'NO_ERROR';
-}
 
 interface World { cycle: string; holder: string; twin: string; other: string; epoch: number; rev: number }
 
