@@ -311,7 +311,12 @@ export async function decideOwnerRequest(db: D1Database, input: {
   const req = parsed.request;
   if (input.proof.kind === 'delegated') {
     const { assertDelegatedAction } = await import('./delegation-policy');
-    assertDelegatedAction({ action: req.action, params: req.params, cycleId: req.cycle_id, envelopeCents: req.max_cost_cents });
+    const { delegatedStateDiff } = await import('./state-diff-store');
+    // D13-5 : verdict d'import recalculé ici contre le dernier import (la garde SQL du lot fige ce même seq).
+    const stateDiff = req.action === 'import_state'
+      ? await delegatedStateDiff(db, { cycle_id: req.cycle_id, previous_seq: req.previous_seq, markdown: String(req.params.markdown) })
+      : undefined;
+    assertDelegatedAction({ action: req.action, params: req.params, cycleId: req.cycle_id, envelopeCents: req.max_cost_cents, stateDiff });
     if (input.proof.request_id !== req.request_id || input.proof.params_hash !== req.payload_sha256 || input.proof.expires_at !== req.expires_at || input.proof.max_cost_cents !== req.max_cost_cents) throw new CollabStoreError('DELEGATED_MISMATCH', 'Delegated proof binding mismatch.');
   }
   // Double soumission du même formulaire : la décision déjà liée à CETTE demande est renvoyée telle quelle.

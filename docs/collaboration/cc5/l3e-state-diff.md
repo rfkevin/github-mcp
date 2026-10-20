@@ -46,3 +46,22 @@ D13-1 v2) et l'affichera sur `/owner` à côté de la demande. Tant qu'il n'est 
 `test/collab-store/owner/state-diff.spec.ts` : cas direct, puis un cas `validate` par règle (décisions, droits,
 tâches, statuts, versions, preuves, rôles, clés de contrôle, chaîne de révisions, sections, texte glissé hors
 table, documents illisibles).
+
+## Incrément 2a — branchement dans la délégation (D13-4)
+
+- `import_state` n'est plus refusé en bloc : la politique exige un verdict `direct` calculé **côté serveur**
+  (`delegatedStateDiff`, jamais fourni par l'appelant). Sans verdict : `state_diff_verifier_required` ;
+  verdict `validate` : `state_requires_owner` (Kevin).
+- Précondition : le dernier import doit être celui visé par la demande (`previous_seq`), sinon `state_precondition_stale`.
+  Un premier import n'est jamais délégué.
+- Une approbation imbriquée (`approve_owner_request`) n'hérite jamais du verdict. Les paramètres `owner_label` et
+  `target` sont interdits pour un import délégué.
+- Le garde SQL `bindingGuard` est paramétré par action (`install_phases` ou `import_state`) et `state-import.ts`
+  lui transmet désormais la preuve déléguée (elle était auparavant ignorée sur ce chemin).
+- `delegation-policy.test.ts`, jamais collecté par vitest, est remplacé par `delegation-policy.spec.ts` (55 tests exécutés).
+- Garde du plan résolu (revue D12) : le classifieur compare du texte, mais l'import réécrit `tasks` depuis l'annuaire
+  courant. Pour une preuve déléguée, le lot D1 exige donc (`withResolvedPlanGuard`) que les tâches en base aient déjà
+  exactement les owner/reviewer/tester/chemins du plan résolu, que la phase soit inchangée, que les références
+  d'issues du cycle soient identiques et qu'aucune issue ne soit prise à un autre cycle. Toute dérive (annuaire
+  modifié, réattribution, phase avancée) => refus, Kevin importe.
+- Incrément 2b (séparé) : afficher le verdict sur /owner.

@@ -10,7 +10,7 @@ export async function executeBoundDelegation(
 ) {
   const bound = await bindDelegatedRequest(db, input, authenticatedPid);
   // Only executable owner actions implemented in the existing /owner dispatcher are allowed.
-  if (bound.action !== 'install_phases') throw new DelegationDenied('no_safe_owner_executor');
+  if (bound.action !== 'install_phases' && bound.action !== 'import_state') throw new DelegationDenied('no_safe_owner_executor');
   const approval = await db.prepare([
     'SELECT reviewer_pid, reviewer_family, epoch, params_hash, max_cost_cents, expires_at, used',
     'FROM delegated_approvals WHERE request_id = ?1 AND cycle_id = ?2',

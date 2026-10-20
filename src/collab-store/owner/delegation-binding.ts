@@ -6,6 +6,7 @@
 import { activeMandate } from './delegation-execution';
 import { executablePayloadSha256, parseOwnerRequest } from './executable';
 import { assertDelegatedAction, DelegationDenied } from './delegation-policy';
+import { delegatedStateDiff } from './state-diff-store';
 
 export interface BoundDelegation {
   cycleId: string;
@@ -61,8 +62,12 @@ export async function bindDelegatedRequest(
   const hash = await executablePayloadSha256(req.action, req.params);
   if (hash !== req.payload_sha256) throw new DelegationDenied('modified_request');
   if (req.expires_at === null || req.expires_at <= now) throw new DelegationDenied('request_expired');
+  // D13-5 : le verdict d'import est calculé ici, côté serveur, contre le dernier import (jamais fourni par l'appelant).
+  const stateDiff = req.action === 'import_state'
+    ? await delegatedStateDiff(db, { cycle_id: input.cycle, previous_seq: req.previous_seq, markdown: String(req.params.markdown) })
+    : undefined;
   assertDelegatedAction({ action: req.action, params: req.params, cycleId: input.cycle,
-    envelopeCents: req.max_cost_cents });
+    envelopeCents: req.max_cost_cents, stateDiff });
   const already = await db.prepare('SELECT 1 AS found FROM owner_decisions WHERE request_id = ?1')
     .bind(input.request_id).first();
   if (already) throw new DelegationDenied('already_decided');

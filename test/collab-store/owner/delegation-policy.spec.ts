@@ -25,6 +25,21 @@ describe('L3c delegation deny-by-default', () => {
   it('rejects unverified state imports even when nominally allowlisted', () => {
     expect(() => assertDelegatedAction({ ...base, action: 'import_state', params: params.import_state })).toThrow('state_diff_verifier_required');
   });
+  it('l3e D13 : import_state passe seulement avec un verdict serveur direct', () => {
+    const direct = { level: 'direct' as const, reasons: [], changes: [] };
+    expect(assertDelegatedAction({ ...base, action: 'import_state', params: params.import_state, stateDiff: direct })).toBe('import_state');
+    expect(() => assertDelegatedAction({ ...base, action: 'import_state', params: params.import_state, stateDiff: { ...direct, level: 'validate', reasons: ['x'] } })).toThrow('state_requires_owner');
+    expect(() => assertDelegatedAction({ ...base, action: 'import_state', params: params.import_state })).toThrow('state_diff_verifier_required');
+    expect(() => assertDelegatedAction({ ...base, action: 'import_state', params: { ...params.import_state, markdown: '  ' }, stateDiff: direct })).toThrow('invalid_state');
+    // les champs hors liste blanche (cible, libellé) restent interdits même avec un verdict direct
+    expect(() => assertDelegatedAction({ ...base, action: 'import_state', params: { ...params.import_state, owner_label: 'Kevin' }, stateDiff: direct })).toThrow('unexpected_parameter');
+    expect(() => assertDelegatedAction({ ...base, action: 'import_state', params: { ...params.import_state, target: null }, stateDiff: direct })).toThrow('unexpected_parameter');
+  });
+  it('l3e D13 : une approbation imbriquée n’hérite jamais du verdict d’état', () => {
+    const direct = { level: 'direct' as const, reasons: [], changes: [] };
+    expect(() => assertDelegatedAction({ ...base, action: 'approve_owner_request', stateDiff: direct,
+      params: { request_id: 'r1', target_action: 'import_state', target_params: params.import_state } })).toThrow('state_diff_verifier_required');
+  });
   it('rejects cost above the owner envelope', () => {
     expect(() => assertDelegatedAction({ ...base, action: 'dispatch_task', params: { ...params.dispatch_task, max_cost_cents: 1 } })).toThrow('envelope_exceeded');
   });

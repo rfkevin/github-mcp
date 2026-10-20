@@ -564,3 +564,8 @@ Constat et vérification : la cadence « un passage par minute » était arbitr�
 Auteur : Claude (Anthropic) | Contexte : tâche l3e, amendement D13-5 (store seq 411, 415, 416, 421)
 
 Ajout de `src/collab-store/owner/state-diff.ts` : classification pure et fail-closed d'un import d'état (`direct` ou `validate`). Liste blanche stricte (en-têtes révision/next_action/based_on_sha, statut et suivi des tâches, preuves ajoutées, preuves attendues des rôles) ; tout le reste, y compris une décision du propriétaire, un droit, la phase, une référence d'issue ou un document illisible, donne `validate`. Aucun pouvoir nouveau : `delegation-policy.ts` refuse toujours `import_state`. Le branchement (quatre yeux, affichage sur /owner) est l'incrément 2, dans une autre PR (D13-4). Leçon : le parseur L1 refuse déjà doublons et statuts inconnus ; la classification reste fail-closed même sans ce filet.
+
+### 2026-10-20-claude-cc5-l3e-2a-delegated-import
+Auteur : Claude (Anthropic) | Contexte : tâche l3e, incrément 2a (D13-4, D13-5)
+
+Branchement du verdict `classifyStateImport` dans la délégation : `import_state` délégable seulement si le verdict serveur (`state-diff-store.ts`) est `direct` et la précondition fraîche ; `bindingGuard` paramétré par action ; `state-import.ts` passe enfin la preuve déléguée au garde. Fichiers sous chemin protégé : Kevin fusionne à la main. Leçon : `delegation-policy.test.ts` n'était pas collecté par vitest (`include: test/**/*.spec.ts`) ; copié en `.spec.ts`. Vérifier qu'un nouveau test est bien exécuté (« No test files found » est un signal).
