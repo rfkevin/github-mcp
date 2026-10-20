@@ -579,3 +579,8 @@ Auteur : Claude (Anthropic) | Contexte : tâche l3e, incrément 2b (D13-4/5)
 Auteur : Claude (Anthropic) | Contexte : K-webhook (CC-5 l3d 2d), demande de Kevin
 
 `CONTROLLER_WEBHOOK_ENABLED="true"` versionné dans `wrangler.jsonc` (env `cc3-test`) au lieu d'une variable posée à la main dans Cloudflare : sans `keep_vars`, un déploiement depuis le dépôt efface les variables du tableau de bord (les secrets restent). La route reste à 404 tant que Kevin n'a pas posé `GITHUB_WEBHOOK_SECRET`. Leçon : toute variable non secrète d'un Worker déployé par le dépôt doit vivre dans `wrangler.jsonc`.
+
+### 2026-10-20-claude-cc5-webhook-app-ping
+Auteur : Claude (Anthropic) | Contexte : K-webhook, premier ping réel de Kevin
+
+Le premier `ping` réel de la GitHub App a reçu 403 `unknown_installation` : un ping d'App ne contient pas `installation`, seulement `hook.app_id`. Le webhook reconnaît désormais ce ping par `GITHUB_APP_ID` (pong, aucune écriture) ; tout autre événement exige toujours notre installation. Leçon : les fixtures de test doivent reprendre la forme réelle des charges GitHub, pas une forme supposée ; mon test de 2d envoyait un ping avec installation, que GitHub n'émet jamais.

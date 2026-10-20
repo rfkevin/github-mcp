@@ -13,7 +13,9 @@
  *   3. signature X-Hub-Signature-256 (HMAC SHA-256 du corps brut, comparaison
  *      en temps constant par crypto.subtle.verify) — sinon 401, rien n'est écrit ;
  *   4. livraison de NOTRE installation GitHub App (GITHUB_INSTALLATION_ID),
- *      sinon 403 ;
+ *      sinon 403 ; le `ping` d'une GitHub App ne porte pas d'installation :
+ *      il est reconnu par `hook.app_id` = GITHUB_APP_ID (sinon 403) et ne
+ *      fait rien d'autre que répondre `pong` ;
  *   5. chaque X-GitHub-Delivery n'est traité qu'une fois (rejeu → 200
  *      duplicate) ; au plus un passage par WEBHOOK_MIN_INTERVAL_S, arbitré dans
  *      UN lot D1 par une ligne de verrou unique (`controller_webhook_window`) :
@@ -46,6 +48,8 @@ export interface WebhookEnv {
   CONTROLLER_WEBHOOK_ENABLED?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   GITHUB_INSTALLATION_ID?: string;
+  /** Identifiant de la GitHub App : seul moyen d'attribuer son `ping` (sans installation). */
+  GITHUB_APP_ID?: string;
 }
 
 export type WebhookOutcome = 'accepted' | 'coalesced' | 'ignored' | 'pong' | 'duplicate';
@@ -165,11 +169,17 @@ export async function handleGitHubWebhook(request: Request, env: WebhookEnv, ctx
   const event = request.headers.get('x-github-event') ?? '';
   const deliveryId = request.headers.get('x-github-delivery') ?? '';
   if (!EVENT_RE.test(event) || !DELIVERY_RE.test(deliveryId)) return reply(400, { error: 'invalid_headers' });
-  let payload: { installation?: { id?: unknown } } | null = null;
+  let payload: { installation?: { id?: unknown }; hook?: { app_id?: unknown } } | null = null;
   try {
-    payload = JSON.parse(new TextDecoder().decode(body)) as { installation?: { id?: unknown } };
+    payload = JSON.parse(new TextDecoder().decode(body)) as { installation?: { id?: unknown }; hook?: { app_id?: unknown } };
   } catch {
     return reply(400, { error: 'invalid_json' });
+  }
+  if (event === 'ping' && payload?.installation === undefined) {
+    // Ping d'une GitHub App (création ou « Redeliver ») : aucune installation, seulement hook.app_id. Aucune écriture.
+    const app = payload?.hook?.app_id;
+    if (!env.GITHUB_APP_ID || String(app ?? '') !== env.GITHUB_APP_ID) return reply(403, { error: 'unknown_app' });
+    return reply(200, { outcome: 'pong' satisfies WebhookOutcome });
   }
   const installation = payload?.installation?.id;
   if (!env.GITHUB_INSTALLATION_ID || String(installation ?? '') !== env.GITHUB_INSTALLATION_ID) {
