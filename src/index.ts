@@ -10,6 +10,7 @@ import { collabMcpHandler } from './collab-store/mcp/handler';
 import { parseFallbackState, storeFallback } from './collab-store/export/fallback';
 import { OWNER_PATH, handleOwnerRequest, type OwnerRouteEnv } from './collab-store/owner/handler';
 import { controllerCronEnabled, runScheduledControllers } from './collab-store/controller/scheduled';
+import { WEBHOOK_PATH, handleGitHubWebhook, type WebhookEnv } from './collab-store/controller/webhook';
 
 export default {
   async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
@@ -28,6 +29,11 @@ export default {
     if (new URL(request.url).pathname === '/ready' && request.method === 'GET') {
       return Response.json({ status: 'ready', sha: env.BUILD_SHA ?? null },
         { headers: { 'Cache-Control': 'no-store' } });
+    }
+    // CC-5 l3d 2d — webhook GitHub du contrôleur, hors OAuth (signature HMAC). Éteint : 404 habituel plus bas.
+    if (new URL(request.url).pathname === WEBHOOK_PATH) {
+      const webhook = await handleGitHubWebhook(request, env as unknown as WebhookEnv, ctx);
+      if (webhook) return webhook;
     }
     const writes = writesEnabled(env.GITHUB_WRITES_ENABLED);
     const collabEnabled = collabStoreEnabled((env as CollabStoreEnv).COLLAB_STORE_ENABLED);

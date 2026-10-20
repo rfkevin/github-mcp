@@ -192,10 +192,32 @@ Contrat : plan CC-5 v0.3 B1 (seq 260) et précisions v0.4 C1 (seq 264). L'IA dé
   demandes sur une autre tâche qui ne masquent pas la demande ouverte),
   plus le cas HALT dans `test/collab-store/owner/automation-halt-budget.spec.ts`.
 
-## Hors incrément 2c-2 (suite de l3d)
+## Incrément 2d — déclenchement par webhook GitHub
 
-- Déclenchement par webhook GitHub, puis exécution des décisions derrière les gates existantes
-  (avance par policy, dispatch A1 des workers).
+- `src/collab-store/controller/webhook.ts` (`handleGitHubWebhook`), route `POST /github/webhook` dans `src/index.ts`,
+  hors OAuth. **Éteint par défaut** : 404 (comme une route inconnue) sauf `CONTROLLER_WEBHOOK_ENABLED="true"`, store
+  monté et secret `GITHUB_WEBHOOK_SECRET` posé (16 caractères au moins). Activation par Kevin seul (K-webhook du guide) ;
+  aucun changement de `wrangler.jsonc` n'est nécessaire, le secret n'est jamais dans le dépôt.
+- **Fail-closed, dans l'ordre** : POST seulement (405) ; corps borné à 256 Kio (413) ; signature
+  `X-Hub-Signature-256` (HMAC SHA-256 du corps brut, comparaison en temps constant par WebCrypto) sinon 401 sans
+  écriture ; en-têtes valides (400) ; livraison de notre installation GitHub App (`GITHUB_INSTALLATION_ID`) sinon 403.
+- **Anti-rejeu et cadence** : table `controller_webhook_deliveries` (rétention 7 jours). Chaque `X-GitHub-Delivery` n'est
+  traité qu'une fois (`duplicate`). **Au plus un passage par minute, garanti sous concurrence** (revue GPT-6 #180) : une
+  ligne de verrou unique `controller_webhook_window` est réclamée par CAS dans le même lot que la consignation ; seule la
+  livraison dont l'identifiant porte la réclamation est `accepted` et lance le passage, les autres sont `coalesced` (le
+  passage suivant ou le Cron les rattrape : le contrôleur relit tout le store). Une réclamation datée de plus de 5 minutes
+  dans le futur (horloge reculée) est périmée. Événements hors liste : `ignored`. `ping` : `pong`.
+- **Même effet que le Cron** : `runScheduledControllers(db, { research: false })` (le chercheur L5 reste quotidien et
+  lancé par le Cron seulement). Journal des décisions, rappels, file des échecs : aucune fusion, aucun dispatch,
+  aucune dépense ; HALT met le contrôleur en mode `halted` (testé).
+- Tests : `test/collab-store/controller/l3d-2d-webhook.spec.ts` (10, dont la route du Worker éteinte puis allumée, une course
+  réelle — une livraison concurrente réclame la fenêtre juste avant le lot d'une autre — et deux livraisons simultanées), plus le
+  cas HALT dans `test/collab-store/owner/automation-halt-budget.spec.ts`.
+
+## Hors incrément 2d (suite)
+
+- Exécution des décisions derrière les gates existantes (avance par policy, dispatch A1 des workers, fusion L4) :
+  activation par Kevin seul, hors l3d.
 - Mesure : décisions par passage, réveils manuels évités (W0).
 
 ## Choix d'exécution — instantané du 2026-10-19 (à revalider le jour de l'activation, X12)

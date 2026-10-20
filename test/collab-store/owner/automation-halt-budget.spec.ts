@@ -8,6 +8,7 @@ import { advanceGuarded } from '../../../src/collab-store/phases/gate';
 import { installPhaseDefinitions } from '../../../src/collab-store/owner/phase-install';
 import { adjustPhase } from '../../../src/collab-store/phases/soft';
 import { requestCorrection } from '../../../src/collab-store/controller/corrections';
+import { WEBHOOK_PATH, handleGitHubWebhook } from '../../../src/collab-store/controller/webhook';
 import { registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { appointCycleCoordinator } from '../../../src/collab-store/owner/delegation-execution';
 
@@ -116,6 +117,34 @@ describe('CC-4 A2 — arrêt d’urgence', () => {
       .first<{ n: number }>()).toEqual({ n: 0 });
     await setAutomationHalt(db, { halted: false, proof, op: uniq('resume') });
     expect((await ask()).status).toBe('applied');
+  });
+  it('CC-5 l3d 2d : sous HALT, une livraison webhook est consignée mais le passage du contrôleur ne journalise rien', async () => {
+    const cycle = uniq('wh');
+    await installPhaseDefinitions(db, { cycle_id: cycle, definitions: JSON.stringify([{ phase: 'P1' }]), proof });
+    await db.prepare([
+      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)',
+      "VALUES ('t0', ?1, 'auteur', 'relecteur', 'testeur', 'in_progress', '[]', '', '', 1)",
+    ].join(' ')).bind(cycle).run();
+    const secret = 'test-only-webhook-secret-halt-0123';
+    const body = JSON.stringify({ installation: { id: 9 } });
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body)));
+    const signature = 'sha256=' + [...mac].map(b => b.toString(16).padStart(2, '0')).join('');
+    await setAutomationHalt(db, { halted: true, proof, op: uniq('halt') });
+    const pending: Promise<unknown>[] = [];
+    const response = await handleGitHubWebhook(new Request('https://example.test' + WEBHOOK_PATH, { method: 'POST', body,
+      headers: { 'x-github-event': 'pull_request', 'x-github-delivery': '0000a17e-' + Date.now().toString(16), 'x-hub-signature-256': signature } }),
+      { COLLAB_DB: db, COLLAB_STORE_ENABLED: 'true', CONTROLLER_WEBHOOK_ENABLED: 'true', GITHUB_WEBHOOK_SECRET: secret, GITHUB_INSTALLATION_ID: '9' },
+      { waitUntil(promise: Promise<unknown>) { pending.push(promise); } }, { now: () => new Date(Date.UTC(2034, 0, 1)) });
+    expect(response!.status).toBe(202);
+    await Promise.all(pending);
+    let journaled = 0;
+    try {
+      journaled = (await db.prepare('SELECT COUNT(*) AS n FROM controller_decisions WHERE cycle_id = ?1').bind(cycle).first<{ n: number }>())!.n;
+    } catch {
+      journaled = 0; // journal jamais créé : rien d'écrit
+    }
+    expect(journaled).toBe(0);
   });
 });
 
