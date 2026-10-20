@@ -29,6 +29,7 @@ async function fileImport(markdown: string, o: { noBase?: boolean; previous?: nu
       payload_sha256: await executablePayloadSha256('import_state', params), preconditions: { previous_seq: o.previous === undefined ? baseSeq : o.previous },
       expires_at: Math.floor(Date.now() / 1000) + 3600, max_cost_cents: 0, reason: 'r', risk: 'r', rollback: 'r' }),
   });
+  if (ask.status !== 'applied') throw new Error('demande non déposée : ' + ask.status);
   const page = await describePending(await listPendingPage(db, { limit: 500 }), undefined, db);
   return page.items.find(item => item.seq === ask.event.seq)!.executable!;
 }
