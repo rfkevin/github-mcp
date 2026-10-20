@@ -25,6 +25,7 @@ import { decidedRequestOf, recordOwnerDecision, resolveRequestTarget, type Decis
 import { installPhaseDefinitions, normalizePhaseDefinitions, PHASE_INSTALL_KEY_PREFIX } from './phase-install';
 import { importStateSnapshot } from './state-import';
 import type { OwnerProof } from './proof';
+import type { StateDiffPreview } from './state-diff-store';
 import type { PauseOccurrence } from '../memory/pause-resume';
 import { validateEndpointRegistration } from '../contracts/principals';
 import { latestEndpointActSeq, registerEndpoint } from '../executors/registry';
@@ -234,6 +235,8 @@ export interface ExecutableView {
   expired?: boolean;
   max_cost_cents?: number;
   preview?: string;
+  /** CC-5 l3e 2b : classification de l'import (import_state seulement). */
+  state_diff?: StateDiffPreview;
   invalid?: string;
 }
 
@@ -241,7 +244,7 @@ export type PendingWithExecutable = PendingRequest & { executable?: ExecutableVi
 export type DescribedPendingPage = Omit<PendingPage, 'items'> & { items: PendingWithExecutable[] };
 
 /** Complète une page de demandes avec le détail exécutable affiché sur /owner (rien n'est exécuté ici). */
-export async function describePending(page: PendingPage, now: () => Date = () => new Date()): Promise<DescribedPendingPage> {
+export async function describePending(page: PendingPage, now: () => Date = () => new Date(), db?: D1Database): Promise<DescribedPendingPage> {
   const at = Math.floor(now().getTime() / 1000);
   const items: PendingWithExecutable[] = [];
   for (const item of page.items) {
@@ -253,7 +256,12 @@ export async function describePending(page: PendingPage, now: () => Date = () =>
       : req.action === 'register_endpoint' || req.action === 'grant_coordinator' || req.action === 'set_identity_family'
         || req.action === 'reassign_task'
         ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
+    // L3e 2b : la même classification que la délégation, affichée ; une panne n'empêche jamais la page.
+    const state_diff = db && req.action === 'import_state'
+      ? await (await import('./state-diff-store')).previewStateDiff(db, { cycle_id: req.cycle_id, previous_seq: req.previous_seq, markdown: String(req.params.markdown) }).catch(() => undefined)
+      : undefined;
     items.push({ ...item, executable: {
+      ...(state_diff ? { state_diff } : {}),
       action: req.action, cycle_id: req.cycle_id, target: req.target, payload_sha256: req.payload_sha256, previous_seq: req.previous_seq,
       reason: req.reason, risk: req.risk, rollback: req.rollback, expires_at: req.expires_at,
       expired: req.expires_at !== null && at > req.expires_at, max_cost_cents: req.max_cost_cents,

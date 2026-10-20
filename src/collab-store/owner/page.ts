@@ -4,7 +4,7 @@
  */
 import type { RelayLine } from '../controller/relay';
 import type { OwnerChannelConfig } from './config';
-import type { DescribedPendingPage, PendingWithExecutable } from './executable';
+import type { DescribedPendingPage, ExecutableView, PendingWithExecutable } from './executable';
 import type { BudgetEnvelope } from './automation';
 import type { CapabilityRow } from '../executors/registry';
 import type { ImportedStateSummary } from './state-import';
@@ -193,10 +193,26 @@ function executableDetail(item: PendingWithExecutable): string {
     + '<dt>Risque</dt><dd>' + escapeHtml(exec.risk ?? '') + '</dd>'
     + '<dt>Retour arrière</dt><dd>' + escapeHtml(exec.rollback ?? '') + '</dd>'
     + '<dt>Précondition</dt><dd>dernier acte du même type au seq ' + (exec.previous_seq ?? 'aucun') + '</dd>'
+    + stateDiffRows(exec)
     + '<dt>Coût maximal</dt><dd>' + ((exec.max_cost_cents ?? 0) / 100).toFixed(2) + ' €</dd>'
     + '<dt>Expiration</dt><dd>' + escapeHtml(expiry) + (exec.expired ? ' — <strong>expirée, non approuvable</strong>' : '') + '</dd>'
     + '<dt>Empreinte sha256</dt><dd><code>' + escapeHtml(exec.payload_sha256 ?? '') + '</code></dd>'
     + '</dl><pre>' + escapeHtml(exec.preview ?? '') + '</pre>';
+}
+
+/** CC-5 l3e 2b : verdict de l'import (même classification que la délégation du coordinateur). */
+export function stateDiffRows(exec: ExecutableView): string {
+  const diff = exec.state_diff;
+  if (exec.action !== 'import_state' || !diff) return '';
+  const verdict = diff.level === 'direct'
+    ? 'Direct — statuts, version, preuves et prochaine action seulement'
+      + (diff.stale ? ' — <strong>mais le dernier import a changé depuis la demande : le coordinateur ne pourra pas l’exécuter, vérifiez avant d’approuver</strong>'
+        : ' — diff textuel direct et précondition d’import à jour ; aperçu seulement, pas une autorisation : l’exécution par le coordinateur reste soumise aux autres gardes (annuaire, droits des tâches, phase, issues) et à l’approbation d’un relecteur indépendant')
+    : '<strong>À valider par vous</strong> — le coordinateur ne peut pas l’exécuter seul';
+  const list = (items: string[]) => items.length ? '<ul>' + items.map(item => '<li>' + escapeHtml(item) + '</li>').join('') + '</ul>' : '';
+  return '<dt>Verdict de l’import</dt><dd>' + verdict
+    + (diff.reasons.length ? '<br>Raison(s) :' + list(diff.reasons) : '')
+    + (diff.changes.length ? '<br>Changements reconnus :' + list(diff.changes) : '') + '</dd>';
 }
 
 function euros(cents: number): string {

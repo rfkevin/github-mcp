@@ -65,3 +65,12 @@ table, documents illisibles).
   d'issues du cycle soient identiques et qu'aucune issue ne soit prise à un autre cycle. Toute dérive (annuaire
   modifié, réattribution, phase avancée) => refus, Kevin importe.
 - Incrément 2b (séparé) : afficher le verdict sur /owner.
+
+## Incrément 2b — verdict affiché sur /owner
+
+Une demande `import_state` en attente montre, sous « Verdict de l’import », la même classification que celle de la
+délégation (`previewStateDiff`, lecture seule, ne lève jamais) : **Direct** (statuts, version, preuves, prochaine
+action seulement) ou **À valider par vous** avec les raisons, la liste des changements reconnus, et un avertissement
+si le dernier import a changé depuis la demande (le coordinateur ne pourrait pas l’exécuter). L’affichage n’accorde aucun
+pouvoir : le bouton Approuver et l’empreinte sont inchangés. Une panne du calcul n’empêche pas la page.
+Tests : `test/collab-store/owner/import-verdict-display.spec.ts` ; document de test partagé : `test/collab-store/state-doc-helper.ts`.
