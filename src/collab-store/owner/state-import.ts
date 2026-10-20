@@ -101,7 +101,7 @@ export async function importStateSnapshot(db: D1Database, input: {
       ...(binding ? bindingPayload(binding) : {}),
     },
     proof: input.proof,
-    ...(binding ? { extraGuard: bindingGuard(binding, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':') } : {}),
+    ...(binding ? { extraGuard: bindingGuard(binding, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':', input.proof, 'import_state') } : {}),
     sideEffects: eventKey => [
       ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
       db.prepare("UPDATE cycles SET phase = ?2, project = CASE WHEN project = '' THEN ?3 ELSE project END WHERE cycle_id = ?1")

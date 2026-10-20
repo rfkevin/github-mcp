@@ -1,4 +1,5 @@
 /** CC-5 L3c: fail-closed delegated-owner policy. This module grants NO authority by itself. */
+import type { StateDiffResult } from './state-diff';
 export const DELEGATED_ACTIONS = [
   'import_state', 'install_phases', 'reassign_task', 'open_round',
   'change_phase', 'close_issue', 'close_pull_request', 'dispatch_task',
@@ -24,6 +25,11 @@ export interface DelegationPolicyInput {
   params: Record<string, unknown>;
   cycleId: string;
   envelopeCents: number;
+  /**
+   * CC-5 l3e (D13) : verdict de classifyStateImport calculé CÔTÉ SERVEUR contre le dernier import
+   * (state-diff-store.ts). Jamais fourni par l'appelant ; absent => import_state refusé.
+   */
+  stateDiff?: StateDiffResult;
 }
 
 export class DelegationDenied extends Error {
@@ -60,9 +66,11 @@ export function assertDelegatedAction(input: DelegationPolicyInput): DelegatedAc
   if ('cycle_id' in input.params && input.params.cycle_id !== input.cycleId) throw new DelegationDenied('cycle_mismatch');
   if (action === 'import_state') {
     const markdown = input.params.markdown;
-    // No safe structured diff verifier yet: deny all state imports rather than risk a grant escalation.
     if (typeof markdown !== 'string' || !markdown.trim()) throw new DelegationDenied('invalid_state');
-    throw new DelegationDenied('state_diff_verifier_required');
+    // D13-5 : sans verdict serveur, refus. Seul un verdict `direct` (liste blanche stricte) est délégable ;
+    // tout le reste (décisions, droits, phase, références, document illisible) reste à Kevin.
+    if (!input.stateDiff) throw new DelegationDenied('state_diff_verifier_required');
+    if (input.stateDiff.level !== 'direct') throw new DelegationDenied('state_requires_owner');
   }
   if (action === 'reassign_task') {
     // CC-5 l3d 2b-2c : la garde owner refuse toute preuve déléguée (DELEGATED_FORBIDDEN) ; la politique
@@ -82,7 +90,8 @@ export function assertDelegatedAction(input: DelegationPolicyInput): DelegatedAc
     if (typeof target !== 'string' || target === 'approve_owner_request' || !record(params)) {
       throw new DelegationDenied('invalid_nested_approval');
     }
-    assertDelegatedAction({ ...input, action: target, params });
+    // Pas de verdict d'état pour une approbation imbriquée : un import_state imbriqué reste refusé.
+    assertDelegatedAction({ ...input, action: target, params, stateDiff: undefined });
   }
   return action;
 }
