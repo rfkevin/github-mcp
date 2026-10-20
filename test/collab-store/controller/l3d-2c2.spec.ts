@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { nextActors, type ControllerSnapshot, type TaskFacts } from '../../../src/collab-store/controller/rules';
+import { nextActors } from '../../../src/collab-store/controller/rules';
+import { snapshot, task } from './fixtures';
 import { latestCorrections } from '../../../src/collab-store/controller/snapshot';
 import { previewNextActions } from '../../../src/collab-store/controller/next-actions';
 import { relayMessage } from '../../../src/collab-store/controller/relay';
@@ -10,19 +11,13 @@ import { registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { appointCycleCoordinator } from '../../../src/collab-store/owner/delegation-execution';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { countEvents, insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
+import { OWNER_PROOF, codeOf, racingBatch, toolIdentityCheck, uniqueIds } from '../coordinator-helpers';
 
 // CC-5 l3d (incrément 2c-2) — demande de correction ciblée du coordinateur (correction.request).
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
 const HEAD2 = 'c'.repeat(40);
 
-function task(overrides: Partial<TaskFacts> = {}): TaskFacts {
-  return { task_id: 't1', status: 'accepted', revision: 1, owner: 'vibe', reviewer: 'grok', tester: 'claude', dependencies: [],
-    submission: null, verdicts: [], ...overrides };
-}
-function snapshot(tasks: TaskFacts[]): ControllerSnapshot {
-  return { cycle_id: 'c', revision: 7, phase: 'P6', halted: false, auto_advance: 'none', outputs_satisfied: false, tasks };
-}
 const positives = [
   { participant: 'grok', verdict: 'positive' as const, head: HEAD, base: BASE, seq: 11 },
   { participant: 'claude', verdict: 'positive' as const, head: HEAD, base: BASE, seq: 12 },
@@ -83,14 +78,8 @@ describe('CC-5 l3d 2c-2 — règles : correction ouverte', () => {
 });
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
-const proof = { kind: 'secret' as const, subject: 'owner-secret' };
-let n = 0;
-const uniq = (label: string) => (label + '-' + (++n) + '-' + Date.now().toString(36)).slice(0, 48);
-
-async function codeOf(promise: Promise<unknown>): Promise<string> {
-  try { await promise; } catch (error) { return (error as { code?: string }).code ?? 'UNKNOWN'; }
-  return 'NO_ERROR';
-}
+const proof = OWNER_PROOF;
+const uniq = uniqueIds('c2');
 
 interface World { cycle: string; holder: string; author: string; other: string; rev: number }
 
@@ -163,24 +152,33 @@ describe('CC-5 l3d 2c-2 — requestCorrection (D1)', () => {
 
   it('course : tâche terminée entre les vérifications et le lot d\'écriture → CORRECTION_PRECONDITION_FAILED, rien écrit', async () => {
     const w = await world();
-    const racing = new Proxy(db, {
-      get(target, prop, receiver) {
-        if (prop === 'batch') {
-          return async (statements: D1PreparedStatement[]) => {
-            // Seul le lot d'écriture (5 instructions) est visé : les lots d'amorçage du schéma passent AVANT les vérifications.
-            if (statements.length === 5) {
-              await target.prepare("UPDATE tasks SET status = 'done' WHERE cycle_id = ?1 AND task_id = 't0'").bind(w.cycle).run();
-            }
-            return target.batch(statements);
-          };
-        }
-        const value = Reflect.get(target, prop, receiver);
-        return typeof value === 'function' ? value.bind(target) : value;
-      },
-    });
+    // Lot d'écriture de requestCorrection : 5 instructions.
+    const racing = racingBatch(db, 5, target => target.prepare("UPDATE tasks SET status = 'done' WHERE cycle_id = ?1 AND task_id = 't0'").bind(w.cycle).run());
     expect(await codeOf(requestCorrection(racing, input(w)))).toBe('CORRECTION_PRECONDITION_FAILED');
     expect(await revision(w.cycle)).toBe(w.rev);
     expect(await countEvents(db, w.cycle, 'correction.request')).toBe(0);
+  });
+
+  it('rejeu du même op_id avec une autre révision attendue → IDEMPOTENCY_CONFLICT (revue GPT-6 #179)', async () => {
+    const w = await world();
+    const first = input(w);
+    await requestCorrection(db, first);
+    expect(await codeOf(requestCorrection(db, { ...first, expected_revision: w.rev + 1 }))).toBe('IDEMPOTENCY_CONFLICT');
+    expect(await countEvents(db, w.cycle, 'correction.request')).toBe(1);
+  });
+
+  it('beaucoup de demandes sur une autre tâche ne masquent jamais la demande ouverte d\'une tâche (revue GPT-6 #179)', async () => {
+    const w = await world();
+    await insertTaskRow(db, { taskId: 't1', cycle: w.cycle, owner: w.other, reviewer: w.author, tester: w.holder });
+    const first = await requestCorrection(db, input(w));
+    // 520 demandes plus récentes sur t1 (au-delà de l'ancien plafond de 500 lectures).
+    const rows = Array.from({ length: 520 }, (_, i) => db.prepare([
+      'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
+      "VALUES (?1, 1, 'correction.request', ?2, '', 'coordinator', ?3, 0, ?4, '')",
+    ].join(' ')).bind(w.cycle, w.holder, JSON.stringify({ task: 't1', items: ['x'] }), uniq('flood') + '-' + i));
+    for (let i = 0; i < rows.length; i += 100) await db.batch(rows.slice(i, i + 100));
+    const view = await previewNextActions(db, w.cycle, w.author);
+    expect(view.mine).toMatchObject([{ action: 'address_correction', task_id: 't0', subject: 'corr#' + first.event_seq }]);
   });
 
   it('un agent ne peut pas forger correction.request par collab_append_event', async () => {
@@ -193,27 +191,12 @@ describe('CC-5 l3d 2c-2 — requestCorrection (D1)', () => {
 });
 
 describe('CC-5 l3d 2c-2 — outil MCP collab_request_correction', () => {
-  type ToolResult = { isError?: boolean; content: Array<{ text: string }> };
-  type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
-
-  async function tool(clientId: string): Promise<ToolHandler> {
-    const { registerCollabStoreTools } = await import('../../../src/collab-store/mcp/tools');
-    const { createCollabToolContext } = await import('../../../src/collab-store/mcp/context');
-    const context = createCollabToolContext({ COLLAB_DB: db, COLLAB_STORE_ENABLED: 'true' }, 'agent:x', ['collab:'], {}, clientId);
-    let handler: ToolHandler | null = null;
-    registerCollabStoreTools({ registerTool(name: string, _spec: unknown, h: ToolHandler) { if (name === 'collab_request_correction') handler = h; } } as never, context);
-    return handler!;
-  }
-
   it('identité issue du jeton : le coordinateur mandaté demande ; un client non associé est refusé', async () => {
-    const { mapClient } = await import('../../../src/collab-store/owner/decisions');
     const w = await world();
-    const client = uniq('client');
-    await mapClient(db, { oauth_client_id: client, participant_id: w.holder, proof, op: uniq('map') });
-    const ok = await (await tool(client))({ cycle: w.cycle, expected_rev: w.rev, task: 't0', items: ['Point A'], op_id: w.holder + ':' + w.cycle + ':corr:1' });
-    expect(ok.isError).toBeFalsy();
-    expect(JSON.parse(ok.content[0].text)).toMatchObject({ status: 'applied', task_id: 't0', items: 1 });
-    const denied = await (await tool(uniq('unknown')))({ cycle: w.cycle, expected_rev: w.rev + 1, task: 't0', items: ['Point A'], op_id: 'x:' + w.cycle + ':corr:1' });
+    const { ok, denied } = await toolIdentityCheck(db, { tool: 'collab_request_correction', participant: w.holder,
+      allowed: { cycle: w.cycle, expected_rev: w.rev, task: 't0', items: ['Point A'], op_id: w.holder + ':' + w.cycle + ':corr:1' },
+      denied: { cycle: w.cycle, expected_rev: w.rev + 1, task: 't0', items: ['Point A'], op_id: 'x:' + w.cycle + ':corr:1' } });
+    expect(ok).toMatchObject({ status: 'applied', task_id: 't0', items: 1 });
     expect(denied.isError).toBe(true);
     expect(denied.content[0].text).toContain('non associé');
   });
