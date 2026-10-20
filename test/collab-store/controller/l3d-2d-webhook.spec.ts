@@ -16,7 +16,7 @@ const uniq = (label: string) => (label + '-' + (++n) + '-' + Date.now().toString
 
 function enabledEnv(overrides: Partial<WebhookEnv> = {}): WebhookEnv {
   return { COLLAB_DB: db, COLLAB_STORE_ENABLED: 'true', CONTROLLER_WEBHOOK_ENABLED: 'true', GITHUB_WEBHOOK_SECRET: SECRET,
-    GITHUB_INSTALLATION_ID: '42', ...overrides };
+    GITHUB_INSTALLATION_ID: '42', GITHUB_APP_ID: '5122110', ...overrides };
 }
 
 async function sign(secret: string, body: string): Promise<string> {
@@ -93,6 +93,23 @@ describe('CC-5 l3d 2d — webhook GitHub : fail-closed', () => {
 });
 
 describe('CC-5 l3d 2d — webhook GitHub : passage du contrôleur', () => {
+  it('ping de GitHub App (sans installation) : pong seulement pour notre app_id, sans écriture', async () => {
+    const appPing = (appId: unknown) => JSON.stringify({ zen: 'z', hook_id: 1, hook: { type: 'App', id: 1, app_id: appId } });
+    const okId = deliveryId();
+    const ok = await handleGitHubWebhook(await delivery({ event: 'ping', id: okId, body: appPing(5122110) }), enabledEnv(), context().ctx);
+    expect(ok!.status).toBe(200);
+    expect(await ok!.json()).toEqual({ outcome: 'pong' });
+    expect(await rows(okId)).toBe(0);
+    for (const body of [appPing(7), appPing(undefined), JSON.stringify({ zen: 'z' })]) {
+      const refused = await handleGitHubWebhook(await delivery({ event: 'ping', body }), enabledEnv(), context().ctx);
+      expect(refused!.status).toBe(403);
+    }
+    expect((await handleGitHubWebhook(await delivery({ event: 'ping', body: appPing(5122110) }), enabledEnv({ GITHUB_APP_ID: undefined }), context().ctx))!.status).toBe(403);
+    // Signature fausse : 401 avant toute reconnaissance du ping.
+    expect((await handleGitHubWebhook(await delivery({ event: 'ping', body: appPing(5122110), secret: 'autre-secret-0123456789' }), enabledEnv(), context().ctx))!.status).toBe(401);
+    // Un événement ordinaire ne peut pas se faire passer pour un ping d'app.
+    expect((await handleGitHubWebhook(await delivery({ event: 'pull_request', body: appPing(5122110) }), enabledEnv(), context().ctx))!.status).toBe(403);
+  });
   it('livraison valide → 202, le même passage que le Cron journalise les décisions ; ping → pong sans écriture', async () => {
     await ensureSchema(db);
     const cycle = uniq('wh');
