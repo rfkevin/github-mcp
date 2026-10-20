@@ -47,6 +47,21 @@ export async function delegatedStateDiff(db: D1Database, input: {
   return classifyStateImport(latest?.content ?? null, input.markdown);
 }
 
+export interface StateDiffPreview extends StateDiffResult {
+  /** Le dernier import n'est plus celui que la demande attendait : l'exécution déléguée serait refusée. */
+  stale: boolean;
+  /** Le coordinateur pourrait l'exécuter après approbation d'une autre famille (verdict direct et précondition fraîche). */
+  delegable: boolean;
+}
+
+/** Affichage /owner (lecture seule, ne lève jamais) : même calcul que delegatedStateDiff. */
+export async function previewStateDiff(db: D1Database, input: { cycle_id: string; previous_seq: number | null; markdown: string }): Promise<StateDiffPreview> {
+  const latest = await latestStateImport(db, input.cycle_id);
+  const verdict = classifyStateImport(latest?.content ?? null, input.markdown);
+  const stale = (latest?.seq ?? null) !== input.previous_seq;
+  return { ...verdict, stale, delegable: verdict.level === 'direct' && !stale };
+}
+
 const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 export interface ResolvedImportPlan {

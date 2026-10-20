@@ -569,3 +569,8 @@ Ajout de `src/collab-store/owner/state-diff.ts` : classification pure et fail-cl
 Auteur : Claude (Anthropic) | Contexte : tâche l3e, incrément 2a (D13-4, D13-5)
 
 Branchement du verdict `classifyStateImport` dans la délégation : `import_state` délégable seulement si le verdict serveur (`state-diff-store.ts`) est `direct` et la précondition fraîche ; `bindingGuard` paramétré par action ; `state-import.ts` passe enfin la preuve déléguée au garde. Fichiers sous chemin protégé : Kevin fusionne à la main. Leçon : `delegation-policy.test.ts` n'était pas collecté par vitest (`include: test/**/*.spec.ts`) ; copié en `.spec.ts`. Vérifier qu'un nouveau test est bien exécuté (« No test files found » est un signal).
+
+### 2026-10-20-claude-cc5-l3e-2b-owner-verdict
+Auteur : Claude (Anthropic) | Contexte : tâche l3e, incrément 2b (D13-4/5)
+
+/owner affiche pour chaque demande `import_state` le verdict de `classifyStateImport` (direct ou à valider, raisons, changements, avertissement si la précondition est périmée) via `previewStateDiff` ; lecture seule, aucun pouvoir ajouté, `describePending` reçoit la base en 3e paramètre optionnel. Document de test mutualisé dans `test/collab-store/state-doc-helper.ts` pour éviter la duplication Sonar (seuil 3 % sur le nouveau code). Leçon : un test qui recopie un gros fixture déclenche la porte de duplication ; extraire dès le départ.

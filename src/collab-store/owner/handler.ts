@@ -62,7 +62,7 @@ const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', '
 /** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
 async function dashboardData(db: D1Database, before?: number) {
   return {
-    pending: await describePending(await listPendingPage(db, { before })),
+    pending: await describePending(await listPendingPage(db, { before }), undefined, db),
     ...await listRegistry(db),
     identityFamilies: await listIdentityFamilies(db),
     imports: await listImportedStates(db),
