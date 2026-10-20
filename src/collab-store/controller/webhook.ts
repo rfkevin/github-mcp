@@ -15,9 +15,12 @@
  *   4. livraison de NOTRE installation GitHub App (GITHUB_INSTALLATION_ID),
  *      sinon 403 ;
  *   5. chaque X-GitHub-Delivery n'est traité qu'une fois (rejeu → 200
- *      duplicate) ; au plus un passage par WEBHOOK_MIN_INTERVAL_S (les autres
- *      livraisons sont consignées `coalesced` : le passage suivant ou le Cron
- *      les rattrape, le contrôleur relit tout le store).
+ *      duplicate) ; au plus un passage par WEBHOOK_MIN_INTERVAL_S, arbitré dans
+ *      UN lot D1 par une ligne de verrou unique (`controller_webhook_window`) :
+ *      une livraison ne lance le passage que si ELLE a réclamé la fenêtre (CAS
+ *      sur la date du dernier passage, réclamation signée par son identifiant).
+ *      Les autres livraisons sont consignées `coalesced` : le passage suivant ou
+ *      le Cron les rattrape, le contrôleur relit tout le store.
  * Le secret est posé par Kevin (Cloudflare) et dans la GitHub App ; il n'est
  * jamais journalisé ni renvoyé.
  */
@@ -27,6 +30,8 @@ import { runScheduledControllers } from './scheduled';
 export const WEBHOOK_PATH = '/github/webhook';
 export const WEBHOOK_BODY_MAX = 256 * 1024;
 export const WEBHOOK_MIN_INTERVAL_S = 60;
+/** Une réclamation datée de plus que cela dans le futur (horloge reculée) est périmée : la fenêtre ne se bloque jamais. */
+export const WEBHOOK_CLOCK_SKEW_S = 300;
 /** Rétention des livraisons consignées (anti-rejeu) : GitHub ne rejoue pas au-delà. */
 export const WEBHOOK_RETENTION_S = 7 * 24 * 3600;
 /** Événements qui peuvent changer une décision du contrôleur (PR, verdicts publiés, CI). */
@@ -57,7 +62,7 @@ function reply(status: number, body: Record<string, unknown>): Response {
 function hexToBytes(hex: string): Uint8Array | null {
   if (!/^[0-9a-f]{64}$/i.test(hex)) return null;
   const out = new Uint8Array(32);
-  for (let i = 0; i < 32; i += 1) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  for (let i = 0; i < 32; i += 1) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 
@@ -77,15 +82,15 @@ async function readBounded(request: Request): Promise<Uint8Array | null> {
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
+  let next = await reader.read();
+  while (!next.done) {
+    size += next.value.byteLength;
     if (size > WEBHOOK_BODY_MAX) {
       await reader.cancel();
       return null;
     }
-    chunks.push(value);
+    chunks.push(next.value);
+    next = await reader.read();
   }
   const out = new Uint8Array(size);
   let offset = 0;
@@ -101,6 +106,13 @@ const INIT = [
     '  received_at INTEGER NOT NULL',
     ')'].join(' '),
   'CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_at ON controller_webhook_deliveries(received_at)',
+  // Verrou de cadence : UNE ligne (id = 1), date du dernier passage lancé et livraison qui l'a réclamé.
+  ['CREATE TABLE IF NOT EXISTS controller_webhook_window (',
+    '  id INTEGER PRIMARY KEY CHECK (id = 1),',
+    '  last_run_at INTEGER NOT NULL,',
+    '  claimed_by TEXT NOT NULL',
+    ')'].join(' '),
+  "INSERT OR IGNORE INTO controller_webhook_window (id, last_run_at, claimed_by) VALUES (1, 0, '')",
 ];
 
 export async function ensureWebhookDeliveries(db: D1Database): Promise<void> {
@@ -109,18 +121,27 @@ export async function ensureWebhookDeliveries(db: D1Database): Promise<void> {
 }
 
 /**
- * Consigne la livraison et décide si un passage doit être lancé, en un lot :
- * INSERT OR IGNORE (rejeu → aucune ligne), outcome `accepted` seulement si
- * aucun passage n'a été lancé dans la fenêtre, sinon `coalesced`.
+ * Consigne la livraison et arbitre la fenêtre de cadence dans UN lot (transaction D1, exécutée en série) :
+ *   1. purge des livraisons de plus de 7 jours ;
+ *   2. réclamation CAS du verrou : seulement si l'événement peut lancer un passage, si la livraison est nouvelle
+ *      et si le dernier passage date d'au moins WEBHOOK_MIN_INTERVAL_S ; la réclamation porte l'identifiant ;
+ *   3. consignation de la livraison (INSERT OR IGNORE : rejeu → aucune ligne), `accepted` seulement si le verrou
+ *      porte SON identifiant, sinon `coalesced` (ou `ignored` pour un événement hors liste).
+ * Deux livraisons simultanées ne peuvent donc pas être toutes deux `accepted` dans la même fenêtre.
  */
 async function recordDelivery(db: D1Database, deliveryId: string, event: string, at: number, runnable: boolean): Promise<WebhookOutcome> {
-  const outcome = runnable
-    ? "CASE WHEN EXISTS (SELECT 1 FROM controller_webhook_deliveries WHERE outcome = 'accepted' AND received_at > ?4) THEN 'coalesced' ELSE 'accepted' END"
-    : "'ignored'";
-  const [, inserted] = await db.batch([
+  const [, , inserted] = await db.batch([
     db.prepare('DELETE FROM controller_webhook_deliveries WHERE received_at < ?1').bind(at - WEBHOOK_RETENTION_S),
-    db.prepare('INSERT OR IGNORE INTO controller_webhook_deliveries (delivery_id, event, outcome, received_at) SELECT ?1, ?2, ' + outcome + ', ?3')
-      .bind(...(runnable ? [deliveryId, event, at, at - WEBHOOK_MIN_INTERVAL_S] : [deliveryId, event, at])),
+    db.prepare([
+      'UPDATE controller_webhook_window SET last_run_at = ?1, claimed_by = ?2',
+      'WHERE id = 1 AND ?3 = 1 AND (last_run_at <= ?1 - ?4 OR last_run_at > ?1 + ?5)',
+      '  AND NOT EXISTS (SELECT 1 FROM controller_webhook_deliveries WHERE delivery_id = ?2)',
+    ].join(' ')).bind(at, deliveryId, runnable ? 1 : 0, WEBHOOK_MIN_INTERVAL_S, WEBHOOK_CLOCK_SKEW_S),
+    db.prepare([
+      'INSERT OR IGNORE INTO controller_webhook_deliveries (delivery_id, event, outcome, received_at)',
+      "SELECT ?1, ?2, CASE WHEN ?4 = 0 THEN 'ignored'",
+      "  WHEN (SELECT claimed_by FROM controller_webhook_window WHERE id = 1) = ?1 THEN 'accepted' ELSE 'coalesced' END, ?3",
+    ].join(' ')).bind(deliveryId, event, at, runnable ? 1 : 0),
   ]);
   if ((inserted.meta?.changes ?? 0) === 0) return 'duplicate';
   const row = await db.prepare('SELECT outcome FROM controller_webhook_deliveries WHERE delivery_id = ?1').bind(deliveryId)

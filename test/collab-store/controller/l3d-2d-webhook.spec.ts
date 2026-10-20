@@ -6,6 +6,7 @@ import {
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
 import { createOAuthFixture } from '../../oauth/helpers';
+import { racingBatch } from '../coordinator-helpers';
 
 // CC-5 l3d (incrément 2d) — webhook GitHub du contrôleur : éteint par défaut, signature HMAC, anti-rejeu, cadence bornée.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
@@ -143,6 +144,46 @@ describe('CC-5 l3d 2d — webhook GitHub : passage du contrôleur', () => {
       .toEqual({ outcome: 'accepted' });
     expect(c.pending).toHaveLength(1);
     await Promise.all([...a.pending, ...c.pending]);
+  });
+});
+
+describe('CC-5 l3d 2d — cadence sous concurrence (revue GPT-6 #180)', () => {
+  it('une livraison concurrente réclame la fenêtre juste avant le lot d\'une autre : un seul passage, l\'autre coalesced', async () => {
+    const now = () => new Date(Date.UTC(2033, 2, 1));
+    const b = context();
+    let competing: Response | null = null;
+    // Juste avant le lot d'écriture de A (3 instructions), B est traitée en entier.
+    const racing = racingBatch(db, 3, async () => {
+      competing = await handleGitHubWebhook(await delivery({ event: 'check_run' }), enabledEnv(), b.ctx, { now });
+    });
+    const a = context();
+    const first = await handleGitHubWebhook(await delivery(), enabledEnv({ COLLAB_DB: racing }), a.ctx, { now });
+    expect(await competing!.json()).toEqual({ outcome: 'accepted' });
+    expect(await first!.json()).toEqual({ outcome: 'coalesced' });
+    expect(a.pending.length + b.pending.length).toBe(1);
+    await Promise.all([...a.pending, ...b.pending]);
+  });
+
+  it('deux livraisons distinctes lancées en même temps : exactement une acceptée', async () => {
+    const now = () => new Date(Date.UTC(2033, 3, 1));
+    const x = context();
+    const y = context();
+    const [rx, ry] = await Promise.all([
+      handleGitHubWebhook(await delivery(), enabledEnv(), x.ctx, { now }),
+      handleGitHubWebhook(await delivery({ event: 'push' }), enabledEnv(), y.ctx, { now }),
+    ]);
+    const outcomes = [((await rx!.json()) as { outcome: string }).outcome, ((await ry!.json()) as { outcome: string }).outcome].sort();
+    expect(outcomes).toEqual(['accepted', 'coalesced']);
+    expect(x.pending.length + y.pending.length).toBe(1);
+    await Promise.all([...x.pending, ...y.pending]);
+  });
+
+  it('horloge reculée : une réclamation datée loin dans le futur ne bloque pas la fenêtre', async () => {
+    await handleGitHubWebhook(await delivery(), enabledEnv(), context().ctx, { now: () => new Date(Date.UTC(2040, 0, 1)) });
+    const later = context();
+    const response = await handleGitHubWebhook(await delivery(), enabledEnv(), later.ctx, { now: () => new Date(Date.UTC(2034, 0, 1)) });
+    expect(await response!.json()).toEqual({ outcome: 'accepted' });
+    await Promise.all(later.pending);
   });
 });
 

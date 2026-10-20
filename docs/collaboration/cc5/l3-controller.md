@@ -202,13 +202,16 @@ Contrat : plan CC-5 v0.3 B1 (seq 260) et précisions v0.4 C1 (seq 264). L'IA dé
   `X-Hub-Signature-256` (HMAC SHA-256 du corps brut, comparaison en temps constant par WebCrypto) sinon 401 sans
   écriture ; en-têtes valides (400) ; livraison de notre installation GitHub App (`GITHUB_INSTALLATION_ID`) sinon 403.
 - **Anti-rejeu et cadence** : table `controller_webhook_deliveries` (rétention 7 jours). Chaque `X-GitHub-Delivery` n'est
-  traité qu'une fois (`duplicate`) ; au plus un passage par minute, les autres livraisons sont `coalesced` (le passage
-  suivant ou le Cron les rattrape : le contrôleur relit tout le store). Événements hors liste : `ignored`. `ping` : `pong`.
+  traité qu'une fois (`duplicate`). **Au plus un passage par minute, garanti sous concurrence** (revue GPT-6 #180) : une
+  ligne de verrou unique `controller_webhook_window` est réclamée par CAS dans le même lot que la consignation ; seule la
+  livraison dont l'identifiant porte la réclamation est `accepted` et lance le passage, les autres sont `coalesced` (le
+  passage suivant ou le Cron les rattrape : le contrôleur relit tout le store). Une réclamation datée de plus de 5 minutes
+  dans le futur (horloge reculée) est périmée. Événements hors liste : `ignored`. `ping` : `pong`.
 - **Même effet que le Cron** : `runScheduledControllers(db, { research: false })` (le chercheur L5 reste quotidien et
   lancé par le Cron seulement). Journal des décisions, rappels, file des échecs : aucune fusion, aucun dispatch,
-  aucune dépense ; HALT met le contrôleur en mode `halted` (testé). Deux livraisons strictement simultanées peuvent
-  lancer deux passages : sans effet, le journal est idempotent par épisode.
-- Tests : `test/collab-store/controller/l3d-2d-webhook.spec.ts` (7, dont la route du Worker éteinte puis allumée), plus le
+  aucune dépense ; HALT met le contrôleur en mode `halted` (testé).
+- Tests : `test/collab-store/controller/l3d-2d-webhook.spec.ts` (10, dont la route du Worker éteinte puis allumée, une course
+  réelle — une livraison concurrente réclame la fenêtre juste avant le lot d'une autre — et deux livraisons simultanées), plus le
   cas HALT dans `test/collab-store/owner/automation-halt-budget.spec.ts`.
 
 ## Hors incrément 2d (suite)
