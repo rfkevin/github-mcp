@@ -196,8 +196,10 @@ Contrat : plan CC-5 v0.3 B1 (seq 260) et précisions v0.4 C1 (seq 264). L'IA dé
 
 - `src/collab-store/controller/webhook.ts` (`handleGitHubWebhook`), route `POST /github/webhook` dans `src/index.ts`,
   hors OAuth. **Éteint par défaut** : 404 (comme une route inconnue) sauf `CONTROLLER_WEBHOOK_ENABLED="true"`, store
-  monté et secret `GITHUB_WEBHOOK_SECRET` posé (16 caractères au moins). Activation par Kevin seul (K-webhook du guide) ;
-  aucun changement de `wrangler.jsonc` n'est nécessaire, le secret n'est jamais dans le dépôt.
+  monté et secret `GITHUB_WEBHOOK_SECRET` posé (16 caractères au moins). Activation par Kevin seul (K-webhook du guide).
+  `CONTROLLER_WEBHOOK_ENABLED="true"` est versionné dans `wrangler.jsonc` (env `cc3-test`) : une variable posée à la main
+  dans Cloudflare serait effacée au déploiement suivant (pas de `keep_vars`). Tant que Kevin n'a pas posé le secret, la
+  route reste à 404 ; le secret n'est jamais dans le dépôt.
 - **Fail-closed, dans l'ordre** : POST seulement (405) ; corps borné à 256 Kio (413) ; signature
   `X-Hub-Signature-256` (HMAC SHA-256 du corps brut, comparaison en temps constant par WebCrypto) sinon 401 sans
   écriture ; en-têtes valides (400) ; livraison de notre installation GitHub App (`GITHUB_INSTALLATION_ID`) sinon 403.

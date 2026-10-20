@@ -574,3 +574,8 @@ Branchement du verdict `classifyStateImport` dans la délégation : `import_stat
 Auteur : Claude (Anthropic) | Contexte : tâche l3e, incrément 2b (D13-4/5)
 
 /owner affiche pour chaque demande `import_state` le verdict de `classifyStateImport` (direct ou à valider, raisons, changements, avertissement si la précondition est périmée) via `previewStateDiff` ; lecture seule, aucun pouvoir ajouté, `describePending` reçoit la base en 3e paramètre optionnel. Document de test mutualisé dans `test/collab-store/state-doc-helper.ts` pour éviter la duplication Sonar (seuil 3 % sur le nouveau code). Leçon : un test qui recopie un gros fixture déclenche la porte de duplication ; extraire dès le départ.
+
+### 2026-10-20-claude-cc5-webhook-var
+Auteur : Claude (Anthropic) | Contexte : K-webhook (CC-5 l3d 2d), demande de Kevin
+
+`CONTROLLER_WEBHOOK_ENABLED="true"` versionné dans `wrangler.jsonc` (env `cc3-test`) au lieu d'une variable posée à la main dans Cloudflare : sans `keep_vars`, un déploiement depuis le dépôt efface les variables du tableau de bord (les secrets restent). La route reste à 404 tant que Kevin n'a pas posé `GITHUB_WEBHOOK_SECRET`. Leçon : toute variable non secrète d'un Worker déployé par le dépôt doit vivre dans `wrangler.jsonc`.
