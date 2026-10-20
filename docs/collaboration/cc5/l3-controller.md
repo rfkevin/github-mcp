@@ -204,7 +204,7 @@ Contrat : plan CC-5 v0.3 B1 (seq 260) et précisions v0.4 C1 (seq 264). L'IA dé
   `X-Hub-Signature-256` (HMAC SHA-256 du corps brut, comparaison en temps constant par WebCrypto) sinon 401 sans
   écriture ; en-têtes valides (400) ; livraison de notre installation GitHub App (`GITHUB_INSTALLATION_ID`) sinon 403.
   Le `ping` d'une GitHub App ne porte pas d'installation (constaté le 20/10 : 403 `unknown_installation`) : il est
-  reconnu par `hook.app_id` = `GITHUB_APP_ID`, répond `pong` et n'écrit rien ; sinon 403 `unknown_app`.
+  reconnu par `hook.app_id` = `GITHUB_APP_ID`, répond `pong` et n'écrit rien ; sinon 403 `unknown_app` (PR #187).
 - **Anti-rejeu et cadence** : table `controller_webhook_deliveries` (rétention 7 jours). Chaque `X-GitHub-Delivery` n'est
   traité qu'une fois (`duplicate`). **Au plus un passage par minute, garanti sous concurrence** (revue GPT-6 #180) : une
   ligne de verrou unique `controller_webhook_window` est réclamée par CAS dans le même lot que la consignation ; seule la
