@@ -14,13 +14,12 @@
  * collab_append_event. Garde dans le lot : mandat à l'époque lue, HALT, cycle
  * ouvert à la révision attendue, tâche existante et non terminée.
  */
-import { opIdClientFor, parseOpId } from '../contracts';
+import { cycleMandateEpoch, mandateGuardSql, settleGuardedWrite } from '../coordinator/mandate';
+import { expireDueHypotheses } from '../memory/hypothesis-expiry';
+import { assertAutomationRunning, HALT_ACTIVE_SQL } from '../owner/automation';
 import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
-import { logicalIdentityOf } from '../identity/families';
-import { activeMandate } from '../owner/delegation-execution';
-import { assertAutomationRunning, HALT_ACTIVE_SQL } from '../owner/automation';
-import { expireDueHypotheses } from '../memory/hypothesis-expiry';
+import { opIdClientFor, parseOpId } from '../contracts';
 
 export const CORRECTION_ITEMS_MAX = 10;
 export const CORRECTION_ITEM_MAX = 300;
@@ -77,26 +76,18 @@ async function replay(db: D1Database, key: string, input: CorrectionInput, items
     .bind(key).first<{ seq: number; expected_rev: number; payload_json: string }>();
   if (!row) return null;
   const payload = JSON.parse(row.payload_json) as { task: string; items: string[]; reason: string };
-  if (payload.task !== input.task_id || payload.reason !== reason || JSON.stringify(payload.items) !== JSON.stringify(items)) {
+  // Intention d'un op_id : tâche, points, raison ET révision attendue (revue GPT-6 #179).
+  if (payload.task !== input.task_id || payload.reason !== reason || row.expected_rev !== input.expected_revision
+    || JSON.stringify(payload.items) !== JSON.stringify(items)) {
     fail('IDEMPOTENCY_CONFLICT', 'Même op_id, intention différente : incrémentez le compteur n.');
   }
   return { status: 'duplicate', revision: row.expected_rev + 1, event_seq: row.seq, task_id: payload.task, items: payload.items.length };
 }
 
-async function mandateEpoch(db: D1Database, cycleId: string, participantId: string): Promise<number> {
-  const participant = await db.prepare('SELECT status FROM participants WHERE participant_id = ?1')
-    .bind(participantId).first<{ status: string }>();
-  const mandate = await activeMandate(db, cycleId);
-  const holds = participant?.status === 'active' && mandate?.participant_id
-    && await logicalIdentityOf(db, mandate.participant_id) === await logicalIdentityOf(db, participantId);
-  if (!holds) fail('CORRECTION_FORBIDDEN', 'Réservé au coordinateur qui tient le mandat actif de ce cycle (nommé par Kevin sur /owner).');
-  return mandate!.epoch;
-}
-
 export async function requestCorrection(db: D1Database, input: CorrectionInput): Promise<CorrectionResult> {
   await ensureSchema(db);
   const { items, reason, key } = validateCorrection(input);
-  const epoch = await mandateEpoch(db, input.cycle_id, input.participant_id);
+  const epoch = await cycleMandateEpoch(db, input.cycle_id, input.participant_id, 'CORRECTION_FORBIDDEN');
   const replayed = await replay(db, key, input, items, reason);
   if (replayed) return replayed;
   await assertAutomationRunning(db);
@@ -121,10 +112,7 @@ export async function requestCorrection(db: D1Database, input: CorrectionInput):
     'SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM events WHERE idempotency_key = ?2)',
     "AND EXISTS (SELECT 1 FROM cycles WHERE cycle_id = ?1 AND revision = ?3 AND status = 'open')",
     'AND NOT ' + HALT_ACTIVE_SQL,
-    "AND EXISTS (SELECT 1 FROM participants WHERE participant_id = ?4 AND status = 'active')",
-    'AND EXISTS (SELECT 1 FROM delegated_mandates m WHERE m.cycle_id = ?1 AND m.epoch = ?5 AND m.participant_id IS NOT NULL',
-    '  AND COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = m.participant_id), m.participant_id)',
-    '    = COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?4), ?4))',
+    'AND ' + mandateGuardSql('?1', '?5', '?4'),
     "AND EXISTS (SELECT 1 FROM tasks WHERE cycle_id = ?1 AND task_id = ?6 AND status NOT IN ('done', 'verified'))",
     'THEN 1 ELSE 0 END',
   ].join(' ');
@@ -142,15 +130,10 @@ export async function requestCorrection(db: D1Database, input: CorrectionInput):
       db.prepare('DELETE FROM collab_store_guard'),
     ]);
   } catch (error) {
-    const winner = await replay(db, key, input, items, reason).catch(() => null);
-    if (winner) return winner;
-    await assertAutomationRunning(db);
-    const current = await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(input.cycle_id).first<{ revision: number }>();
-    if ((current?.revision ?? 0) !== input.expected_revision) fail('STALE', 'Le cycle a bougé pendant la demande.');
-    if (error instanceof Error && /CHECK constraint/i.test(error.message)) {
-      fail('CORRECTION_PRECONDITION_FAILED', 'Mandat ou tâche changé pendant la demande : rien n\'est écrit. Relisez l\'état et réessayez.');
-    }
-    throw error;
+    return settleGuardedWrite(db, { error, cycleId: input.cycle_id, expectedRevision: input.expected_revision,
+      replay: () => replay(db, key, input, items, reason),
+      preconditionCode: 'CORRECTION_PRECONDITION_FAILED',
+      preconditionMessage: 'Mandat ou tâche changé pendant la demande : rien n\'est écrit. Relisez l\'état et réessayez.' });
   }
   const event = await db.prepare('SELECT seq FROM events WHERE idempotency_key = ?1').bind(key).first<{ seq: number }>();
   return { status: 'applied', revision: input.expected_revision + 1, event_seq: event!.seq, task_id: input.task_id, items: items.length };

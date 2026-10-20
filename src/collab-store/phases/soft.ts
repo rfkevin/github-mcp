@@ -38,9 +38,8 @@ import { assertPhase, PHASES, type Phase } from '../../collab/contracts';
 import { opIdClientFor, parseOpId } from '../contracts';
 import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
-import { logicalIdentityOf } from '../identity/families';
-import { activeMandate } from '../owner/delegation-execution';
 import { assertAutomationRunning, HALT_ACTIVE_SQL } from '../owner/automation';
+import { cycleMandateEpoch, mandateGuardSql, settleGuardedWrite } from '../coordinator/mandate';
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 
 export const SOFT_PHASE_OPS = ['round.add', 'phase.reopen', 'phase.skip'] as const;
@@ -138,19 +137,6 @@ async function replay(db: D1Database, key: string, op: SoftPhaseOp, target: stri
   return { status: 'duplicate', revision: row.expected_rev + 1, event_seq: row.seq, op: payload.op, from: payload.from, to: payload.to };
 }
 
-/** Le mandat du cycle, s'il est tenu par l'appelant (identité logique). Sinon SOFT_PHASE_FORBIDDEN. */
-async function holderEpoch(db: D1Database, cycleId: string, participantId: string): Promise<number> {
-  const participant = await db.prepare('SELECT status FROM participants WHERE participant_id = ?1')
-    .bind(participantId).first<{ status: string }>();
-  const mandate = await activeMandate(db, cycleId);
-  const holds = participant?.status === 'active' && mandate?.participant_id
-    && await logicalIdentityOf(db, mandate.participant_id) === await logicalIdentityOf(db, participantId);
-  if (!holds) {
-    fail('SOFT_PHASE_FORBIDDEN', 'Réservé au coordinateur qui tient le mandat actif de ce cycle (nommé par Kevin sur /owner).');
-  }
-  return mandate!.epoch;
-}
-
 /** Opérations souples déjà faites : par phase cible (tours ajoutés) et pour tout le cycle. */
 const SOFT_COUNT_SQL = [
   "SELECT COUNT(*) FROM events WHERE cycle_id = ?1 AND type = 'phase.advance' AND role = 'coordinator'",
@@ -190,7 +176,7 @@ export async function adjustPhase(db: D1Database, input: SoftPhaseInput): Promis
   await ensureSchema(db);
   const { op, reason, key } = validateSoftPhaseInput(input);
   // Garde d'identité avant tout effet, rejeu compris (même règle que collab_phase_advance).
-  const epoch = await holderEpoch(db, input.cycle_id, input.participant_id);
+  const epoch = await cycleMandateEpoch(db, input.cycle_id, input.participant_id, 'SOFT_PHASE_FORBIDDEN');
   const replayed = await replay(db, key, op, input.target_phase, reason, input.expected_revision);
   if (replayed) return replayed;
   await assertAutomationRunning(db);
@@ -240,7 +226,6 @@ export async function adjustPhase(db: D1Database, input: SoftPhaseInput): Promis
 
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
   const payload = { op, from, to, reason, mandate_epoch: epoch, extra_rounds: op === 'phase.skip' ? null : extraRounds + 1 };
-  const logical = (n: number) => 'COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?' + n + '), ?' + n + ')';
   // ?1 cycle, ?2 clé, ?3 révision, ?4 phase source, ?5 appelant, ?6 époque, ?7 budget cycle, ?8 tours max, ?9 cible, ?10 skip,
   // ?11..?13 définition source lue (entrée, sorties, sortie), ?14..?16 définition cible lue.
   // Revue GPT-6 #178 : les protections du saut et les conditions d'entrée de la cible ont été jugées sur ces définitions ;
@@ -250,9 +235,7 @@ export async function adjustPhase(db: D1Database, input: SoftPhaseInput): Promis
     'SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM events WHERE idempotency_key = ?2)',
     "AND EXISTS (SELECT 1 FROM cycles WHERE cycle_id = ?1 AND revision = ?3 AND phase = ?4 AND status = 'open')",
     'AND NOT ' + HALT_ACTIVE_SQL,
-    "AND EXISTS (SELECT 1 FROM participants WHERE participant_id = ?5 AND status = 'active')",
-    'AND EXISTS (SELECT 1 FROM delegated_mandates m WHERE m.cycle_id = ?1 AND m.epoch = ?6 AND m.participant_id IS NOT NULL',
-    "  AND COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = m.participant_id), m.participant_id) = " + logical(5) + ')',
+    'AND ' + mandateGuardSql('?1', '?6', '?5'),
     'AND (' + SOFT_COUNT_SQL + ') < ?7',
     'AND (?10 = 1 OR (' + EXTRA_ROUNDS_SQL + ') < ?8)',
     'AND (?10 = 0 OR NOT EXISTS (SELECT 1 FROM sealed_items WHERE cycle_id = ?1 AND phase = ?4 AND revealed_at IS NULL))',
@@ -283,15 +266,10 @@ export async function adjustPhase(db: D1Database, input: SoftPhaseInput): Promis
       db.prepare('DELETE FROM collab_store_guard'),
     ]);
   } catch (error) {
-    const winner = await replay(db, key, op, input.target_phase, reason, input.expected_revision).catch(() => null);
-    if (winner) return winner;
-    await assertAutomationRunning(db);
-    const current = await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(input.cycle_id).first<{ revision: number }>();
-    if ((current?.revision ?? 0) !== input.expected_revision) fail('STALE', 'Le cycle a bougé pendant la réorganisation.');
-    if (error instanceof Error && /CHECK constraint/i.test(error.message)) {
-      fail('SOFT_PHASE_PRECONDITION_FAILED', 'Mandat, budget, scellé ou définition de phase changé pendant l\'opération : rien n\'est écrit. Relisez l\'état et réessayez.');
-    }
-    throw error;
+    return settleGuardedWrite(db, { error, cycleId: input.cycle_id, expectedRevision: input.expected_revision,
+      replay: () => replay(db, key, op, input.target_phase, reason, input.expected_revision),
+      preconditionCode: 'SOFT_PHASE_PRECONDITION_FAILED',
+      preconditionMessage: 'Mandat, budget, scellé ou définition de phase changé pendant l\'opération : rien n\'est écrit. Relisez l\'état et réessayez.' });
   }
   const event = await db.prepare('SELECT seq FROM events WHERE idempotency_key = ?1').bind(key).first<{ seq: number }>();
   return { status: 'applied', revision: input.expected_revision + 1, event_seq: event!.seq, op, from, to };

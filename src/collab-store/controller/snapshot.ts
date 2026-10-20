@@ -21,8 +21,6 @@ interface ClarifyRow { seq: number; type: string; participant_id: string; payloa
 
 /** Plafond de lecture des événements clarify par passage (paquet borné, D3). */
 const CLARIFY_SCAN_LIMIT = 2000;
-/** Plafond de lecture des demandes de correction par passage (2c-2). */
-const CORRECTION_SCAN_LIMIT = 500;
 
 /** Dernière demande de correction par tâche (événements écrits par le serveur seulement). Payload illisible : ignoré. */
 export function latestCorrections(rows: Array<{ seq: number; payload_json: string }>): Map<string, CorrectionFact> {
@@ -115,8 +113,14 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
       .bind(cycleId),
     db.prepare("SELECT seq, type, participant_id, payload_json, expected_rev FROM events WHERE cycle_id = ?1 AND type IN ('clarify.ask', 'clarify.answer') ORDER BY seq DESC LIMIT " + CLARIFY_SCAN_LIMIT)
       .bind(cycleId),
-    db.prepare("SELECT seq, payload_json FROM events WHERE cycle_id = ?1 AND type = 'correction.request' ORDER BY seq DESC LIMIT " + CORRECTION_SCAN_LIMIT)
-      .bind(cycleId),
+    // Dernière demande PAR TÂCHE (une ligne par tâche, sans plafond global : revue GPT-6 #179 — une limite sur les
+    // N dernières demandes du cycle pouvait masquer la demande encore ouverte d'une tâche moins active).
+    db.prepare([
+      'SELECT e.seq, e.payload_json FROM events e JOIN (',
+      "  SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'correction.request' AND json_valid(payload_json)",
+      "  GROUP BY json_extract(payload_json, '$.task')",
+      ') latest ON latest.seq = e.seq',
+    ].join(' ')).bind(cycleId),
   ]);
   const cycleRow = (cycle.results as Array<{ phase: string; revision: number }>)[0];
   if (!cycleRow) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + cycleId);
