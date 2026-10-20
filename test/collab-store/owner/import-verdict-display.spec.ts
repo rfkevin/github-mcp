@@ -71,6 +71,22 @@ describe('l3e 2b — rendu HTML du verdict', () => {
     expect(html).toContain('tâche t1 : status');
     expect(html).not.toContain('À valider par vous');
   });
+  it('direct à jour : aperçu seulement, aucune promesse d’exécution', () => {
+    const html = stateDiffRows({ action: 'import_state', state_diff: base });
+    expect(html).toContain('pas une autorisation');
+    expect(html).toContain('autres gardes');
+    expect(html).not.toContain('peut l’exécuter');
+    expect(html).not.toContain('sans lecture détaillée');
+  });
+  it('annuaire modifié, texte et previous_seq identiques : le verdict reste textuel et sans promesse', async () => {
+    const view = await fileImport(doc({ revision: 9 }));
+    await db.prepare("UPDATE participants SET display_label = 'l3e2b-renamed' WHERE participant_id = 'l3e2b-author'").run();
+    const html = stateDiffRows(view);
+    expect(view.state_diff?.level).toBe('direct');
+    expect(html).toContain('autres gardes');
+    expect(html).not.toContain('peut l’exécuter');
+    await db.prepare("UPDATE participants SET display_label = 'l3e2b-author' WHERE participant_id = 'l3e2b-author'").run();
+  });
   it('périmé : avertissement explicite', () => {
     expect(stateDiffRows({ action: 'import_state', state_diff: { ...base, stale: true, delegable: false } })).toContain('le dernier import a changé');
   });

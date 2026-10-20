@@ -206,8 +206,8 @@ export function stateDiffRows(exec: ExecutableView): string {
   if (exec.action !== 'import_state' || !diff) return '';
   const verdict = diff.level === 'direct'
     ? 'Direct — statuts, version, preuves et prochaine action seulement'
-      + (diff.stale ? ' — <strong>mais le dernier import a changé depuis la demande : le coordinateur ne peut pas l’exécuter, vérifiez avant d’approuver</strong>'
-        : ' — le coordinateur peut l’exécuter après approbation d’un relecteur indépendant, vous pouvez approuver sans lecture détaillée')
+      + (diff.stale ? ' — <strong>mais le dernier import a changé depuis la demande : le coordinateur ne pourra pas l’exécuter, vérifiez avant d’approuver</strong>'
+        : ' — diff textuel direct et précondition d’import à jour ; aperçu seulement, pas une autorisation : l’exécution par le coordinateur reste soumise aux autres gardes (annuaire, droits des tâches, phase, issues) et à l’approbation d’un relecteur indépendant')
     : '<strong>À valider par vous</strong> — le coordinateur ne peut pas l’exécuter seul';
   const list = (items: string[]) => items.length ? '<ul>' + items.map(item => '<li>' + escapeHtml(item) + '</li>').join('') + '</ul>' : '';
   return '<dt>Verdict de l’import</dt><dd>' + verdict
