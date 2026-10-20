@@ -178,13 +178,18 @@ Contrat : plan CC-5 v0.3 B1 (seq 260) et précisions v0.4 C1 (seq 264). L'IA dé
   D12. L'événement `correction.request` est écrit par le serveur seulement (type absent d'`EVENT_TYPES`).
 - **Garde dans le lot** : mandat à l'époque lue, HALT, cycle ouvert à la révision attendue, tâche existante et non
   terminée (les protections jugées sur une lecture sont reprises dans le lot, leçon de la revue #178).
-- **Contrôleur** (`rules.ts`, `snapshot.ts`) : la dernière demande par tâche est lue dans l'instantané (500 au plus) ;
+- **Contrôleur** (`rules.ts`, `snapshot.ts`) : la dernière demande **de chaque tâche** est lue dans l'instantané (une ligne par
+  tâche, sans plafond global : revue GPT-6 #179, une limite sur les N dernières demandes du cycle pouvait masquer une demande ouverte) ;
   tant que l'auteur n'a pas soumis APRÈS elle, il reçoit `address_correction` (au lieu de `implement` ou
   `address_feedback`), relecteur et testeur restent réveillés, et `merge_ready` est retenu (retarder, jamais autoriser).
   L'épisode de la tâche inclut la demande (`:c<seq>`) seulement quand elle existe : les clés déjà journalisées ne changent pas.
 - Message d'échec du passage programmé reformulé (réserve ChatGPT, 2b-2b) : « consigné sur n heures distinctes
   (24 h glissantes) ».
-- Tests : `test/collab-store/controller/l3d-2c2.spec.ts` (14, dont une course réelle : tâche terminée pendant le lot),
+- Rejeu : l'intention d'un `op_id` comprend tâche, points, raison et révision attendue (revue GPT-6 #179).
+- Briques partagées avec 2c-1 (`src/collab-store/coordinator/mandate.ts`) : mandat du cycle, prédicat SQL du mandat,
+  traitement d'un lot gardé en échec ; outils MCP via `coordinatorAct` (SonarCloud : duplication du nouveau code).
+- Tests : `test/collab-store/controller/l3d-2c2.spec.ts` (16, dont une course réelle : tâche terminée pendant le lot, et 520
+  demandes sur une autre tâche qui ne masquent pas la demande ouverte),
   plus le cas HALT dans `test/collab-store/owner/automation-halt-budget.spec.ts`.
 
 ## Hors incrément 2c-2 (suite de l3d)
