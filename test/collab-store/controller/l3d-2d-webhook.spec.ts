@@ -107,6 +107,11 @@ describe('CC-5 l3d 2d — webhook GitHub : passage du contrôleur', () => {
     expect((await handleGitHubWebhook(await delivery({ event: 'ping', body: appPing(5122110) }), enabledEnv({ GITHUB_APP_ID: undefined }), context().ctx))!.status).toBe(403);
     // Signature fausse : 401 avant toute reconnaissance du ping.
     expect((await handleGitHubWebhook(await delivery({ event: 'ping', body: appPing(5122110), secret: 'autre-secret-0123456789' }), enabledEnv(), context().ctx))!.status).toBe(401);
+    // Contre-épreuve (revue GPT-6) : un ping portant une installation étrangère suit la garde d'installation → 403, même avec notre app_id.
+    const foreign = JSON.stringify({ zen: 'z', hook: { app_id: 5122110 }, installation: { id: 7 } });
+    const foreignRes = await handleGitHubWebhook(await delivery({ event: 'ping', body: foreign }), enabledEnv(), context().ctx);
+    expect(foreignRes!.status).toBe(403);
+    expect(await foreignRes!.json()).toEqual({ error: 'unknown_installation' });
     // Un événement ordinaire ne peut pas se faire passer pour un ping d'app.
     expect((await handleGitHubWebhook(await delivery({ event: 'pull_request', body: appPing(5122110) }), enabledEnv(), context().ctx))!.status).toBe(403);
   });
