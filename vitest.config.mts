@@ -10,7 +10,12 @@ export default defineConfig({
 			// CC-3 C2: COLLAB_DB_C2 carries the canonical C1 schema for the store tests
 			// (COLLAB_DB keeps the frozen C0 proto schema, incompatible with 0001_init.sql).
 			// CC-3 C6: COLLAB_DB_C6_RESTORE is an empty canonical database for the export -> import -> export proof.
-			miniflare: { d1Databases: { COLLAB_DB: "collab-c0", COLLAB_DB_RESTORE: "collab-c0-restore", COLLAB_DB_C2: "collab-c2", COLLAB_DB_C6_RESTORE: "collab-c6-restore" } },
+			miniflare: {
+				d1Databases: { COLLAB_DB: "collab-c0", COLLAB_DB_RESTORE: "collab-c0-restore", COLLAB_DB_C2: "collab-c2", COLLAB_DB_C6_RESTORE: "collab-c6-restore" },
+				// CC-5 l7 7b : orchestrateur des exécutions d'agents, tests seulement (en vrai : env cc3-test de wrangler.jsonc).
+				durableObjects: { AGENT_RUN: "AgentRunObject" },
+				bindings: { AGENT_RUNS_ENABLED: "true", AGENT_RUN_DB_BINDING: "COLLAB_DB_C2" },
+			},
 		}),
 	],
 });

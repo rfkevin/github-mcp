@@ -11,6 +11,20 @@ import { parseFallbackState, storeFallback } from './collab-store/export/fallbac
 import { OWNER_PATH, handleOwnerRequest, type OwnerRouteEnv } from './collab-store/owner/handler';
 import { controllerCronEnabled, runScheduledControllers } from './collab-store/controller/scheduled';
 import { WEBHOOK_PATH, handleGitHubWebhook, type WebhookEnv } from './collab-store/controller/webhook';
+import { agentRunPass } from './collab-store/agentrun/orchestrator';
+import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './collab-store/agentrun/object';
+
+// CC-5 l7 7b — orchestrateur des exécutions d'agents (binding AGENT_RUN, env cc3-test seulement ; inactif par défaut).
+export { AgentRunObject } from './collab-store/agentrun/object';
+
+/** Passage de l'orchestrateur (outbox de réveil + scan de secours) ; no-op sans écriture si AGENT_RUNS_ENABLED n'est pas « true ». */
+function scheduleAgentRunPass(env: unknown, ctx: ExecutionContext): void {
+  const agentEnv = env as AgentRunObjectEnv;
+  if (agentEnv.AGENT_RUNS_ENABLED !== 'true' || !agentEnv.AGENT_RUN) return;
+  ctx.waitUntil(agentRunPass(agentRunDb(agentEnv), agentEnv, {
+    now: Math.floor(Date.now() / 1000), deliverer: 'pass:' + crypto.randomUUID(), wake: wakeViaNamespace(agentEnv.AGENT_RUN),
+  }).catch(() => undefined));
+}
 
 export default {
   async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
@@ -33,6 +47,8 @@ export default {
     // CC-5 l3d 2d — webhook GitHub du contrôleur, hors OAuth (signature HMAC). Éteint : 404 habituel plus bas.
     if (new URL(request.url).pathname === WEBHOOK_PATH) {
       const webhook = await handleGitHubWebhook(request, env as unknown as WebhookEnv, ctx);
+      // Même cadence que le contrôleur : seulement quand la livraison lance un passage (202 accepted).
+      if (webhook?.status === 202 && (await webhook.clone().json() as { outcome?: string }).outcome === 'accepted') scheduleAgentRunPass(env, ctx);
       if (webhook) return webhook;
     }
     const writes = writesEnabled(env.GITHUB_WRITES_ENABLED);
@@ -125,6 +141,7 @@ export default {
     if (!controllerCronEnabled(store.CONTROLLER_CRON_ENABLED)) return;
     if (!collabStoreEnabled(store.COLLAB_STORE_ENABLED) || !store.COLLAB_DB) return;
     ctx.waitUntil(runScheduledControllers(store.COLLAB_DB).then(() => undefined));
+    scheduleAgentRunPass(env, ctx);
   },
 } satisfies ExportedHandler<AppEnv>;
 

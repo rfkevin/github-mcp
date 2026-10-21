@@ -70,3 +70,54 @@ qui atteint l'effet après qu'un autre a terminé l'étape, reprise pendant un e
 Contre-épreuves locales : retirer la garde du checkpoint, la vérification d'effet incertain, le délai de reprise, HALT de
 la garde, la borne de réessai, le contrôle D12, la réclamation exacte des effets, l'ensemble des liaisons à la tentative,
 le délai « en vol » ou la borne d'exécution fait échouer au moins un test.
+
+## Incrément 7b — orchestrateur Durable Object et réveil (plan v1.1, store seq 474-478)
+
+Toujours inactif : `AGENT_RUNS_ENABLED="false"` (versionné, env `cc3-test`) refuse tout réveil sans écriture ni alarme, et
+le passage n'écrit rien ; 7b n'a ni fournisseur réel ni outil (modèle simulé qui termine en une étape, hôte d'outils vide).
+
+- **Objet** `AgentRunObject` (`src/collab-store/agentrun/object.ts`, coquille ; logique dans `orchestrator.ts`) : Durable
+  Object SQLite, un par clé de bail (`idFromName(lease_key)`), exporté par `src/index.ts`. `wake(run_id, lease_key)` vérifie
+  que l'objet est bien celui du bail, relit l'exécution dans D1, consomme le quota et pose une alarme ; un double wake ne
+  pose qu'une alarme. `alarm()` relit l'exécution (la copie locale n'est jamais crue : bail d'un autre objet = oubli),
+  fait au plus une étape (`runStep`), puis : `stepped` → alarme immédiate ; `busy` → recul 5, 10, 20 … plafonné à 300 s ;
+  `retry` → 30 s ; panne → 60 s ; issue terminale → objet libéré. Après toute issue non terminale une alarme existe ;
+  une alarme plus proche n'est jamais reculée (min). L'échéance est annoncée dans `agent_run_alarms`.
+- **Outbox** `agent_run_wakeups` écrite dans le même lot que `createRun` (seulement si l'exécution vient d'être créée) ;
+  `deliverWakeups` réclame chaque réveil par CAS avec expiration (`WAKEUP_CLAIM_S` = 60 s), ACK seulement après un wake
+  accepté, réclamation rendue sinon ; au plus `MAX_WAKEUP_ATTEMPTS` (3) puis `failed` journalisé. Un livreur coupé après
+  la réclamation : elle expire et un autre livre (wake idempotent).
+- **Scan de secours** `rescueStalledRuns` : exécution `running` sans réveil en attente et sans alarme vivante annoncée
+  (jamais annoncée, ou dépassée de plus de `ALARM_GRACE_S` = 120 s) ; ne se fie pas à `updated_at`, rafraîchi par l'audit.
+- **Passage** `agentRunPass` (outbox puis secours, bornés à 10 par passage) : appelé par le Cron et par le webhook quand
+  la livraison lance un passage du contrôleur (`accepted`) ; no-op si l'interrupteur est éteint ou le binding absent.
+- **Quotas Durable Objects Free (R5)**, `agent_run_quota`, jour UTC, réservation atomique sans dépassement :
+  requêtes (`do_requests`, 1 par wake et par alarme, défaut 20 000/jour) et lignes écrites (`rows_written`, estimation
+  pessimiste de 12 par étape, défaut 20 000/jour), réglables à la baisse par `AGENT_RUN_DAILY_REQUESTS` et
+  `AGENT_RUN_DAILY_ROWS` (plafond 100 000) ; quota épuisé = aucune étape, alarme dans une heure, journalisé.
+  Le troisième quota (Go-s/jour) est reporté à 7c : sans sens avec un modèle simulé.
+- **Journal** `agent_run_journal` (append-only) : quota épuisé, réveil refusé ou en échec, exécution rattrapée, fin.
+- `createRun` revérifie HALT aussi dans la branche `ON CONFLICT` (réserve 7a).
+- **Configuration** : binding `AGENT_RUN` et migration `new_sqlite_classes` dans `wrangler.jsonc`, env `cc3-test`
+  seulement (vérifié par test : rien au niveau racine ni dans un autre env) ; les tests déclarent l'objet dans
+  `vitest.config.mts` (miniflare). Fusion par Kevin.
+
+### Contrat d'hôte pour 7c (réserve 7a)
+
+Le moteur ne promet rien sur l'effet externe après sa borne : `Promise.race` cesse d'attendre, il n'annule pas l'appel.
+Une réponse tardive n'est ni enregistrée comme résultat ni relancée ; elle reste une trace `ambiguous`. Tout outil
+d'écriture d'un hôte réel devra donc : recevoir et transmettre la clé d'effet, être idempotent côté fournisseur
+(`expectedHeadSha` pour GitHub), et fournir un `lookup` capable de dire si l'effet a eu lieu ; un outil d'écriture sans
+`lookup` sera refusé par l'hôte.
+
+### Tests 7b
+
+`test/collab-store/agentrun/l7b-orchestrator.spec.ts` (16) : configuration cc3-test seulement ; désactivé sans écriture ;
+double wake = une alarme, mauvais objet, exécution inconnue ; alarmes jusqu'au terme avec alarme future après chaque
+issue non terminale ; recul busy croissant et plafonné, alarme plus proche jamais reculée ; HALT et préemption ; copie
+locale périmée ; quotas ; outbox livrée une fois ; livreur coupé avant l'ACK ; livreurs concurrents ; tentatives bornées
+puis échec terminal ; alarme perdue rattrapée après la grâce malgré `updated_at` rafraîchi ; Durable Object réel (RPC,
+alarmes, état local perdu puis relance par le passage) ; résolution tardive d'un outil. Contre-épreuves : retirer la
+sémantique min, l'interrupteur du wake, l'expiration de réclamation, la grâce, la replanification après busy, la
+vérification du bail dans l'alarme, le quota de lignes ou le plafond du recul fait échouer au moins un test.
+Non-régression : les 21 tests 7a passent.

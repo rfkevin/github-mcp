@@ -61,6 +61,14 @@
           "database_id": "c7c75111-a0bd-41a6-9924-5f0e6a75ffd7"
         }
       ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "AGENT_RUN", "class_name": "AgentRunObject" }
+        ]
+      },
+      "migrations": [
+        { "tag": "cc5-l7b-agent-run", "new_sqlite_classes": ["AgentRunObject"] }
+      ],
       "vars": {
         "PUBLIC_ORIGIN": "https://github-mcp-cc3-test.rfahedkevin.workers.dev",
         "ALLOWED_GITHUB_USER_IDS": "105856986",
@@ -72,6 +80,7 @@
         "COLLAB_STORE_ENABLED": "true",
         "CONTROLLER_CRON_ENABLED": "false",
         "CONTROLLER_WEBHOOK_ENABLED": "true",
+        "AGENT_RUNS_ENABLED": "false",
         "OWNER_AUTH_MODE": "secret",
         "GITHUB_CHECKS_CONFIG": "[{\"repository\":\"rfkevin/github-mcp\",\"ref\":\"master\",\"controllerSha\":\"774a3117e5359ca9c164fcef59fa6d6dc8b0bde7\"}]"
       }
