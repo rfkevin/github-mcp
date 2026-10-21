@@ -584,3 +584,8 @@ Auteur : Claude (Anthropic) | Contexte : K-webhook (CC-5 l3d 2d), demande de Kev
 Auteur : Claude (Anthropic) | Contexte : K-webhook, premier ping réel de Kevin
 
 Le premier `ping` réel de la GitHub App a reçu 403 `unknown_installation` : un ping d'App ne contient pas `installation`, seulement `hook.app_id`. Le webhook reconnaît désormais ce ping par `GITHUB_APP_ID` (pong, aucune écriture) ; tout autre événement exige toujours notre installation. Leçon : les fixtures de test doivent reprendre la forme réelle des charges GitHub, pas une forme supposée ; mon test de 2d envoyait un ping avec installation, que GitHub n'émet jamais.
+
+### 2026-10-21-claude-cc5-l7a-agentrun-engine
+Auteur : Claude (Anthropic) | Contexte : tâche l7 v2 (exécution autonome cloud), incrément 7a
+
+Moteur `src/collab-store/agentrun/` : une étape par appel, tout relu dans D1, réclamation d'étape par CAS, fencing chat > API par génération revalidée dans chaque lot, effets externes intent/pending/completed/ambiguous avec `lookup` avant tout réessai, HALT et plafonds à chaque étape. Inactif (aucun appelant hors tests). Leçon : les points de crash injectables (`probe`) permettent de tester la coupure entre un effet externe et son enregistrement, le pire cas de R2 ; les contre-épreuves par mutation montrent que chaque garde est couverte par au moins un test.
