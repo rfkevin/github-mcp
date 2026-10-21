@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
-  createRun, runStep, preemptByChat, releaseChat, runSummary, ModelCallError, ToolRefused, STEP_TIMEOUT_S,
+  createRun, runStep, preemptByChat, releaseChat, runSummary, ModelCallError, ToolRefused, STEP_TIMEOUT_S, EFFECT_TIMEOUT_S,
   type ModelOutput, type ToolCall, type ToolHost, type LookupResult, type AgentMessage,
 } from '../../../src/collab-store/agentrun';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
@@ -199,6 +199,112 @@ describe('CC-5 l7a — coupures et reprise', () => {
     expect(await status(input.runId)).toMatchObject({ status: 'failed', tokens_used: 14 });
     expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 3))).outcome).toBe('failed');
     expect(model.state.calls).toBe(2);
+  });
+});
+
+describe('CC-5 l7a — réclamation liée à la tentative (revue D12 #188)', () => {
+  it('ancien worker resté en vie après une reprise, même workerId : sa décision n’est pas enregistrée, aucun second effet', async () => {
+    const { input } = await newRun();
+    const h = host({ lookup: async () => ({ found: false }) });
+    const resumeAt = T0 + 1 + STEP_TIMEOUT_S;
+    let bCrash = true;
+    let clockA = T0 + 1;
+    const b = scripted([READ_THEN_COMMIT[1]]);
+    const a = {
+      state: { calls: 0 },
+      async complete() {
+        this.state.calls += 1;
+        // Pendant l'appel modèle de A, sa réclamation expire : B (même workerId) reprend l'étape,
+        // lance le commit puis s'arrête avant de l'enregistrer.
+        const probe = (point: string) => { if (bCrash && point === 'after_effect') { bCrash = false; throw new Crash('coupure B'); } };
+        await expect(runStep(db, input.runId, deps(b, h.tools, () => resumeAt, { workerId: 'w1', probe }))).rejects.toThrow('coupure B');
+        // A se réveille bien plus tard : l'effet de B n'est plus « en vol », seule la réclamation liée l'arrête.
+        clockA = resumeAt + EFFECT_TIMEOUT_S + 80;
+        return { output: READ_THEN_COMMIT[1], usage: { tokens: 10, cost_cents: 0 } };
+      },
+    };
+    expect((await runStep(db, input.runId, { model: a, tools: h.tools, now: () => clockA, workerId: 'w1' })).outcome).toBe('busy');
+    expect(h.commits).toHaveLength(1);
+    const step = await db.prepare('SELECT state, attempts FROM agent_run_steps WHERE run_id = ?1 AND n = 0').bind(input.runId)
+      .first<{ state: string; attempts: number }>();
+    expect(step).toEqual({ state: 'model_done', attempts: 2 });
+    // L'usage de A est compté (audit), sa décision ne l'est pas.
+    expect((await status(input.runId)).tokens_used).toBe(110);
+  });
+
+  it('ancien worker qui arrive à l’effet après la reprise : effet en vol chez l’autre, busy, aucun commit', async () => {
+    const { input } = await newRun();
+    const h = host({ lookup: async () => ({ found: false }) });
+    const model = scripted([READ_THEN_COMMIT[1]]);
+    let clock = T0 + 1;
+    let bCrash = true;
+    const resumeAt = T0 + 1 + STEP_TIMEOUT_S;
+    const probeA = async (point: string) => {
+      if (point !== 'after_model' || !bCrash) return;
+      // B reprend l'étape (réclamation de A expirée), passe l'effet en pending puis s'arrête avant de l'exécuter.
+      const probeB = (p: string) => { if (bCrash && p === 'before_effect') { bCrash = false; throw new Crash('coupure B'); } };
+      await expect(runStep(db, input.runId, deps(model, h.tools, () => resumeAt, { workerId: 'w1', probe: probeB }))).rejects.toThrow('coupure B');
+      clock = resumeAt + 4;
+    };
+    expect((await runStep(db, input.runId, { model, tools: h.tools, now: () => clock, workerId: 'w1', probe: probeA })).outcome).toBe('busy');
+    expect(h.commits).toHaveLength(0);
+    // Effet pending récent : un nouveau réveil ne le reprend pas avant EFFECT_TIMEOUT_S.
+    expect((await runStep(db, input.runId, deps(model, h.tools, () => resumeAt + 5, { workerId: 'w3' }))).outcome).toBe('busy');
+    expect(h.commits).toHaveLength(0);
+    expect(EFFECT_TIMEOUT_S).toBeLessThan(STEP_TIMEOUT_S);
+  });
+
+  it('ancien worker qui atteint l’effet après qu’un autre a terminé l’étape : aucun effet lancé', async () => {
+    const { input } = await newRun();
+    const h = host();
+    const model = scripted([READ_THEN_COMMIT[1]]);
+    const refusing: ToolHost = { spec: () => null, list: () => [], execute: async () => 'jamais' };
+    let resumed: string | null = null;
+    const probe = async (point: string) => {
+      if (point !== 'after_model' || resumed) return;
+      // Réclamation de A expirée : B (même workerId) reprend et termine l'étape sans effet.
+      resumed = (await runStep(db, input.runId, deps(model, refusing, () => T0 + 1 + STEP_TIMEOUT_S, { workerId: 'w1' }))).outcome;
+    };
+    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 1, { workerId: 'w1', probe }))).outcome).toBe('busy');
+    expect(resumed).toBe('stepped');
+    expect(h.commits).toHaveLength(0);
+    expect((await runSummary(db, input.runId))!.effects).toEqual([]);
+  });
+
+  it('reprise pendant qu’un effet est en vol (lancé il y a moins de EFFECT_TIMEOUT_S) : busy, un seul commit', async () => {
+    const { input } = await newRun();
+    let clock = T0 + 1;
+    let inFlight = true;
+    let resumed: string | null = null;
+    const model = {
+      state: { calls: 0 },
+      // Appel modèle long : l'effet sera lancé à T0+590, peu avant l'expiration de la réclamation.
+      async complete() { this.state.calls += 1; clock = T0 + 590; return { output: READ_THEN_COMMIT[1], usage: { tokens: 10, cost_cents: 0 } }; },
+    };
+    const h = host({
+      lookup: async () => ({ found: false }),
+      onExecute: async () => {
+        if (!inFlight) return;
+        inFlight = false;
+        // Pendant l'exécution de A, la réclamation expire et C reprend l'étape.
+        resumed = (await runStep(db, input.runId, { model, tools: h.tools, now: () => T0 + 1 + STEP_TIMEOUT_S, workerId: 'w3' })).outcome;
+      },
+    });
+    await runStep(db, input.runId, { model, tools: h.tools, now: () => clock, workerId: 'w1' });
+    expect(resumed).toBe('busy');
+    expect(h.commits).toHaveLength(1);
+  });
+
+  it('outil qui ne répond pas : borne d’exécution, ambiguous puis needs_reconcile', async () => {
+    const { input } = await newRun();
+    const model = scripted([READ_THEN_COMMIT[1]]);
+    const tools: ToolHost = {
+      spec: (_kind, name) => (name === 'commit' ? { name, effect: 'write' } : null),
+      list: () => ['commit'],
+      execute: () => new Promise(() => undefined),
+    };
+    expect((await runStep(db, input.runId, { model, tools, now: () => T0 + 1, workerId: 'w1', effectTimeoutMs: 20 })).outcome).toBe('needs_reconcile');
+    expect((await runSummary(db, input.runId))!.effects).toEqual([{ tool: 'commit', status: 'ambiguous' }]);
   });
 });
 

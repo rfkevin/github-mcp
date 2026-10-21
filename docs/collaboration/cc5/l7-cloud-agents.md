@@ -21,6 +21,11 @@ Aucun pouvoir activé : rien n'appelle ce moteur hors des tests ; modèle et out
   mémoire : tout est relu dans D1, source de vérité. L'orchestrateur (alarme d'un Durable Object en 7b, ou une étape
   Workflows si Kevin passe en Workers Paid) l'appelle en boucle.
 - **Double réveil** : l'étape est réclamée par CAS (`PRIMARY KEY (run_id, n)`) ; le second appel reçoit `busy`.
+- **Réclamation liée (revue D12 #188, Grok et ChatGPT)** : chaque transition opérationnelle de l'étape (décision du modèle,
+  intention et lancement d'un effet, checkpoint, arrêt) exige la réclamation exacte, `claimed_by` ET numéro de tentative.
+  Un ancien worker resté en vie après une reprise, même avec le même `workerId`, ne peut plus rien faire avancer.
+- **Effet en vol** : le moteur borne chaque exécution d'outil à `EFFECT_TIMEOUT_S` (120 s, au-delà : `ambiguous`), et un
+  effet `pending` plus récent que cette borne n'est pas repris (`busy`) ; `EFFECT_TIMEOUT_S < STEP_TIMEOUT_S`.
 - **Coupure** : une étape réclamée depuis plus de `STEP_TIMEOUT_S` (600 s, sous les 15 min d'une alarme) est reprise par
   un autre worker, au plus `MAX_STEP_ATTEMPTS` (2) fois, puis l'exécution passe `failed`. La sortie du modèle est
   enregistrée avant tout effet : une reprise rejoue la même décision sans rappeler le modèle.
@@ -31,8 +36,10 @@ Aucun pouvoir activé : rien n'appelle ce moteur hors des tests ; modèle et out
   (exécution, étape, rang, outil, arguments). Un effet resté `pending` après une coupure n'est **jamais réémis à
   l'aveugle** : `lookup` cherche s'il a eu lieu ; « trouvé » = résultat repris, « certainement pas » = tenté une fois,
   « impossible de savoir » = `needs_reconcile`. Une erreur d'exécution non certaine (délai) donne `ambiguous` ;
-  `ToolRefused` (refus certain) donne `failed` et l'agent continue. Le résultat d'un effet réellement envoyé est
-  enregistré même si le bail a changé : c'est la trace de ce qui a eu lieu.
+  `ToolRefused` (refus certain) donne `failed` et l'agent continue.
+- **Écritures d'audit hors garde, volontairement** : l'usage d'un appel modèle, le résultat réel d'un effet déjà envoyé
+  (`completed`, `failed`, `ambiguous`, même si le bail a changé) et `settle`, qui ne fait que constater une condition
+  d'arrêt (HALT, préemption, plafond). Toutes les autres écritures passent par `LIVE` et la réclamation exacte.
 - **HALT (L7-7)** : aucune nouvelle étape, aucun nouvel effet, aucune écriture ; une décision du modèle reçue après HALT
   n'est pas enregistrée ; un effet déjà envoyé reste visible (pas de promesse d'annulation).
 - **Plafonds (R5)**, vérifiés à chaque étape dans la garde de réclamation puis par `settle` : étapes, jetons, coût
@@ -53,10 +60,13 @@ l'outbox et les baux d'invocation existants (`src/collab-store/invocations/`, A1
 
 ### Tests
 
-`test/collab-store/agentrun/l7a-engine.spec.ts` (16) : parcours complet ; double réveil ; coupure après le modèle ;
+`test/collab-store/agentrun/l7a-engine.spec.ts` (21) : parcours complet ; double réveil ; coupure après le modèle ;
 coupure après l'effet et avant son enregistrement (lookup, aucun second commit) ; effet incertain sans lookup ;
 délai contre refus certain ; effet pending certainement non appliqué ; réessai modèle borné et usage compté ;
 préemption pendant et avant l'effet ; bail tenu par le chat puis libéré ; une exécution active par clé ; HALT entre
 deux étapes et pendant l'appel modèle ; plafonds d'étapes, jetons, coût et échéance ; outils refusés et verdict D12 ;
-DELETE refusé. Contre-épreuves locales : retirer la garde du checkpoint, la vérification d'effet incertain, le délai de
-reprise, HALT de la garde, la borne de réessai ou le contrôle D12 fait échouer au moins un test.
+DELETE refusé ; réclamation liée : ancien worker (même `workerId`) dont la décision n'est plus enregistrée, ancien worker
+qui atteint l'effet après qu'un autre a terminé l'étape, reprise pendant un effet en vol, outil qui ne répond pas.
+Contre-épreuves locales : retirer la garde du checkpoint, la vérification d'effet incertain, le délai de reprise, HALT de
+la garde, la borne de réessai, le contrôle D12, la réclamation exacte des effets, l'ensemble des liaisons à la tentative,
+le délai « en vol » ou la borne d'exécution fait échouer au moins un test.

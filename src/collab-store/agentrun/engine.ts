@@ -8,6 +8,14 @@
  *   état en mémoire : tout est relu dans D1, source de vérité.
  * - Double réveil : l'étape est réclamée par CAS (PRIMARY KEY (run_id, n)) ; le
  *   second appel reçoit `busy` et n'exécute rien.
+ * - Réclamation liée (revue D12 #188) : chaque transition opérationnelle de
+ *   l'étape (décision du modèle, intention et lancement d'un effet, checkpoint,
+ *   arrêt) exige la réclamation EXACTE (claimed_by ET numéro de tentative) ; un
+ *   ancien worker resté en vie après une reprise, même avec le même workerId,
+ *   ne peut plus rien faire avancer.
+ * - Effet en vol : un effet `pending` plus récent que EFFECT_TIMEOUT_S n'est pas
+ *   repris (busy) ; le moteur borne lui-même chaque exécution d'outil à
+ *   EFFECT_TIMEOUT_S (au-delà : ambiguous), toujours sous STEP_TIMEOUT_S.
  * - Fencing (L7-4) : chaque écriture de l'exécution revalide dans le même lot D1
  *   que la génération du bail est toujours la sienne, que le chat ne l'a pas
  *   reprise et que HALT n'est pas posé (garde LIVE).
@@ -20,8 +28,10 @@
  * - Le canal API n'émet aucun verdict D12 (L7-6) : outils interdits refusés en
  *   code même si l'hôte les déclare, et `assertNotD12Verdict` sur toute écriture.
  *
- * L'usage d'un appel modèle est toujours comptabilisé, même si l'étape est
- * ensuite refusée (préemption, HALT) ou si l'appel échoue (leçon L0).
+ * Écritures hors garde, volontairement (audit) : l'usage d'un appel modèle (toujours
+ * comptabilisé, même si l'étape est ensuite refusée ou si l'appel échoue, leçon L0),
+ * le résultat réel d'un effet déjà envoyé (completed, failed, ambiguous), et `settle`
+ * qui ne fait que constater une condition d'arrêt (HALT, préemption, plafond).
  */
 import { sha256Hex } from '../store/hash';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
@@ -29,6 +39,8 @@ import { ensureAgentRunSchema } from './schema';
 
 export const STEP_TIMEOUT_S = 600;
 export const MAX_STEP_ATTEMPTS = 2;
+/** Durée maximale d'une exécution d'outil ; un effet pending plus récent est considéré en vol. */
+export const EFFECT_TIMEOUT_S = 120;
 export const MAX_TOOL_CALLS_PER_STEP = 8;
 export const RESULT_MAX_CHARS = 16 * 1024;
 
@@ -72,6 +84,8 @@ export interface EngineDeps {
   tools: ToolHost;
   now: () => number;
   workerId: string;
+  /** Borne d'exécution d'un outil en ms (défaut EFFECT_TIMEOUT_S), réduite par les tests. */
+  effectTimeoutMs?: number;
   /** Points de crash injectables pour les tests (lever une exception = coupure). */
   probe?: (point: 'after_model' | 'before_effect' | 'after_effect' | 'after_effect_recorded') => void | Promise<void>;
 }
@@ -86,7 +100,9 @@ interface RunRow {
   steps_done: number; prompt: string;
 }
 interface StepRow { state: string; claimed_by: string; claimed_at: number; attempts: number; model_output: string | null }
-interface EffectRow { status: string; result: string | null }
+interface EffectRow { status: string; result: string | null; updated_at: number }
+/** Réclamation exacte d'une étape : seul son titulaire courant peut la faire avancer. */
+interface Claim { n: number; worker: string; attempts: number }
 interface ResultEntry { id: string; content: string; error?: true }
 
 export function leaseKeyOf(cycleId: string, participantId: string, taskId: string): string {
@@ -105,6 +121,12 @@ const WITHIN_LIMITS = [
   'EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1 AND steps_done < max_steps',
   '  AND tokens_used < max_tokens AND cost_cents <= max_cost_cents AND ?4 < deadline_at)',
 ].join(' ');
+
+/** Réclamation exacte : ?1 = run_id ; les trois autres paramètres sont fournis par l'appelant. */
+function claimHeld(n: string, worker: string, attempts: string): string {
+  return 'EXISTS (SELECT 1 FROM agent_run_steps WHERE run_id = ?1 AND n = ' + n + ' AND claimed_by = ' + worker
+    + " AND attempts = " + attempts + " AND state <> 'completed')";
+}
 
 function byCodeUnit(a: string, b: string): number {
   if (a < b) return -1;
@@ -223,9 +245,9 @@ export async function settle(db: D1Database, runId: string, now: number): Promis
   return (await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ status: RunStatus }>())!.status;
 }
 
-async function stopAs(db: D1Database, runId: string, status: 'failed' | 'needs_reconcile', reason: string, now: number): Promise<void> {
-  await db.prepare("UPDATE agent_runs SET status = ?2, stop_reason = ?3, updated_at = ?4 WHERE run_id = ?1 AND status = 'running'")
-    .bind(runId, status, reason.slice(0, 500), now).run();
+async function stopAs(db: D1Database, runId: string, status: 'failed' | 'needs_reconcile', reason: string, now: number, claim: Claim): Promise<void> {
+  await db.prepare("UPDATE agent_runs SET status = ?2, stop_reason = ?3, updated_at = ?4 WHERE run_id = ?1 AND status = 'running' AND "
+    + claimHeld('?5', '?6', '?7')).bind(runId, status, reason.slice(0, 500), now, claim.n, claim.worker, claim.attempts).run();
 }
 
 async function settled(db: D1Database, runId: string, now: number): Promise<StepResult> {
@@ -273,8 +295,14 @@ async function claimStep(db: D1Database, run: RunRow, deps: EngineDeps, now: num
   if (!step) return settled(db, run.run_id, now);
   if (step.state === 'completed' || step.claimed_at + STEP_TIMEOUT_S > now) return { outcome: 'busy' };
   if (step.attempts >= MAX_STEP_ATTEMPTS) {
-    await stopAs(db, run.run_id, 'failed', 'step_attempts_exhausted', now);
-    return { outcome: 'failed' };
+    // Seulement si la réclamation périmée observée est toujours celle-là (aucune reprise entre-temps).
+    await db.prepare([
+      "UPDATE agent_runs SET status = 'failed', stop_reason = 'step_attempts_exhausted', updated_at = ?2",
+      "WHERE run_id = ?1 AND status = 'running' AND EXISTS (SELECT 1 FROM agent_run_steps",
+      "  WHERE run_id = ?1 AND n = ?3 AND claimed_by = ?4 AND claimed_at = ?5 AND attempts = ?6 AND state <> 'completed')",
+    ].join(' ')).bind(run.run_id, now, n, step.claimed_by, step.claimed_at, step.attempts).run();
+    const status = (await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(run.run_id).first<{ status: RunStatus }>())!.status;
+    return { outcome: status === 'running' ? 'busy' : status };
   }
   const retaken = await db.prepare([
     'UPDATE agent_run_steps SET claimed_by = ?3, claimed_at = ?4, attempts = attempts + 1',
@@ -298,6 +326,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const claimed = await claimStep(db, run, deps, now);
   if ('outcome' in claimed) return claimed;
   const n = run.steps_done;
+  const claim: Claim = { n, worker: deps.workerId, attempts: claimed.attempts };
 
   // 1. Modèle (sortie persistée avant tout effet : une reprise rejoue la même décision).
   let output: ModelOutput;
@@ -313,11 +342,11 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1')
           .bind(runId, Math.max(0, usage?.tokens ?? 0), Math.max(0, usage?.cost_cents ?? 0), now),
         // Réclamation rendue périmée : la prochaine réveil réessaie, dans la limite de MAX_STEP_ATTEMPTS.
-        db.prepare('UPDATE agent_run_steps SET claimed_at = 0 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3')
-          .bind(runId, n, deps.workerId),
+        db.prepare('UPDATE agent_run_steps SET claimed_at = 0 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4')
+          .bind(runId, n, deps.workerId, claimed.attempts),
       ]);
       if (claimed.attempts >= MAX_STEP_ATTEMPTS) {
-        await stopAs(db, runId, 'failed', 'model_error: ' + errorText(error), now);
+        await stopAs(db, runId, 'failed', 'model_error: ' + errorText(error), now, claim);
         return { outcome: 'failed' };
       }
       return { outcome: 'retry' };
@@ -330,8 +359,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         .bind(runId, tokens, cost, now),
       db.prepare([
         "UPDATE agent_run_steps SET state = 'model_done', model_output = ?4, tokens = ?5, cost_cents = ?6",
-        'WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND ' + LIVE,
-      ].join(' ')).bind(runId, n, deps.workerId, JSON.stringify(output), tokens, cost),
+        "WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?7 AND state = 'claimed' AND " + LIVE,
+      ].join(' ')).bind(runId, n, deps.workerId, JSON.stringify(output), tokens, cost, claimed.attempts),
     ]);
     if (saved.meta.changes !== 1) return settled(db, runId, now);
     await deps.probe?.('after_model');
@@ -359,7 +388,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       refused('d12_verdict_forbidden_on_api_channel');
       continue;
     }
-    const effect = await runEffect(db, runId, n, idx, call, deps, now);
+    const effect = await runEffect(db, runId, claim, idx, call, deps);
     if ('outcome' in effect) return effect;
     results.push(effect);
   }
@@ -369,8 +398,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const [done] = await db.batch([
     db.prepare([
       "UPDATE agent_run_steps SET state = 'completed', results = ?4, completed_at = ?5",
-      "WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND state = 'model_done' AND " + LIVE,
-    ].join(' ')).bind(runId, n, deps.workerId, JSON.stringify(results), now),
+      "WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?6 AND state = 'model_done' AND " + LIVE,
+    ].join(' ')).bind(runId, n, deps.workerId, JSON.stringify(results), now, claimed.attempts),
     db.prepare([
       'UPDATE agent_runs SET steps_done = steps_done + 1, updated_at = ?3,',
       "  status = CASE WHEN ?4 = 1 THEN 'completed' ELSE status END,",
@@ -387,16 +416,20 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
 }
 
 /** Effet externe selon R2. Rend l'entrée de résultat, ou un arrêt. */
-async function runEffect(db: D1Database, runId: string, n: number, idx: number, call: ToolCall, deps: EngineDeps, now: number):
+async function runEffect(db: D1Database, runId: string, claim: Claim, idx: number, call: ToolCall, deps: EngineDeps):
   Promise<ResultEntry | StepResult> {
+  const n = claim.n;
+  const now = deps.now();
   const key = await sha256Hex(canonical({ run_id: runId, n, idx, tool: call.name, args: call.args }));
   const ctx = { run_id: runId, effect_key: key };
   const mark = (status: 'completed' | 'failed' | 'ambiguous', result: string) =>
     db.prepare('UPDATE agent_run_effects SET status = ?2, result = ?3, updated_at = ?4 WHERE effect_key = ?1')
       .bind(key, status, result, now).run();
-  const effect = await db.prepare('SELECT status, result FROM agent_run_effects WHERE effect_key = ?1').bind(key).first<EffectRow>();
+  const effect = await db.prepare('SELECT status, result, updated_at FROM agent_run_effects WHERE effect_key = ?1').bind(key).first<EffectRow>();
   if (effect?.status === 'completed') return { id: call.id, content: effect.result ?? '' };
   if (effect?.status === 'failed') return { id: call.id, content: effect.result ?? '', error: true };
+  // Effet lancé il y a moins de EFFECT_TIMEOUT_S : peut-être encore en vol chez un autre worker.
+  if (effect?.status === 'pending' && effect.updated_at + EFFECT_TIMEOUT_S > now) return { outcome: 'busy' };
   if (effect && (effect.status === 'pending' || effect.status === 'ambiguous')) {
     // Effet incertain : chercher s'il a eu lieu AVANT tout réessai ; jamais de réémission à l'aveugle.
     let found: LookupResult = null;
@@ -412,7 +445,7 @@ async function runEffect(db: D1Database, runId: string, n: number, idx: number, 
     }
     if (!found) {
       await mark('ambiguous', JSON.stringify({ error: 'effect_outcome_unknown' }));
-      await stopAs(db, runId, 'needs_reconcile', 'effect_outcome_unknown: ' + call.name, now);
+      await stopAs(db, runId, 'needs_reconcile', 'effect_outcome_unknown: ' + call.name, now, claim);
       return { outcome: 'needs_reconcile' };
     }
     // found === { found: false } : l'effet n'a certainement pas eu lieu, il peut être tenté.
@@ -420,19 +453,24 @@ async function runEffect(db: D1Database, runId: string, n: number, idx: number, 
   if (!effect) {
     const intent = await db.prepare([
       'INSERT OR IGNORE INTO agent_run_effects (effect_key, run_id, n, idx, tool, args, status, updated_at)',
-      "SELECT ?2, ?1, ?3, ?4, ?5, ?6, 'intent', ?7 WHERE " + LIVE,
-    ].join(' ')).bind(runId, key, n, idx, call.name, canonical(call.args), now).run();
+      "SELECT ?2, ?1, ?3, ?4, ?5, ?6, 'intent', ?7 WHERE " + LIVE + ' AND ' + claimHeld('?3', '?8', '?9'),
+    ].join(' ')).bind(runId, key, n, idx, call.name, canonical(call.args), now, claim.worker, claim.attempts).run();
     if (intent.meta.changes !== 1) return settled(db, runId, now);
   }
   const pending = await db.prepare([
     "UPDATE agent_run_effects SET status = 'pending', updated_at = ?3",
-    "WHERE effect_key = ?2 AND status IN ('intent','pending','ambiguous') AND " + LIVE,
-  ].join(' ')).bind(runId, key, now).run();
+    "WHERE effect_key = ?2 AND status IN ('intent','pending','ambiguous') AND " + LIVE + ' AND ' + claimHeld('?4', '?5', '?6'),
+  ].join(' ')).bind(runId, key, now, n, claim.worker, claim.attempts).run();
   if (pending.meta.changes !== 1) return settled(db, runId, now);
   await deps.probe?.('before_effect');
   let result: unknown;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    result = await deps.tools.execute(call, ctx);
+    const limit = Math.max(1, deps.effectTimeoutMs ?? EFFECT_TIMEOUT_S * 1000);
+    result = await Promise.race([
+      deps.tools.execute(call, ctx),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('effect_timeout')), limit); }),
+    ]);
   } catch (error) {
     if (error instanceof ToolRefused) {
       const content = JSON.stringify({ error: errorText(error) });
@@ -440,8 +478,10 @@ async function runEffect(db: D1Database, runId: string, n: number, idx: number, 
       return { id: call.id, content, error: true };
     }
     await mark('ambiguous', JSON.stringify({ error: errorText(error) }));
-    await stopAs(db, runId, 'needs_reconcile', 'effect_outcome_unknown: ' + call.name, now);
+    await stopAs(db, runId, 'needs_reconcile', 'effect_outcome_unknown: ' + call.name, now, claim);
     return { outcome: 'needs_reconcile' };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
   await deps.probe?.('after_effect');
   // Enregistrement du résultat sans garde : c'est la trace de ce qui a réellement eu lieu.
