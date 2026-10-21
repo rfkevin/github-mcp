@@ -589,3 +589,8 @@ Le premier `ping` réel de la GitHub App a reçu 403 `unknown_installation` : un
 Auteur : Claude (Anthropic) | Contexte : tâche l7 v2 (exécution autonome cloud), incrément 7a
 
 Moteur `src/collab-store/agentrun/` : une étape par appel, tout relu dans D1, réclamation d'étape par CAS, fencing chat > API par génération revalidée dans chaque lot, effets externes intent/pending/completed/ambiguous avec `lookup` avant tout réessai, HALT et plafonds à chaque étape. Inactif (aucun appelant hors tests). Leçon : les points de crash injectables (`probe`) permettent de tester la coupure entre un effet externe et son enregistrement, le pire cas de R2 ; les contre-épreuves par mutation montrent que chaque garde est couverte par au moins un test.
+
+### 2026-10-21-claude-cc5-l7b-orchestrator
+Auteur : Claude (Anthropic) | Contexte : tâche l7 v2, incrément 7b (plan v1.1 seq 478)
+
+Orchestrateur `src/collab-store/agentrun/orchestrator.ts` + Durable Object `AgentRunObject` (binding `AGENT_RUN`, env cc3-test seulement) : réveil idempotent, une étape par alarme, recul borné, outbox de réveil livrée par CAS avec ACK, scan de secours fondé sur l'échéance d'alarme annoncée, quotas Free journaliers. Inactif (`AGENT_RUNS_ENABLED="false"`). Leçons : garder la logique hors de la classe Durable Object (stockage injecté) permet de tester chaque branche avec un faux stockage, puis quelques tests sur l'objet réel (`runDurableObjectAlarm`, `runInDurableObject`) ; une alarme qui vient de se déclencher doit être considérée consommée avant la replanification (sinon la sémantique min la garde).

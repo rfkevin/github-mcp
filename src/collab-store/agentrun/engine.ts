@@ -197,7 +197,8 @@ export async function createRun(db: D1Database, input: CreateRunInput): Promise<
       "INSERT INTO agent_fences (lease_key, generation, holder, held_until, updated_at) SELECT ?1, 1, 'api', 0, ?2",
       'WHERE NOT ' + HALTED + ' AND NOT EXISTS (' + active + ')',
       "ON CONFLICT(lease_key) DO UPDATE SET generation = agent_fences.generation + 1, holder = 'api', held_until = 0,",
-      "  updated_at = excluded.updated_at WHERE agent_fences.holder <> 'chat' OR agent_fences.held_until <= excluded.updated_at",
+      "  updated_at = excluded.updated_at WHERE (agent_fences.holder <> 'chat' OR agent_fences.held_until <= excluded.updated_at)",
+      '  AND NOT ' + HALTED,
     ].join(' ')).bind(key, input.now),
     db.prepare([
       'INSERT OR IGNORE INTO agent_runs (run_id, cycle_id, participant_id, task_id, lease_key, generation, task_kind, status,',
@@ -208,6 +209,11 @@ export async function createRun(db: D1Database, input: CreateRunInput): Promise<
     ].join(' ')).bind(key, input.runId, input.cycleId, input.participantId, input.taskId, input.taskKind,
       Math.max(1, input.maxSteps), Math.max(1, input.maxTokens), Math.max(0, input.maxCostCents), input.deadlineAt,
       input.prompt, input.now),
+    // 7b : outbox de réveil dans le même lot, seulement si l'exécution vient d'être créée par ce lot.
+    db.prepare([
+      'INSERT OR IGNORE INTO agent_run_wakeups (run_id, lease_key, requested_at, status)',
+      "SELECT ?1, ?2, ?3, 'pending' WHERE EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1 AND lease_key = ?2 AND created_at = ?3)",
+    ].join(' ')).bind(input.runId, key, input.now),
   ]);
   const run = await db.prepare('SELECT generation, created_at, lease_key FROM agent_runs WHERE run_id = ?1')
     .bind(input.runId).first<{ generation: number; created_at: number; lease_key: string }>();
