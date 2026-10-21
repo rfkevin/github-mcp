@@ -313,6 +313,17 @@ describe('CC-5 l7b — outbox et scan de secours', () => {
   });
 });
 
+/** Les alarmes réelles peuvent se déclencher seules (échéance immédiate) : on les force et on attend l'état terminal. */
+async function settleObject(stub: DurableObjectStub<AgentRunObject>, runId: string): Promise<string> {
+  for (let i = 0; i < 60; i += 1) {
+    await runDurableObjectAlarm(stub);
+    const status = (await runSummary(db, runId))!.status;
+    if (status !== 'running') return status;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  return (await runSummary(db, runId))!.status;
+}
+
 describe('CC-5 l7b — Durable Object réel', () => {
   it('wake par RPC puis alarmes jusqu’au terme (modèle simulé par défaut) ; mauvais objet refusé', async () => {
     const run = await newRun(Math.floor(Date.now() / 1000));
@@ -320,24 +331,23 @@ describe('CC-5 l7b — Durable Object réel', () => {
     expect(await wakeViaNamespace(namespace)(run.leaseKey, run.runId)).toEqual({ accepted: true });
     const other = namespace.get(namespace.idFromName(run.leaseKey + '-autre'));
     expect(await other.wake(run.runId, run.leaseKey)).toEqual({ accepted: false, reason: 'wrong_object' });
-    let guard = 0;
-    while (await runDurableObjectAlarm(stub) && guard < 5) guard += 1;
+    expect(await settleObject(stub, run.runId)).toBe('completed');
     expect((await runSummary(db, run.runId))).toMatchObject({ status: 'completed', summary: 'Exécution simulée (7b) : aucun fournisseur branché.' });
   });
 
-  it('objet dont l’état local est perdu : le passage le relance depuis D1', async () => {
+  it('objet sans état local (évincé, jamais réveillé) : le passage le relance depuis D1', async () => {
     const run = await newRun(Math.floor(Date.now() / 1000), 'fix-evict');
     const stub = namespace.get(namespace.idFromName(run.leaseKey));
-    await stub.wake(run.runId, run.leaseKey);
-    await runInDurableObject(stub, async (_instance, state) => { await state.storage.deleteAlarm(); await state.storage.deleteAll(); });
-    expect(await runDurableObjectAlarm(stub)).toBe(false);
+    // Aucun état local ni alarme dans l'objet ; le réveil initial est considéré livré (perdu en route).
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.get('run_id')).toBeUndefined();
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
     await db.prepare("UPDATE agent_run_wakeups SET status = 'delivered' WHERE run_id = ?1").bind(run.runId).run();
     const later = Math.floor(Date.now() / 1000) + ALARM_GRACE_S + 5;
     const pass = await agentRunPass(db, { AGENT_RUNS_ENABLED: 'true' }, { now: later, deliverer: 'pass', wake: wakeViaNamespace(namespace) });
     expect(pass.rescued).toBeGreaterThanOrEqual(1);
-    let guard = 0;
-    while (await runDurableObjectAlarm(stub) && guard < 5) guard += 1;
-    expect((await runSummary(db, run.runId))!.status).toBe('completed');
+    expect(await settleObject(stub, run.runId)).toBe('completed');
   });
 });
 
