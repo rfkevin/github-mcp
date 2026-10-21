@@ -111,7 +111,7 @@ describe('CC-5 l7a — exécution pas à pas', () => {
       runStep(db, input.runId, deps(model, h.tools, () => T0 + 1, { workerId: 'w1' })),
       runStep(db, input.runId, deps(model, h.tools, () => T0 + 1, { workerId: 'w2' })),
     ]);
-    expect([a.outcome, b.outcome].sort()).toEqual(['busy', 'stepped']);
+    expect([a.outcome, b.outcome].sort((x, y) => x.localeCompare(y))).toEqual(['busy', 'stepped']);
     expect(model.state.calls).toBe(1);
     expect(h.log).toEqual(['read_file']);
   });

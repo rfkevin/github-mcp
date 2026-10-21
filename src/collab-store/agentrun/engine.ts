@@ -106,10 +106,15 @@ const WITHIN_LIMITS = [
   '  AND tokens_used < max_tokens AND cost_cents <= max_cost_cents AND ?4 < deadline_at)',
 ].join(' ');
 
+function byCodeUnit(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
   if (value && typeof value === 'object') {
-    return '{' + Object.keys(value as Record<string, unknown>).sort()
+    return '{' + Object.keys(value as Record<string, unknown>).sort(byCodeUnit)
       .map(key => JSON.stringify(key) + ':' + canonical((value as Record<string, unknown>)[key])).join(',') + '}';
   }
   return JSON.stringify(value ?? null);
