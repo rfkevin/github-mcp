@@ -10,7 +10,9 @@ const doc = (name: string): string => {
   if (text === undefined) throw new Error(`document introuvable : ${name}`);
   return text;
 };
-const GUIDE_DOCS = ['collaboration/usage.md', 'collaboration/troubleshooting.md', 'collaboration/profile-decision.md'];
+const GUIDE_DOCS = ['collaboration/usage.md', 'collaboration/troubleshooting.md', 'collaboration/profile-decision.md',
+  'collaboration/modules/collaboration.md', 'collaboration/modules/git-conflits.md',
+  'collaboration/modules/ci-qualite.md', 'collaboration/modules/feedback.md'];
 const TOOLS = new Set<string>([...READ_TOOLS, ...WRITE_TOOLS, 'github_apply_changes']);
 
 function resolve(from: string, target: string): string {
@@ -62,10 +64,24 @@ describe('guide de participation CC-2 (L6)', () => {
     for (const tool of cited) expect(TOOLS.has(tool), tool).toBe(true);
   });
 
-  it('les consignes d’initialisation renvoient au guide sans grossir de plus de 600 octets', () => {
+  it('les consignes d’initialisation restent sous 3500 octets et placent le store et son repli tôt', () => {
     expect(WORKFLOW_INSTRUCTIONS).toContain('github_collab_context');
     expect(WORKFLOW_INSTRUCTIONS).toContain('docs/collaboration/usage.md');
-    expect(new TextEncoder().encode(WORKFLOW_INSTRUCTIONS).length).toBeLessThanOrEqual(6585 + 600);
+    expect(new TextEncoder().encode(WORKFLOW_INSTRUCTIONS).length).toBeLessThanOrEqual(3500);
+    for (const marker of ['store', 'STORE_UNAVAILABLE', 'github_collab_context', 'usage.md']) {
+      expect(WORKFLOW_INSTRUCTIONS.indexOf(marker)).toBeGreaterThan(-1);
+      expect(WORKFLOW_INSTRUCTIONS.indexOf(marker)).toBeLessThan(800);
+    }
+  });
+
+  it('le contexte principal pointe les quatre modules du staging, jamais master', () => {
+    expect(WORKFLOW_INSTRUCTIONS).toContain('github_read_file');
+    expect(WORKFLOW_INSTRUCTIONS).toContain('docs/collaboration/modules/');
+    for (const moduleName of ['collaboration.md', 'git-conflits.md', 'ci-qualite.md', 'feedback.md']) {
+      expect(WORKFLOW_INSTRUCTIONS).toContain(moduleName);
+    }
+    expect(WORKFLOW_INSTRUCTIONS).toContain('rfkevin/github-mcp');
+    expect(WORKFLOW_INSTRUCTIONS).toContain('mcp/105856986/cc3-integration');
   });
 
   it('la décision de profil ne revendique aucun gain non mesuré', () => {

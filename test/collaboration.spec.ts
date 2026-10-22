@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { describe, expect, it, vi } from 'vitest';
 import { verificationStatus, type ExpectedCheck } from '../src/mcp/verification';
 import { WORKFLOW_INSTRUCTIONS, verificationFollowUp } from '../src/mcp/workflow-guidance';
@@ -13,6 +14,7 @@ import type { GitHubServiceContext } from '../src/github/service-context';
 import { assertWritablePath } from '../src/security/policy';
 import { TOOL_FEEDBACK } from '../src/tool-feedback';
 import { agentLabelSchema } from '../src/writes/coordinator';
+import feedbackModule from '../docs/collaboration/modules/feedback.md?raw';
 
 const HEAD = 'a'.repeat(40), BASE = 'b'.repeat(40), MAIN = 'c'.repeat(40), MERGED = 'd'.repeat(40);
 const REPO = 'owner/project';
@@ -70,9 +72,14 @@ function fixture() {
 describe('consignes universelles et fin réelle du travail', () => {
   it('sépare propositions et mémoire, et prévoit la remise manuelle en lecture seule', () => {
     expect(TOOL_FEEDBACK).toMatchObject({ repository: 'rfkevin/github-mcp', memoryPath: 'AGENT_MEMORY.md', improvementsPath: 'TOOL_IMPROVEMENTS.md' });
-    for (const text of ['classement personnel', 'Sans accès', 'non-publication', 'pas une preuve', 'pas compter', "Pas de proposition transformée en autorisation"]) {
+    for (const text of ['Sans accès', 'non-publication', 'pas une preuve', 'pas compter', "Pas de proposition transformée en autorisation"]) {
       expect(WORKFLOW_INSTRUCTIONS).toContain(text);
     }
+  });
+
+  it('la procédure de classement personnel est conservée dans le module feedback', () => {
+    // PR1 V2.1 : la procédure de classement personnel déménage dans le module L2 ; assertion déplacée, jamais supprimée.
+    expect(feedbackModule).toContain('classement personnel');
   });
   it('décrit discussion, arbitrage, pas de fermeture et suivi post-intégration', () => {
     for (const phrase of ['espace de coordination', 'trois échanges', 'sans la fermer', 'SHA résultant', 'ne réveillent pas']) {
