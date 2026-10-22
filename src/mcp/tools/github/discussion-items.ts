@@ -16,7 +16,7 @@ export function registerDiscussionItemTools(server: McpServer, context: ToolCont
     title: 'Lire un élément de discussion ciblé',
     _meta: oauthMetadata(),
     outputSchema: outputSchemas.github_get_discussion_item,
-    description: 'Lire intégralement et par pages UTF-8 une revue de PR, un commentaire inline de revue ou un commentaire de commit. Commencer à offset=0 puis réutiliser revision et nextOffset. pullNumber est requis uniquement pour pull_request_review. Les commentaires généraux d’issue/PR restent lus avec github_get_issue_comment. Les chemins sensibles des commentaires inline/commit sont refusés.',
+    description: 'Lire intégralement, par pages UTF-8, une revue de PR, un commentaire inline de revue ou un commentaire de commit : commencer à offset=0 puis réutiliser revision et nextOffset. pullNumber requis uniquement pour pull_request_review. Commentaires généraux d’issue/PR : github_get_issue_comment. Chemins sensibles des commentaires inline/commit refusés.',
     inputSchema: { repository: z.string(), kind, id: z.number().int().positive(), pullNumber: z.number().int().positive().optional(),
       offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(12_000).default(4_000),
       revision: z.string().regex(/^[a-f0-9]{64}$/).optional() }, annotations,

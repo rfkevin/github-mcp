@@ -14,7 +14,7 @@ export function registerCollabContextTools(server: McpServer, context: ToolConte
     title: 'Contexte de collaboration',
     _meta: oauthMetadata(),
     outputSchema: outputSchemas.github_collab_context,
-    description: 'Contexte read-only progressif du workflow de collaboration. Première sortie : cycle, phase, revision, tâche et rôle déclarés, guidance (actions permises, frontière d arrêt, décision owner), blocker et next_action ; puis chemins ciblés et identifiants de sources. Reprise cross-chat par checkpoint portable borné (empreinte par source, jamais un simple lastSeen) : relit les sources modifiées y compris par édition tardive, signale les sources suivies devenues absentes (rescan explicite requis) et expose la continuation des lectures partielles. Exclusion contractuelle des propositions de pairs avant la phase permise ; contamination consignée si déjà lues. Lecture seule, aucun effet de bord. La couverture lue est un fait sur le contenu récupéré, pas une preuve de compréhension.',
+    description: 'Contexte read-only progressif du workflow : cycle, phase, révision, tâche et rôle déclarés, guidance, blocker, next_action, puis chemins ciblés et sources. Reprise cross-chat par checkpoint portable borné (empreinte par source, jamais un lastSeen) : relit les sources modifiées y compris tardives, signale les sources disparues (rescan explicite), poursuit les lectures partielles. Propositions de pairs exclues avant la phase permise ; contamination consignée si déjà lues. Couverture lue ≠ preuve de compréhension. Lecture seule, aucun effet de bord. Repli seulement si STORE_UNAVAILABLE ; le store de collaboration reste le canal nominal.',
     inputSchema: {
       repository: z.string().min(3).max(200),
       ref: z.string().min(1).max(240),
