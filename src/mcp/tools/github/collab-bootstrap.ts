@@ -42,7 +42,7 @@ export function registerCollabBootstrapTools(server: McpServer, context: ToolCon
     title: 'Prévisualiser l’amorçage de collaboration',
     _meta: oauthMetadata(),
     outputSchema: outputSchemas.github_plan_project_bootstrap,
-    description: 'Lecture seule : compare un dépôt à un manifeste de modèles épinglés (AGENTS.md pointeur, AGENT_MEMORY.md, registre d’installation) et renvoie, par fichier, create, unchanged, kept (existant conservé, jamais écrasé) ou action_required (existant incompatible : rien n’est planifié, une décision du propriétaire est nécessaire). Statut ready : appliquer les operations telles quelles avec l’outil d’écriture groupée, s’il est autorisé, sur une branche de travail créée à partir de sha (expectedHeadSha = sha ; un fichier apparu entre-temps ou une branche déplacée fait échouer l’application, relancer la prévisualisation). Un second passage sur un dépôt déjà amorcé renvoie unchanged. Aucune mise à jour automatique des modèles.',
+    description: 'Lecture seule : compare un dépôt au manifeste de modèles épinglés (AGENTS.md pointeur, AGENT_MEMORY.md, registre d’installation). Par fichier : create, unchanged, kept (jamais écrasé) ou action_required (existant incompatible : rien n’est planifié, décision owner requise). Statut ready : appliquer les operations telles quelles sur une branche de travail issue de sha, expectedHeadSha = sha ; fichier apparu ou branche déplacée : échec, relancer la prévisualisation. Dépôt déjà amorcé : unchanged. Aucune mise à jour automatique des modèles.',
     inputSchema: { repository: z.string(), ref: z.string() },
     annotations,
   }, async ({ repository, ref }) => {
