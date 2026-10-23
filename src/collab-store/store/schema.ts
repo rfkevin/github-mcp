@@ -317,7 +317,7 @@ export const STORE_MIGRATION_0011 = [
     'CREATE TABLE IF NOT EXISTS request_classifications (',
     '  cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),',
     '  request_seq INTEGER NOT NULL REFERENCES events(seq),',
-    "  verdict TEXT NOT NULL CHECK (verdict IN ('invalid', 'blocked', 'duplicate', 'other')),"
+    "  verdict TEXT NOT NULL CHECK (verdict IN ('invalid', 'blocked', 'duplicate', 'other')),",
     "  note TEXT NOT NULL DEFAULT '',",
     '  event_seq INTEGER REFERENCES events(seq),',
     '  created_at INTEGER NOT NULL,',
