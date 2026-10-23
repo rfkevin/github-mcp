@@ -27,6 +27,7 @@
 import { CollabStoreError, type StoredStoreEvent } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { listCyclePendingRequests, ownerAppend, type OwnerWriteResult } from './decisions';
+import { assertBindingPrecondition, bindingGuard, bindingKey, bindingPayload, bindingStatements, type OwnerRequestBinding } from './binding';
 import type { OwnerProof } from './proof';
 
 /**
@@ -48,6 +49,13 @@ const ACTIVE_TASKS_GUARD = "COALESCE((SELECT COUNT(*) FROM tasks WHERE cycle_id 
 const LAST_REQUEST_SEQ_SQL = "SELECT COALESCE(MAX(seq), -1) AS n FROM events WHERE cycle_id = ?1 AND type IN ('owner.request', 'phase.request')";
 /** La même expression, évaluée dans la garde du lot (?4 = valeur observée au comptage). */
 const LAST_REQUEST_SEQ_GUARD = "COALESCE((SELECT MAX(seq) FROM events WHERE cycle_id = ?2 AND type IN ('owner.request', 'phase.request')), -1) = ?4";
+/**
+ * CC-Owner V2 L6 : variantes liées — la demande close elle-même (seq exclue)
+ * ne compte ni au comptage ni dans la garde : exclusion SYMÉTRIQUE JS/SQL,
+ * sinon une demande close pending sur son propre cycle se bloquerait seule.
+ */
+const LAST_REQUEST_SEQ_SQL_EXCLUDING = "SELECT COALESCE(MAX(seq), -1) AS n FROM events WHERE cycle_id = ?1 AND type IN ('owner.request', 'phase.request') AND seq != ?2";
+const LAST_REQUEST_SEQ_GUARD_EXCLUDING = "COALESCE((SELECT MAX(seq) FROM events WHERE cycle_id = ?2 AND type IN ('owner.request', 'phase.request') AND seq != ?8), -1) = ?7";
 
 export interface CycleCloseResult extends OwnerWriteResult {
   cycle_id: string;
@@ -62,6 +70,11 @@ export interface CycleCloseResult extends OwnerWriteResult {
  * Acte owner : fermer un cycle. op nomme la soumission (formulaire /owner) ;
  * la clé d'idempotence rend un double envoi inoffensif, un second close sous
  * une nouvelle clé sur un cycle déjà clos → CYCLE_ALREADY_CLOSED.
+ *
+ * CC-Owner V2 L6 : version exécutable DOUCE — binding lie la clôture à
+ * l’approbation d’une demande close_cycle (cycle_id seul, previous_seq null) ;
+ * la demande close elle-même est exclue du comptage et de la garde
+ * (exclusion symétrique JS/SQL), sinon elle se bloquerait toute seule.
  */
 export async function closeCycle(db: D1Database, input: {
   cycle_id: string;
@@ -70,6 +83,10 @@ export async function closeCycle(db: D1Database, input: {
   confirm?: string;
   proof: OwnerProof;
   op: string;
+  /** CC-Owner V2 L6 : approbation d’une demande close_cycle — clôture DOUCE liée. */
+  binding?: OwnerRequestBinding;
+  /** Seq de la demande close elle-même : exclue du comptage et de la garde. */
+  excludeRequestSeq?: number | null;
   now?: () => Date;
 }): Promise<CycleCloseResult> {
   if (input.proof.kind === 'delegated') {
@@ -82,6 +99,19 @@ export async function closeCycle(db: D1Database, input: {
   if (SYSTEM_CYCLES.test(cycleId)) {
     throw new CollabStoreError('CYCLE_CLOSE_SYSTEM_INVALID',
       'Cycle système (registre owner, alarmes mémoire, tâches du coordinateur) : la clôture ne s’applique qu’aux cycles de travail.');
+  }
+  // CC-Owner V2 L6 : clôture exécutable DOUCE liée — force n’est pas un
+  // paramètre approuvable (validateParams l’a déjà refusé ; défense en
+  // profondeur), previous_seq est toujours null et la demande close elle-même
+  // (excludeRequestSeq) est exclue du comptage et de la garde.
+  if (input.binding && input.force === true) {
+    throw new CollabStoreError('EXECUTABLE_REQUEST_INVALID',
+      'La clôture demandée par un agent est douce (cycle_id seul) : force, reason et confirm ne sont pas approuvables.');
+  }
+  if (input.binding) assertBindingPrecondition(input.binding, null);
+  const excludeSeq = input.excludeRequestSeq ?? null;
+  if (input.binding && (excludeSeq === null || !Number.isSafeInteger(excludeSeq) || excludeSeq <= 0)) {
+    throw new CollabStoreError('INVALID_REQUEST_ID', 'Clôture exécutable : seq de la demande à exclure du comptage requise.');
   }
   await ensureSchema(db);
   const force = input.force === true;
@@ -96,7 +126,11 @@ export async function closeCycle(db: D1Database, input: {
   // A05 : le contrôle d'idempotence précède toute garde — le rejeu de la même
   // soumission (même op) renvoie l'événement original (duplicate), même sur un
   // cycle déjà clos ; CYCLE_ALREADY_CLOSED ne vise qu'une clôture distincte.
-  const key = 'owner:cycle-close:' + cycleId + ':' + input.op;
+  // L6 lié : clé de liaison ; garde de famille ?5 sur les actes close du cycle.
+  const key = input.binding
+    ? bindingKey('owner:cycle-close:' + cycleId, input.binding)
+    : 'owner:cycle-close:' + cycleId + ':' + input.op;
+  const bound = input.binding ? bindingGuard(input.binding, 'owner:cycle-close:' + cycleId + ':') : null;
   const replay = await db.prepare('SELECT * FROM events WHERE idempotency_key = ?1').bind(key)
     .first<StoredStoreEvent>();
   if (replay) {
@@ -119,8 +153,12 @@ export async function closeCycle(db: D1Database, input: {
     }
     // La borne du comptage est lue AVANT les demandes : une demande déposée
     // ensuite fait échouer la garde (refuse-soft atomique), jamais passer.
-    const lastRequestSeq = (await db.prepare(LAST_REQUEST_SEQ_SQL).bind(cycleId).first<{ n: number }>())?.n ?? -1;
-    const pending = (await listCyclePendingRequests(db, cycleId)).filter(request => request.state === 'pending');
+    // L6 : exclusion symétrique — la borne ET le comptage ignorent la demande close.
+    const lastRequestSeq = input.binding
+      ? ((await db.prepare(LAST_REQUEST_SEQ_SQL_EXCLUDING).bind(cycleId, excludeSeq as number).first<{ n: number }>())?.n ?? -1)
+      : ((await db.prepare(LAST_REQUEST_SEQ_SQL).bind(cycleId).first<{ n: number }>())?.n ?? -1);
+    const pending = (await listCyclePendingRequests(db, cycleId))
+      .filter(request => request.state === 'pending' && (excludeSeq === null || request.seq !== excludeSeq));
     if (!force && pending.length > 0) {
       throw new CollabStoreError('CYCLE_CLOSE_PENDING_REQUESTS',
         pending.length + ' demande(s) d’agent encore en attente sur ce cycle (la plus récente : seq '
@@ -133,16 +171,24 @@ export async function closeCycle(db: D1Database, input: {
         key,
         payload: { action: 'close_cycle', cycle_id: cycleId, force,
           pending_requests: pending.length, active_tasks: activeTasks,
-          ...(force ? { reason } : {}) },
+          ...(force ? { reason } : {}), ...(input.binding ? bindingPayload(input.binding) : {}) },
         proof: input.proof,
         // Gardes dans le lot : cycle ouvert, aucune tâche active, et (douce)
         // aucune demande déposée depuis le comptage. Force : les demandes ne
         // bloquent plus, le compte reste journalisé.
-        extraGuard: {
+        extraGuard: bound ? {
+          // L6 lié : garde de liaison (?4..?6), ouverture et tâches (?2),
+          // refuse-soft atomique avec exclusion symétrique (?7 borne, ?8 exclue).
+          sql: [CYCLE_OPEN_GUARD, ACTIVE_TASKS_GUARD, '(' + bound.sql + ')', LAST_REQUEST_SEQ_GUARD_EXCLUDING].join(' AND '),
+          binds: [...bound.binds, lastRequestSeq, excludeSeq as number],
+        } : {
           sql: [CYCLE_OPEN_GUARD, ACTIVE_TASKS_GUARD, force ? '1 = 1' : LAST_REQUEST_SEQ_GUARD].join(' AND '),
           binds: force ? [] : [lastRequestSeq],
         },
-        sideEffects: () => [db.prepare("UPDATE cycles SET status = 'closed' WHERE cycle_id = ?1").bind(cycleId)],
+        sideEffects: key => [
+          ...(input.binding ? bindingStatements(db, input.binding, input.proof, key, input.now) : []),
+          db.prepare("UPDATE cycles SET status = 'closed' WHERE cycle_id = ?1").bind(cycleId),
+        ],
         now: input.now,
       });
       return { ...result, cycle_id: cycleId, force, pending_requests: pending.length, active_tasks: activeTasks };
