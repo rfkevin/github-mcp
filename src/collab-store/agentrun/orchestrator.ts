@@ -12,6 +12,7 @@
  * AGENT_RUNS_ENABLED n'est pas exactement « true » (en plus de HALT, vérifié par
  * le moteur à chaque écriture).
  */
+import { planAgentRuns } from './plan';
 import { runStep, type EngineDeps, type ModelClient, type ToolHost } from './engine';
 import { meteredDb } from './metered-db';
 import { ensureAgentRunSchema } from './schema';
@@ -57,6 +58,8 @@ export interface AgentRunEnv {
   AGENT_RUN_DAILY_REQUESTS?: string;
   AGENT_RUN_DAILY_ROWS?: string;
   AGENT_RUN_DAILY_GB_S?: string;
+  /** 7c-2 : participants volontaires du canal API (plan.ts) ; vide par défaut = aucune création. */
+  AGENT_RUN_PARTICIPANTS?: string;
 }
 
 export type QuotaKind = 'do_requests' | 'rows_written' | 'do_gb_s';
@@ -251,7 +254,7 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
 
 export type WakeFn = (leaseKey: string, runId: string) => Promise<WakeResult>;
 
-export interface PassResult { delivered: number; failed: number; rescued: number; skipped?: 'disabled' }
+export interface PassResult { delivered: number; failed: number; rescued: number; planned?: number; skipped?: 'disabled' }
 
 /**
  * Livre l'outbox de réveil : réclamation par CAS avec expiration (un livreur à la
@@ -338,9 +341,17 @@ export async function rescueStalledRuns(db: D1Database, input: { now: number; wa
 /** Passage complet appelé par le webhook ou le Cron : no-op sans écriture si désactivé. */
 export async function agentRunPass(db: D1Database | undefined, env: AgentRunEnv, input: { now: number; deliverer: string; wake: WakeFn | null }): Promise<PassResult> {
   if (!agentRunsEnabled(env) || !db || !input.wake) return { delivered: 0, failed: 0, rescued: 0, skipped: 'disabled' };
+  // 7c-2 : création depuis les décisions du contrôleur AVANT la livraison (l'outbox du même lot part dans ce passage).
+  // Une panne de planification ne bloque ni la livraison ni le secours.
+  let planned = 0;
+  try {
+    planned = (await planAgentRuns(db, env, { now: input.now })).created;
+  } catch {
+    planned = 0;
+  }
   const { delivered, failed } = await deliverWakeups(db, { now: input.now, deliverer: input.deliverer, wake: input.wake });
   const rescued = await rescueStalledRuns(db, { now: input.now, wake: input.wake });
-  return { delivered, failed, rescued };
+  return { delivered, failed, rescued, planned };
 }
 
 // ---------------------------------------------------------------- dépendances par défaut (7b)

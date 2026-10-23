@@ -13,8 +13,9 @@
  * store, redactEventsFor) et que le dépôt autorisé par l'hôte.
  */
 import { CollabStore } from '../store/collab-store';
-import { ToolRefused, type ToolCall, type ToolHost, type ToolSpec } from './engine';
+import { ToolRefused, type LookupResult, type ToolCall, type ToolHost, type ToolSpec } from './engine';
 import type { ToolSchema } from './workers-ai-model';
+import { createStoreWriteTools, WRITE_TOOL_SCHEMAS, type WriteToolName } from './store-tools';
 
 /** Lectures GitHub utilisées par l'hôte (sous-ensemble des clients existants, lecture seule). */
 export interface GitHubReads {
@@ -42,6 +43,8 @@ export type ReadToolName = 'store_context' | 'store_delta' | 'github_read_file' 
 /** Allowlist par type de tâche, figée en code ; un type inconnu n'a aucun outil. */
 export const READ_TOOLS_BY_KIND: Readonly<Record<string, readonly ReadToolName[]>> = Object.freeze({
   research: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs'],
+  // 7c-2 : réponse à une question adressée (créée par le contrôleur, plan.ts).
+  answer: ['store_context', 'store_delta'],
   planning: ['store_context', 'store_delta', 'github_read_file'],
   status: ['store_context', 'store_delta', 'github_check_runs'],
 });
@@ -54,6 +57,8 @@ export interface ReadToolHostOptions {
   /** Unique dépôt lisible par l'exécution (ex. rfkevin/github-mcp) ; null = aucun outil GitHub. */
   repository: string | null;
   github: GitHubReads | null;
+  /** 7c-2 : ajoute les écritures store de WRITE_TOOLS_BY_KIND (clarify, task.status non-verdict). Absent = lecture seule. */
+  storeWrites?: boolean;
 }
 
 interface RunScope { cycle_id: string; participant_id: string }
@@ -73,6 +78,8 @@ function stringArg(args: Record<string, unknown>, name: string, pattern: RegExp)
 }
 
 export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { schemas(taskKind: string): ToolSchema[] } {
+  const writes = options.storeWrites ? createStoreWriteTools(options.db) : null;
+  const writeNames = (taskKind: string): readonly WriteToolName[] => writes ? writes.names(taskKind) : [];
   const allowed = (taskKind: string): readonly ReadToolName[] => {
     const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
     // Sans dépôt ou client GitHub, les outils GitHub ne sont pas proposés du tout.
@@ -83,7 +90,8 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     if (!run) throw new ToolRefused('unknown_run');
     return run;
   }
-  async function execute(call: ToolCall, ctx: { run_id: string }): Promise<unknown> {
+  async function execute(call: ToolCall, ctx: { run_id: string; effect_key?: string }): Promise<unknown> {
+    if (writes && (WRITE_TOOL_SCHEMAS.some(schema => schema.name === call.name))) return writes.execute(call, ctx);
     const { cycle_id, participant_id } = await scope(ctx.run_id);
     const args = call.args ?? {};
     const store = new CollabStore(options.db);
@@ -121,15 +129,21 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   }
   return {
     spec(taskKind: string, name: string): ToolSpec | null {
-      return (allowed(taskKind) as readonly string[]).includes(name) ? { name, effect: 'read' } : null;
+      if ((allowed(taskKind) as readonly string[]).includes(name)) return { name, effect: 'read' };
+      if ((writeNames(taskKind) as readonly string[]).includes(name)) return { name, effect: 'write' };
+      return null;
     },
     list(taskKind: string): string[] {
-      return [...allowed(taskKind)];
+      return [...allowed(taskKind), ...writeNames(taskKind)];
     },
     schemas(taskKind: string): ToolSchema[] {
-      const names = new Set<string>(allowed(taskKind));
-      return READ_TOOL_SCHEMAS.filter(schema => names.has(schema.name));
+      const names = new Set<string>([...allowed(taskKind), ...writeNames(taskKind)]);
+      return [...READ_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
     },
     execute,
+    // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.
+    async lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult> {
+      return writes ? writes.lookup(call, ctx) : null;
+    },
   };
 }

@@ -155,3 +155,35 @@ garde le modèle simulé de 7b. Aucun effet externe : tous les outils de 7c-1 so
 Tests : `test/collab-store/agentrun/l7c1-model-tools.spec.ts` (16). Contre-épreuves locales : retirer le règlement des
 quotas, l'allowlist par type de tâche, le filtrage des outils décrits au modèle ou la relecture du périmètre depuis le
 `run_id` fait échouer au moins un test. Non-régression : 21 tests 7a et 16 tests 7b passent.
+
+## Incrément 7c-2 — écritures store sûres et création d'exécutions (plan de clôture v1.1, store seq 719)
+
+Toujours éteint : en plus de `AGENT_RUNS_ENABLED="true"` et `AGENT_RUN_MODEL`, la création automatique exige une liste
+explicite `AGENT_RUN_PARTICIPANTS` (vide par défaut = aucune lecture, aucune création).
+
+- **Écritures autorisées** `createStoreWriteTools` (`store-tools.ts`), figées par type de tâche (`WRITE_TOOLS_BY_KIND`) :
+  `answer` → `store_answer` (clarify.answer), `planning` → `store_ask` (clarify.ask), `status` → `store_task_status`
+  (task.status limité à `in_progress` / `blocked`). Décision coordinateur : `evidence.add` reste dans
+  `API_AGENT_FORBIDDEN` (lot L3b), 7c-2 ne l'affaiblit pas ; `review`, `verified`, `done` et tout verdict D12 restent
+  hors du canal API (refus en code avant le store, puis `assertNotD12Verdict` du moteur).
+- **Contrat d'hôte 7a** : op_id dérivé de la clé d'effet du moteur (`effectOpId` :
+  `{client canonique}:{cycle}:api-{32 premiers hex de la clé}:1`, grammaire stricte du store, jamais un UUID) ; rejeu =
+  événement original (`duplicate`) ; `lookup` cherche l'événement par `idempotency_key` avant tout réessai (append
+  atomique : absent = pas écrit). Refus typé du store ou du contrat (`TASK_FORBIDDEN`, `CLARIFY_ANSWER_FORBIDDEN`,
+  `CYCLE_CLOSED`, quota…) = `ToolRefused` certain ; toute autre erreur reste incertaine (ambiguous puis lookup). STALE :
+  au plus 3 réessais à la révision courante. Cycle et participant relus depuis le `run_id` ; rôle d'événement
+  `api-agent` (provenance visible dans le journal).
+- **Hôte combiné** : `createReadToolHost({ …, storeWrites: true })` ajoute ces écritures (`effect: 'write'`, avec
+  `lookup`) ; sans l'option, l'hôte reste en lecture seule (comportement 7c-1). `engineFor` l'active ; consigne commune
+  mise à jour.
+- **Création depuis le contrôleur** `planAgentRuns` (`plan.ts`), appelé par `agentRunPass` AVANT la livraison de
+  l'outbox (une panne de planification ne bloque ni livraison ni secours) : pour chaque participant volontaire et chaque
+  cycle ouvert (au plus 20), `previewNextActions` ; seules les décisions `answer_question` (question adressée, X13)
+  créent une exécution de type `answer`, `task_id` vide, coût 0, 6 étapes et 24 000 jetons au plus, échéance 15 min.
+  `run_id` déterministe (cycle, participant, question) : un passage rejoué ne crée rien de plus ; `createRun` garde ses
+  refus (HALT, bail chat, exécution active). Aucune décision d'implémentation, de revue, de test, de fusion ou de phase
+  ne crée d'exécution API.
+
+Tests : `test/collab-store/agentrun/l7c2-store-writes.spec.ts` (14). Contre-épreuves locales : retirer la limite
+`in_progress`/`blocked`, le filtre `answer_question` du planificateur, le réessai STALE ou la conversion des refus typés
+en `ToolRefused` fait échouer au moins un test. Non-régression : suites 7a, 7b et 7c-1 inchangées et vertes.

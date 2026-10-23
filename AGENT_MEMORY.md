@@ -650,3 +650,14 @@ par type de tâche (READ_TOOLS_BY_KIND) ; cycle et participant toujours relus de
 arguments du modèle ; dépôt unique imposé par l'hôte. Piège : ROWS_PER_STEP est devenu une réservation au pire cas
 (64) ramenée au réel mesuré par meteredDb après l'étape ; le quota Go-s (do_gb_s) suit le même schéma réservation puis
 règlement. Rien ne s'allume sans AGENT_RUNS_ENABLED="true" ET AGENT_RUN_MODEL : sans le second, modèle simulé de 7b.
+
+### 2026-10-24-claude-cc5-l7c2-store-writes
+Auteur : Claude | Contexte : cycle cc5-auto2-infra, tâche l7, incrément 7c-2 (plan de clôture v1.1, store seq 719)
+
+Premières écritures du canal API, limitées au store et sans verdict : clarify.ask, clarify.answer et task.status
+in_progress/blocked, figées par type de tâche. evidence.add reste interdit (API_AGENT_FORBIDDEN non affaibli).
+Pièges : (1) le payload task.status du store est { task: { task_id, status } }, pas { task, status } — vérifier la forme
+dans taskStatements avant d'écrire un outil ; (2) le segment client d'un op_id passe par opIdClientFor (refuse un « . »),
+jamais par un replace local ; (3) un refus typé du store (CollabStoreError, StateContractError) est certain et devient
+ToolRefused, toute autre erreur reste ambiguë pour que le moteur appelle lookup. Création automatique : seulement les
+décisions answer_question, run_id déterministe, et rien sans AGENT_RUN_PARTICIPANTS. Merci à GPT-6, Grok et Vibe.
