@@ -13,6 +13,7 @@
  * le moteur à chaque écriture).
  */
 import { runStep, type EngineDeps, type ModelClient, type ToolHost } from './engine';
+import { meteredDb } from './metered-db';
 import { ensureAgentRunSchema } from './schema';
 
 /** Recul d'une alarme après `busy` : 5 s, 10 s, 20 s… plafonné à 300 s. */
@@ -31,23 +32,43 @@ export const PASS_LIMIT = 10;
 export const DEFAULT_DAILY_REQUESTS = 20_000;
 export const DEFAULT_DAILY_ROWS = 20_000;
 export const FREE_DAILY_CEILING = 100_000;
-/** Estimation pessimiste des lignes D1 écrites par une étape du moteur (réclamation, décision, effets, checkpoint). */
-export const ROWS_PER_STEP = 12;
+/**
+ * Réservation de lignes écrites AVANT une étape (pire cas : réclamation, décision,
+ * jusqu'à MAX_TOOL_CALLS_PER_STEP effets en trois transitions, checkpoint, arrêt,
+ * index compris). 7c-1 : après l'étape, la réservation est ramenée au réel mesuré
+ * (meta.rows_written des requêtes D1 du moteur, metered-db.ts) plus l'estimation
+ * fixe des écritures du stockage du Durable Object (DO_ROWS_PER_ALARM).
+ */
+export const ROWS_PER_STEP = 64;
+/** Écritures du stockage SQLite de l'objet par alarme (copie locale « busy », alarme), estimation fixe. */
+export const DO_ROWS_PER_ALARM = 3;
+/**
+ * Troisième quota Durable Objects Free : durée facturée en Go-s (objet de 128 Mo).
+ * Réservation avant l'étape au pire cas d'une étape longue (125 s, modèle et outils
+ * bornés), puis ramenée à la durée mesurée de l'alarme, arrondie au Go-s supérieur.
+ */
+export const GB_S_PER_STEP = 16;
+export const DO_MEMORY_GB = 0.128;
+export const DEFAULT_DAILY_GB_S = 10_000;
+export const FREE_DAILY_GB_S = 13_000;
 
 export interface AgentRunEnv {
   AGENT_RUNS_ENABLED?: string;
   AGENT_RUN_DAILY_REQUESTS?: string;
   AGENT_RUN_DAILY_ROWS?: string;
+  AGENT_RUN_DAILY_GB_S?: string;
 }
+
+export type QuotaKind = 'do_requests' | 'rows_written' | 'do_gb_s';
 
 export function agentRunsEnabled(env: AgentRunEnv): boolean {
   return env.AGENT_RUNS_ENABLED === 'true';
 }
 
-function dailyLimit(raw: string | undefined, fallback: number): number {
+function dailyLimit(raw: string | undefined, fallback: number, ceiling = FREE_DAILY_CEILING): number {
   const value = Number(raw);
-  if (!Number.isInteger(value) || value < 0) return fallback;
-  return Math.min(value, FREE_DAILY_CEILING);
+  if (raw === undefined || !Number.isInteger(value) || value < 0) return fallback;
+  return Math.min(value, ceiling);
 }
 
 export function utcDay(now: number): string {
@@ -55,13 +76,24 @@ export function utcDay(now: number): string {
 }
 
 /** Réserve `amount` unités d'un quota du jour, atomiquement, sans jamais dépasser le plafond. */
-export async function consumeQuota(db: D1Database, kind: 'do_requests' | 'rows_written', amount: number, limit: number, now: number): Promise<boolean> {
+export async function consumeQuota(db: D1Database, kind: QuotaKind, amount: number, limit: number, now: number): Promise<boolean> {
   const result = await db.prepare([
     'INSERT INTO agent_run_quota (day, kind, used) SELECT ?1, ?2, ?3 WHERE ?3 <= ?4',
     'ON CONFLICT(day, kind) DO UPDATE SET used = agent_run_quota.used + excluded.used',
     '  WHERE agent_run_quota.used + excluded.used <= ?4',
   ].join(' ')).bind(utcDay(now), kind, amount, limit).run();
   return result.meta.changes === 1;
+}
+
+/**
+ * 7c-1 : ramène une réservation au réel mesuré, sur le jour de la réservation.
+ * Le réel peut dépasser la réservation (l'étape a déjà eu lieu) : le compteur le
+ * reflète et bloque les étapes suivantes ; il ne descend jamais sous zéro.
+ */
+export async function settleQuota(db: D1Database, kind: QuotaKind, day: string, reserved: number, actual: number): Promise<void> {
+  const delta = Math.max(0, Math.ceil(actual)) - reserved;
+  if (delta === 0) return;
+  await db.prepare('UPDATE agent_run_quota SET used = MAX(0, used + ?3) WHERE day = ?1 AND kind = ?2').bind(day, kind, delta).run();
 }
 
 async function journal(db: D1Database, now: number, kind: string, runId: string, detail: string): Promise<void> {
@@ -90,7 +122,8 @@ export interface OrchestratorDeps {
   /** L'objet est bien celui de cette clé de bail (idFromName(lease_key)). */
   ownsLease: (leaseKey: string) => boolean;
   nowMs: () => number;
-  engine: (workerId: string) => Omit<EngineDeps, 'workerId'>;
+  /** Dépendances du moteur pour une exécution ; `db` = base mesurée de l'étape (7c-1), à utiliser pour toute écriture. */
+  engine: (runId: string, db?: D1Database) => Omit<EngineDeps, 'workerId'>;
   workerId: () => string;
 }
 
@@ -166,22 +199,36 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
   }
   const requestsOk = await consumeQuota(deps.db, 'do_requests', 1, dailyLimit(deps.env.AGENT_RUN_DAILY_REQUESTS, DEFAULT_DAILY_REQUESTS), now);
   const rowsOk = requestsOk && await consumeQuota(deps.db, 'rows_written', ROWS_PER_STEP, dailyLimit(deps.env.AGENT_RUN_DAILY_ROWS, DEFAULT_DAILY_ROWS), now);
-  if (!rowsOk) {
-    await journal(deps.db, now, 'quota_exhausted', runId, requestsOk ? 'rows_written' : 'do_requests');
+  const gbOk = rowsOk && await consumeQuota(deps.db, 'do_gb_s', GB_S_PER_STEP,
+    dailyLimit(deps.env.AGENT_RUN_DAILY_GB_S, DEFAULT_DAILY_GB_S, FREE_DAILY_GB_S), now);
+  if (!gbOk) {
+    // Une réservation de lignes déjà faite est rendue : l'étape n'a pas lieu.
+    if (rowsOk) await settleQuota(deps.db, 'rows_written', utcDay(now), ROWS_PER_STEP, 0);
+    await journal(deps.db, now, 'quota_exhausted', runId, !requestsOk ? 'do_requests' : !rowsOk ? 'rows_written' : 'do_gb_s');
     const next = nowMs + QUOTA_RETRY_S * 1000;
     await scheduleAt(deps, runId, run.lease_key, next);
     return { action: 'quota_wait', next_at: next };
   }
+  // 7c-1 : lignes D1 mesurées pendant l'étape, durée mesurée pour le quota Go-s.
+  const metered = meteredDb(deps.db);
+  const startedMs = deps.nowMs();
+  const settleStep = async () => {
+    const day = utcDay(now);
+    await settleQuota(deps.db, 'rows_written', day, ROWS_PER_STEP, metered.rowsWritten() + DO_ROWS_PER_ALARM);
+    await settleQuota(deps.db, 'do_gb_s', day, GB_S_PER_STEP, Math.max(0, deps.nowMs() - startedMs) / 1000 * DO_MEMORY_GB);
+  };
   let outcome: string;
   try {
-    outcome = (await runStep(deps.db, runId, { ...deps.engine(runId), workerId: deps.workerId() })).outcome;
+    outcome = (await runStep(metered.db, runId, { ...deps.engine(runId, metered.db), workerId: deps.workerId() })).outcome;
   } catch (error) {
     // Panne (D1, fournisseur) : jamais d'alarme perdue, nouvel essai borné par le moteur (MAX_STEP_ATTEMPTS).
+    await settleStep();
     await journal(deps.db, now, 'step_error', runId, error instanceof Error ? error.message : String(error));
     const next = nowMs + ERROR_DELAY_S * 1000;
     await scheduleAt(deps, runId, run.lease_key, next);
     return { action: 'error', next_at: next };
   }
+  await settleStep();
   if (outcome === 'stepped') {
     await deps.slot.put('busy', 0);
     await scheduleAt(deps, runId, run.lease_key, deps.nowMs());

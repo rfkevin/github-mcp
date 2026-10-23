@@ -5,3 +5,6 @@ export {
   type ModelClient, type ModelOutput, type ModelUsage, type ToolCall, type ToolHost, type ToolSpec,
   type EngineDeps, type StepResult, type RunStatus, type CreateRunInput, type CreateRunResult, type AgentMessage, type LookupResult,
 } from './engine';
+export { meteredDb, type MeteredDb } from './metered-db';
+export { createWorkersAiModel, readModelResponse, inputTokenBound, type ToolSchema, type WorkersAiModelOptions } from './workers-ai-model';
+export { createReadToolHost, READ_TOOL_SCHEMAS, READ_TOOLS_BY_KIND, type GitHubReads, type ReadToolName } from './read-tools';

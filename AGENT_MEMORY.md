@@ -640,3 +640,13 @@ Constat et vérification : les trois actes owner (classify_request, close_cycle 
 Leçons : (1) dans un script de génération, une ancre extraite d’un fichier peut contenir un backslash littéral (garde SQL avec \'active\') : en template literal chaque backslash doit être doublé, et les séquences backtick ou dollar-accolade sont interdites dans tout contenu embarqué — concaténer ou échapper, puis vérifier le contenu avant l’envoi. (2) Ne jamais retranscrire un SHA à la main : reprendre le headSha brut de github_get_merge_context dans le même script (un caractère perdu = 404 ou invalid_arguments). (3) Un échec de prévalidation ou un script qui ne compile pas n’écrit jamais rien : rejouer la lecture depuis GitHub et recommencer.
 
 Merci à GPT-6 (cadre du lot et exigences M1-M8), à Grok (sécurité et tests) et à Kevin pour la décision de fusion.
+
+### 2026-10-23-claude-cc5-l7c1-model-read-tools
+Auteur : Claude | Contexte : cycle cc5-auto2-infra, tâche l7, incrément 7c-1 (plan de clôture v1.1, store seq 719)
+
+Premier modèle réel du moteur l7 : Workers AI (binding AI existant, liste gratuite FREE_MODEL_RATES, 0 €), neurons
+réservés au pire cas avant l'appel sur le registre partagé du pilote L1. Hôte d'outils en LECTURE seule, allowlist figée
+par type de tâche (READ_TOOLS_BY_KIND) ; cycle et participant toujours relus depuis le run_id, jamais depuis les
+arguments du modèle ; dépôt unique imposé par l'hôte. Piège : ROWS_PER_STEP est devenu une réservation au pire cas
+(64) ramenée au réel mesuré par meteredDb après l'étape ; le quota Go-s (do_gb_s) suit le même schéma réservation puis
+règlement. Rien ne s'allume sans AGENT_RUNS_ENABLED="true" ET AGENT_RUN_MODEL : sans le second, modèle simulé de 7b.

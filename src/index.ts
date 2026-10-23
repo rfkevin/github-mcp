@@ -15,7 +15,7 @@ import { agentRunPass } from './collab-store/agentrun/orchestrator';
 import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './collab-store/agentrun/object';
 
 // CC-5 l7 7b — orchestrateur des exécutions d'agents (binding AGENT_RUN, env cc3-test seulement ; inactif par défaut).
-export { AgentRunObject } from './collab-store/agentrun/object';
+export { AgentRunObject } from './agent-run-object';
 
 /** Passage de l'orchestrateur (outbox de réveil + scan de secours) ; no-op sans écriture si AGENT_RUNS_ENABLED n'est pas « true ». */
 function scheduleAgentRunPass(env: unknown, ctx: ExecutionContext): void {
