@@ -446,7 +446,7 @@ describe('CC-4 A3 — /owner : matrice des exécuteurs et bouton de sonde (HTTP)
     await approve(db, await fileRegistration(db, registration(endpointId)));
 
     const view = await (await post({ action: 'view', owner_secret: SECRET })).text();
-    expect(view).toContain('<h2>Exécuteurs</h2>');
+    expect(view).toContain('<h2 id="executors">Exécuteurs</h2>');
     expect(view).toContain(endpointId);
     expect(view).toContain('outils : llm.generate · fournisseurs : workers-ai · jetons ≤ 512');
     expect(view).not.toContain(SECRET);

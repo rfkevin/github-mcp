@@ -179,3 +179,21 @@ export async function rethrowIfCycleClosed(db: D1Database, cycleId: string, erro
   }
   throw error;
 }
+
+/**
+ * CC-Owner V2 L4 : synthèse lecture seule des statuts de cycle pour le bandeau
+ * /owner. Même frontière que la clôture : les cycles système (registre owner,
+ * alarmes mémoire, tâches du coordinateur) ne comptent pas ; tout statut autre
+ * que open/closed est ignoré. Aucune écriture.
+ */
+export async function cycleStatusCounts(db: D1Database): Promise<{ open: number; closed: number }> {
+  await ensureSchema(db);
+  const { results } = await db.prepare('SELECT cycle_id, status FROM cycles').all<{ cycle_id: string; status: string }>();
+  const counts = { open: 0, closed: 0 };
+  for (const row of results) {
+    if (SYSTEM_CYCLES.test(row.cycle_id)) continue;
+    if (row.status === 'open') counts.open += 1;
+    else if (row.status === 'closed') counts.closed += 1;
+  }
+  return counts;
+}

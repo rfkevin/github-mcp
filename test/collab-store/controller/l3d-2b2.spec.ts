@@ -101,8 +101,9 @@ describe('CC-5 L3d 2b-2a — section « À relayer » de /owner', () => {
     const html = dashboardPage({ mode: 'secret', secret: 'fixture-secret-0123456789abcdefghijkl' }, data([
       { cycle_id: 'c', actor: 'x', label: '<b>X</b>', task_id: 'l0', action: 'implement', message: 'faire <script>alert(1)</script>', since: 1700000000 },
     ]));
-    const section = html.slice(html.indexOf('<h2>À relayer'), html.indexOf('<h2>', html.indexOf('<h2>À relayer') + 4));
-    expect(section).toContain('<h2>À relayer (1)</h2>');
+    const relayStart = html.indexOf('<h2 id="relay">');
+    const section = html.slice(relayStart, html.indexOf('<h2', relayStart + 4));
+    expect(section).toContain('<h2 id="relay">À relayer (1)</h2>');
     expect(section).toContain('&#60;b&#62;X&#60;/b&#62;');
     expect(section).toContain('faire &#60;script&#62;');
     expect(section).toContain('2023-11-14 22:13 UTC');
@@ -226,6 +227,6 @@ describe('CC-5 L3d 2b-2a — /owner inchangé hors section (revue #174)', () => 
     for (const heading of ['Demandes en attente', 'Automatisation', 'Mandat coordinateur par cycle (CC-5)']) {
       expect(withRelay).toContain(heading);
     }
-    expect(withRelay.replace(/<h2>À relayer[\s\S]*?(?=<h2>)/, '')).toBe(without.replace(/<h2>À relayer[\s\S]*?(?=<h2>)/, ''));
+    expect(withRelay.replace(/<h2 id="relay">À relayer[\s\S]*?(?=<h2)/, '')).toBe(without.replace(/<h2 id="relay">À relayer[\s\S]*?(?=<h2)/, ''));
   });
 });

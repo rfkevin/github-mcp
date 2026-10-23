@@ -20,7 +20,7 @@ import { parseDailyCap, parseNeuronBudget, probeEndpoint, providerAdapterFactory
 import { runOwnerTrial } from './trials';
 import { listActiveCoordinators } from './coordinators';
 import { appointCycleCoordinator } from './delegation-execution';
-import { closeCycle } from './close';
+import { closeCycle, cycleStatusCounts } from './close';
 import { classifyRequest } from './classify';
 import { setExecutorNotes } from './executor-notes';
 import { listIdentityFamilies } from '../identity/families';
@@ -59,7 +59,7 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator', 'close_cycle', 'classify_request'] as const;
+export const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator', 'close_cycle', 'classify_request'] as const;
 
 /** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
 async function dashboardData(db: D1Database, before?: number) {
@@ -76,6 +76,8 @@ async function dashboardData(db: D1Database, before?: number) {
     executors: await capabilityMatrix(db),
     // CC-5 l3d 2b-2a : messages à relayer (lecture seule ; une panne n'empêche jamais la page).
     relay: await relayLines(db).catch(() => []),
+    // CC-Owner V2 L4 : synthèse des statuts de cycle pour le bandeau (lecture seule).
+    cycles: await cycleStatusCounts(db),
   };
 }
 

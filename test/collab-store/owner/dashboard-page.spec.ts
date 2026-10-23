@@ -42,10 +42,10 @@ function dataWith(overrides: {
 /** Le bandeau précède la file, qui précède Automatisation, Coordinateurs puis Exécuteurs. */
 function assertOrder(html: string): void {
   const banner = html.indexOf('Automatisation');
-  const fileHeading = html.indexOf('<h2>Demandes en attente');
-  const automation = html.indexOf('<h2>Automatisation</h2>');
-  const coordinators = html.indexOf('<h2>Coordinateurs actifs</h2>');
-  const executors = html.indexOf('<h2>Exécuteurs</h2>');
+  const fileHeading = html.indexOf('Demandes en attente');
+  const automation = html.indexOf('<h2 id="automation">Automatisation</h2>');
+  const coordinators = html.indexOf('<h2 id="coordinators">Coordinateurs actifs</h2>');
+  const executors = html.indexOf('<h2 id="executors">Exécuteurs</h2>');
   expect(banner).toBeGreaterThanOrEqual(0);
   expect(fileHeading).toBeGreaterThan(banner);
   expect(automation).toBeGreaterThan(fileHeading);
@@ -65,7 +65,7 @@ describe('CC-AUTO T1 — rendu du tableau de bord /owner', () => {
   it('bandeau : compteur, ACTIVE vs HALTÉE, budget affiché seulement si présent', () => {
     const active = dashboardPage(config, dataWith({ total: 3 }));
     expect(active).toContain('<strong>3</strong> demande(s) en attente · Automatisation ACTIVE</p>');
-    const bannerActive = active.slice(0, active.indexOf('<h2>Demandes en attente'));
+    const bannerActive = active.slice(0, active.indexOf('Demandes en attente'));
     expect(bannerActive).not.toContain('class="halt"');
     expect(bannerActive).not.toContain('Budget restant');
     expect(active).not.toContain('Automatisation HALTÉE');
@@ -75,7 +75,7 @@ describe('CC-AUTO T1 — rendu du tableau de bord /owner', () => {
       budget: { scope: 'global', limit_cents: 500, reserved_cents: 100, spent_cents: 150, remaining_cents: 250 },
     }));
     expect(halted).toContain('Automatisation HALTÉE · Budget restant 2.50 € / 5.00 €</p>');
-    const bannerHalted = halted.slice(0, halted.indexOf('<h2>Demandes en attente'));
+    const bannerHalted = halted.slice(0, halted.indexOf('Demandes en attente'));
     expect(bannerHalted).toContain('class="halt"');
     expect(bannerHalted).toContain('urgence posé');
     expect(bannerHalted).toContain('Budget restant 2.50 € / 5.00 €');
@@ -88,7 +88,7 @@ describe('CC-AUTO T1 — rendu du tableau de bord /owner', () => {
       const html = dashboardPage(config, dataWith({ halted }));
       const toggleForms = (html.match(/name="action" value="(halt|resume)"/g) ?? []).length;
       expect(toggleForms, 'halted=' + String(halted)).toBe(1);
-      const banner = html.slice(0, html.indexOf('<h2>Demandes en attente'));
+      const banner = html.slice(0, html.indexOf('Demandes en attente'));
       expect(banner).not.toContain('<form');
       expect(banner).not.toContain('<button');
     }
