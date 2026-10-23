@@ -43,9 +43,14 @@ const STYLE = [
   'summary{cursor:pointer;min-height:44px;padding:10px 6px;overflow-wrap:anywhere}',
   'details.ep{border:1px solid #d8e2df;border-radius:8px;margin:8px 0;padding:2px 10px}',
   '@media (prefers-color-scheme:dark){details.ep{border-color:#2a3f3b}}',
+  '.toc{position:sticky;top:0;z-index:1;background:#f4f7f6;padding:6px 0;border-bottom:1px solid #d8e2df}',
+  '.toc ul{display:flex;flex-wrap:wrap;gap:2px 10px;list-style:none;margin:0;padding:0}',
+  '.toc a{display:inline-block;padding:0 6px;min-height:36px;line-height:36px}',
+  'h2{scroll-margin-top:56px}',
+  '@media (prefers-color-scheme:dark){.toc{background:#081210;border-color:#2a3f3b}}',
   '@media (max-width:600px){body{padding:12px}h2{margin-top:22px}',
   'table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}td,th{padding:6px;min-width:110px}td[colspan]{min-width:0}',
-  'input[type=text],input[type=password],select,button{min-height:44px;font-size:16px}textarea{font-size:16px;min-height:140px}',
+  'input[type=text],input[type=password],select,button{min-height:44px;font-size:16px}.toc a{min-height:44px;font-size:16px;line-height:44px}textarea{font-size:16px;min-height:140px}',
   'fieldset{padding:8px 10px}pre{max-height:180px}}',
 ].join('');
 
@@ -96,6 +101,8 @@ export interface DashboardData {
   executors?: CapabilityRow[];
   /** CC-5 l3d 2b-2a : décisions courantes du contrôleur à relayer aux agents (lecture seule). */
   relay?: RelayLine[];
+  /** CC-Owner V2 L4 : cycles de travail ouverts et clos (bandeau de synthèse, lecture seule). */
+  cycles?: { open: number; closed: number };
 }
 
 export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): string {
@@ -113,7 +120,8 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + (config.mode === 'secret' ? ' Le secret est redemandé à chaque action et n’est jamais conservé.' : '') + '</p>'
     + (data.message ? '<p class="msg' + (data.message.error ? ' err' : '') + '">' + escapeHtml(data.message.text) + '</p>' : '')
     + statusBanner(data)
-    + '<h2>Demandes en attente (' + data.pending.total + ')</h2>'
+    + ownerNav()
+    + '<h2 id="pending">Demandes en attente (' + data.pending.total + ')</h2>'
     + (rows ? '<table><tr><th>Demande</th><th>Participant</th><th>Résumé</th><th>Décision</th></tr>' + rows + '</table>'
       : '<p class="note">Aucune demande en attente.</p>')
     + (data.pending.next_before !== null
@@ -125,7 +133,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + relaySection(data.relay ?? [])
     + automationSection(data.halted ?? false, data.budget, secret)
     + coordinatorSection(data.coordinators ?? [])
-    + '<h2>Mandat coordinateur par cycle (CC-5)</h2>'
+    + '<h2 id="mandate">Mandat coordinateur par cycle (CC-5)</h2>'
     + '<p class="note">Nomination owner uniquement. Laisser participant et famille vides révoque le mandat. Époque attendue obligatoire.</p>'
     + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="appoint_cycle_coordinator">'
     + '<label>Cycle <input type="text" name="cycle_id" required></label>'
@@ -135,14 +143,14 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + secret + '<p><button type="submit">Nommer ou révoquer</button></p></form></fieldset>'
     + closeSection(secret)
     + executorSection(data.executors ?? [], secret)
-    + '<h2>Participants</h2>'
+    + '<h2 id="participants">Participants</h2>'
     + (participants ? '<table><tr><th>Identifiant</th><th>Libellé (affichage)</th><th>Statut</th></tr>' + participants + '</table>' : '<p class="note">Aucun participant.</p>')
     + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="register">'
     + '<label>Identifiant <input type="text" name="participant_id" required pattern="[A-Za-z0-9][A-Za-z0-9:_-]{0,127}"></label>'
     + '<label>Libellé <input type="text" name="display_label" required maxlength="80"></label>' + secret
     + '<p><button type="submit">Enregistrer le participant</button></p></form></fieldset>'
     + identityFamilySection(data.identityFamilies ?? [])
-    + '<h2>Clients OAuth associés</h2>'
+    + '<h2 id="clients">Clients OAuth associés</h2>'
     + (clients ? '<table><tr><th>Client OAuth</th><th>Participant</th><th>Événement</th></tr>' + clients + '</table>' : '<p class="note">Aucun client associé : tous les clients sont « unregistered ».</p>')
     + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="map">'
     + '<label>Client OAuth ou pseudonyme unregistered:… <input type="text" name="oauth_client_id" required maxlength="512"></label>'
@@ -234,13 +242,29 @@ function statusBanner(data: DashboardData): string {
   const budget = data.budget
     ? ' · Budget restant ' + euros(data.budget.remaining_cents) + ' / ' + euros(data.budget.limit_cents)
     : '';
-  return '<p><strong>' + data.pending.total + '</strong> demande(s) en attente · Automatisation '
-    + (halted ? 'HALTÉE' : 'ACTIVE') + budget + '</p>'
+  // CC-Owner V2 L4 : synthèse des statuts de cycle pour le bandeau (facultative).
+  const cycles = data.cycles ? ' · Cycles : ' + data.cycles.open + ' ouvert(s), ' + data.cycles.closed + ' clos' : '';
+    + (halted ? 'HALTÉE' : 'ACTIVE') + budget + cycles + '</p>'
     + (halted
       ? '<p class="halt">Arrêt d’urgence posé : aucune action automatique ne démarre.</p>'
       : '');
 }
 
+/**
+ * CC-Owner V2 L4 : navigation par ancres, collante (position: sticky) et sans
+ * aucun script (CSP inchangée) : chaque lien vise l'id d'une section rendue.
+ */
+function ownerNav(): string {
+  const links: Array<[string, string]> = [
+    ['#pending', 'Demandes'], ['#classified', 'Classées'], ['#relay', 'Relais'],
+    ['#automation', 'Automatisation'], ['#coordinators', 'Coordinateurs'], ['#mandate', 'Mandat'],
+    ['#close', 'Clôture'], ['#executors', 'Exécuteurs'], ['#participants', 'Participants'],
+    ['#families', 'Identités'], ['#clients', 'Clients'], ['#imports', 'Imports'], ['#phases', 'Phases'],
+  ];
+  return '<nav class="toc" aria-label="Ancres de la page owner"><ul>'
+    + links.map(([href, label]) => '<li><a href="' + href + '">' + label + '</a></li>').join('')
+    + '</ul></nav>';
+}
 /** CC-4 A2 : arrêt d'urgence et enveloppe budgétaire globale. */
 function automationSection(halted: boolean, budget: BudgetEnvelope | undefined, secret: string): string {
   const status = halted
@@ -253,14 +277,14 @@ function automationSection(halted: boolean, budget: BudgetEnvelope | undefined, 
       + euros(budget.reserved_cents) + '</td><td>' + euros(budget.spent_cents) + '</td><td>' + euros(budget.remaining_cents) + '</td></tr></table>'
       + '<p class="note">Enveloppe ' + escapeHtml(budget.scope) + ' : 0 € par défaut (Free d’abord). Toute dépense exige une enveloppe approuvée par le propriétaire.</p>'
     : '';
-  return '<h2>Automatisation</h2>' + status + button + '<h2>Budget</h2>' + money;
+  return '<h2 id="automation">Automatisation</h2>' + status + button + '<h2>Budget</h2>' + money;
 }
 
 function identityFamilySection(rows: Array<{ family_id: string; members: string[]; event_seq: number | null }>): string {
   const body = rows.map(row => '<tr><td><code>' + escapeHtml(row.family_id) + '</code></td><td>'
     + row.members.map(member => '<code>' + escapeHtml(member) + '</code>').join(', ')
     + '</td><td>' + (row.event_seq ?? '—') + '</td></tr>').join('');
-  return '<h2>Identités logiques</h2><p class="note">Les identifiants restent distincts dans l’historique, mais une même famille compte comme un seul principal D12 et partage les droits de reprise.</p>'
+  return '<h2 id="families">Identités logiques</h2><p class="note">Les identifiants restent distincts dans l’historique, mais une même famille compte comme un seul principal D12 et partage les droits de reprise.</p>'
     + (body ? '<table><tr><th>Identité</th><th>Identifiants historiques</th><th>Décision owner</th></tr>' + body + '</table>'
       : '<p class="note">Aucune équivalence configurée.</p>');
 }
@@ -269,7 +293,7 @@ function relaySection(rows: RelayLine[]): string {
   const body = rows.map(row => '<tr><td>' + escapeHtml(row.label) + '</td><td>' + escapeHtml(row.message) + '</td><td>'
     + (row.since === null ? '—' : escapeHtml(new Date(row.since * 1000).toISOString().slice(0, 16).replace('T', ' ')) + ' UTC')
     + '</td></tr>').join('');
-  return '<h2>À relayer (' + rows.length + ')</h2>'
+  return '<h2 id="relay">À relayer (' + rows.length + ')</h2>'
     + '<p class="note">Décisions courantes du contrôleur, en lecture seule : rien n’est envoyé ni exécuté. Copier le message à l’agent concerné.</p>'
     + (body ? '<table><tr><th>Pour</th><th>Message</th><th>Depuis</th></tr>' + body + '</table>' : '<p class="note">Rien à relayer.</p>');
 }
@@ -277,7 +301,7 @@ function relaySection(rows: RelayLine[]): string {
 function coordinatorSection(rows: Array<{ participant_id: string; display_label: string; event_seq: number | null }>): string {
   const body = rows.map(row => '<tr><td><code>' + escapeHtml(row.participant_id) + '</code></td><td>'
     + escapeHtml(row.display_label) + '</td><td>' + (row.event_seq ?? '—') + '</td></tr>').join('');
-  return '<h2>Coordinateurs actifs</h2>'
+  return '<h2 id="coordinators">Coordinateurs actifs</h2>'
     + '<p class="note">Ce rôle ne peut être accordé ou retiré que par une demande <code>grant_coordinator</code> approuvée ci-dessous.</p>'
     + (body ? '<table><tr><th>Participant</th><th>Libellé</th><th>Décision owner</th></tr>' + body + '</table>'
       : '<p class="note">Aucun coordinateur actif.</p>');
@@ -311,7 +335,7 @@ function executorStatusCounts(rows: CapabilityRow[]): string {
     if (row.status === 'active' || row.status === 'probe_required' || row.status === 'retired') counts[row.status] += 1;
     else counts.other += 1;
   }
-  return '<h2>Exécuteurs</h2>'
+  return '<h2 id="executors">Exécuteurs</h2>'
     + '<p class="note"><strong>' + rows.length + '</strong> endpoint(s) — actifs ' + counts.active
     + ' · à sonder ' + counts.probe_required + ' · retirés ' + counts.retired
     + (counts.other ? ' · autre ' + counts.other : '')
@@ -367,7 +391,7 @@ function executorSection(rows: CapabilityRow[], secret: string): string {
 function importSection(imports: ImportedStateSummary[], secret: string): string {
   const rows = imports.map(item => '<tr><td><code>' + escapeHtml(item.cycle_id) + '</code></td><td>' + item.state_revision
     + '</td><td><code>' + escapeHtml(item.content_sha256.slice(0, 12)) + '</code></td><td>' + item.seq + '</td></tr>').join('');
-  return '<h2>États CC-STATE-1 importés</h2>'
+  return '<h2 id="imports">États CC-STATE-1 importés</h2>'
     + '<p class="note">Importer l’état fusionné dans GitHub en fait la base de collab_export pour ce cycle : phase et tâches du store remplacées, '
     + 'enregistré comme décision owner. Les libellés des tâches doivent correspondre à des participants enregistrés.</p>'
     + (rows ? '<table><tr><th>Cycle</th><th>Révision</th><th>sha256</th><th>Événement</th></tr>' + rows + '</table>'
@@ -384,7 +408,7 @@ function importSection(imports: ImportedStateSummary[], secret: string): string 
 
 /** CR-A / CR-03 : installation des définitions de phase d'un cycle (décision owner). */
 function phaseSection(secret: string): string {
-  return '<h2>Définitions de phase</h2>'
+  return '<h2 id="phases">Définitions de phase</h2>'
     + '<p class="note">Installe l’ensemble des phases d’un cycle (remplace l’ensemble précédent), enregistré comme décision owner. '
     + 'Laisser vide : P1–P6 sans condition, <code>auto_advance</code> = <code>none</code> (aucune avance tant qu’une policy n’est pas nommée). '
     + 'Format : liste JSON, par ex. <code>[{"phase":"P1","auto_advance":"cc3-p1"},{"phase":"P2"}]</code> ; champs facultatifs '
@@ -401,7 +425,7 @@ function classifiedSection(rows: ClassifiedRequest[], secret: string): string {
     + escapeHtml(row.type) + ' · ' + escapeHtml(row.cycle_id) + ' · seq ' + row.request_seq + '</td>'
     + '<td>' + escapeHtml(row.participant_id) + '</td><td><code>' + escapeHtml(row.verdict) + '</code>'
     + (row.note ? '<br>' + escapeHtml(row.note) : '') + '</td><td>seq ' + (row.event_seq ?? '—') + '</td></tr>').join('');
-  return '<h2>Demandes classées (' + rows.length + ')</h2>'
+  return '<h2 id="classified">Demandes classées (' + rows.length + ')</h2>'
     + '<p class="note">Une classification retire une demande de l’attente sans la décider ni l’effacer : '
     + 'audit append-only, une classification immuable par demande, possible même sur un cycle clos. '
     + 'Verdicts : <code>invalid</code> (non décidable), <code>blocked</code>, <code>duplicate</code>, <code>other</code>.</p>'
@@ -418,7 +442,7 @@ function classifiedSection(rows: ClassifiedRequest[], secret: string): string {
 
 /** CC-Owner V2 L2 : clôture d'un cycle (refuse-soft, force avec motif et confirmation). */
 function closeSection(secret: string): string {
-  return '<h2>Clôture d’un cycle</h2>'
+  return '<h2 id="close">Clôture d’un cycle</h2>'
     + '<p class="note">Ferme un cycle : état terminal, les agents ne peuvent plus y écrire (<code>CYCLE_CLOSED</code>). '
     + 'Refusée tant que des demandes d’agent sont en attente (compte affiché) ; cocher la case force la clôture '
     + 'avec un motif de 10 à 500 caractères et la ressaisie de l’identifiant du cycle (confirmation explicite). '
