@@ -243,3 +243,31 @@ describe('CC-Owner V2 — L2 : clôture d’un cycle depuis /owner', () => {
     expect(await again.text()).toContain('CYCLE_ALREADY_CLOSED');
   });
 });
+
+// CC-Owner V2 L3 — classification d'une demande depuis /owner : preuve exigée,
+// drain de la liste d'attente, audit visible, re-classement refusé.
+describe('CC-Owner V2 — L3 : classification d’une demande depuis /owner', () => {
+  it('sans preuve : 403 ; avec le secret : classement appliqué, la demande quitte l’attente et l’audit l’affiche', async () => {
+    const store = new CollabStore(db);
+    const cycleId = uniq('cyc');
+    const requestId = uniq('req');
+    await store.appendEvent({ cycle_id: cycleId, type: 'owner.request', participant_id: 'agent:a', expected_rev: 0,
+      op_id: `agent.a:${cycleId}:req:1`, payload_json: JSON.stringify({ request_id: requestId, summary: 'à classer' }) });
+    const seq = (await db.prepare(
+      "SELECT seq FROM events WHERE cycle_id = ?1 AND type IN ('owner.request', 'phase.request') ORDER BY seq DESC LIMIT 1"
+    ).bind(cycleId).first<{ seq: number }>())!.seq;
+    const fixture = fixtureWith();
+    const noProof = await post(fixture, { action: 'classify_request', request_seq: String(seq), verdict: 'invalid' });
+    expect(noProof.status).toBe(403);
+    const classified = await post(fixture, { action: 'classify_request', request_seq: String(seq), verdict: 'invalid',
+      note: 'identifiant déjà traité', owner_secret: SECRET });
+    expect(classified.status).toBe(200);
+    const body = await classified.text();
+    expect(body).toContain('Demande classée : seq ' + seq);
+    expect(body).toContain('Demandes classées (1)');
+    expect(body).toContain(requestId);
+    const again = await post(fixture, { action: 'classify_request', request_seq: String(seq), verdict: 'other', owner_secret: SECRET });
+    expect(again.status).toBe(409);
+    expect(await again.text()).toContain('REQUEST_ALREADY_CLASSIFIED');
+  });
+});
