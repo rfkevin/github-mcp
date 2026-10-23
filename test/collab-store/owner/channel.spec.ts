@@ -193,7 +193,7 @@ describe('CC-3 C5 — canal owner, mode Cloudflare Access', () => {
 // CC-Owner V2 L2 — clôture d'un cycle depuis /owner : refuse-soft avec compte
 // affiché, force avec motif et confirmation, decide préservé après clôture,
 // actes cycle-scopés et appends d'agent refusés, état terminal.
-describe('CC-Owner V2 — L2 : clôture d'un cycle depuis /owner', () => {
+describe('CC-Owner V2 — L2 : clôture d’un cycle depuis /owner', () => {
   it('soft : refusée avec le compte des demandes ; force incomplète refusée ; section du formulaire visible', async () => {
     const store = new CollabStore(db);
     const cycleId = uniq('cyc');

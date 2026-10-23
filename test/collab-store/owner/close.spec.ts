@@ -78,7 +78,7 @@ async function cycleStatus(cycle: string): Promise<string> {
   return (await db.prepare('SELECT status FROM cycles WHERE cycle_id = ?1').bind(cycle).first<{ status: string }>())?.status ?? 'absent';
 }
 
-describe('CC-Owner V2 — L2 : clôture d'un cycle par le propriétaire', () => {
+describe('CC-Owner V2 — L2 : clôture d’un cycle par le propriétaire', () => {
   it('clôture douce appliquée : payload et révision, rejeu duplicate, état terminal, append refusé sans écriture ni quota', async () => {
     const store = makeStore();
     const cycle = uniq('cyc');
@@ -175,7 +175,7 @@ describe('CC-Owner V2 — L2 : clôture d'un cycle par le propriétaire', () => 
     expect(closed.active_tasks).toBe(0);
   });
 
-  it('course réelle append contre clôture : la clôture passe, l'append aboutit ou est refusé CYCLE_CLOSED', async () => {
+  it('course réelle append contre clôture : la clôture passe, l’append aboutit ou est refusé CYCLE_CLOSED', async () => {
     const store = makeStore();
     const cycle = uniq('cyc');
     expect((await appendCheckpoint(store, cycle, 0, 'cp:1')).status).toBe('applied');
@@ -202,7 +202,7 @@ describe('CC-Owner V2 — L2 : clôture d'un cycle par le propriétaire', () => 
     expect(await countCloseEvents(cycle)).toBe(1);
   });
 
-  it('double clôture concurrente : exactement une appliquée, l'autre CYCLE_ALREADY_CLOSED', async () => {
+  it('double clôture concurrente : exactement une appliquée, l’autre CYCLE_ALREADY_CLOSED', async () => {
     const store = makeStore();
     const cycle = uniq('cyc');
     expect((await appendCheckpoint(store, cycle, 0, 'cp:1')).status).toBe('applied');
@@ -232,7 +232,7 @@ describe('CC-Owner V2 — L2 : clôture d'un cycle par le propriétaire', () => 
     expect((await recordOwnerDecision(db, { request_id: requestId, decision: 'deny', proof })).status).toBe('applied');
   });
 
-  it('export et lectures après clôture : l'export superpose les écritures post-import et reste disponible', async () => {
+  it('export et lectures après clôture : l’export superpose les écritures post-import et reste disponible', async () => {
     const store = makeStore();
     const cycle = uniq('cyc');
     expect((await importStateSnapshot(db, { cycle_id: cycle,
