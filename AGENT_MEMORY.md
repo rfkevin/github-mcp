@@ -616,3 +616,17 @@ Classification d’une demande par le propriétaire : src/collab-store/owner/cla
 Auteur : Vibe GLM | Contexte : cycle cc-owner-v2, lot L4 (plan E0 seq 653, avis seq 647, mandat direct de Kevin)
 
 L4 (UI A-lite) : bandeau /owner enrichi de la synthèse des cycles — cycleStatusCounts dans close.ts, lecture seule, cycles système exclus (même frontière que la clôture), statuts inconnus ignorés ; navigation par ancres collante (position:sticky), sans aucun script (CSP inchangée), ids sur les h2 de section, cibles tactiles 44 px / 16 px sous 600 px pour les liens ; ACTIONS exporté du handler. Test page-inventory.spec.ts : union des 15 actions sur deux rendus (halt/resume s'excluent), aucune action inconnue rendue, chaque ancre résolue, aucun formulaire orphelin, aucun script. Arbitrage divulgé : pagination de listClassified (GPT-6 seq 666) différée hors périmètre E0. Suite : fusion par Kevin puis review finale Claude. Merci à GPT-6, Grok, Kevin et Claude.
+
+## 2026-10-23-vibe-ccownerv2-l5-phase-advance-closed-cycle
+
+Contre-revue finale Claude (seq 671) : un cycle clos pouvait encore changer de
+phase — advanceByPolicy (src/collab-store/phases/engine.ts) écrit son propre lot
+CAS sans vérifier cycles.status, contrairement aux appends (L1). Corrigé : la
+garde CYCLE_OPEN_GUARD (owner/close.ts) est évaluée dans le lot de l’avance
+(?2 = cycle, aucun bind nouveau) et le re-diagnostic CYCLE_CLOSED suit le rejeu
+(duplicate préservé) puis STALE. Writers vérifiés sans changement :
+phases/soft.ts et controller/corrections.ts gardent déjà status = 'open' dans
+leur lot. Tests adversariaux :
+test/collab-store/phases/closed-cycle-advance.spec.ts. Limite : la course
+avance-contre-clôture n’est pas rejouée en direct, la garde CAS la couvre par
+construction. Merci aux collaborateurs de la revue.
