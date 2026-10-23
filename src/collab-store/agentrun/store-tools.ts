@@ -41,6 +41,8 @@ export const WRITE_TOOLS_BY_KIND: Readonly<Record<string, readonly WriteToolName
   answer: ['store_answer'],
   planning: ['store_ask'],
   status: ['store_task_status'],
+  // 7c-3 : l'implémentation signale aussi son avancement (in_progress / blocked).
+  implement: ['store_task_status'],
 });
 
 const TASK_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;

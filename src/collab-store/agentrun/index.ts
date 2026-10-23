@@ -10,3 +10,7 @@ export { createWorkersAiModel, readModelResponse, inputTokenBound, type ToolSche
 export { createReadToolHost, READ_TOOL_SCHEMAS, READ_TOOLS_BY_KIND, type GitHubReads, type ReadToolName } from './read-tools';
 export { createStoreWriteTools, effectOpId, WRITE_TOOL_SCHEMAS, WRITE_TOOLS_BY_KIND, type WriteToolName, type StoreWriteTools } from './store-tools';
 export { planAgentRuns, apiParticipants, answerRunId, PLAN_LIMIT, PLAN_MAX_STEPS, PLAN_MAX_TOKENS, PLAN_DEADLINE_S, type PlanEnv, type PlanResult } from './plan';
+export {
+  createGitHubWriteTools, apiBranch, effectTrailer, GitHubWriteRefused, GITHUB_WRITE_TOOL_SCHEMAS, GITHUB_WRITE_TOOLS_BY_KIND,
+  API_BRANCH_NAMESPACE, DEFAULT_API_BASE_BRANCH, type GitHubWrites, type GitHubWriteToolName, type GitHubWriteTools,
+} from './github-tools';
