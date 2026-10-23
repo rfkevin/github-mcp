@@ -126,7 +126,8 @@ export async function listPendingPage(db: D1Database, options: { limit?: number;
 
 /** Requests awaiting a decision (first page, newest first). See listPendingPage for paging. */
 export async function listPendingRequests(db: D1Database, limit = 100): Promise<PendingRequest[]> {
-  return (await listPendingPage(db, { limit }
+  return (await listPendingPage(db, { limit })).items;
+}
 
 /**
  * CC-Owner V2 L2 : demandes non tranchées (tous états) d'un cycle, les plus
@@ -142,7 +143,6 @@ export async function listCyclePendingRequests(db: D1Database, cycleId: string, 
   ].join(' ')).bind(Number.MAX_SAFE_INTEGER, limit, cycleId)
     .all<StoredStoreEvent & { decided_id: string | null; decided_seq: number | null }>();
   return results.map(rowToPending);
-})).items;
 }
 
 /** The request event of `seq`, if it is a request type. */
