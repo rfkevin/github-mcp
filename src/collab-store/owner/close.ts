@@ -23,7 +23,7 @@
  * après le comptage reste tranchable après la clôture (borne documentée,
  * decide reste possible).
  */
-import { CollabStoreError } from '../store/collab-store';
+import { CollabStoreError, type StoredStoreEvent } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { listCyclePendingRequests, ownerAppend, type OwnerWriteResult } from './decisions';
 import type { OwnerProof } from './proof';
@@ -92,6 +92,17 @@ export async function closeCycle(db: D1Database, input: {
     throw new CollabStoreError('CYCLE_CLOSE_FORCE_INVALID',
       'Confirmation attendue : ressaisissez l’identifiant exact du cycle (' + cycleId + ').');
   }
+  // A05 : le contrôle d'idempotence précède toute garde — le rejeu de la même
+  // soumission (même op) renvoie l'événement original (duplicate), même sur un
+  // cycle déjà clos ; CYCLE_ALREADY_CLOSED ne vise qu'une clôture distincte.
+  const key = 'owner:cycle-close:' + cycleId + ':' + input.op;
+  const replay = await db.prepare('SELECT * FROM events WHERE idempotency_key = ?1').bind(key)
+    .first<StoredStoreEvent>();
+  if (replay) {
+    const closedAs = JSON.parse(replay.payload_json) as { force?: boolean; pending_requests?: number; active_tasks?: number };
+    return { status: 'duplicate', event: replay, cycle_id: cycleId, force: closedAs.force === true,
+      pending_requests: closedAs.pending_requests ?? 0, active_tasks: closedAs.active_tasks ?? 0 };
+  }
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const cycle = await db.prepare('SELECT status FROM cycles WHERE cycle_id = ?1').bind(cycleId).first<{ status: string }>();
     if (!cycle) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + cycleId + '.');
@@ -118,7 +129,7 @@ export async function closeCycle(db: D1Database, input: {
     try {
       const result = await ownerAppend(db, {
         cycleId,
-        key: 'owner:cycle-close:' + cycleId + ':' + input.op,
+        key,
         payload: { action: 'close_cycle', cycle_id: cycleId, force,
           pending_requests: pending.length, active_tasks: activeTasks,
           ...(force ? { reason } : {}) },
