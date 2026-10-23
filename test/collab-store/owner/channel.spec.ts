@@ -189,3 +189,57 @@ describe('CC-3 C5 — canal owner, mode Cloudflare Access', () => {
     }
   });
 });
+
+// CC-Owner V2 L2 — clôture d'un cycle depuis /owner : refuse-soft avec compte
+// affiché, force avec motif et confirmation, decide préservé après clôture,
+// actes cycle-scopés et appends d'agent refusés, état terminal.
+describe('CC-Owner V2 — L2 : clôture d'un cycle depuis /owner', () => {
+  it('soft : refusée avec le compte des demandes ; force incomplète refusée ; section du formulaire visible', async () => {
+    const store = new CollabStore(db);
+    const cycleId = uniq('cyc');
+    const requestId = uniq('req');
+    await store.appendEvent({ cycle_id: cycleId, type: 'owner.request', participant_id: 'agent:a', expected_rev: 0,
+      op_id: `agent.a:${cycleId}:req:1`, payload_json: JSON.stringify({ request_id: requestId, summary: 'à trancher' }) });
+    const fixture = fixtureWith();
+    const soft = await post(fixture, { action: 'close_cycle', cycle_id: cycleId, owner_secret: SECRET });
+    expect(soft.status).toBe(409);
+    const softBody = await soft.text();
+    expect(softBody).toContain('CYCLE_CLOSE_PENDING_REQUESTS');
+    expect(softBody).toContain('1 demande(s)');
+    const shortReason = await post(fixture, { action: 'close_cycle', cycle_id: cycleId, force: 'on', reason: 'court',
+      confirm: cycleId, owner_secret: SECRET });
+    expect(shortReason.status).toBe(409);
+    expect(await shortReason.text()).toContain('CYCLE_CLOSE_FORCE_INVALID');
+    const view = await post(fixture, { action: 'view', owner_secret: SECRET });
+    expect(view.status).toBe(200);
+    expect(await view.text()).toContain('Clôture d'un cycle');
+  });
+
+  it('force complète : clôture appliquée avec compte ; decide préservé ; install_phases, append et re-clôture refusés', async () => {
+    const store = new CollabStore(db);
+    const cycleId = uniq('cyc');
+    const requestId = uniq('req');
+    await store.appendEvent({ cycle_id: cycleId, type: 'owner.request', participant_id: 'agent:a', expected_rev: 0,
+      op_id: `agent.a:${cycleId}:req:1`, payload_json: JSON.stringify({ request_id: requestId, summary: 'à trancher' }) });
+    const fixture = fixtureWith();
+    const closed = await post(fixture, { action: 'close_cycle', cycle_id: cycleId, force: 'on',
+      reason: 'motif suffisant pour forcer la clôture', confirm: cycleId, owner_secret: SECRET });
+    expect(closed.status).toBe(200);
+    const closedBody = await closed.text();
+    expect(closedBody).toContain('Cycle clos');
+    expect(closedBody).toContain('1 demande(s)');
+    expect(closedBody).toContain('clôture forcée');
+    const decided = await post(fixture, { action: 'decide', request_id: requestId, decision: 'deny', owner_secret: SECRET });
+    expect(decided.status).toBe(200);
+    expect(await decided.text()).toContain('Décision enregistrée : deny');
+    const phases = await post(fixture, { action: 'install_phases', cycle_id: cycleId, phases: '', owner_secret: SECRET });
+    expect(phases.status).toBe(409);
+    expect(await phases.text()).toContain('CYCLE_CLOSED');
+    await expect(store.appendEvent({ cycle_id: cycleId, type: 'checkpoint', participant_id: 'agent:a',
+      expected_rev: await store.currentRevision(cycleId), payload_json: '{}', op_id: `agent.a:${cycleId}:cp:1` }))
+      .rejects.toMatchObject({ code: 'CYCLE_CLOSED' });
+    const again = await post(fixture, { action: 'close_cycle', cycle_id: cycleId, owner_secret: SECRET });
+    expect(again.status).toBe(409);
+    expect(await again.text()).toContain('CYCLE_ALREADY_CLOSED');
+  });
+});
