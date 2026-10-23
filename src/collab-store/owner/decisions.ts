@@ -129,6 +129,7 @@ export async function listPendingRequests(db: D1Database, limit = 100): Promise<
   return (await listPendingPage(db, { limit })).items;
 }
 
+/**
  * CC-Owner V2 L2 : demandes non tranchées (tous états) d'un cycle, les plus
  * récentes d'abord — source du compte affiché à l'owner au moment de la
  * clôture (seules les pending sont actionnables, la classification reste
