@@ -1,69 +1,22 @@
-import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { classifyRequest } from '../../../src/collab-store/owner/classify';
 import { listClassified, listPendingPage, recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
 import { closeCycle } from '../../../src/collab-store/owner/close';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
+import { db, proof, delegatedProof, uniq, makeStoreForMonth, codeOf, refusalOf, fileRequest, countEvents, countOwnerActionEvents } from './owner-act-helpers';
 
 // CC-Owner V2 L3 — classification owner d'une demande d'agent : drain
 // append-only de la liste d'attente, audit complet, anti-re-classement PK
 // (cycle_id, request_seq), idempotence par op, possible sur un cycle clos.
-const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
-const proof = { kind: 'secret' as const, subject: 'owner-secret' };
-const delegatedProof = (cycleId: string) => ({ kind: 'delegated' as const, subject: 'reviewer', cycle_id: cycleId,
-  epoch: 0, request_id: 'req', reviewer_pid: 'agent:b', reviewer_family: 'agent:b', expires_at: 0,
-  params_hash: 'h', max_cost_cents: 0 });
-let n = 0;
-const uniq = (label: string) => `ccown3-${label}-${++n}`;
-let day = 0;
-
-/** Un jour distinct par store : décembre, sans recouvrement avec les suites d'octobre et de novembre. */
+/** Un jour distinct par store : décembre (harnais partagé, voir owner-act-helpers.ts). */
 function makeStore(): CollabStore {
-  day += 1;
-  const stamp = `2026-12-${String(day).padStart(2, '0')}T10:00:00.000Z`;
-  return new CollabStore(db, { now: () => new Date(stamp) });
-}
-
-function codeOf(error: unknown): string {
-  return (error as { code: string }).code;
-}
-
-/** Capture le refus (code + message) ; échoue si la promesse aboutit. */
-async function refusalOf(promise: Promise<unknown>): Promise<{ code: string; message: string }> {
-  try {
-    await promise;
-  } catch (error) {
-    return error as { code: string; message: string };
-  }
-  throw new Error('un refus était attendu');
-}
-
-/** Dépose une demande d'agent valide sur le cycle et renvoie sa seq d'événement. */
-async function fileRequest(store: CollabStore, cycle: string, rev: number, requestId: string): Promise<number> {
-  const outcome = await store.appendEvent({ cycle_id: cycle, type: 'owner.request', participant_id: 'agent:a',
-    expected_rev: rev, op_id: `agent.a:${cycle}:req:${++n}`, payload_json: JSON.stringify({ request_id: requestId, summary: 'demande de test' }) });
-  expect(outcome.status).toBe('applied');
-  const row = await db.prepare(
-    "SELECT seq FROM events WHERE cycle_id = ?1 AND type IN ('owner.request', 'phase.request') ORDER BY seq DESC LIMIT 1"
-  ).bind(cycle).first<{ seq: number }>();
-  return row!.seq;
-}
-
-async function countEvents(cycle: string): Promise<number> {
-  return (await db.prepare('SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1').bind(cycle).first<{ n: number }>())?.n ?? 0;
+  return makeStoreForMonth('2026-12');
 }
 
 async function countClassifications(cycle: string, seq: number): Promise<number> {
   return (await db.prepare(
     'SELECT COUNT(*) AS n FROM request_classifications WHERE cycle_id = ?1 AND request_seq = ?2'
-  ).bind(cycle, seq).first<{ n: number }>())?.n ?? 0;
-}
-
-async function countClassifyEvents(cycle: string, seq: number): Promise<number> {
-  return (await db.prepare(
-    "SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND json_valid(payload_json)"
-    + " AND json_extract(payload_json, '$.action') = 'classify_request' AND json_extract(payload_json, '$.request_seq') = ?2"
   ).bind(cycle, seq).first<{ n: number }>())?.n ?? 0;
 }
 
@@ -107,7 +60,7 @@ describe('CC-Owner V2 — L3 : classification owner d’une demande', () => {
     expect(refusal.code).toBe('REQUEST_ALREADY_CLASSIFIED');
     expect(refusal.message).toContain('duplicate');
     expect(await countClassifications(cycle, seq)).toBe(1);
-    expect(await countClassifyEvents(cycle, seq)).toBe(1);
+    expect(await countOwnerActionEvents(cycle, 'classify_request', seq)).toBe(1);
   });
 
   it('gardes d’entrée : verdict hors vocabulaire, seq invalide ou inconnu, preuve déléguée — rien n’est écrit', async () => {
@@ -173,7 +126,7 @@ describe('CC-Owner V2 — L3 : classification owner d’une demande', () => {
     const refused = outcomes.find(outcome => outcome.status === 'rejected');
     expect(refused && codeOf((refused as PromiseRejectedResult).reason)).toBe('REQUEST_ALREADY_CLASSIFIED');
     expect(await countClassifications(cycle, seq)).toBe(1);
-    expect(await countClassifyEvents(cycle, seq)).toBe(1);
+    expect(await countOwnerActionEvents(cycle, 'classify_request', seq)).toBe(1);
   });
 
   it('migration 0011 idempotente : ensureSchema rejouable, table request_classifications présente', async () => {
