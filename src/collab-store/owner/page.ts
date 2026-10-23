@@ -129,6 +129,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + '<label>Famille logique (vide = révocation) <input type="text" name="family_id"></label>'
     + '<label>Époque attendue <input type="number" name="expected_epoch" min="0" required></label>'
     + secret + '<p><button type="submit">Nommer ou révoquer</button></p></form></fieldset>'
+    + closeSection(secret)
     + executorSection(data.executors ?? [], secret)
     + '<h2>Participants</h2>'
     + (participants ? '<table><tr><th>Identifiant</th><th>Libellé (affichage)</th><th>Statut</th></tr>' + participants + '</table>' : '<p class="note">Aucun participant.</p>')
@@ -388,4 +389,20 @@ function phaseSection(secret: string): string {
     + '<label>Cycle <input type="text" name="cycle_id" required pattern="[a-z0-9][a-z0-9_-]{0,63}"></label>'
     + '<label>Définitions (JSON, facultatif) <textarea name="phases"></textarea></label>' + secret
     + '<p><button type="submit">Installer les phases</button></p></form></fieldset>';
+}
+
+/** CC-Owner V2 L2 : clôture d'un cycle (refuse-soft, force avec motif et confirmation). */
+function closeSection(secret: string): string {
+  return '<h2>Clôture d’un cycle</h2>'
+    + '<p class="note">Ferme un cycle : état terminal, les agents ne peuvent plus y écrire (<code>CYCLE_CLOSED</code>). '
+    + 'Refusée tant que des demandes d’agent sont en attente (compte affiché) ; cocher la case force la clôture '
+    + 'avec un motif de 10 à 500 caractères et la ressaisie de l’identifiant du cycle (confirmation explicite). '
+    + 'Des tâches non terminées (<code>done</code>/<code>verified</code>) interdisent la clôture, même forcée. '
+    + 'Les décisions (<code>decide</code>) restent possibles après.</p>'
+    + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="close_cycle">'
+    + '<label>Cycle <input type="text" name="cycle_id" required pattern="[a-z0-9][a-z0-9_-]{0,63}"></label>'
+    + '<label>Forcer la clôture (motif et confirmation requis) <input type="checkbox" name="force" value="on"></label>'
+    + '<label>Motif (requis si forcé) <textarea name="reason" maxlength="500"></textarea></label>'
+    + '<label>Confirmation : ressaisir le cycle si forcé <input type="text" name="confirm"></label>' + secret
+    + '<p><button type="submit">Clôturer le cycle</button></p></form></fieldset>';
 }

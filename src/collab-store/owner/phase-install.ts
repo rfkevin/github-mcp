@@ -20,6 +20,7 @@ import { CollabStoreError, type StoredStoreEvent } from '../store/collab-store';
 import { sha256Hex } from '../store/hash';
 import { ensureSchema } from '../store/schema';
 import { ownerAppend, type OwnerWriteResult } from './decisions';
+import { CYCLE_OPEN_GUARD, rethrowIfCycleClosed } from './close';
 import { bindingGuard, bindingPayload, bindingStatements, bindingKey, assertBindingPrecondition, type OwnerRequestBinding } from './binding';
 import type { OwnerProof } from './proof';
 
@@ -107,6 +108,12 @@ export async function installPhaseDefinitions(db: D1Database, input: {
 }): Promise<PhaseInstallResult> {
   await ensureSchema(db);
   const cycleId = input.cycle_id.trim();
+
+  // CC-Owner V2 L2 : la garde d'ouverture étant désormais toujours fournie, une
+  // preuve déléguée sans demande liée est refusée explicitement (fail-closed).
+  if (input.proof.kind === 'delegated' && !input.binding) {
+    throw new CollabStoreError('DELEGATED_FORBIDDEN', 'Preuve déléguée sans demande liée : rien n’est exécuté.');
+  }
   const definitions = normalizePhaseDefinitions(cycleId, input.definitions);
   const digest = await sha256Hex(canonical(definitions));
   const summary = definitions.map(def => ({ phase: def.phase, auto_advance: def.auto_advance }));
@@ -124,23 +131,33 @@ export async function installPhaseDefinitions(db: D1Database, input: {
   const key = binding
     ? bindingKey(PHASE_INSTALL_KEY_PREFIX + cycleId, binding)
     : PHASE_INSTALL_KEY_PREFIX + cycleId + ':' + (previous?.seq ?? 0) + ':' + digest.slice(0, 32);
-  const result = await ownerAppend(db, {
-    cycleId,
-    key,
-    payload: { action: 'install_phases', cycle_id: cycleId, definitions_sha256: digest, previous_install_seq: previous?.seq ?? null,
-      definitions: definitions.map(({ cycle_id: _cycle, ...def }) => def), ...(binding ? bindingPayload(binding) : {}) },
-    proof: input.proof,
-    ...(binding ? { extraGuard: bindingGuard(binding, PHASE_INSTALL_KEY_PREFIX + cycleId + ':', input.proof, 'install_phases') } : {}),
-    sideEffects: eventKey => [
-      ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
-      db.prepare('DELETE FROM phase_definitions WHERE cycle_id = ?1').bind(cycleId),
-      ...definitions.map(def => db.prepare([
-        'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
-        'VALUES (?1, ?2, ?3, ?4, ?5, ?6)',
-      ].join(' ')).bind(cycleId, def.phase, JSON.stringify(def.entry_conditions), JSON.stringify(def.expected_outputs),
-        JSON.stringify(def.exit_conditions), def.auto_advance)),
-    ],
-    now: input.now,
-  });
+  let result: OwnerWriteResult;
+  try {
+    result = await ownerAppend(db, {
+      cycleId,
+      key,
+      payload: { action: 'install_phases', cycle_id: cycleId, definitions_sha256: digest, previous_install_seq: previous?.seq ?? null,
+        definitions: definitions.map(({ cycle_id: _cycle, ...def }) => def), ...(binding ? bindingPayload(binding) : {}) },
+      proof: input.proof,
+      // CC-Owner V2 L2 : acte cycle-scopé — garde d'ouverture dans le lot (cycle clos → CYCLE_CLOSED).
+      extraGuard: (base => base
+        ? { sql: base.sql + ' AND (' + CYCLE_OPEN_GUARD + ')', binds: base.binds }
+        : { sql: CYCLE_OPEN_GUARD, binds: [] as unknown[] })(
+        binding ? bindingGuard(binding, PHASE_INSTALL_KEY_PREFIX + cycleId + ':', input.proof, 'install_phases') : null),
+      sideEffects: eventKey => [
+        ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
+        db.prepare('DELETE FROM phase_definitions WHERE cycle_id = ?1').bind(cycleId),
+        ...definitions.map(def => db.prepare([
+          'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
+          'VALUES (?1, ?2, ?3, ?4, ?5, ?6)',
+        ].join(' ')).bind(cycleId, def.phase, JSON.stringify(def.entry_conditions), JSON.stringify(def.expected_outputs),
+          JSON.stringify(def.exit_conditions), def.auto_advance)),
+      ],
+      now: input.now,
+    });
+  } catch (error) {
+    // CC-Owner V2 L2 : cycle clos entre-temps → CYCLE_CLOSED (sinon l'erreur d'origine).
+    throw await rethrowIfCycleClosed(db, cycleId, error);
+  }
   return { ...result, definitions_sha256: digest, phases: summary };
 }
