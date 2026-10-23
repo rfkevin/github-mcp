@@ -129,20 +129,28 @@ export async function listPendingRequests(db: D1Database, limit = 100): Promise<
   return (await listPendingPage(db, { limit })).items;
 }
 
-/**
  * CC-Owner V2 L2 : demandes non tranchées (tous états) d'un cycle, les plus
  * récentes d'abord — source du compte affiché à l'owner au moment de la
- * clôture (seules les pending sont actionnables, la classification reste ici).
+ * clôture (seules les pending sont actionnables, la classification reste
+ * ici). Exhaustif : pages enchaînées jusqu'au bout du journal du cycle,
+ * aucun plafond silencieux (review GPT-6 seq 662 — au-delà de MAX_PAGE, les
+ * demandes plus anciennes restent lues et comptées).
  */
-export async function listCyclePendingRequests(db: D1Database, cycleId: string, limit = 1000): Promise<PendingRequest[]> {
+export async function listCyclePendingRequests(db: D1Database, cycleId: string): Promise<PendingRequest[]> {
   await ensureSchema(db);
-  const { results } = await db.prepare([
-    'SELECT e.seq, e.cycle_id, e.at, e.type, e.participant_id, e.payload_json,',
-    "  d.request_id AS decided_id, json_extract(de.payload_json, '$.request_seq') AS decided_seq",
-    UNDECIDED_FROM, 'AND e.cycle_id = ?3 ORDER BY e.seq DESC LIMIT ?2',
-  ].join(' ')).bind(Number.MAX_SAFE_INTEGER, limit, cycleId)
-    .all<StoredStoreEvent & { decided_id: string | null; decided_seq: number | null }>();
-  return results.map(rowToPending);
+  const all: PendingRequest[] = [];
+  let before = Number.MAX_SAFE_INTEGER;
+  for (;;) {
+    const { results } = await db.prepare([
+      'SELECT e.seq, e.cycle_id, e.at, e.type, e.participant_id, e.payload_json,',
+      "  d.request_id AS decided_id, json_extract(de.payload_json, '$.request_seq') AS decided_seq",
+      UNDECIDED_FROM, 'AND e.cycle_id = ?3 AND e.seq < ?1 ORDER BY e.seq DESC LIMIT ?2',
+    ].join(' ')).bind(before, MAX_PAGE, cycleId)
+      .all<StoredStoreEvent & { decided_id: string | null; decided_seq: number | null }>();
+    all.push(...results.map(rowToPending));
+    if (results.length < MAX_PAGE) return all;
+    before = results[results.length - 1].seq;
+  }
 }
 
 /** The request event of `seq`, if it is a request type. */

@@ -158,6 +158,31 @@ describe('CC-Owner V2 — L2 : clôture d’un cycle par le propriétaire', () =
     expect(await cycleStatus(cycle)).toBe('closed');
   });
 
+  it('au-delà d’une page : des demandes récentes non actionnables ne masquent pas les pending plus anciennes (review GPT-6)', async () => {
+    const store = makeStore();
+    const cycle = uniq('cyc');
+    for (let i = 1; i <= 5; i += 1) {
+      await fileRequest(store, cycle, i - 1, uniq('req'));
+    }
+    // 1005 demandes invalides, plus récentes : avant correctif, la tranche
+    // des 1000 plus récentes masquait les 5 pending plus anciennes.
+    const invalid = Array.from({ length: 1005 }, (_, i) => db.prepare(
+      "INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)"
+      + " VALUES (?1, 0, 'owner.request', 'agent:a', '', 'agent', ?2, 0, ?3, '')"
+    ).bind(cycle, JSON.stringify({ summary: 'sans identifiant' }), `bulk.${cycle}.inv.${i}`));
+    for (let i = 0; i < invalid.length; i += 100) {
+      await db.batch(invalid.slice(i, i + 100));
+    }
+    const soft = await refusalOf(closeCycle(db, { cycle_id: cycle, proof, op: 'close-1' }));
+    expect(soft.code).toBe('CYCLE_CLOSE_PENDING_REQUESTS');
+    expect(soft.message).toContain('5 demande(s)');
+    // Force : le compte journalisé est lui aussi exhaustif.
+    const forced = await closeCycle(db, { cycle_id: cycle, force: true, reason: 'motif suffisant pour forcer',
+      confirm: cycle, proof, op: 'close-2' });
+    expect(forced.status).toBe('applied');
+    expect(JSON.parse(forced.event.payload_json)).toMatchObject({ force: true, pending_requests: 5 });
+    expect(await cycleStatus(cycle)).toBe('closed');
+  });
   it('des tâches actives interdisent la clôture, même forcée ; done y met fin', async () => {
     const store = makeStore();
     const cycle = uniq('cyc');

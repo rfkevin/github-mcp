@@ -18,10 +18,11 @@
  * CAS que son effet (cycles.status = 'closed'). Le compte des demandes
  * pending, lu hors transaction, est ancré par une garde SQL sur la plus
  * grande seq d'événement de demande du cycle : une demande déposée entre la
- * lecture et le lot annule la clôture (refuse-soft atomique) sans dupliquer
- * la classification JS (validité, homonymie) en SQL — une demande arrivée
- * après le comptage reste tranchable après la clôture (borne documentée,
- * decide reste possible).
+ * lecture et le lot annule la clôture (refuse-soft atomique) sur un balayage
+ * paginé du journal des demandes du cycle, sans plafond silencieux (review
+ * GPT-6 seq 662) ni duplication de la classification JS (validité,
+ * homonymie) en SQL — une demande arrivée après le comptage reste
+ * tranchable après la clôture (borne documentée, decide reste possible).
  */
 import { CollabStoreError, type StoredStoreEvent } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
