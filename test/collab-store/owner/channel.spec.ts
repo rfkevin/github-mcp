@@ -212,7 +212,7 @@ describe('CC-Owner V2 — L2 : clôture d'un cycle depuis /owner', () => {
     expect(await shortReason.text()).toContain('CYCLE_CLOSE_FORCE_INVALID');
     const view = await post(fixture, { action: 'view', owner_secret: SECRET });
     expect(view.status).toBe(200);
-    expect(await view.text()).toContain('Clôture d'un cycle');
+    expect(await view.text()).toContain('Clôture d’un cycle');
   });
 
   it('force complète : clôture appliquée avec compte ; decide préservé ; install_phases, append et re-clôture refusés', async () => {
