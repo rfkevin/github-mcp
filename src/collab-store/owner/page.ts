@@ -244,6 +244,7 @@ function statusBanner(data: DashboardData): string {
     : '';
   // CC-Owner V2 L4 : synthèse des statuts de cycle pour le bandeau (facultative).
   const cycles = data.cycles ? ' · Cycles : ' + data.cycles.open + ' ouvert(s), ' + data.cycles.closed + ' clos' : '';
+  return '<p><strong>' + data.pending.total + '</strong> demande(s) en attente · Automatisation '
     + (halted ? 'HALTÉE' : 'ACTIVE') + budget + cycles + '</p>'
     + (halted
       ? '<p class="halt">Arrêt d’urgence posé : aucune action automatique ne démarre.</p>'
