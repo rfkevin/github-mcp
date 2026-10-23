@@ -7,6 +7,7 @@ import { ensureSchema } from '../store/schema';
 import { ownerAppend, type OwnerWriteResult } from './decisions';
 import type { OwnerProof } from './proof';
 import { DelegationDenied } from './delegation-policy';
+import { rethrowIfCycleClosed } from './close';
 
 const INIT = [
   "CREATE TABLE IF NOT EXISTS delegated_mandates (cycle_id TEXT PRIMARY KEY, participant_id TEXT, family_id TEXT, epoch INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)",
@@ -42,25 +43,34 @@ export async function appointCycleCoordinator(db: D1Database, input: {
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
   const guard = [
     'COALESCE((SELECT epoch FROM delegated_mandates WHERE cycle_id = ?4), 0) = ?5',
+    // CC-Owner V2 L2 : acte cycle-scopé — garde d'ouverture dans le lot (?4 = cycle).
+    "COALESCE((SELECT status FROM cycles WHERE cycle_id = ?4), 'open') = 'open'",
     input.participantId === null ? '1 = 1' : [
       'EXISTS (SELECT 1 FROM participants WHERE participant_id = ?6 AND status = \'active\')',
       "COALESCE((SELECT family_id FROM participant_identity_families WHERE participant_id = ?6), ?6) = ?7",
     ].join(' AND '),
   ].join(' AND ');
-  return ownerAppend(db, {
-    cycleId: input.cycleId, key: 'owner:delegated-mandate:' + input.cycleId + ':' + input.op,
-    payload: { action: 'appoint_cycle_coordinator', participant_id: input.participantId, epoch: input.expectedEpoch + 1 },
-    proof: input.proof,
-    extraGuard: { sql: guard, binds: input.participantId === null
-      ? [input.cycleId, input.expectedEpoch] : [input.cycleId, input.expectedEpoch, input.participantId, input.familyId] },
-    sideEffects: () => [
-      db.prepare([
-        'INSERT INTO delegated_mandates (cycle_id, participant_id, family_id, epoch, updated_at)',
-        'VALUES (?1, ?2, ?3, ?4, ?5)',
-        'ON CONFLICT(cycle_id) DO UPDATE SET participant_id = excluded.participant_id,',
-        'family_id = excluded.family_id, epoch = excluded.epoch, updated_at = excluded.updated_at',
-      ].join(' ')).bind(input.cycleId, input.participantId, input.familyId, input.expectedEpoch + 1, at),
-      db.prepare('DELETE FROM delegated_approvals WHERE cycle_id = ?1').bind(input.cycleId),
-    ], now: input.now,
-  });
+  let result: OwnerWriteResult;
+  try {
+    result = await ownerAppend(db, {
+      cycleId: input.cycleId, key: 'owner:delegated-mandate:' + input.cycleId + ':' + input.op,
+      payload: { action: 'appoint_cycle_coordinator', participant_id: input.participantId, epoch: input.expectedEpoch + 1 },
+      proof: input.proof,
+      extraGuard: { sql: guard, binds: input.participantId === null
+        ? [input.cycleId, input.expectedEpoch] : [input.cycleId, input.expectedEpoch, input.participantId, input.familyId] },
+      sideEffects: () => [
+        db.prepare([
+          'INSERT INTO delegated_mandates (cycle_id, participant_id, family_id, epoch, updated_at)',
+          'VALUES (?1, ?2, ?3, ?4, ?5)',
+          'ON CONFLICT(cycle_id) DO UPDATE SET participant_id = excluded.participant_id,',
+          'family_id = excluded.family_id, epoch = excluded.epoch, updated_at = excluded.updated_at',
+        ].join(' ')).bind(input.cycleId, input.participantId, input.familyId, input.expectedEpoch + 1, at),
+        db.prepare('DELETE FROM delegated_approvals WHERE cycle_id = ?1').bind(input.cycleId),
+      ], now: input.now,
+    });
+  } catch (error) {
+    // CC-Owner V2 L2 : cycle clos entre-temps → CYCLE_CLOSED (sinon l'erreur d'origine).
+    throw await rethrowIfCycleClosed(db, input.cycleId, error);
+  }
+  return result;
 }

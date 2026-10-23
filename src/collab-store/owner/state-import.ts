@@ -18,6 +18,7 @@ import { loadLabelDirectory, DEFAULT_OWNER_LABEL } from '../export/labels';
 import { planStateImport, type ExportTarget } from '../export/state-import-plan';
 import { STATE_IMPORT_KEY_PREFIX } from '../export/state-export';
 import { ownerAppend, type OwnerWriteResult } from './decisions';
+import { CYCLE_OPEN_GUARD, rethrowIfCycleClosed } from './close';
 import { bindingGuard, bindingPayload, bindingStatements, bindingKey, assertBindingPrecondition, type OwnerRequestBinding } from './binding';
 import type { OwnerProof } from './proof';
 
@@ -48,6 +49,12 @@ export async function importStateSnapshot(db: D1Database, input: {
   await ensureSchema(db);
   // C3 owns cycle_issue_refs_v2; the import indexes the state's issues there in the same batch.
   await ensureContextSchema(db);
+
+  // CC-Owner V2 L2 : la garde d'ouverture étant désormais toujours fournie, une
+  // preuve déléguée sans demande liée est refusée explicitement (fail-closed).
+  if (input.proof.kind === 'delegated' && !input.binding) {
+    throw new CollabStoreError('DELEGATED_FORBIDDEN', 'Preuve déléguée sans demande liée : rien n’est exécuté.');
+  }
   const ownerLabel = (input.owner_label ?? '').trim() || DEFAULT_OWNER_LABEL;
   if (ownerLabel.length > 80) throw new CollabStoreError('INVALID_LABEL', 'Libellé owner trop long.');
   const plan = await planStateImport({
@@ -85,45 +92,55 @@ export async function importStateSnapshot(db: D1Database, input: {
   const key = binding
     ? bindingKey(STATE_IMPORT_KEY_PREFIX + plan.cycle_id, binding)
     : STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':' + (previous?.seq ?? 0) + ':' + plan.content_sha256.slice(0, 32);
-  const result = await ownerAppend(db, {
-    cycleId: plan.cycle_id,
-    key,
-    payload: {
-      action: 'import_state',
-      cycle_id: plan.cycle_id,
-      workflow_id: plan.workflow_id,
-      state_revision: plan.state_revision,
-      content_sha256: plan.content_sha256,
-      owner_label: plan.owner_label,
-      target: plan.target,
-      issue_refs: plan.issue_refs,
-      previous_import_seq: previous?.seq ?? null,
-      content: plan.content,
-      ...(binding ? bindingPayload(binding) : {}),
-    },
-    proof: input.proof,
-    ...(binding ? { extraGuard: (guard => input.proof.kind === 'delegated' ? withResolvedPlanGuard(guard, plan) : guard)(
-      bindingGuard(binding, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':', input.proof, 'import_state')) } : {}),
-    sideEffects: eventKey => [
-      ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
-      db.prepare("UPDATE cycles SET phase = ?2, project = CASE WHEN project = '' THEN ?3 ELSE project END WHERE cycle_id = ?1")
-        .bind(plan.cycle_id, plan.phase, plan.target?.repository ?? ''),
-      db.prepare('DELETE FROM tasks WHERE cycle_id = ?1').bind(plan.cycle_id),
-      ...plan.tasks.map(task => db.prepare([
-        'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status,',
-        '                  owned_paths, target_ref, next_action, revision)',
-        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '', ?8, (SELECT revision FROM cycles WHERE cycle_id = ?2))",
-      ].join(' ')).bind(task.task_id, plan.cycle_id, task.owner_pid, task.reviewer_pid, task.tester_pid,
-        task.status, JSON.stringify(task.owned_paths), task.next_action)),
-      // Issue index (C3): the cycle's previous mappings are replaced by the imported file's references.
-      db.prepare('DELETE FROM cycle_issue_refs_v2 WHERE cycle_id = ?1').bind(plan.cycle_id),
-      ...plan.issue_refs.map(ref => db.prepare([
-        'INSERT INTO cycle_issue_refs_v2 (repository, issue_number, cycle_id) VALUES (?1, ?2, ?3)',
-        'ON CONFLICT(repository, issue_number) DO UPDATE SET cycle_id = excluded.cycle_id',
-      ].join(' ')).bind(ref.repository, ref.issue_number, plan.cycle_id)),
-    ],
-    now: input.now,
-  });
+  let result: OwnerWriteResult;
+  try {
+    result = await ownerAppend(db, {
+      cycleId: plan.cycle_id,
+      key,
+      payload: {
+        action: 'import_state',
+        cycle_id: plan.cycle_id,
+        workflow_id: plan.workflow_id,
+        state_revision: plan.state_revision,
+        content_sha256: plan.content_sha256,
+        owner_label: plan.owner_label,
+        target: plan.target,
+        issue_refs: plan.issue_refs,
+        previous_import_seq: previous?.seq ?? null,
+        content: plan.content,
+        ...(binding ? bindingPayload(binding) : {}),
+      },
+      proof: input.proof,
+      // CC-Owner V2 L2 : acte cycle-scopé — garde d'ouverture dans le lot (cycle clos → CYCLE_CLOSED).
+      extraGuard: (base => base
+        ? { sql: base.sql + ' AND (' + CYCLE_OPEN_GUARD + ')', binds: base.binds }
+        : { sql: CYCLE_OPEN_GUARD, binds: [] as unknown[] })(
+        binding ? (guard => input.proof.kind === 'delegated' ? withResolvedPlanGuard(guard, plan) : guard)(
+          bindingGuard(binding, STATE_IMPORT_KEY_PREFIX + plan.cycle_id + ':', input.proof, 'import_state')) : null),
+      sideEffects: eventKey => [
+        ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
+        db.prepare("UPDATE cycles SET phase = ?2, project = CASE WHEN project = '' THEN ?3 ELSE project END WHERE cycle_id = ?1")
+          .bind(plan.cycle_id, plan.phase, plan.target?.repository ?? ''),
+        db.prepare('DELETE FROM tasks WHERE cycle_id = ?1').bind(plan.cycle_id),
+        ...plan.tasks.map(task => db.prepare([
+          'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status,',
+          '                  owned_paths, target_ref, next_action, revision)',
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '', ?8, (SELECT revision FROM cycles WHERE cycle_id = ?2))",
+        ].join(' ')).bind(task.task_id, plan.cycle_id, task.owner_pid, task.reviewer_pid, task.tester_pid,
+          task.status, JSON.stringify(task.owned_paths), task.next_action)),
+        // Issue index (C3): the cycle's previous mappings are replaced by the imported file's references.
+        db.prepare('DELETE FROM cycle_issue_refs_v2 WHERE cycle_id = ?1').bind(plan.cycle_id),
+        ...plan.issue_refs.map(ref => db.prepare([
+          'INSERT INTO cycle_issue_refs_v2 (repository, issue_number, cycle_id) VALUES (?1, ?2, ?3)',
+          'ON CONFLICT(repository, issue_number) DO UPDATE SET cycle_id = excluded.cycle_id',
+        ].join(' ')).bind(ref.repository, ref.issue_number, plan.cycle_id)),
+      ],
+      now: input.now,
+    });
+  } catch (error) {
+    // CC-Owner V2 L2 : cycle clos entre-temps → CYCLE_CLOSED (sinon l'erreur d'origine).
+    throw await rethrowIfCycleClosed(db, plan.cycle_id, error);
+  }
   return {
     ...result,
     state_revision: plan.state_revision,

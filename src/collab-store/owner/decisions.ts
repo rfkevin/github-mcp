@@ -94,6 +94,20 @@ const UNDECIDED_FROM = [
 ].join(' ');
 const MAX_PAGE = 500;
 
+/**
+ * Une ligne SQL de demande vers PendingRequest (partagé : pages de /owner et
+ * comptage de clôture d'un cycle, CC-Owner V2 L2).
+ */
+function rowToPending(row: StoredStoreEvent & { decided_id: string | null; decided_seq: number | null }): PendingRequest {
+  const parsed = requestIdOf(row.payload_json);
+  const state = !parsed.valid ? 'invalid' : row.decided_id !== null ? 'blocked' : 'pending';
+  return {
+    request_id: parsed.request_id, summary: parsed.summary, cycle_id: row.cycle_id, type: row.type,
+    participant_id: row.participant_id, seq: row.seq, at: row.at, state, payload_json: row.payload_json,
+    ...(state === 'blocked' ? { decided_seq: row.decided_seq ?? null } : {}),
+  };
+}
+
 /** One page of request events awaiting a decision, newest first, with a cursor to older pages. */
 export async function listPendingPage(db: D1Database, options: { limit?: number; before?: number } = {}): Promise<PendingPage> {
   await ensureSchema(db);
@@ -106,21 +120,38 @@ export async function listPendingPage(db: D1Database, options: { limit?: number;
   ].join(' ')).bind(before, limit + 1)
     .all<StoredStoreEvent & { decided_id: string | null; decided_seq: number | null }>();
   const total = (await db.prepare('SELECT COUNT(*) AS n ' + UNDECIDED_FROM).first<{ n: number }>())?.n ?? 0;
-  const items = results.slice(0, limit).map((row): PendingRequest => {
-    const parsed = requestIdOf(row.payload_json);
-    const state = !parsed.valid ? 'invalid' : row.decided_id !== null ? 'blocked' : 'pending';
-    return {
-      request_id: parsed.request_id, summary: parsed.summary, cycle_id: row.cycle_id, type: row.type,
-      participant_id: row.participant_id, seq: row.seq, at: row.at, state, payload_json: row.payload_json,
-      ...(state === 'blocked' ? { decided_seq: row.decided_seq ?? null } : {}),
-    };
-  });
+  const items = results.slice(0, limit).map(rowToPending);
   return { items, total, next_before: results.length > limit ? items[items.length - 1].seq : null };
 }
 
 /** Requests awaiting a decision (first page, newest first). See listPendingPage for paging. */
 export async function listPendingRequests(db: D1Database, limit = 100): Promise<PendingRequest[]> {
   return (await listPendingPage(db, { limit })).items;
+}
+
+/**
+ * CC-Owner V2 L2 : demandes non tranchées (tous états) d'un cycle, les plus
+ * récentes d'abord — source du compte affiché à l'owner au moment de la
+ * clôture (seules les pending sont actionnables, la classification reste
+ * ici). Exhaustif : pages enchaînées jusqu'au bout du journal du cycle,
+ * aucun plafond silencieux (review GPT-6 seq 662 — au-delà de MAX_PAGE, les
+ * demandes plus anciennes restent lues et comptées).
+ */
+export async function listCyclePendingRequests(db: D1Database, cycleId: string): Promise<PendingRequest[]> {
+  await ensureSchema(db);
+  const all: PendingRequest[] = [];
+  let before = Number.MAX_SAFE_INTEGER;
+  for (;;) {
+    const { results } = await db.prepare([
+      'SELECT e.seq, e.cycle_id, e.at, e.type, e.participant_id, e.payload_json,',
+      "  d.request_id AS decided_id, json_extract(de.payload_json, '$.request_seq') AS decided_seq",
+      UNDECIDED_FROM, 'AND e.cycle_id = ?3 AND e.seq < ?1 ORDER BY e.seq DESC LIMIT ?2',
+    ].join(' ')).bind(before, MAX_PAGE, cycleId)
+      .all<StoredStoreEvent & { decided_id: string | null; decided_seq: number | null }>();
+    all.push(...results.map(rowToPending));
+    if (results.length < MAX_PAGE) return all;
+    before = results[results.length - 1].seq;
+  }
 }
 
 /** The request event of `seq`, if it is a request type. */

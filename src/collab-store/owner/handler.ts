@@ -20,6 +20,7 @@ import { parseDailyCap, parseNeuronBudget, probeEndpoint, providerAdapterFactory
 import { runOwnerTrial } from './trials';
 import { listActiveCoordinators } from './coordinators';
 import { appointCycleCoordinator } from './delegation-execution';
+import { closeCycle } from './close';
 import { setExecutorNotes } from './executor-notes';
 import { listIdentityFamilies } from '../identity/families';
 import { relayLines } from '../controller/relay';
@@ -57,7 +58,7 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator'] as const;
+const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator', 'close_cycle'] as const;
 
 /** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
 async function dashboardData(db: D1Database, before?: number) {
@@ -148,6 +149,18 @@ export async function handleOwnerRequest(
         proof, op,
       });
       message = { text: 'Mandat du cycle mis à jour (seq ' + result.event.seq + ').', error: false };
+    } else if (action === 'close_cycle') {
+      // CC-Owner V2 L2 : clôture d'un cycle — refuse-soft (compte affiché), force avec motif et confirmation.
+      const result = await closeCycle(db, {
+        cycle_id: field('cycle_id'), force: field('force') === 'on',
+        reason: field('reason'), confirm: field('confirm'), proof, op,
+      });
+      const closedAs = JSON.parse(result.event.payload_json) as { pending_requests?: number; active_tasks?: number };
+      message = { text: (result.status === 'duplicate' ? 'Cycle déjà clos : ' : 'Cycle clos : ')
+        + result.cycle_id + ' (seq ' + result.event.seq + ') — '
+        + (closedAs.pending_requests ?? 0) + ' demande(s) d’agent encore en attente, '
+        + (closedAs.active_tasks ?? 0) + ' tâche(s) active(s)'
+        + (result.force ? ', clôture forcée (motif journalisé)' : '') + '.', error: false };
     } else if (action === 'register') {
       const result = await registerParticipant(db, { participant_id: field('participant_id'), display_label: field('display_label'), proof, op });
       message = { text: 'Participant enregistré (seq ' + result.event.seq + ').', error: false };
