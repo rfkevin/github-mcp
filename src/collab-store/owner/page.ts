@@ -188,7 +188,10 @@ function decisionCell(item: PendingWithExecutable, secret: string): string {
 
 const ACTION_LABELS: Record<string, string> = { install_phases: 'Installer les définitions de phase', import_state: 'Importer l’état CC-STATE-1',
   register_endpoint: 'Inscrire ou modifier un endpoint d’exécution', grant_coordinator: 'Accorder ou révoquer le rôle coordinateur',
-  set_identity_family: 'Configurer une identité logique commune' };
+  set_identity_family: 'Configurer une identité logique commune',
+  // CC-Owner V2 L6 : actes désormais exécutables à l’approbation d’une demande.
+  classify_request: 'Classer une demande', close_cycle: 'Clôturer un cycle (mode doux)',
+  appoint_cycle_coordinator: 'Nommer ou révoquer le coordinateur d’un cycle' };
 
 /** CC-4 A2 : ce qui sera exécuté exactement, pourquoi, risque, retour arrière, empreinte. */
 function executableDetail(item: PendingWithExecutable): string {
@@ -201,7 +204,8 @@ function executableDetail(item: PendingWithExecutable): string {
     + (exec.action === 'register_endpoint' ? ' — endpoint <code>' + escapeHtml(exec.target ?? '') + '</code>'
       : exec.action === 'grant_coordinator' ? ' — participant <code>' + escapeHtml(exec.target ?? '') + '</code>'
         : exec.action === 'set_identity_family' ? ' — identité <code>' + escapeHtml(exec.target ?? '') + '</code>'
-          : ' — cycle <code>' + escapeHtml(exec.cycle_id ?? '') + '</code>') + '</dd>'
+          : exec.action === 'classify_request' ? ' — demande <code>' + escapeHtml(exec.target ?? '') + '</code>'
+            : ' — cycle <code>' + escapeHtml(exec.cycle_id ?? '') + '</code>') + '</dd>'
     + '<dt>Pourquoi</dt><dd>' + escapeHtml(exec.reason ?? '') + '</dd>'
     + '<dt>Risque</dt><dd>' + escapeHtml(exec.risk ?? '') + '</dd>'
     + '<dt>Retour arrière</dt><dd>' + escapeHtml(exec.rollback ?? '') + '</dd>'

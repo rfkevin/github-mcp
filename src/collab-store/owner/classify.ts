@@ -19,6 +19,7 @@
 import { CollabStoreError, type StoredStoreEvent } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { ownerAppend, requestEvent, type OwnerWriteResult } from './decisions';
+import { assertBindingPrecondition, bindingGuard, bindingKey, bindingPayload, bindingStatements, type OwnerRequestBinding } from './binding';
 import type { OwnerProof } from './proof';
 
 export const CLASSIFICATION_VERDICTS = ['invalid', 'blocked', 'duplicate', 'other'] as const;
@@ -44,6 +45,8 @@ export async function classifyRequest(db: D1Database, input: {
   note?: string;
   proof: OwnerProof;
   op: string;
+  /** CC-Owner V2 L6 : approbation d’une demande classify_request — acte lié. */
+  binding?: OwnerRequestBinding;
   now?: () => Date;
 }): Promise<ClassifyResult> {
   if (input.proof.kind === 'delegated') {
@@ -57,6 +60,10 @@ export async function classifyRequest(db: D1Database, input: {
   }
   const verdict = input.verdict as ClassificationVerdict;
   const note = (input.note ?? '').trim().slice(0, MAX_NOTE);
+  // CC-Owner V2 L6 : la demande exécutable déclare previous_seq null — la
+  // classification n’observe aucun acte du même type (la PK 0011 scelle la
+  // cible dans le même lot).
+  if (input.binding) assertBindingPrecondition(input.binding, null);
   await ensureSchema(db);
   const request = await requestEvent(db, input.request_seq);
   if (!request) {
@@ -70,7 +77,14 @@ export async function classifyRequest(db: D1Database, input: {
     requestId = '';
   }
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
-  const key = 'owner-request-classification:' + request.cycle_id + ':' + request.seq + ':' + input.op;
+  // L6 lié : clé de liaison (identité de la demande exécutable) ; la garde de
+  // famille ?5 couvre les actes form ET liés de cette cible (prefix commun).
+  const key = input.binding
+    ? bindingKey('owner-request-classification:' + request.cycle_id + ':' + request.seq, input.binding)
+    : 'owner-request-classification:' + request.cycle_id + ':' + request.seq + ':' + input.op;
+  const bound = input.binding
+    ? bindingGuard(input.binding, 'owner-request-classification:' + request.cycle_id + ':' + request.seq + ':')
+    : null;
   // A05 : le contrôle d'idempotence précède toute garde — le rejeu de la même
   // soumission (même op) renvoie l'événement original (duplicate), même si la
   // demande est déjà classée ; REQUEST_ALREADY_CLASSIFIED ne vise qu'un
@@ -95,15 +109,23 @@ export async function classifyRequest(db: D1Database, input: {
     result = await ownerAppend(db, {
       cycleId: request.cycle_id,
       key,
+      // L6 : bindingPayload en DERNIER — l’acte lié porte l’identité de la
+      // demande EXÉCUTABLE (request_id/request_seq), sinon le rejeu de
+      // l’approbation casserait (ALREADY_DECIDED au lieu de duplicate).
       payload: { action: 'classify_request', request_id: requestId, request_seq: request.seq, verdict,
-        ...(note ? { note } : {}) },
+        ...(note ? { note } : {}), ...(input.binding ? bindingPayload(input.binding) : {}) },
       proof: input.proof,
       extraGuard: {
         // PK (cycle_id, request_seq) : un classement concurrent gagne, le nôtre est refusé.
-        sql: 'NOT EXISTS (SELECT 1 FROM request_classifications WHERE cycle_id = ?4 AND request_seq = ?5)',
-        binds: [request.cycle_id, request.seq] as unknown[],
+        // L6 lié : la garde de liaison (?4..?6) précède, la PK passe en ?7/?8.
+        sql: bound
+          ? '(' + bound.sql + ') AND NOT EXISTS (SELECT 1 FROM request_classifications WHERE cycle_id = ?7 AND request_seq = ?8)'
+          : 'NOT EXISTS (SELECT 1 FROM request_classifications WHERE cycle_id = ?4 AND request_seq = ?5)',
+        binds: (bound ? [...bound.binds, request.cycle_id, request.seq] : [request.cycle_id, request.seq]) as unknown[],
       },
-      sideEffects: keyBind => [db.prepare([
+      sideEffects: keyBind => [
+        ...(input.binding ? bindingStatements(db, input.binding, input.proof, keyBind, input.now) : []),
+        db.prepare([
         'INSERT INTO request_classifications (cycle_id, request_seq, verdict, note, event_seq, created_at)',
         'VALUES (?1, ?2, ?3, ?4, (SELECT seq FROM events WHERE idempotency_key = ?5), ?6)',
       ].join(' ')).bind(request.cycle_id, request.seq, verdict, note, keyBind, at)],

@@ -4,7 +4,9 @@
  * colle plus rien, il approuve ou refuse sur /owner.
  *
  * Une demande exécutable est un owner.request dont le payload porte :
- *   request_id, summary, action (install_phases | import_state), params,
+ *   request_id, summary, action (install_phases, import_state, register_endpoint,
+ *   grant_coordinator, set_identity_family, reassign_task, classify_request,
+ *   close_cycle, appoint_cycle_coordinator), params,
  *   payload_sha256 = sha256(JSON canonique {action, params}),
  *   preconditions.previous_seq (dernier acte du même type sur le cycle cible
  *   au dépôt, null s'il n'y en a pas), reason, risk, rollback, et en option
@@ -37,8 +39,12 @@ import {
 import { latestIdentityFamilyActSeq, setIdentityFamily } from './identity-families';
 import { IDENTITY_FAMILY_RE } from '../identity/families';
 import { latestReassignActSeq, parseReassignParams, reassignTarget, reassignTask } from './task-reassign';
+import { CLASSIFICATION_VERDICTS, classifyRequest, type ClassificationVerdict } from './classify';
+import { closeCycle } from './close';
+import { appointCycleCoordinator, latestMandateActSeq, MANDATE_FAMILY_RE, MANDATE_PARTICIPANT_RE } from './delegation-execution';
 
-export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator', 'set_identity_family', 'reassign_task'] as const;
+export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator', 'set_identity_family', 'reassign_task',
+  'classify_request', 'close_cycle', 'appoint_cycle_coordinator'] as const;
 export type ExecutableAction = (typeof EXECUTABLE_ACTIONS)[number];
 const SHA_RE = /^[0-9a-f]{64}$/;
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -133,6 +139,53 @@ function validateParams(action: ExecutableAction, params: Record<string, unknown
     }
     return familyId;
   }
+  if (action === 'classify_request') {
+    // CC-Owner V2 L6 : cible = la demande à classer ; le cycle réel (celui de
+    // cette demande) est résolu à l’approbation par classifyRequest.
+    const extra = Object.keys(params).filter(key => !['request_seq', 'verdict', 'note'].includes(key));
+    if (extra.length) throw new Error('params : champs inconnus ' + extra.join(', ') + '.');
+    const targetSeq = params.request_seq;
+    if (!Number.isSafeInteger(targetSeq) || (targetSeq as number) <= 0) {
+      throw new Error('params.request_seq : numéro (seq) de la demande à classer requis.');
+    }
+    const verdict = params.verdict;
+    if (typeof verdict !== 'string' || !CLASSIFICATION_VERDICTS.includes(verdict as ClassificationVerdict)) {
+      throw new Error('params.verdict : invalid, blocked, duplicate ou other.');
+    }
+    const note = params.note;
+    if (note !== undefined && (typeof note !== 'string' || note.length > 500)) {
+      throw new Error('params.note : texte facultatif de 500 caractères au maximum.');
+    }
+    return 'request:' + (targetSeq as number);
+  }
+  if (action === 'close_cycle') {
+    // CC-Owner V2 L6 : clôture exécutable DOUCE — cycle_id seul ; force, reason
+    // et confirm ne sont pas des paramètres approuvables.
+    const extra = Object.keys(params).filter(key => key !== 'cycle_id');
+    if (extra.length) throw new Error('params : champs inconnus ' + extra.join(', ') + ' (clôture douce : cycle_id seul).');
+    const cycleId = params.cycle_id;
+    if (typeof cycleId !== 'string' || !CYCLE_RE.test(cycleId)) throw new Error('params.cycle_id invalide.');
+    return cycleId;
+  }
+  if (action === 'appoint_cycle_coordinator') {
+    // CC-Owner V2 L6 : nomination/révocation — les deux ids ensemble ou aucun.
+    const extra = Object.keys(params).filter(key => !['cycle_id', 'participant_id', 'family_id', 'expected_epoch'].includes(key));
+    if (extra.length) throw new Error('params : champs inconnus ' + extra.join(', ') + '.');
+    const cycleId = params.cycle_id;
+    if (typeof cycleId !== 'string' || !CYCLE_RE.test(cycleId)) throw new Error('params.cycle_id invalide.');
+    const participantId = params.participant_id;
+    const familyId = params.family_id;
+    const nomination = typeof participantId === 'string' && typeof familyId === 'string'
+      && MANDATE_PARTICIPANT_RE.test(participantId) && MANDATE_FAMILY_RE.test(familyId);
+    if (!(nomination || (participantId === undefined && familyId === undefined))) {
+      throw new Error('params.participant_id et params.family_id : les deux (nomination) ou aucun (révocation), identifiants valides.');
+    }
+    const expectedEpoch = params.expected_epoch;
+    if (!Number.isSafeInteger(expectedEpoch) || (expectedEpoch as number) < 0) {
+      throw new Error('params.expected_epoch : entier >= 0 (époque actuelle du mandat).');
+    }
+    return cycleId;
+  }
   if (action === 'reassign_task') {
     // CC-5 l3d 2b-2c : cible = « cycle/tâche » (précondition par tâche).
     const parsed = parseReassignParams(params);
@@ -185,6 +238,8 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     const target = validateParams(action as ExecutableAction, params as Record<string, unknown>);
     const cycleId = action === 'register_endpoint' || action === 'grant_coordinator' || action === 'set_identity_family'
       ? REGISTRY_CYCLE : action === 'reassign_task' ? String((params as Record<string, unknown>).cycle_id) : target;
+    // L6 : pour classify_request, target (request:<seq>) n’est pas un cycle — le
+    // cycle réel (celui de la demande classée) est résolu à l’approbation.
     const declared = payload.payload_sha256;
     if (typeof declared !== 'string' || !SHA_RE.test(declared)) throw new Error('payload_sha256 : 64 caractères hexadécimaux requis.');
     const computed = await executablePayloadSha256(action as string, params);
@@ -211,6 +266,12 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
 
 /** seq du dernier acte du même type sur la cible (cycle, ou endpoint_id pour register_endpoint) : précondition d'une demande. */
 export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction, cycleId: string): Promise<number | null> {
+  // CC-Owner V2 L6 : classification et clôture liées n’observent aucun acte du
+  // même type (previous_seq toujours null : la PK 0011 verrouille le
+  // re-classement, l’état clos verrouille la re-clôture) ; le mandat
+  // coordinateur, lui, se chaîne acte par acte (epoch).
+  if (action === 'classify_request' || action === 'close_cycle') return null;
+  if (action === 'appoint_cycle_coordinator') return latestMandateActSeq(db, cycleId);
   if (action === 'register_endpoint') return latestEndpointActSeq(db, cycleId);
   if (action === 'grant_coordinator') return latestCoordinatorActSeq(db, cycleId);
   if (action === 'set_identity_family') return latestIdentityFamilyActSeq(db, cycleId);
@@ -254,7 +315,8 @@ export async function describePending(page: PendingPage, now: () => Date = () =>
     const req = parsed.request;
     const body = req.action === 'install_phases' ? String(req.params.definitions)
       : req.action === 'register_endpoint' || req.action === 'grant_coordinator' || req.action === 'set_identity_family'
-        || req.action === 'reassign_task'
+        || req.action === 'reassign_task' || req.action === 'classify_request' || req.action === 'close_cycle'
+        || req.action === 'appoint_cycle_coordinator'
         ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
     // L3e 2b : la même classification que la délégation, affichée ; une panne n'empêche jamais la page.
     const state_diff = db && req.action === 'import_state'
@@ -383,6 +445,40 @@ export async function decideOwnerRequest(db: D1Database, input: {
     return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action, cycle_id: req.cycle_id,
       detail: 'phases ' + result.phases.map(item => item.phase + ' (' + item.auto_advance + ')').join(', ')
         + ', sha256 ' + result.definitions_sha256.slice(0, 12) } };
+  }
+  if (req.action === 'classify_request') {
+    // CC-Owner V2 L6 : la cible (params.request_seq) vit éventuellement sur un
+    // autre cycle que la demande — classifyRequest résout et écrit sur le cycle
+    // de la cible, l’acte porte l’identité de la demande exécutable.
+    const result = await classifyRequest(db, {
+      request_seq: req.params.request_seq as number, verdict: String(req.params.verdict),
+      ...(typeof req.params.note === 'string' ? { note: req.params.note } : {}),
+      proof: input.proof, op: 'binding', binding, now: input.now,
+    });
+    return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action,
+      cycle_id: result.cycle_id, detail: 'demande seq ' + result.request_seq + ' classée ' + result.verdict } };
+  }
+  if (req.action === 'close_cycle') {
+    // CC-Owner V2 L6 : clôture DOUCE liée — la demande close elle-même est
+    // exclue du comptage (exclusion symétrique JS/SQL), force impossible.
+    const result = await closeCycle(db, { cycle_id: String(req.params.cycle_id), proof: input.proof, op: 'binding',
+      binding, excludeRequestSeq: request.seq, now: input.now });
+    return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action,
+      cycle_id: result.cycle_id, detail: 'cycle clos (mode doux), ' + result.pending_requests
+        + ' demande(s) en attente au moment de la clôture' } };
+  }
+  if (req.action === 'appoint_cycle_coordinator') {
+    // CC-Owner V2 L6 : nomination/révocation liée, jamais déléguable ;
+    // previous_seq = dernier acte de mandat (l’epoch est revérifié dans le lot).
+    const result = await appointCycleCoordinator(db, {
+      cycleId: String(req.params.cycle_id),
+      participantId: typeof req.params.participant_id === 'string' ? req.params.participant_id : null,
+      familyId: typeof req.params.family_id === 'string' ? req.params.family_id : null,
+      expectedEpoch: req.params.expected_epoch as number, proof: input.proof, op: 'binding', binding, now: input.now,
+    });
+    return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action,
+      cycle_id: String(req.params.cycle_id), detail: 'mandat epoch ' + ((req.params.expected_epoch as number) + 1)
+        + ', participant ' + (typeof req.params.participant_id === 'string' ? req.params.participant_id : 'aucun (révocation)') } };
   }
   const target = req.params.target as { repository: string; path: string; ref: string } | undefined | null;
   const result = await importStateSnapshot(db, {
