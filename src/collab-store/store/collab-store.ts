@@ -283,12 +283,16 @@ export class CollabStore {
     const journal: D1PreparedStatement[] = [
       // Transactional CAS guard: the whole batch rolls back unless the key is
       // new AND the cycle is exactly at expected_rev AND the quota is open
+      // AND the cycle is open (CC-Owner V2 L1: a closed cycle refuses every
+      // agent write — COALESCE keeps cycle creation, the cycles row is born
+      // below in the same batch with its default open status)
       // AND (proposal.submit) no proposal from this participant in this round.
       this.db.prepare([
         'INSERT INTO collab_store_guard (ok)',
         'SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM events WHERE idempotency_key = ?1)',
         '             AND COALESCE((SELECT revision FROM cycles WHERE cycle_id = ?2), 0) = ?3',
         '             AND COALESCE((SELECT writes FROM quota_counters WHERE day = ?4), 0) < ?5',
+        '             AND COALESCE((SELECT status FROM cycles WHERE cycle_id = ?2), \'open\') = \'open\'',
         ...proposalClause,
         '       THEN 1 ELSE 0 END',
       ].join(' ')).bind(...guardParams),
@@ -352,6 +356,19 @@ export class CollabStore {
         // serveur, déjà autorisée) : aucune mémoire privée d'autrui.
         const delta = await this.deltaSinceRevision(event.cycle_id, event.expected_rev);
         return { status: 'stale', currentRevision, delta: await redactEventsFor(this.db, event.participant_id, delta) };
+      }
+      // CC-Owner V2 (L1) : le batch a pu ruer en arrière parce que le cycle
+      // est fermé. Re-diagnostic depuis l'état durable, APRÈS le rejeu (un
+      // op_id d'avant la clôture reste duplicate) et APRÈS STALE (une écriture
+      // en vol absorbe d'abord le conflit de révision ; au nouvel essai à la
+      // révision courante, la garde renvoie CYCLE_CLOSED).
+      const cycleStatus = await this.db.prepare('SELECT status FROM cycles WHERE cycle_id = ?1')
+        .bind(event.cycle_id).first<{ status: string }>();
+      if ((cycleStatus?.status ?? 'open') === 'closed') {
+        throw new CollabStoreError(
+          'CYCLE_CLOSED',
+          'Cycle « ' + event.cycle_id + ' » fermé par le propriétaire : les écritures des agents sont refusées ; les lectures (contexte, delta, export) restent disponibles.',
+        );
       }
       // CC-4 A0 (point 5) : un proposal.submit concurrent a pu gagner la ronde
       // entre le pré-check read-only et le batch — re-diagnostiquer depuis

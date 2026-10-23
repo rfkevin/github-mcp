@@ -467,3 +467,92 @@ describe('CC-3 F1 — rejeux après réponse perdue (review Claude)', () => {
     });
   });
 });
+
+
+// CC-Owner V2 — L1 : un cycle fermé (cycles.status = 'closed') refuse toute
+// écriture des agents, atomiquement dans la garde du batch ; le rejeu
+// d'avant-clôture et les lectures restent disponibles. L'action owner
+// close_cycle arrive en L2 : ces tests ferment le cycle directement en base.
+describe('CC-Owner V2 — L1 : garde cycle-closed', () => {
+  /** Fermeture directe du cycle (l'action owner close_cycle arrive en L2). */
+  async function closeCycle(cycle: string): Promise<void> {
+    await bindings.COLLAB_DB_C2.prepare(
+      "UPDATE cycles SET status = 'closed' WHERE cycle_id = ?1"
+    ).bind(cycle).run();
+  }
+
+  async function appendCheckpoint(store: CollabStore, cycle: string, expectedRev: number, opSuffix: string) {
+    return store.appendEvent({
+      cycle_id: cycle, type: 'checkpoint', participant_id: 'agent:a', expected_rev: expectedRev,
+      payload_json: '{"n":1}', op_id: 'agent.a:' + cycle + ':' + opSuffix,
+    });
+  }
+
+  async function countEvents(cycle: string): Promise<number> {
+    const row = await bindings.COLLAB_DB_C2.prepare('SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1')
+      .bind(cycle).first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  it('cycle fermé : append refusé CYCLE_CLOSED, rien d’écrit, rejeu pré-clôture duplicate', async () => {
+    const store = makeStore();
+    const cycle = uniq('l1a');
+    expect((await appendCheckpoint(store, cycle, 0, 'cp:1')).status).toBe('applied');
+    await closeCycle(cycle);
+    await expect(appendCheckpoint(store, cycle, 1, 'cp:2')).rejects.toMatchObject({ code: 'CYCLE_CLOSED' });
+    expect(await store.currentRevision(cycle)).toBe(1);
+    expect(await countEvents(cycle)).toBe(1);
+    // Un op_id déposé avant la clôture reste un rejeu duplicate : le journal est la vérité.
+    expect((await appendCheckpoint(store, cycle, 0, 'cp:1')).status).toBe('duplicate');
+  });
+
+  it('cycle fermé : écriture en vol absorbée par STALE, puis CYCLE_CLOSED au nouvel essai', async () => {
+    const store = makeStore();
+    const cycle = uniq('l1b');
+    expect((await appendCheckpoint(store, cycle, 0, 'cp:1')).status).toBe('applied');
+    await closeCycle(cycle);
+    const stale = await appendCheckpoint(store, cycle, 0, 'cp:2') as { status: string; currentRevision: number };
+    expect(stale.status).toBe('stale');
+    expect(stale.currentRevision).toBe(1);
+    await expect(appendCheckpoint(store, cycle, 1, 'cp:2')).rejects.toMatchObject({ code: 'CYCLE_CLOSED' });
+  });
+
+  it('cycle fermé : task.status refusé CYCLE_CLOSED, la tâche reste inchangée', async () => {
+    const store = makeStore();
+    const cycle = uniq('l1c');
+    await seedParticipants('agent:a', 'agent:b', 'agent:c');
+    await store.appendEvent({ cycle_id: cycle, type: 'task.claim', participant_id: 'agent:a', expected_rev: 0,
+      payload_json: JSON.stringify({ task: { task_id: 't1', owner_pid: 'agent:a', reviewer_pid: 'agent:b', tester_pid: 'agent:c' } }),
+      op_id: 'agent.a:' + cycle + ':claim:1' });
+    await closeCycle(cycle);
+    await expect(store.appendEvent({ cycle_id: cycle, type: 'task.status', participant_id: 'agent:a', expected_rev: 1,
+      payload_json: JSON.stringify({ task: { task_id: 't1', status: 'review' } }),
+      op_id: 'agent.a:' + cycle + ':status:1' })).rejects.toMatchObject({ code: 'CYCLE_CLOSED' });
+    const task = await bindings.COLLAB_DB_C2.prepare('SELECT status FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
+      .bind(cycle, 't1').first<{ status: string }>();
+    // Le claim matérialise la tâche en in_progress : le task.status refusé n'a rien écrit.
+    expect(task?.status).toBe('in_progress');
+  });
+
+  it('cycle fermé : les lectures restent disponibles (contexte et delta)', async () => {
+    const store = makeStore();
+    const cycle = uniq('l1d');
+    expect((await appendCheckpoint(store, cycle, 0, 'cp:1')).status).toBe('applied');
+    await closeCycle(cycle);
+    const context = await store.getContext(cycle, 'agent:a');
+    expect(context.cycle_id).toBe(cycle);
+    const delta = await store.getDelta(cycle, 0, 10, 'agent:a');
+    expect(delta.events).toHaveLength(1);
+  });
+
+  it('la fermeture est par cycle : un autre cycle (création comprise) reste inscriptible', async () => {
+    const store = makeStore();
+    const closed = uniq('l1e1');
+    expect((await appendCheckpoint(store, closed, 0, 'cp:1')).status).toBe('applied');
+    await closeCycle(closed);
+    const other = uniq('l1e2');
+    expect((await appendCheckpoint(store, other, 0, 'cp:1')).status).toBe('applied');
+    expect(await countEvents(other)).toBe(1);
+    await expect(appendCheckpoint(store, closed, 1, 'cp:2')).rejects.toMatchObject({ code: 'CYCLE_CLOSED' });
+  });
+});

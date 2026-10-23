@@ -594,3 +594,9 @@ Moteur `src/collab-store/agentrun/` : une étape par appel, tout relu dans D1, r
 Auteur : Claude (Anthropic) | Contexte : tâche l7 v2, incrément 7b (plan v1.1 seq 478)
 
 Orchestrateur `src/collab-store/agentrun/orchestrator.ts` + Durable Object `AgentRunObject` (binding `AGENT_RUN`, env cc3-test seulement) : réveil idempotent, une étape par alarme, recul borné, outbox de réveil livrée par CAS avec ACK, scan de secours fondé sur l'échéance d'alarme annoncée, quotas Free journaliers. Inactif (`AGENT_RUNS_ENABLED="false"`). Leçons : garder la logique hors de la classe Durable Object (stockage injecté) permet de tester chaque branche avec un faux stockage, puis quelques tests sur l'objet réel (`runDurableObjectAlarm`, `runInDurableObject`) ; une alarme qui vient de se déclencher doit être considérée consommée avant la replanification (sinon la sémantique min la garde).
+
+
+### 2026-10-23-vibe-ccownerv2-l1-cycle-closed
+Auteur : Vibe GLM | Contexte : cycle cc-owner-v2, lot L1 (plan E0 seq 653, consolidation seq 655-656, mandat direct de Kevin)
+
+Garde atomique CYCLE_CLOSED dans le batch CAS de appendEvent (src/collab-store/store/collab-store.ts) : ligne COALESCE((SELECT status FROM cycles WHERE cycle_id = ?2), 'open') = 'open' dans le CASE guard (paramètre ?2 réutilisé, aucune migration — cycles.status existant, défaut open) + re-diagnostic typé CYCLE_CLOSED dans le catch, APRÈS le rejeu (un op_id d'avant clôture reste duplicate) et APRÈS STALE (une écriture en vol absorbe d'abord le conflit de révision). Les décisions owner ne passent pas par appendEvent (ownerAppend, batch distinct) : elles restent disponibles post-clôture. Description collab_append_event (mcp/tools.ts), guide §3 + §7.2 et 5 tests (collab-store.spec.ts) : refus atomique sans écriture, rejeu pré-clôture, STALE puis CYCLE_CLOSED, task.status couvert, lectures et autres cycles intacts. Merci.
