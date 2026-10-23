@@ -526,11 +526,12 @@ describe('CC-Owner V2 — L1 : garde cycle-closed', () => {
       op_id: 'agent.a:' + cycle + ':claim:1' });
     await closeCycle(cycle);
     await expect(store.appendEvent({ cycle_id: cycle, type: 'task.status', participant_id: 'agent:a', expected_rev: 1,
-      payload_json: JSON.stringify({ task: { task_id: 't1', status: 'in_progress' } }),
+      payload_json: JSON.stringify({ task: { task_id: 't1', status: 'review' } }),
       op_id: 'agent.a:' + cycle + ':status:1' })).rejects.toMatchObject({ code: 'CYCLE_CLOSED' });
     const task = await bindings.COLLAB_DB_C2.prepare('SELECT status FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
       .bind(cycle, 't1').first<{ status: string }>();
-    expect(task?.status).toBe('proposed');
+    // Le claim matérialise la tâche en in_progress : le task.status refusé n'a rien écrit.
+    expect(task?.status).toBe('in_progress');
   });
 
   it('cycle fermé : les lectures restent disponibles (contexte et delta)', async () => {
