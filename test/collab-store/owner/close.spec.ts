@@ -1,4 +1,3 @@
-import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { closeCycle } from '../../../src/collab-store/owner/close';
 import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
@@ -7,46 +6,15 @@ import { importStateSnapshot } from '../../../src/collab-store/owner/state-impor
 import { appointCycleCoordinator } from '../../../src/collab-store/owner/delegation-execution';
 import { exportCycleState } from '../../../src/collab-store/export/state-export';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
+import { db, proof, delegatedProof, uniq, makeStoreForMonth, dayStamp, nextSerial, codeOf, refusalOf, fileRequest, countEvents, countOwnerActionEvents } from './owner-act-helpers';
 import { doc, TASK } from '../state-doc-helper';
 
 // CC-Owner V2 L2 — clôture d'un cycle par le propriétaire : refuse-soft avec
 // compte affiché, force réservée à l'owner (motif + confirmation), tâches
 // actives bloquantes même en force, état terminal, decide préservé.
-const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
-const proof = { kind: 'secret' as const, subject: 'owner-secret' };
-const delegatedProof = (cycleId: string) => ({ kind: 'delegated' as const, subject: 'reviewer', cycle_id: cycleId,
-  epoch: 0, request_id: 'req', reviewer_pid: 'agent:b', reviewer_family: 'agent:b', expires_at: 0,
-  params_hash: 'h', max_cost_cents: 0 });
-let n = 0;
-const uniq = (label: string) => `ccown2-${label}-${++n}`;
-let day = 0;
-
-/** Un jour distinct par store : novembre, sans recouvrement avec les suites d'octobre. */
+/** Un jour distinct par store : novembre (harnais partagé, voir owner-act-helpers.ts). */
 function makeStore(): CollabStore {
-  day += 1;
-  const stamp = `2026-11-${String(day).padStart(2, '0')}T10:00:00.000Z`;
-  return new CollabStore(db, { now: () => new Date(stamp) });
-}
-
-function codeOf(error: unknown): string {
-  return (error as { code: string }).code;
-}
-
-/** Capture le refus (code + message) ; échoue si la promesse aboutit. */
-async function refusalOf(promise: Promise<unknown>): Promise<{ code: string; message: string }> {
-  try {
-    await promise;
-  } catch (error) {
-    return error as { code: string; message: string };
-  }
-  throw new Error('un refus était attendu');
-}
-
-/** Dépose une demande d'agent valide sur le cycle. */
-async function fileRequest(store: CollabStore, cycle: string, rev: number, requestId: string): Promise<void> {
-  const outcome = await store.appendEvent({ cycle_id: cycle, type: 'owner.request', participant_id: 'agent:a',
-    expected_rev: rev, op_id: `agent.a:${cycle}:req:${++n}`, payload_json: JSON.stringify({ request_id: requestId, summary: 'demande de test' }) });
-  expect(outcome.status).toBe('applied');
+  return makeStoreForMonth('2026-11');
 }
 
 async function appendCheckpoint(store: CollabStore, cycle: string, expectedRev: number, opSuffix: string) {
@@ -63,17 +31,6 @@ async function seedParticipants(...pids: string[]): Promise<void> {
   }
 }
 
-async function countEvents(cycle: string): Promise<number> {
-  return (await db.prepare('SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1').bind(cycle).first<{ n: number }>())?.n ?? 0;
-}
-
-async function countCloseEvents(cycle: string): Promise<number> {
-  return (await db.prepare(
-    "SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND json_valid(payload_json)"
-    + " AND json_extract(payload_json, '$.action') = 'close_cycle'"
-  ).bind(cycle).first<{ n: number }>())?.n ?? 0;
-}
-
 async function cycleStatus(cycle: string): Promise<string> {
   return (await db.prepare('SELECT status FROM cycles WHERE cycle_id = ?1').bind(cycle).first<{ status: string }>())?.status ?? 'absent';
 }
@@ -82,7 +39,7 @@ describe('CC-Owner V2 — L2 : clôture d’un cycle par le propriétaire', () =
   it('clôture douce appliquée : payload et révision, rejeu duplicate, état terminal, append refusé sans écriture ni quota', async () => {
     const store = makeStore();
     const cycle = uniq('cyc');
-    const quotaDay = `2026-11-${String(day).padStart(2, '0')}`;
+    const quotaDay = dayStamp('2026-11');
     expect((await appendCheckpoint(store, cycle, 0, 'cp:1')).status).toBe('applied');
     const quotaBefore = (await db.prepare('SELECT COALESCE(writes, 0) AS w FROM quota_counters WHERE day = ?1')
       .bind(quotaDay).first<{ w: number }>())?.w ?? 0;
@@ -146,12 +103,12 @@ describe('CC-Owner V2 — L2 : clôture d’un cycle par le propriétaire', () =
     const requestId = uniq('req');
     // Demande invalide : payload sans request_id exploitable.
     expect((await store.appendEvent({ cycle_id: cycle, type: 'owner.request', participant_id: 'agent:a', expected_rev: 0,
-      payload_json: JSON.stringify({ summary: 'sans identifiant' }), op_id: `agent.a:${cycle}:req:${++n}` })).status).toBe('applied');
+      payload_json: JSON.stringify({ summary: 'sans identifiant' }), op_id: `agent.a:${cycle}:req:${nextSerial()}` })).status).toBe('applied');
     // Homonyme d'un request_id déjà tranché dans un autre cycle : bloquée, jamais décidable.
     await fileRequest(store, other, 0, requestId);
     await recordOwnerDecision(db, { request_id: requestId, decision: 'approve', proof });
     expect((await store.appendEvent({ cycle_id: cycle, type: 'owner.request', participant_id: 'agent:a', expected_rev: 1,
-      payload_json: JSON.stringify({ request_id: requestId, summary: 'homonyme' }), op_id: `agent.a:${cycle}:req:${++n}` })).status).toBe('applied');
+      payload_json: JSON.stringify({ request_id: requestId, summary: 'homonyme' }), op_id: `agent.a:${cycle}:req:${nextSerial()}` })).status).toBe('applied');
     const closed = await closeCycle(db, { cycle_id: cycle, proof, op: 'close-1' });
     expect(closed.status).toBe('applied');
     expect(closed.pending_requests).toBe(0);
@@ -224,7 +181,7 @@ describe('CC-Owner V2 — L2 : clôture d’un cycle par le propriétaire', () =
       expect(codeOf(append.reason)).toBe('CYCLE_CLOSED');
     }
     expect(await cycleStatus(cycle)).toBe('closed');
-    expect(await countCloseEvents(cycle)).toBe(1);
+    expect(await countOwnerActionEvents(cycle, 'close_cycle')).toBe(1);
   });
 
   it('double clôture concurrente : exactement une appliquée, l’autre CYCLE_ALREADY_CLOSED', async () => {
@@ -240,7 +197,7 @@ describe('CC-Owner V2 — L2 : clôture d’un cycle par le propriétaire', () =
     expect(outcomes.filter(code => code === 'applied')).toHaveLength(1);
     expect(outcomes.filter(code => code === 'CYCLE_ALREADY_CLOSED')).toHaveLength(1);
     expect(await cycleStatus(cycle)).toBe('closed');
-    expect(await countCloseEvents(cycle)).toBe(1);
+    expect(await countOwnerActionEvents(cycle, 'close_cycle')).toBe(1);
   });
 
   it('post-clôture : install_phases, import_state et appoint_cycle_coordinator refusés CYCLE_CLOSED, decide préservé', async () => {

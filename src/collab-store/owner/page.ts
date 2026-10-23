@@ -5,6 +5,7 @@
 import type { RelayLine } from '../controller/relay';
 import type { OwnerChannelConfig } from './config';
 import type { DescribedPendingPage, ExecutableView, PendingWithExecutable } from './executable';
+import type { ClassifiedRequest } from './decisions';
 import type { BudgetEnvelope } from './automation';
 import type { CapabilityRow } from '../executors/registry';
 import type { ImportedStateSummary } from './state-import';
@@ -76,6 +77,8 @@ export function loginPage(config: OwnerChannelConfig, message = ''): string {
 export interface DashboardData {
   /** F2/A06 : une page de demandes non tranchées, filtrées avant pagination. */
   pending: DescribedPendingPage;
+  /** CC-Owner V2 L3 : audit des demandes classées par l'owner (jamais effacées). */
+  classified?: ClassifiedRequest[];
   participants: Array<{ participant_id: string; display_label: string; status: string }>;
   clients: Array<{ oauth_client_id: string; participant_id: string; approved_event_seq: number | null }>;
   /** #126 : ids historiques qui représentent une même identité logique. */
@@ -118,6 +121,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
         + '<input type="hidden" name="before" value="' + data.pending.next_before + '">' + secret
         + '<p><button type="submit">Demandes plus anciennes</button></p></form>'
       : '')
+    + classifiedSection(data.classified ?? [], secret)
     + relaySection(data.relay ?? [])
     + automationSection(data.halted ?? false, data.budget, secret)
     + coordinatorSection(data.coordinators ?? [])
@@ -389,6 +393,27 @@ function phaseSection(secret: string): string {
     + '<label>Cycle <input type="text" name="cycle_id" required pattern="[a-z0-9][a-z0-9_-]{0,63}"></label>'
     + '<label>Définitions (JSON, facultatif) <textarea name="phases"></textarea></label>' + secret
     + '<p><button type="submit">Installer les phases</button></p></form></fieldset>';
+}
+
+/** CC-Owner V2 L3 : audit des demandes classées + formulaire de classification (drain append-only). */
+function classifiedSection(rows: ClassifiedRequest[], secret: string): string {
+  const body = rows.map(row => '<tr><td><code>' + escapeHtml(row.request_id || '—') + '</code><br>'
+    + escapeHtml(row.type) + ' · ' + escapeHtml(row.cycle_id) + ' · seq ' + row.request_seq + '</td>'
+    + '<td>' + escapeHtml(row.participant_id) + '</td><td><code>' + escapeHtml(row.verdict) + '</code>'
+    + (row.note ? '<br>' + escapeHtml(row.note) : '') + '</td><td>seq ' + (row.event_seq ?? '—') + '</td></tr>').join('');
+  return '<h2>Demandes classées (' + rows.length + ')</h2>'
+    + '<p class="note">Une classification retire une demande de l’attente sans la décider ni l’effacer : '
+    + 'audit append-only, une classification immuable par demande, possible même sur un cycle clos. '
+    + 'Verdicts : <code>invalid</code> (non décidable), <code>blocked</code>, <code>duplicate</code>, <code>other</code>.</p>'
+    + (body ? '<table><tr><th>Demande</th><th>Participant</th><th>Verdict</th><th>Événement</th></tr>' + body + '</table>'
+      : '<p class="note">Aucune demande classée.</p>')
+    + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="classify_request">'
+    + '<label>Numéro de demande (seq) <input type="number" name="request_seq" min="1" required></label>'
+    + '<label>Verdict <select name="verdict" required><option value="invalid">invalid</option>'
+    + '<option value="blocked">blocked</option><option value="duplicate">duplicate</option>'
+    + '<option value="other">other</option></select></label>'
+    + '<label>Note (facultative, 500 caractères) <textarea name="note" maxlength="500"></textarea></label>' + secret
+    + '<p><button type="submit">Classer la demande</button></p></form></fieldset>';
 }
 
 /** CC-Owner V2 L2 : clôture d'un cycle (refuse-soft, force avec motif et confirmation). */
