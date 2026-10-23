@@ -121,3 +121,37 @@ alarmes, état local perdu puis relance par le passage) ; résolution tardive d'
 sémantique min, l'interrupteur du wake, l'expiration de réclamation, la grâce, la replanification après busy, la
 vérification du bail dans l'alarme, le quota de lignes ou le plafond du recul fait échouer au moins un test.
 Non-régression : les 21 tests 7a passent.
+
+## Incrément 7c-1 — modèle réel gratuit et outils de lecture (plan de clôture v1.1, store seq 719)
+
+Toujours éteint : `AGENT_RUNS_ENABLED="false"` reste la seule porte d'activation, et sans `AGENT_RUN_MODEL` l'orchestrateur
+garde le modèle simulé de 7b. Aucun effet externe : tous les outils de 7c-1 sont en lecture (`effect: 'read'`).
+
+- **Modèle** `createWorkersAiModel` (`src/collab-store/agentrun/workers-ai-model.ts`) : binding `AI` déjà déclaré, aucune
+  clé ; modèles de la liste gratuite vérifiée (`FREE_MODEL_RATES`, modèles payants refusés) ; appel d'outils au format
+  compatible OpenAI, les deux formes de réponse Workers AI lues ; coût 0. Les neurons du jour sont réservés au pire cas
+  AVANT l'appel sur le même registre que le pilote L1 (`reserveNeurons`, pool du compte) puis ramenés au réel ; budget
+  insuffisant = aucun appel. Seuls les outils autorisés par l'hôte pour le type de tâche sont décrits au modèle.
+- **Jetons (A1)** : `prompt_tokens` rapportés, qui incluent les résultats d'outils renvoyés au modèle ; sans usage
+  rapporté, borne haute sur les octets envoyés (jamais 0). Erreur du fournisseur : usage = borne d'entrée.
+- **Hôte de lecture** `createReadToolHost` (`read-tools.ts`) : allowlist figée en code par type de tâche
+  (`READ_TOOLS_BY_KIND` : `research`, `planning`, `status` ; tout autre type n'a aucun outil) — `store_context`,
+  `store_delta` (masqué selon le participant, CR-C), `github_read_file`, `github_pull_request`, `github_check_runs`.
+  Cycle et participant relus dans `agent_runs` depuis le `run_id`, jamais pris dans les arguments du modèle ; dépôt unique
+  imposé par l'hôte (`AGENT_RUN_REPOSITORY`, sinon aucun outil GitHub) ; jetons GitHub minimaux en lecture seule, injectés
+  par la racine du Worker (`src/agent-run-object.ts`, sous-classe de l'objet) : le code du store n'importe jamais le client
+  GitHub (invariant CC-3 C6, `test/collab-store/export/tool.spec.ts`).
+- **Câblage** `engineFor` (`object.ts`) : modèle Workers AI + hôte de lecture si `AGENT_RUN_MODEL` et `AI` sont présents,
+  sinon simulé ; consigne commune `AGENT_RUN_SYSTEM` (lecture seule, données d'outils non fiables, jamais de verdict D12).
+- **Lignes écrites mesurées** : `ROWS_PER_STEP` (64) est désormais une réservation au pire cas avant l'étape ; après
+  l'étape elle est ramenée au réel mesuré par `meteredDb` (`meta.rows_written` des requêtes et lots D1 du moteur, index
+  compris) plus `DO_ROWS_PER_ALARM` (3, stockage de l'objet).
+- **Go-s (troisième quota Durable Objects Free)** : `do_gb_s`, réservation `GB_S_PER_STEP` (16) puis durée mesurée de
+  l'alarme × 0,128 Go, arrondie au supérieur ; défaut 10 000/jour (`AGENT_RUN_DAILY_GB_S`, plafond 13 000) ; épuisé =
+  aucune étape, réservation de lignes rendue, alarme dans une heure, journalisé.
+- **Double réveil** : deux wakes = deux requêtes comptées (`do_requests`), une seule alarme, une seule étape, aucun double
+  effet (test de rejeu).
+
+Tests : `test/collab-store/agentrun/l7c1-model-tools.spec.ts` (16). Contre-épreuves locales : retirer le règlement des
+quotas, l'allowlist par type de tâche, le filtrage des outils décrits au modèle ou la relecture du périmètre depuis le
+`run_id` fait échouer au moins un test. Non-régression : 21 tests 7a et 16 tests 7b passent.
