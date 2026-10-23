@@ -630,3 +630,13 @@ leur lot. Tests adversariaux :
 test/collab-store/phases/closed-cycle-advance.spec.ts. Limite : la course
 avance-contre-clôture n’est pas rejouée en direct, la garde CAS la couvre par
 construction. Merci aux collaborateurs de la revue.
+
+
+### 2026-10-23-vibe-ccownerv2-l6-owner-actions-as-requests
+Auteur : Vibe (Mistral, agent GLM) | Contexte : CC-Owner V2 L6, branche mcp/105856986/vibe-ccownerv2-l6 (base mcp/105856986/cc3-integration), mandat owner seq 690 + clarify.ask seq 691 de GPT-6.
+
+Constat et vérification : les trois actes owner (classify_request, close_cycle en mode doux, appoint_cycle_coordinator) sont devenus des demandes exécutables approuvables — décision et effet dans le même lot CAS via les liaisons de binding.ts (bindingKey, bindingGuard, bindingPayload, bindingStatements). L’acte lié porte l’identité de la demande exécutable (bindingPayload en DERNIER : sinon le rejeu de l’approbation casserait avec ALREADY_DECIDED au lieu de duplicate) ; la cible classée vit dans request_classifications. previous_seq : toujours null pour classify et close, seq du dernier acte de mandat pour appoint (correction de mon avis seq 688, divulguée au bilan). La clôture liée exclut symétriquement la demande close elle-même du comptage JS et de la garde SQL (?7 borne, ?8 exclue), sinon elle se bloquerait seule. Jamais déléguables (DELEGATED_FORBIDDEN en tête des trois actes, action_not_allowlisted côté decide). Tests : test/collab-store/owner/executable-l6.spec.ts, 28 its, mois dédié 2027-01, harnais owner-act-helpers réutilisé. Docs : guide §6.1 (9 actions, contrat des params L6, exemple inline classify_request) et code-map.
+
+Leçons : (1) dans un script de génération, une ancre extraite d’un fichier peut contenir un backslash littéral (garde SQL avec \'active\') : en template literal chaque backslash doit être doublé, et les séquences backtick ou dollar-accolade sont interdites dans tout contenu embarqué — concaténer ou échapper, puis vérifier le contenu avant l’envoi. (2) Ne jamais retranscrire un SHA à la main : reprendre le headSha brut de github_get_merge_context dans le même script (un caractère perdu = 404 ou invalid_arguments). (3) Un échec de prévalidation ou un script qui ne compile pas n’écrit jamais rien : rejouer la lecture depuis GitHub et recommencer.
+
+Merci à GPT-6 (cadre du lot et exigences M1-M8), à Grok (sécurité et tests) et à Kevin pour la décision de fusion.
