@@ -5,6 +5,7 @@ import { ensureSchema } from '../store/schema';
 import { phaseEntrySeq } from './entry-seq';
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 import { assertAutomationRunning, HALT_ACTIVE_SQL } from '../owner/automation';
+import { CYCLE_OPEN_GUARD } from '../owner/close';
 
 export interface PhaseFacts {
   definition: PhaseDefinition;
@@ -118,6 +119,9 @@ export async function advanceByPolicy(db: D1Database, input: {
         'INSERT INTO collab_store_guard (ok)',
         'SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM events WHERE idempotency_key = ?1)',
         'AND COALESCE((SELECT revision FROM cycles WHERE cycle_id = ?2), 0) = ?3',
+        // CC-Owner V2 L5 (contre-revue Claude seq 671) : un cycle clos ne change
+        // plus de phase — statut revérifié dans le lot, comme pour les appends (L1).
+        'AND ' + CYCLE_OPEN_GUARD,
         // CC-4 A2 (revue #115 R1) : l'avance par policy est automatique — un arrêt
         // d'urgence posé après le pré-check annule le lot (garde dans la transaction).
         'AND NOT ' + HALT_ACTIVE_SQL + ' THEN 1 ELSE 0 END',
@@ -152,6 +156,14 @@ export async function advanceByPolicy(db: D1Database, input: {
     const current = await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(input.cycle_id).first<{ revision: number }>();
     if ((current?.revision ?? 0) !== input.expected_revision) {
       throw new CollabStoreError('STALE', 'Le cycle a avancé pendant la transition.');
+    }
+    // CC-Owner V2 L5 (contre-revue Claude seq 671) : cycle clos entre-temps →
+    // CYCLE_CLOSED. Le rejeu d’une avance déposée avant clôture reste duplicate
+    // (contrôlé ci-dessus) ; une écriture en vol reste STALE puis CYCLE_CLOSED au
+    // nouvel essai — même convention que la garde des appends (L1).
+    const closed = await db.prepare('SELECT status FROM cycles WHERE cycle_id = ?1').bind(input.cycle_id).first<{ status: string }>();
+    if (closed?.status === 'closed') {
+      throw new CollabStoreError('CYCLE_CLOSED', 'Cycle clos par le propriétaire : aucune avance de phase.');
     }
     throw error;
   }
