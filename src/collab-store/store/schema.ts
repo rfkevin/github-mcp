@@ -302,6 +302,30 @@ export const STORE_MIGRATION_0009 = [
   'CREATE INDEX IF NOT EXISTS idx_identity_families_family ON participant_identity_families(family_id)',
 ];
 
+/**
+ * Store-owned migration 0011 (CC-Owner V2 L3) : classifications owner des
+ * demandes d'agent. Table interne au store (jamais dans le schéma canonique
+ * gelé 0001_init.sql), portable (CREATE IF NOT EXISTS, aucune option moteur),
+ * créée dans le batch initial d'ensureSchema : une base neuve l'obtient
+ * d'emblée, une base existante au premier appel. La PK (cycle_id,
+ * request_seq) interdit le re-classement : une classification immuable par
+ * demande, append-only (l'événement de demande n'est jamais modifié ni
+ * supprimé).
+ */
+export const STORE_MIGRATION_0011 = [
+  [
+    'CREATE TABLE IF NOT EXISTS request_classifications (',
+    '  cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),',
+    '  request_seq INTEGER NOT NULL REFERENCES events(seq),',
+    "  verdict TEXT NOT NULL CHECK (verdict IN ('invalid', 'blocked', 'duplicate', 'other'))",
+    "  note TEXT NOT NULL DEFAULT '',",
+    '  event_seq INTEGER REFERENCES events(seq),',
+    '  created_at INTEGER NOT NULL,',
+    '  PRIMARY KEY (cycle_id, request_seq)',
+    ')',
+  ].join(' '),
+];
+
 const ENSURED = new WeakSet<object>();
 
 function runnableStatements(sql: string): string[] {
@@ -334,6 +358,8 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     ...STORE_MIGRATION_0009.map(statement => db.prepare(statement)),
     // CC-5 L4: persistent one-shot merge intents and short-lived fencing leases.
     ...MERGE_INTENT_SCHEMA.map(statement => db.prepare(statement)),
+    // CC-Owner V2 L3 (0011) : classifications owner des demandes d'agent (drain append-only).
+    ...STORE_MIGRATION_0011.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.

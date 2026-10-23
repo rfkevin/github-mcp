@@ -55,7 +55,7 @@ export interface PendingRequest {
 
 export interface PendingPage {
   items: PendingRequest[];
-  /** Request events still awaiting a decision of their own (all states), across all pages. */
+  /** Request events still awaiting a decision of their own (all states, classified ones excluded — L3), across all pages. */
   total: number;
   /** Pass as `before` to read the next (older) page; null when this is the last page. */
   next_before: number | null;
@@ -84,6 +84,9 @@ const SQL_REQUEST_ID = "json_extract(CASE WHEN json_valid(e.payload_json) THEN e
  * in SQL, before any LIMIT, so a page never hides older undecided requests
  * behind newer decided ones (A06). The decision of a request_id is bound to a
  * request seq through its owner.decision event (payload.request_seq).
+ * CC-Owner V2 L3 : a request classified by the owner (request_classifications)
+ * also leaves this list — classification is administration, not a decision,
+ * and a classified request must never block the soft close again.
  */
 const UNDECIDED_FROM = [
   'FROM events e',
@@ -91,6 +94,10 @@ const UNDECIDED_FROM = [
   'LEFT JOIN events de ON de.seq = d.event_seq',
   "WHERE e.type IN ('owner.request', 'phase.request')",
   "  AND (d.request_id IS NULL OR json_extract(de.payload_json, '$.request_seq') IS NOT e.seq)",
+  // CC-Owner V2 L3 : une demande classée par l'owner quitte aussi cette liste —
+  // classification = administration, pas une décision ; l'audit complet reste
+  // dans listClassified (l'événement de demande n'est jamais effacé).
+  '  AND NOT EXISTS (SELECT 1 FROM request_classifications rc WHERE rc.cycle_id = e.cycle_id AND rc.request_seq = e.seq)',
 ].join(' ');
 const MAX_PAGE = 500;
 
@@ -154,8 +161,42 @@ export async function listCyclePendingRequests(db: D1Database, cycleId: string):
   }
 }
 
+/**
+ * CC-Owner V2 L3 : audit complet des demandes classées — la classification
+ * retire une demande de l'attente sans jamais l'effacer ; cette vue la
+ * restitue avec son verdict et sa note, les plus récentes d'abord.
+ */
+export interface ClassifiedRequest {
+  cycle_id: string;
+  request_seq: number;
+  verdict: string;
+  note: string;
+  event_seq: number | null;
+  created_at: number;
+  request_id: string;
+  participant_id: string;
+  type: string;
+}
+
+export async function listClassified(db: D1Database): Promise<ClassifiedRequest[]> {
+  await ensureSchema(db);
+  const { results } = await db.prepare([
+    'SELECT rc.cycle_id, rc.request_seq, rc.verdict, rc.note, rc.event_seq, rc.created_at,',
+    '  e.type, e.participant_id, e.payload_json',
+    'FROM request_classifications rc',
+    'INNER JOIN events e ON e.cycle_id = rc.cycle_id AND e.seq = rc.request_seq',
+    'ORDER BY rc.created_at DESC, rc.request_seq DESC',
+  ].join(' ')).all<{ cycle_id: string; request_seq: number; verdict: string; note: string; event_seq: number | null;
+    created_at: number; type: string; participant_id: string; payload_json: string }>();
+  return results.map(row => ({
+    cycle_id: row.cycle_id, request_seq: row.request_seq, verdict: row.verdict, note: row.note,
+    event_seq: row.event_seq ?? null, created_at: row.created_at,
+    request_id: requestIdOf(row.payload_json).request_id, participant_id: row.participant_id, type: row.type,
+  }));
+}
+
 /** The request event of `seq`, if it is a request type. */
-async function requestEvent(db: D1Database, seq: number): Promise<StoredStoreEvent | null> {
+export async function requestEvent(db: D1Database, seq: number): Promise<StoredStoreEvent | null> {
   return db.prepare("SELECT * FROM events WHERE seq = ?1 AND type IN ('owner.request', 'phase.request')")
     .bind(seq).first<StoredStoreEvent>();
 }

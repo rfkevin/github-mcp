@@ -7,7 +7,7 @@ import { CollabStoreError } from '../store/collab-store';
 import { StateContractError } from '../../collab/contracts';
 import { ownerChannelConfig, type OwnerChannelEnv } from './config';
 import { defaultJwksResolver, verifyOwnerProof, type JwksResolver } from './proof';
-import { listPendingPage, listRegistry, mapClient, registerParticipant, unmapClient } from './decisions';
+import { listClassified, listPendingPage, listRegistry, mapClient, registerParticipant, unmapClient } from './decisions';
 import { decideOwnerRequest, describePending } from './executable';
 import { budgetEnvelope, isAutomationHalted, setAutomationHalt } from './automation';
 import { OWNER_PAGE_CSP, dashboardPage, loginPage } from './page';
@@ -21,6 +21,7 @@ import { runOwnerTrial } from './trials';
 import { listActiveCoordinators } from './coordinators';
 import { appointCycleCoordinator } from './delegation-execution';
 import { closeCycle } from './close';
+import { classifyRequest } from './classify';
 import { setExecutorNotes } from './executor-notes';
 import { listIdentityFamilies } from '../identity/families';
 import { relayLines } from '../controller/relay';
@@ -58,12 +59,14 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator', 'close_cycle'] as const;
+const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator', 'close_cycle', 'classify_request'] as const;
 
 /** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
 async function dashboardData(db: D1Database, before?: number) {
   return {
     pending: await describePending(await listPendingPage(db, { before }), undefined, db),
+    // CC-Owner V2 L3 : audit des demandes classées (jamais effacées).
+    classified: await listClassified(db),
     ...await listRegistry(db),
     identityFamilies: await listIdentityFamilies(db),
     imports: await listImportedStates(db),
@@ -161,6 +164,16 @@ export async function handleOwnerRequest(
         + (closedAs.pending_requests ?? 0) + ' demande(s) d’agent encore en attente, '
         + (closedAs.active_tasks ?? 0) + ' tâche(s) active(s)'
         + (result.force ? ', clôture forcée (motif journalisé)' : '') + '.', error: false };
+    } else if (action === 'classify_request') {
+      // CC-Owner V2 L3 : classification owner d'une demande — drain append-only, pas une décision.
+      const seqField = field('request_seq').trim();
+      const result = await classifyRequest(db, {
+        request_seq: seqField ? Number(seqField) : 0, verdict: field('verdict'),
+        note: field('note'), proof, op,
+      });
+      message = { text: (result.status === 'duplicate' ? 'Déjà classée : ' : 'Demande classée : seq ')
+        + result.request_seq + ' — verdict ' + result.verdict + ' (' + result.cycle_id + ', événement seq '
+        + result.event.seq + ').', error: false };
     } else if (action === 'register') {
       const result = await registerParticipant(db, { participant_id: field('participant_id'), display_label: field('display_label'), proof, op });
       message = { text: 'Participant enregistré (seq ' + result.event.seq + ').', error: false };
