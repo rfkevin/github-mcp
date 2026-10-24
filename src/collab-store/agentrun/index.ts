@@ -7,6 +7,7 @@ export {
 } from './engine';
 export { meteredDb, type MeteredDb } from './metered-db';
 export { createWorkersAiModel, readModelResponse, inputTokenBound, type ToolSchema, type WorkersAiModelOptions } from './workers-ai-model';
+export { createPaidWorkersAiModel, parsePaidWorkersAiRef, parsePaidEnvelope, parsePaidCycleCap, centsOfNeurons, PAID_MODEL_RATES, type PaidModelOptions } from './paid-model';
 export { createReadToolHost, READ_TOOL_SCHEMAS, READ_TOOLS_BY_KIND, type GitHubReads, type ReadToolName } from './read-tools';
 export { createStoreWriteTools, effectOpId, WRITE_TOOL_SCHEMAS, WRITE_TOOLS_BY_KIND, type WriteToolName, type StoreWriteTools } from './store-tools';
 export { planAgentRuns, apiParticipants, answerRunId, PLAN_LIMIT, PLAN_MAX_STEPS, PLAN_MAX_TOKENS, PLAN_DEADLINE_S, type PlanEnv, type PlanResult } from './plan';

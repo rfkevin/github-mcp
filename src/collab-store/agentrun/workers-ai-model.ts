@@ -48,11 +48,11 @@ export interface WorkersAiModelOptions {
 const encoder = new TextEncoder();
 const DEFAULT_TIMEOUT_MS = 60_000;
 
-function bytes(text: string): number {
+export function bytes(text: string): number {
   return encoder.encode(text).length;
 }
 
-function toProviderMessages(system: string, messages: AgentMessage[]): Record<string, unknown>[] {
+export function toProviderMessages(system: string, messages: AgentMessage[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [{ role: 'system', content: system }];
   for (const message of messages) {
     if (message.role === 'assistant') {
@@ -123,7 +123,7 @@ export function readModelResponse(raw: unknown): { output: ModelOutput; input: n
   };
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+export async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
