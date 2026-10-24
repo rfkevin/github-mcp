@@ -216,3 +216,13 @@ Tests : `test/collab-store/agentrun/l7c3-github-writes.spec.ts` (11). Contre-ép
 chemins interdits, rendre « pas écrit » un lookup hors fenêtre, construire la branche sans le participant ou ne plus
 convertir les refus certains fait échouer au moins un test. Limite : le passage de `draft: true` par l'adaptateur racine
 est vérifié à la lecture (pas de faux serveur GitHub authentifié dans la suite).
+
+
+## Incrément 7e — continuité chat (plan de clôture v1.1, amendement A4)
+
+Toujours éteint côté API (portes 7a–7c inchangées). Le chat reprend la priorité via le fencing 7a.
+
+- **MCP** (`mcp/agentrun-tools.ts`) : `collab_list_agent_runs`, `collab_agent_run_summary` (lecture), `collab_preempt_agent_run`, `collab_release_agent_run` (écriture). Identité serveur uniquement ; runs d’autrui invisibles (CR-C). Préemption / release refusées si le participant ne possède pas d’exécution pour (cycle, task).
+- **Couche** `chat-continuity.ts` : s’appuie uniquement sur les exports publics `preemptByChat`, `releaseChat`, `runSummary`, `leaseKeyOf`.
+- **/owner** : section « Exécutions API » lecture seule (statut, étapes, jetons, coût, bail, résumé) — aucun nouveau POST ; CSP inchangée.
+- **Tests** : `test/collab-store/agentrun/l7e-chat-continuity.spec.ts` (CR-C, préemption pendant étape, not_owner, release, vue owner).
