@@ -312,6 +312,23 @@ function relaySection(rows: RelayLine[]): string {
     + (body ? '<table><tr><th>Pour</th><th>Message</th><th>Depuis</th></tr>' + body + '</table>' : '<p class="note">Rien à relayer.</p>');
 }
 
+/** CC-5 l7e : exécutions API — lecture seule, aucun POST. */
+function agentRunsSection(rows: NonNullable<DashboardData['agentRuns']>): string {
+  const body = rows.map(row => '<tr><td><code>' + escapeHtml(row.run_id) + '</code><br>'
+    + escapeHtml(row.cycle_id) + ' · ' + escapeHtml(row.participant_id) + '</td><td>'
+    + escapeHtml(row.task_kind) + ' · ' + escapeHtml(row.task_id || '—') + '</td><td>'
+    + escapeHtml(row.status) + (row.stop_reason ? ' · ' + escapeHtml(row.stop_reason) : '') + '</td><td>'
+    + row.steps_done + ' · ' + row.tokens_used + ' j · ' + (row.cost_cents / 100).toFixed(2) + ' €</td><td>'
+    + escapeHtml(row.fence_holder ?? '—') + (row.fence_generation != null ? ' g' + row.fence_generation : '')
+    + '</td><td>' + escapeHtml((row.summary || '').slice(0, 120)) + '</td></tr>').join('');
+  return '<h2 id="agent-runs">Exécutions API (' + rows.length + ')</h2>'
+    + '<p class="note">Lecture seule (CC-5 l7e). Préemption et reprise se font par les outils MCP chat du participant, jamais ici. Aucun nouveau formulaire POST.</p>'
+    + (body
+      ? '<table><tr><th>Run / cycle</th><th>Tâche</th><th>Statut</th><th>Étapes · jetons · coût</th><th>Bail</th><th>Résumé</th></tr>'
+        + body + '</table>'
+      : '<p class="note">Aucune exécution enregistrée.</p>');
+}
+
 function coordinatorSection(rows: Array<{ participant_id: string; display_label: string; event_seq: number | null }>): string {
   const body = rows.map(row => '<tr><td><code>' + escapeHtml(row.participant_id) + '</code></td><td>'
     + escapeHtml(row.display_label) + '</td><td>' + (row.event_seq ?? '—') + '</td></tr>').join('');
