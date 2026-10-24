@@ -25,6 +25,7 @@ import { classifyRequest } from './classify';
 import { setExecutorNotes } from './executor-notes';
 import { listIdentityFamilies } from '../identity/families';
 import { relayLines } from '../controller/relay';
+import { listRunsForOwner } from '../agentrun/chat-continuity';
 
 export const OWNER_PATH = '/owner';
 // CC-3 C6 : un import d'état CC-STATE-1 (≤ 256 Kio) passe par ce formulaire ; marge pour l'encodage.
@@ -78,6 +79,8 @@ async function dashboardData(db: D1Database, before?: number) {
     relay: await relayLines(db).catch(() => []),
     // CC-Owner V2 L4 : synthèse des statuts de cycle pour le bandeau (lecture seule).
     cycles: await cycleStatusCounts(db),
+    // CC-5 l7e : exécutions API (lecture seule ; panne → liste vide).
+    agentRuns: await listRunsForOwner(db).catch(() => []),
   };
 }
 

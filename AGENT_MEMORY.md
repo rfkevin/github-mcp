@@ -671,3 +671,12 @@ Piège : lister les 30 derniers commits d'une branche ne prouve jamais l'absence
 remplit la fenêtre) ; le lookup remonte depuis la tête jusqu'à expected_head_sha, parent obligé du commit de l'effet :
 atteint sans trailer = pas écrit, hors fenêtre = incertain. Le store n'importe pas le client GitHub : la racine traduit
 les refus certains en GitHubWriteRefused. Merci à Grok et Vibe.
+
+
+### 2026-10-24-grok-cc5-l7e-chat-continuity
+Auteur : Grok | Contexte : cycle cc5-auto2-infra, tâche l7e (réattribution Kevin seq 747)
+
+Continuité chat : list/preempt/release des exécutions du participant serveur seulement (CR-C),
+vue /owner lecture seule des runs, exports publics agentrun uniquement. Piège : ne jamais
+préempter un lease_key sans vérifier participant_id dans agent_runs — sinon un agent pourrait
+bloquer le bail d’un autre. Aucune porte d’activation ajoutée.

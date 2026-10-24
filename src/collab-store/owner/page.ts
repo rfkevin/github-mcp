@@ -103,6 +103,13 @@ export interface DashboardData {
   relay?: RelayLine[];
   /** CC-Owner V2 L4 : cycles de travail ouverts et clos (bandeau de synthèse, lecture seule). */
   cycles?: { open: number; closed: number };
+  /** CC-5 l7e : dernières exécutions API (lecture seule, tous participants). */
+  agentRuns?: Array<{
+    run_id: string; cycle_id: string; participant_id: string; task_id: string; task_kind: string;
+    status: string; steps_done: number; tokens_used: number; cost_cents: number;
+    stop_reason: string; summary: string; updated_at: number;
+    fence_holder: string | null; fence_generation: number | null;
+  }>;
 }
 
 export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): string {
@@ -131,6 +138,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
       : '')
     + classifiedSection(data.classified ?? [], secret)
     + relaySection(data.relay ?? [])
+    + agentRunsSection(data.agentRuns ?? [])
     + automationSection(data.halted ?? false, data.budget, secret)
     + coordinatorSection(data.coordinators ?? [])
     + '<h2 id="mandate">Mandat coordinateur par cycle (CC-5)</h2>'
@@ -262,6 +270,7 @@ function statusBanner(data: DashboardData): string {
 function ownerNav(): string {
   const links: Array<[string, string]> = [
     ['#pending', 'Demandes'], ['#classified', 'Classées'], ['#relay', 'Relais'],
+    ['#agent-runs', 'Exécutions API'],
     ['#automation', 'Automatisation'], ['#coordinators', 'Coordinateurs'], ['#mandate', 'Mandat'],
     ['#close', 'Clôture'], ['#executors', 'Exécuteurs'], ['#participants', 'Participants'],
     ['#families', 'Identités'], ['#clients', 'Clients'], ['#imports', 'Imports'], ['#phases', 'Phases'],
@@ -301,6 +310,23 @@ function relaySection(rows: RelayLine[]): string {
   return '<h2 id="relay">À relayer (' + rows.length + ')</h2>'
     + '<p class="note">Décisions courantes du contrôleur, en lecture seule : rien n’est envoyé ni exécuté. Copier le message à l’agent concerné.</p>'
     + (body ? '<table><tr><th>Pour</th><th>Message</th><th>Depuis</th></tr>' + body + '</table>' : '<p class="note">Rien à relayer.</p>');
+}
+
+/** CC-5 l7e : exécutions API — lecture seule, aucun POST. */
+function agentRunsSection(rows: NonNullable<DashboardData['agentRuns']>): string {
+  const body = rows.map(row => '<tr><td><code>' + escapeHtml(row.run_id) + '</code><br>'
+    + escapeHtml(row.cycle_id) + ' · ' + escapeHtml(row.participant_id) + '</td><td>'
+    + escapeHtml(row.task_kind) + ' · ' + escapeHtml(row.task_id || '—') + '</td><td>'
+    + escapeHtml(row.status) + (row.stop_reason ? ' · ' + escapeHtml(row.stop_reason) : '') + '</td><td>'
+    + row.steps_done + ' · ' + row.tokens_used + ' j · ' + (row.cost_cents / 100).toFixed(2) + ' €</td><td>'
+    + escapeHtml(row.fence_holder ?? '—') + (row.fence_generation != null ? ' g' + row.fence_generation : '')
+    + '</td><td>' + escapeHtml((row.summary || '').slice(0, 120)) + '</td></tr>').join('');
+  return '<h2 id="agent-runs">Exécutions API (' + rows.length + ')</h2>'
+    + '<p class="note">Lecture seule (CC-5 l7e). Préemption et reprise se font par les outils MCP chat du participant, jamais ici. Aucun nouveau formulaire POST.</p>'
+    + (body
+      ? '<table><tr><th>Run / cycle</th><th>Tâche</th><th>Statut</th><th>Étapes · jetons · coût</th><th>Bail</th><th>Résumé</th></tr>'
+        + body + '</table>'
+      : '<p class="note">Aucune exécution enregistrée.</p>');
 }
 
 function coordinatorSection(rows: Array<{ participant_id: string; display_label: string; event_seq: number | null }>): string {
