@@ -12,6 +12,9 @@
  * - agent_run_steps : une ligne par étape, réclamée par CAS (double réveil).
  * - agent_run_effects : effets externes intent → pending → completed | failed | ambiguous (R2).
  *
+ * 7d (amendement A5 du plan de clôture v1.1) : agent_paid_steps — une ligne par étape payante,
+ *   réservée au pire cas puis réglée au réel ; jamais deux réservations pour la même étape,
+ *   un rejeu d’une étape réglée est refusé fail-closed.
  * 7b (plan v1.1 seq 478) :
  * - agent_run_wakeups : outbox de réveil écrite dans le même lot que createRun,
  *   livrée par CAS avec expiration, ACK après wake accepté, tentatives bornées.
@@ -103,6 +106,15 @@ const TABLES = [
     '  used INTEGER NOT NULL,',
     '  PRIMARY KEY (day, kind)',
     ')'].join(' '),
+  ['CREATE TABLE IF NOT EXISTS agent_paid_steps (',
+    '  run_id TEXT NOT NULL,',
+    '  n INTEGER NOT NULL,',
+    '  reserved_cents INTEGER NOT NULL,',
+    '  actual_cents INTEGER NOT NULL DEFAULT 0,',
+    '  settled INTEGER NOT NULL DEFAULT 0,',
+    '  updated_at INTEGER NOT NULL,',
+    '  PRIMARY KEY (run_id, n)',
+    ')'].join(' '),
   ['CREATE TABLE IF NOT EXISTS agent_run_journal (',
     '  id INTEGER PRIMARY KEY AUTOINCREMENT,',
     '  at INTEGER NOT NULL,',
@@ -113,7 +125,7 @@ const TABLES = [
 ];
 
 const NO_DELETE = ['agent_fences', 'agent_runs', 'agent_run_steps', 'agent_run_effects', 'agent_run_wakeups',
-  'agent_run_alarms', 'agent_run_quota', 'agent_run_journal'].map(table =>
+  'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal'].map(table =>
   'CREATE TRIGGER IF NOT EXISTS ' + table + '_no_delete BEFORE DELETE ON ' + table
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END");
 

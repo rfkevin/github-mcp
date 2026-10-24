@@ -13,6 +13,7 @@ import {
 } from './orchestrator';
 import type { EngineDeps } from './engine';
 import { createWorkersAiModel } from './workers-ai-model';
+import { createPaidWorkersAiModel, parsePaidCycleCap, parsePaidEnvelope } from './paid-model';
 import { createReadToolHost, type GitHubReads } from './read-tools';
 import { DEFAULT_API_BASE_BRANCH, type GitHubWrites } from './github-tools';
 import type { WorkersAiBinding } from '../executors/adapter';
@@ -31,6 +32,12 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   AGENT_RUN_GITHUB_WRITES?: string;
   /** 7c-3 : branche de base des branches API et cible des PR brouillons (défaut DEFAULT_API_BASE_BRANCH, jamais main/master). */
   AGENT_RUN_BASE_BRANCH?: string;
+  /** 7d : modèle payant workers-ai:@cf/vendor/model derrière l’enveloppe de coût ; absent = chemin 7c-1 inchangé. */
+  AGENT_RUN_PAID_MODEL?: string;
+  /** 7d : enveloppe owner du jour en cents (registre paid:day) ; 0, invalide ou absent = aucun appel payant. */
+  AGENT_RUN_PAID_ENVELOPE_CENTS?: string;
+  /** 7d : borne par cycle en cents (registre paid:cycle) ; défaut et plafond : l’enveloppe. */
+  AGENT_RUN_PAID_CYCLE_CENTS?: string;
   AI?: WorkersAiBinding;
   WORKERS_AI_DAILY_NEURONS?: string;
   GITHUB_APP_ID?: string;
@@ -61,6 +68,8 @@ export const AGENT_RUN_SYSTEM = [
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /**
+ * 7d : AGENT_RUN_PAID_MODEL (prioritaire sur AGENT_RUN_MODEL) prend le chemin payant
+ * derrière l’enveloppe owner ; sans enveloppe financée, chaque appel est refusé en code.
  * 7c-1 : modèle Workers AI réel et outils de lecture si AGENT_RUN_MODEL est posé et
  * (7c-2 : plus les écritures store non-verdict de WRITE_TOOLS_BY_KIND, avec lookup)
  * le binding AI présent ; sinon le modèle simulé de 7b. L'interrupteur général
@@ -69,9 +78,11 @@ const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undefined, githubReads: GitHubReads | null = null,
   githubWrites: GitHubWrites | null = null): EngineFactory {
   if (testFactory) return testFactory;
-  if (!env.AGENT_RUN_MODEL || !env.AI || !fallbackDb) return simulated;
+  if (!fallbackDb || !env.AI) return simulated;
+  const paidRef = env.AGENT_RUN_PAID_MODEL ?? null;
+  const ref = paidRef ?? (env.AGENT_RUN_MODEL ?? null);
+  if (!ref) return simulated;
   const ai = env.AI;
-  const ref = env.AGENT_RUN_MODEL;
   const repository = env.AGENT_RUN_REPOSITORY && REPOSITORY_RE.test(env.AGENT_RUN_REPOSITORY) ? env.AGENT_RUN_REPOSITORY : null;
   const github = repository ? githubReads : null;
   // 7c-3 : écritures GitHub seulement avec un dépôt, l'interrupteur dédié et l'adaptateur de la racine.
@@ -80,8 +91,13 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   return (_runId, stepDb) => {
     const db = stepDb ?? fallbackDb;
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes });
-    const model = createWorkersAiModel({ ai, ref, db, neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
-      schemas: kind => tools.schemas(kind), system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 });
+    const envelopeCents = parsePaidEnvelope(env.AGENT_RUN_PAID_ENVELOPE_CENTS);
+    const model = paidRef
+      ? createPaidWorkersAiModel({ ai, ref: paidRef, db, runId: _runId, envelopeCents,
+        cycleCents: parsePaidCycleCap(env.AGENT_RUN_PAID_CYCLE_CENTS, envelopeCents),
+        schemas: kind => tools.schemas(kind), system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 })
+      : createWorkersAiModel({ ai, ref, db, neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
+        schemas: kind => tools.schemas(kind), system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 });
     return { model, tools, now };
   };
 }
