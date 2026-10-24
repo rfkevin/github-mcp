@@ -103,6 +103,13 @@ export interface DashboardData {
   relay?: RelayLine[];
   /** CC-Owner V2 L4 : cycles de travail ouverts et clos (bandeau de synthèse, lecture seule). */
   cycles?: { open: number; closed: number };
+  /** CC-5 l7e : dernières exécutions API (lecture seule, tous participants). */
+  agentRuns?: Array<{
+    run_id: string; cycle_id: string; participant_id: string; task_id: string; task_kind: string;
+    status: string; steps_done: number; tokens_used: number; cost_cents: number;
+    stop_reason: string; summary: string; updated_at: number;
+    fence_holder: string | null; fence_generation: number | null;
+  }>;
 }
 
 export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): string {
@@ -131,6 +138,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
       : '')
     + classifiedSection(data.classified ?? [], secret)
     + relaySection(data.relay ?? [])
+    + agentRunsSection(data.agentRuns ?? [])
     + automationSection(data.halted ?? false, data.budget, secret)
     + coordinatorSection(data.coordinators ?? [])
     + '<h2 id="mandate">Mandat coordinateur par cycle (CC-5)</h2>'
@@ -262,6 +270,7 @@ function statusBanner(data: DashboardData): string {
 function ownerNav(): string {
   const links: Array<[string, string]> = [
     ['#pending', 'Demandes'], ['#classified', 'Classées'], ['#relay', 'Relais'],
+    ['#agent-runs', 'Exécutions API'],
     ['#automation', 'Automatisation'], ['#coordinators', 'Coordinateurs'], ['#mandate', 'Mandat'],
     ['#close', 'Clôture'], ['#executors', 'Exécuteurs'], ['#participants', 'Participants'],
     ['#families', 'Identités'], ['#clients', 'Clients'], ['#imports', 'Imports'], ['#phases', 'Phases'],
