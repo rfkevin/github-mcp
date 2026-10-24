@@ -73,26 +73,63 @@ describe('CC-5 l7e — continuité chat', () => {
     expect(ok?.status).toBeTruthy();
   });
 
-  it('préemption chat pendant une étape : écritures API ensuite busy/preempted', async () => {
+  it('préemption chat PENDANT une étape en vol (A4/A8) : outcome preempted, 0 effet, bail chat, release sans nouvelle génération', async () => {
     const input = await makeRun('grok', 'preempt-task');
-    const gen = await preemptOwnRun(db, {
-      participantId: 'grok',
-      cycleId: input.cycleId,
-      taskId: input.taskId,
-      now: T0 + 50,
-      holdSeconds: 600,
-    });
-    expect(gen.ok).toBe(true);
-    if (!gen.ok) return;
-    expect(gen.generation).toBeGreaterThan(0);
-    // L'API ne peut plus avancer sous le bail chat
+    let preemptedGeneration = 0;
+    const model = {
+      async complete() {
+        // Préemption pendant l'appel modèle (étape en vol), pas avant runStep.
+        const gen = await preemptOwnRun(db, {
+          participantId: 'grok',
+          cycleId: input.cycleId,
+          taskId: input.taskId,
+          now: T0 + 55,
+          holdSeconds: 600,
+        });
+        expect(gen.ok).toBe(true);
+        if (gen.ok) preemptedGeneration = gen.generation;
+        return {
+          output: { text: 'outil', tool_calls: [{ id: 't1', name: 'write_note', args: { text: 'x' } }] },
+          usage: { tokens: 10, cost_cents: 0 },
+        };
+      },
+    };
+    const host: ToolHost = {
+      spec: (_k, name) => (name === 'write_note' ? { name, effect: 'write' } : null),
+      list: () => ['write_note'],
+      async execute() { return { written: true }; },
+    };
     const step = await runStep(db, input.runId, {
-      model: modelOnce(),
-      tools: emptyHost(),
+      model,
+      tools: host,
       now: () => T0 + 60,
       workerId: 'api-w',
     });
-    expect(['busy', 'preempted', 'unknown_run', 'halted']).toContain(step.outcome);
+    expect(step.outcome).toBe('preempted');
+    const row = await db.prepare('SELECT status, steps_done FROM agent_runs WHERE run_id = ?1').bind(input.runId)
+      .first<{ status: string; steps_done: number }>();
+    expect(row?.status).toBe('preempted');
+    expect(row?.steps_done).toBe(0);
+    const effects = await db.prepare('SELECT COUNT(*) AS c FROM agent_run_effects WHERE run_id = ?1').bind(input.runId)
+      .first<{ c: number }>();
+    expect(Number(effects?.c ?? 0)).toBe(0);
+    const fence = await db.prepare(
+      "SELECT holder, generation FROM agent_fences WHERE lease_key = (SELECT lease_key FROM agent_runs WHERE run_id = ?1)",
+    ).bind(input.runId).first<{ holder: string; generation: number }>();
+    expect(fence?.holder).toBe('chat');
+    expect(fence?.generation).toBe(preemptedGeneration);
+    const rel = await releaseOwnRun(db, {
+      participantId: 'grok',
+      cycleId: input.cycleId,
+      taskId: input.taskId,
+      now: T0 + 70,
+    });
+    expect(rel).toEqual({ ok: true });
+    const after = await db.prepare(
+      "SELECT holder, generation FROM agent_fences WHERE lease_key = (SELECT lease_key FROM agent_runs WHERE run_id = ?1)",
+    ).bind(input.runId).first<{ holder: string; generation: number }>();
+    expect(after?.holder).toBe('none');
+    expect(after?.generation).toBe(preemptedGeneration);
   });
 
   it('préemption refusée si pas propriétaire', async () => {
