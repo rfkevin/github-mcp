@@ -216,3 +216,51 @@ Tests : `test/collab-store/agentrun/l7c3-github-writes.spec.ts` (11). Contre-ép
 chemins interdits, rendre « pas écrit » un lookup hors fenêtre, construire la branche sans le participant ou ne plus
 convertir les refus certains fait échouer au moins un test. Limite : le passage de `draft: true` par l'adaptateur racine
 est vérifié à la lecture (pas de faux serveur GitHub authentifié dans la suite).
+
+## Incrément 7d — modèles payants derrière l’enveloppe owner (amendement A5)
+
+Toujours éteint : sans AGENT_RUN_PAID_MODEL, le câblage ne change pas (chemin gratuit 7c-1 ou modèle simulé
+7b). L’enveloppe AGENT_RUN_PAID_ENVELOPE_CENTS vaut 0 par défaut : tout appel est refusé
+(PAID_ENVELOPE_NOT_FUNDED) avant tout quota ; la borne par cycle AGENT_RUN_PAID_CYCLE_CENTS vaut
+l’enveloppe par défaut et ne peut la dépasser. Aucune variable nouvelle dans wrangler.jsonc.
+
+- **Modèle** createPaidWorkersAiModel (paid-model.ts) : mêmes messages, filtrage d’outils et lecture de
+  réponse que 7c-1 (réutilise toProviderMessages, inputTokenBound, readModelResponse, withTimeout, bytes,
+  désormais exportés), mais un coût en cents. Références payantes seulement, d’une liste datée figée en
+  code (PAID_MODEL_RATES, page tarifaire Workers AI relevée le 2026-10-24 ; centsOfNeurons : 0,011 $ pour
+  1 000 neurons, arrondi au cent supérieur) ; deny-by-default, un modèle gratuit, inconnu ou d’un autre
+  fournisseur est refusé à la construction. Instantanés à revalider avant tout financement réel.
+- **Idempotence par étape AVANT réservation** : table append-only agent_paid_steps (run_id, n,
+  reserved_cents, actual_cents, settled). L’étape en cours et le cycle sont relus dans agent_runs depuis
+  le run_id (closure du câblage), jamais depuis les arguments du modèle. Une étape déjà réservée mais non
+  réglée (coupure avant la fin de l’appel) ne réserve jamais deux fois : la reprise réutilise la
+  réservation. Une étape déjà réglée rejouée — coupure entre le règlement et la persistance de la
+  sortie par le moteur — est refusée fail-closed (PAID_STEP_ALREADY_SETTLED) : aucune seconde charge
+  possible, l’exécution échoue proprement. Fenêtre résiduelle divulguée : une coupure pendant l’appel
+  (après réservation, avant règlement) permet un second appel du fournisseur sur la même réservation.
+- **Réservation au pire cas puis règlement au réel** : les registres du jour (paid:day:<date>, borné par
+  l’enveloppe) et du cycle (paid:cycle:<cycle>, borné par AGENT_RUN_PAID_CYCLE_CENTS), la ligne d’étape
+  et la garde collab_store_guard sont écrits dans le MÊME lot D1 : un refus ne laisse rien écrire nulle
+  part (les deux bornes sont vérifiées d’un coup, aucun remboursement jour/cycle à coder). Le règlement
+  rend le trop-versé sur les deux registres et passe la ligne à settled dans un seul autre lot. Erreur
+  incertaine du fournisseur : la réserve reste au pire cas, l’étape est réglée au pire cas et l’usage du
+  modèle porte ce pire cas (jamais 0) ; un rejeu de cette étape est refusé.
+- **Bornes typées, jamais de découvert** : PAID_ENVELOPE_NOT_FUNDED (avant tout appel, aucun quota),
+  PAID_RUN_BUDGET_EXCEEDED (refus préemptif si cost_cents + pire cas > max_cost_cents, avant toute
+  réservation), PAID_DAILY_BUDGET_EXCEEDED, PAID_CYCLE_BUDGET_EXCEEDED (lot atomique : ni registre ni
+  ligne écrits). Le coût réglé est plafonné à la réservation : l’exécution ne dépasse jamais son plafond.
+- **Go-s à part** : les Go-s Durable Objects restent comptés par 7c-1 (agent_run_quota, do_gb_s) ; aucun
+  centime n’y entre, aucun Go-s dans les registres payants.
+- **Câblage** engineFor (object.ts) : AGENT_RUN_PAID_MODEL (prioritaire sur AGENT_RUN_MODEL) avec le
+  binding AI construit le modèle payant de l’exécution (closure sur le run_id) ; sans l’un d’eux,
+  comportement inchangé.
+
+Tests : test/collab-store/agentrun/l7d-paid-model.spec.ts (14) : instantané et deny-by-default (les 7
+modèles payants du dépôt, aucun modèle gratuit), refus à la construction, enveloppe 0, bornes
+exécution/jour/cycle sans écriture résiduelle, réservation/règlement avec remboursement, rejeu idempotent,
+étape réglée refusée fail-closed, erreur fournisseur au pire cas puis rejeu refusé, non-découvert sous
+usage forgé, A1 jetons bornés sans usage rapporté, parcours moteur complet, Go-s à part, câblage
+(simulé, enveloppe absente, priorité payante). Contre-épreuves locales : retirer la relecture de la ligne
+d’étape (double réservation), le plafonnement du règlement (découvert), la garde du lot (dépassement
+silencieux), le refus préemptif du plafond d’exécution ou le fail-closed de l’étape réglée fait échouer au
+moins un test. Non-régression : suites 7a, 7b, 7c-1, 7c-2 et 7c-3 inchangées.

@@ -671,3 +671,16 @@ Piège : lister les 30 derniers commits d'une branche ne prouve jamais l'absence
 remplit la fenêtre) ; le lookup remonte depuis la tête jusqu'à expected_head_sha, parent obligé du commit de l'effet :
 atteint sans trailer = pas écrit, hors fenêtre = incertain. Le store n'importe pas le client GitHub : la racine traduit
 les refus certains en GitHubWriteRefused. Merci à Grok et Vibe.
+
+### 2026-10-24-vibe-cc5-l7d-paid-models
+Auteur : Vibe GLM (GLM 5.3, Mistral AI) | Contexte : cycle cc5-auto2-infra, tâche l7d, incrément 7d (amendement A5 du plan seq 719), base cc3-integration 0c8e80d
+
+Modèles payants Workers AI derrière l’enveloppe owner : PAID_MODEL_RATES est un instantané daté (page
+tarifaire du 2026-10-24, 0,011 $ pour 1 000 neurons) à revalider avant financement ; deny-by-default,
+un modèle gratuit pointé par AGENT_RUN_PAID_MODEL est refusé à la construction. Conseil : centsOfNeurons
+arrondit au cent supérieur (1 cent ≈ 909 neurons) — pour un remboursement visible dans un test, viser une
+réservation d’au moins 2 cents (glm-5.3 avec maxOutputTokens 4096 réserve 2 cents et règle à 1). Piège :
+un lot db.batch est atomique — les deux registres (paid:day, paid:cycle), la ligne agent_paid_steps et la
+garde collab_store_guard vont dans le MÊME lot : un refus ne laisse rien écrire, aucun remboursement
+jour/cycle à coder. Limite : aucune exécution npm locale (attestation = lecture + CI 4/4). Suite : relecture
+Claude, test Grok, fusion Kevin. Merci aux collaborateurs.
