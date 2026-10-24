@@ -156,6 +156,24 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Lecture seule** : calculé sur l'état courant, rien n'est journalisé ni exécuté (le journal `controller_decisions` est écrit par le passage programmé, désactivé par défaut : `CONTROLLER_CRON_ENABLED="true"` l'active). HALT → `halted` sans décision ; instantané illisible → `degraded` sans décision.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `STORE_UNAVAILABLE`.
 
+### `collab_list_agent_runs`
+- **CC-5 l7e** : liste les exécutions API **de votre participant serveur uniquement** (masquage CR-C). Entrée optionnelle : `cycle_id`, `limit` (1–40). Identité issue du jeton ; client non associé → `UNREGISTERED_CLIENT`.
+- **Lecture seule** : statut, étapes, jetons, coût, bail (`fence_holder` / génération), résumé.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `STORE_UNAVAILABLE`.
+
+### `collab_agent_run_summary`
+- **CC-5 l7e** : résumé d’une exécution (`run_id`) qui vous appartient. Sinon `summary: null` (pas de fuite). Identité serveur uniquement.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `STORE_UNAVAILABLE`.
+
+### `collab_preempt_agent_run`
+- **CC-5 l7e** : le chat reprend le bail (fencing 7a) pour **vos** exécutions seulement (`cycle_id`, `task_id` optionnel, `hold_seconds` défaut 900). Sans exécution à vous pour ce couple → `AGENT_RUN_NOT_OWNED`, aucune écriture de fence.
+- Une étape API en vol perd ses écritures LIVE ; le test exige `outcome: preempted` si la préemption intervient pendant l’appel modèle.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `AGENT_RUN_NOT_OWNED`, `STORE_UNAVAILABLE`.
+
+### `collab_release_agent_run`
+- **CC-5 l7e** : libère le bail chat (`holder = none`, génération inchangée) pour vos exécutions seulement. Sinon `AGENT_RUN_NOT_OWNED`.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `AGENT_RUN_NOT_OWNED`, `STORE_UNAVAILABLE`.
+
 ### Identités logiques équivalentes (#126)
 
 **Réattribuer une tâche (CC-5 l3d, `reassign_task`)** : demande exécutable déposée par un agent (`owner.request`, `action: "reassign_task"`, `params` = `{ cycle_id, task_id, owner_pid, reviewer_pid, tester_pid, expected_revision, expected_owner_pid, expected_reviewer_pid, expected_tester_pid }` — les trois derniers figent les rôles lus au dépôt, couverts par l’empreinte approuvée, `preconditions.previous_seq` = dernière réattribution de cette tâche, cible affichée `cycle/tâche`), approuvée par Kevin sur `/owner`. Dans le lot d’écriture : demande non tranchée, précondition inchangée, tâche à la révision attendue avec exactement les rôles figés dans la demande (un changement de rôles sans changement de révision suffit à refuser) et non terminée (`TASK_CLOSED` ; une tâche `blocked` reste réattribuable), trois participants enregistrés actifs (`UNREGISTERED_PARTICIPANT`) et trois identités logiques distinctes (`DUPLICATE_LOGICAL_IDENTITY`). Tout écart : `OWNER_PRECONDITION_FAILED`, aucun effet. La tâche prend la révision du cycle : les réveils du contrôleur sont réarmés pour les nouveaux titulaires. Non délégable dans ce contrat (`DELEGATED_FORBIDDEN` ; la politique L3c le refuse aussi : `owner_guard_not_delegable`) ; les verdicts déjà rendus restent attachés à leur couple SHA.
@@ -401,6 +419,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `CLARIFY_TO_INVALID` | L2 | `clarify.ask` : `to` présent mais mal formé (ni participant, ni rôle `owner`/`reviewer`/`tester` : chaîne de 1 à 128 caractères) | Corriger `to` ou l’omettre (question publique) |
 | `CLARIFY_TO_REQUIRES_TASK` | L2 | `clarify.ask` : adressage par rôle (`owner`/`reviewer`/`tester`) sans `task` — le destinataire ne peut pas être résolu | Fournir la tâche dont on désigne le rôle |
 | `CLARIFY_ANSWER_FORBIDDEN` | L2 | `clarify.answer` par un participant qui n’est ni l’auteur ni le destinataire de la question adressée : rien n’est écrit | Laisser l’auteur ou le destinataire répondre, ou poser une question publique |
+| `AGENT_RUN_NOT_OWNED` | l7e | `collab_preempt_agent_run` / `collab_release_agent_run` : aucune exécution `agent_runs` pour ce participant sur le couple cycle/tâche — le fence d’autrui n’est pas touché | Lister vos runs (`collab_list_agent_runs`) ou fournir le bon cycle/tâche |
 | `UNREGISTERED_PARTICIPANT` | F1 | Rôle de tâche sans participant enregistré actif sur `/owner` (K6) | Enregistrer le participant |
 | `IDEMPOTENCY_CONFLICT` | F1 | `op_id` rejoué avec une intention différente | Incrémenter le compteur `n` de l’op_id |
 | `UNKNOWN_CYCLE` | C2 | Cycle inconnu | Vérifier l’identifiant |

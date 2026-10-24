@@ -15,3 +15,7 @@ export {
   createGitHubWriteTools, apiBranch, effectTrailer, GitHubWriteRefused, GITHUB_WRITE_TOOL_SCHEMAS, GITHUB_WRITE_TOOLS_BY_KIND,
   API_BRANCH_NAMESPACE, DEFAULT_API_BASE_BRANCH, type GitHubWrites, type GitHubWriteToolName, type GitHubWriteTools,
 } from './github-tools';
+export {
+  listRunsForParticipant, runSummaryForParticipant, preemptOwnRun, releaseOwnRun, listRunsForOwner,
+  CHAT_HOLD_SECONDS_DEFAULT, LIST_RUNS_LIMIT, type AgentRunListItem,
+} from './chat-continuity';
