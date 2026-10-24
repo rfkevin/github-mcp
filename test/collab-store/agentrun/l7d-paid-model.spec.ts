@@ -103,7 +103,7 @@ describe('CC-5 l7d — instantané daté et deny-by-default', () => {
     expect(() => createPaidWorkersAiModel({ ...base, ref: 'workers-ai:@cf/zai-org/glm-4.7-flash' })).toThrow(/PAID_MODEL_UNSUPPORTED/);
     expect(() => createPaidWorkersAiModel({ ...base, ref: 'workers-ai:@cf/nobody/inconnu' })).toThrow(/PAID_MODEL_UNSUPPORTED/);
     expect(() => createPaidWorkersAiModel({ ...base, ref: 'openrouter:v/x' })).toThrow(/PAID_MODEL_UNSUPPORTED/);
-    expect(() => createPaidWorkersAiModel({ ...base, maxOutputTokens: 0 })).toThrow(/maxOutputTokens/);
+    expect(() => createPaidWorkersAiModel({ ...base, ref: GLM53, maxOutputTokens: 0 })).toThrow(/maxOutputTokens/);
   });
 });
 
