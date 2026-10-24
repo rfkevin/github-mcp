@@ -8,6 +8,7 @@ import { engineFor } from '../../../src/collab-store/agentrun/object';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { FREE_MODEL_RATES, WORKERS_AI_PAID_ONLY_MODELS } from '../../../src/collab-store/executors/adapter';
+import { reserveNeurons } from '../../../src/collab-store/executors/run';
 
 // CC-5 l7 incrément 7d (amendement A5) — modèles Workers AI payants derrière l’enveloppe
 // owner : bornes typées, réservation par étape idempotente, règlement au réel,
@@ -179,6 +180,8 @@ describe('CC-5 l7d — réservation, règlement, idempotence', () => {
     expect(await paidStep(run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 1, settled: 1 });
     expect(await paidUsed('paid:day:2032-03-05')).toBe(1);
     expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(1);
+    // B1 : les neurons réels (100 + 20 jetons → 21) décomptent le pool gratuit partagé du compte.
+    expect(await paidUsed('neurons:workers-ai:2032-03-05')).toBe(21);
   });
 
   it('rejeu idempotent : une étape déjà réservée (non réglée) ne réserve jamais deux fois', async () => {
@@ -218,6 +221,8 @@ describe('CC-5 l7d — réservation, règlement, idempotence', () => {
     expect(error.usage!.cost_cents).toBe(2);
     expect(await paidUsed('paid:day:2032-03-08')).toBe(2);
     expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(2);
+    // B1 : sur erreur fournisseur, le pire cas en neurons décompte aussi le pool gratuit partagé.
+    expect(await paidUsed('neurons:workers-ai:2032-03-08')).toBeGreaterThan(0);
     expect(await paidStep(run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 2, settled: 1 });
     const replay = await call(paid({ ai: stub, runId: run.runId, at, envelopeCents: 1_000 })).catch(e => e);
     expect((replay as ModelCallError).message).toMatch(/PAID_STEP_ALREADY_SETTLED/);
@@ -233,6 +238,18 @@ describe('CC-5 l7d — réservation, règlement, idempotence', () => {
     expect(await paidUsed('paid:day:2032-03-09')).toBe(2);
     expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(2);
     expect(await paidStep(run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 2, settled: 1 });
+  });
+
+  it('B1 — les neurons payants décomptent le pool gratuit partagé : le budget restant diminue', async () => {
+    const at = new Date('2032-03-13T10:00:00Z');
+    const run = await newRun(T + 1_200);
+    const stub = aiStub([reply('ok', { prompt_tokens: 100, completion_tokens: 20 })]);
+    await call(paid({ ai: stub, runId: run.runId, at, envelopeCents: 1_000 }));
+    expect(await paidUsed('neurons:workers-ai:2032-03-13')).toBe(21);
+    // Contre-épreuve : avec un budget gratuit de 22 neurons pour ce jour, il n’en reste plus qu’un.
+    await reserveNeurons(db, 1, 22, at);
+    const refused = await reserveNeurons(db, 1, 22, at).catch(error => (error as { code?: string }).code);
+    expect(refused).toBe('EXECUTOR_NEURON_BUDGET');
   });
 
   it('A1 — sans usage rapporté, les jetons sont bornés par les octets envoyés (jamais 0)', async () => {
@@ -274,8 +291,8 @@ describe('CC-5 l7d — parcours moteur et câblage', () => {
     expect(await paidStep(run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 1, settled: 1 });
     expect(await paidStep(run.runId, 1)).toEqual({ reserved_cents: 2, actual_cents: 1, settled: 1 });
     expect(await paidUsed('paid:day:2032-03-11')).toBe(2);
-    // Go-s et neurons à part : aucun compteur du chemin gratuit n’est touché par le chemin payant.
-    expect(await paidUsed('neurons:workers-ai:2032-03-11')).toBe(0);
+    // Go-s à part ; B1 : les neurons réels des 2 étapes décomptent le pool gratuit partagé du compte.
+    expect(await paidUsed('neurons:workers-ai:2032-03-11')).toBe(42);
     expect((await db.prepare('SELECT COUNT(*) AS c FROM agent_run_quota WHERE day = ?1').bind('2032-03-11').first<{ c: number }>())?.c ?? 0).toBe(0);
   });
 
@@ -294,7 +311,7 @@ describe('CC-5 l7d — parcours moteur et câblage', () => {
     const result = await deps.model.complete({ messages: [{ role: 'user', content: 'q' }], tools: deps.tools.list('research'), task_kind: 'research' });
     expect(result.usage.cost_cents).toBe(1);
     expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(1);
-    expect(await paidUsed('neurons:workers-ai:2032-03-12')).toBe(0);
+    expect(await paidUsed('neurons:workers-ai:2032-03-12')).toBe(21);
     expect(stub.seen[0].model).toBe('@cf/zai-org/glm-5.3');
   });
 });

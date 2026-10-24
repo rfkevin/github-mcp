@@ -23,7 +23,12 @@
  *    n’écrit rien nulle part (ni registre, ni ligne d’étape) ;
  * 5. jamais de découvert : le coût réglé est plafonné à la réservation ;
  * 6. les Go-s Durable Objects (do_gb_s, 7c-1) restent comptés à part : aucun
- *    centime n’y entre, aucun Go-s dans les registres payants.
+ *    centime n’y entre, aucun Go-s dans les registres payants ;
+ * 7. les neurons consommés décomptent aussi le pool gratuit partagé du compte
+ *    (neurons:workers-ai:<date>, quota_counters) : au réel au règlement, au
+ *    pire cas sur erreur fournisseur, sans contrôle de budget (B1).
+ *
+ * Unités : tous les montants monétaires sont en cents de dollars US.
  *
  * Taux : instantanés datés en code (PAID_MODEL_RATES et centsOfNeurons, page
  * tarifaire Workers AI relevée le 2026-10-24), deny-by-default — une référence
@@ -48,8 +53,8 @@ export const PAID_MODEL_RATES: Readonly<Record<string, { input_per_m: number; ou
 
 /**
  * Cents facturés pour des neurons : 0,011 $ pour 1 000 neurons au-delà de
- * l’allocation gratuite (page tarifaire relevée le 2026-10-24), soit 11
- * milli-cents par neuron ; arrondi au cent supérieur, jamais sous-évalué.
+ * l’allocation gratuite (page tarifaire relevée le 2026-10-24), soit 1,1
+ * milli-cent (11 micro-dollars) par neuron ; arrondi au cent supérieur, jamais sous-évalué.
  */
 export function centsOfNeurons(neurons: number): number {
   return Math.ceil((Math.max(0, Math.floor(neurons)) * 11) / 10_000);
@@ -68,13 +73,17 @@ export function parsePaidWorkersAiRef(ref: string): string {
   return model;
 }
 
-/** Enveloppe owner : entier de cents strictement positif et borné ; tout le reste vaut 0 (non financée). */
+/** Enveloppe owner en cents de dollars US : entier strictement positif et borné ; tout le reste vaut 0 (non financée). */
 export function parsePaidEnvelope(value: string | undefined): number {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 10_000_000 ? parsed : 0;
 }
 
-/** Borne par cycle : défaut et plafond = l’enveloppe du jour. */
+/**
+ * Borne par cycle : défaut et plafond = l’enveloppe du jour. Le registre
+ * paid:cycle:<cycle> n’est jamais remis à zéro : la dépense cumulée d’un
+ * cycle reste bornée par une enveloppe journalière.
+ */
 export function parsePaidCycleCap(value: string | undefined, envelopeCents: number): number {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= envelopeCents ? parsed : envelopeCents;
@@ -143,20 +152,28 @@ async function reservePaidStep(db: D1Database, input: {
 }
 
 /**
- * Règle une étape payante : remboursement du trop-versé sur les DEUX registres
- * et passage à settled dans le même lot D1 (avant le lot, un rejeu reprend la
+ * Règle une étape payante : remboursement du trop-versé sur les DEUX registres,
+ * décompte des neurons dans le pool gratuit partagé (B1 : sans contrôle de
+ * budget — l’appel a eu lieu, 7c-1 et le pilote L1 y lisent leur budget) et
+ * passage à settled dans le même lot D1 (avant le lot, un rejeu reprend la
  * réservation existante ; après, il est refusé fail-closed).
  */
 async function settlePaidStep(db: D1Database, input: {
   runId: string; n: number; dayKey: string; cycleKey: string; reserved: number; actual: number; nowSec: number;
+  neuronsKey: string; neurons: number;
 }): Promise<void> {
   const settled = Math.min(Math.max(Math.floor(input.actual), 0), input.reserved);
   const refund = input.reserved - settled;
+  const usedNeurons = Math.max(0, Math.floor(input.neurons));
   await db.batch([
     ...(refund > 0 ? [
       db.prepare('UPDATE quota_counters SET writes = MAX(writes - ?2, 0) WHERE day = ?1').bind(input.dayKey, refund),
       db.prepare('UPDATE quota_counters SET writes = MAX(writes - ?2, 0) WHERE day = ?1').bind(input.cycleKey, refund),
     ] : []),
+    // B1 : les neurons consommés (réels, ou pire cas sur erreur fournisseur) décomptent
+    // le pool gratuit partagé du compte, sans contrôle de budget.
+    db.prepare('INSERT INTO quota_counters (day, writes) VALUES (?1, 0) ON CONFLICT(day) DO NOTHING').bind(input.neuronsKey),
+    db.prepare('UPDATE quota_counters SET writes = writes + ?2 WHERE day = ?1').bind(input.neuronsKey, usedNeurons),
     db.prepare('UPDATE agent_paid_steps SET actual_cents = ?3, settled = 1, updated_at = ?4 WHERE run_id = ?1 AND n = ?2 AND settled = 0')
       .bind(input.runId, input.n, settled, input.nowSec),
   ]);
@@ -185,6 +202,7 @@ export function createPaidWorkersAiModel(options: PaidModelOptions): ModelClient
       // Étape en cours : le moteur réclame l’étape n = steps_done et ne l’incrémente qu’au checkpoint.
       const n = run.steps_done;
       const dayKey = 'paid:day:' + now.toISOString().slice(0, 10);
+      const neuronsKey = 'neurons:workers-ai:' + now.toISOString().slice(0, 10);
       const cycleKey = 'paid:cycle:' + run.cycle_id;
       const previous = await options.db.prepare('SELECT reserved_cents, actual_cents, settled FROM agent_paid_steps WHERE run_id = ?1 AND n = ?2')
         .bind(options.runId, n).first<PaidStepRow>();
@@ -197,7 +215,8 @@ export function createPaidWorkersAiModel(options: PaidModelOptions): ModelClient
         .map(schema => ({ type: 'function', function: { name: schema.name, description: schema.description, parameters: schema.parameters } }));
       const messages = toProviderMessages(options.system, input.messages);
       const bound = inputTokenBound(messages, tools);
-      const worstCents = Math.min(centsOfNeurons(neurons(bound, options.maxOutputTokens)), MAX_PAID_CENTS);
+      const worstNeurons = neurons(bound, options.maxOutputTokens);
+      const worstCents = Math.min(centsOfNeurons(worstNeurons), MAX_PAID_CENTS);
       // (4) Borne par exécution : refus PRÉEMPTIF avant toute réservation (jamais de découvert).
       if (run.cost_cents + worstCents > run.max_cost_cents) {
         throw new ModelCallError('PAID_RUN_BUDGET_EXCEEDED : ' + run.cost_cents + ' + ' + worstCents + ' cents > plafond '
@@ -221,15 +240,18 @@ export function createPaidWorkersAiModel(options: PaidModelOptions): ModelClient
       } catch (error) {
         // (3) Erreur incertaine du fournisseur : la réserve reste au pire cas, l’étape est réglée au pire
         // cas ; un rejeu de cette étape sera refusé fail-closed : aucune seconde charge possible.
-        await settlePaidStep(options.db, { runId: options.runId, n, dayKey, cycleKey, reserved, actual: reserved, nowSec });
+        await settlePaidStep(options.db, { runId: options.runId, n, dayKey, cycleKey, reserved, actual: reserved, nowSec,
+          neuronsKey, neurons: worstNeurons });
         throw new ModelCallError('workers_ai_error: ' + (error instanceof Error ? error.message : String(error)),
           { tokens: bound, cost_cents: reserved });
       }
       const parsed = readModelResponse(raw);
       const inputTokens = parsed.input ?? bound;
       const outputTokens = parsed.output_tokens ?? bytes(JSON.stringify(parsed.output));
-      const actualCents = Math.min(centsOfNeurons(neurons(inputTokens, outputTokens)), reserved);
-      await settlePaidStep(options.db, { runId: options.runId, n, dayKey, cycleKey, reserved, actual: actualCents, nowSec });
+      const actualNeurons = neurons(inputTokens, outputTokens);
+      const actualCents = Math.min(centsOfNeurons(actualNeurons), reserved);
+      await settlePaidStep(options.db, { runId: options.runId, n, dayKey, cycleKey, reserved, actual: actualCents, nowSec,
+        neuronsKey, neurons: actualNeurons });
       return { output: parsed.output, usage: { tokens: inputTokens + outputTokens, cost_cents: actualCents } };
     },
   };

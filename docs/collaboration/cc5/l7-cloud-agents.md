@@ -244,22 +244,34 @@ l’enveloppe par défaut et ne peut la dépasser. Aucune variable nouvelle dans
   part (les deux bornes sont vérifiées d’un coup, aucun remboursement jour/cycle à coder). Le règlement
   rend le trop-versé sur les deux registres et passe la ligne à settled dans un seul autre lot. Erreur
   incertaine du fournisseur : la réserve reste au pire cas, l’étape est réglée au pire cas et l’usage du
-  modèle porte ce pire cas (jamais 0) ; un rejeu de cette étape est refusé.
+  modèle porte ce pire cas (jamais 0) ; un rejeu de cette étape est refusé. B1 (relecture) : au règlement
+  — neurons réels sur succès, pire cas sur erreur fournisseur — les neurons consommés décomptent aussi
+  le pool gratuit partagé du compte (neurons:workers-ai:<date>, quota_counters) SANS contrôle de
+  budget : un appel payant réduit donc le budget gratuit restant du jour (reserveNeurons de 7c-1, pilote
+  L1). Un appel refusé avant l’appel (enveloppe non financée, bornes) ne décompte rien : rien n’est
+  écrit sans appel.
 - **Bornes typées, jamais de découvert** : PAID_ENVELOPE_NOT_FUNDED (avant tout appel, aucun quota),
   PAID_RUN_BUDGET_EXCEEDED (refus préemptif si cost_cents + pire cas > max_cost_cents, avant toute
   réservation), PAID_DAILY_BUDGET_EXCEEDED, PAID_CYCLE_BUDGET_EXCEEDED (lot atomique : ni registre ni
   ligne écrits). Le coût réglé est plafonné à la réservation : l’exécution ne dépasse jamais son plafond.
 - **Go-s à part** : les Go-s Durable Objects restent comptés par 7c-1 (agent_run_quota, do_gb_s) ; aucun
   centime n’y entre, aucun Go-s dans les registres payants.
+- **Unités et bornes documentées (relecture)** : montants en cents de dollars US — l’affichage en € du
+  /owner de 7e est un autre périmètre, à relire de son côté ; centsOfNeurons = 1,1 milli-cent (11
+  micro-dollars) par neuron. Le registre paid:cycle:<cycle> n’est jamais remis à zéro et la borne par
+  cycle (parsePaidCycleCap) est plafonnée à l’enveloppe du jour : la dépense cumulée d’un cycle ne
+  dépasse donc jamais une enveloppe journalière. Les runs créés par plan.ts ont max_cost_cents=0 : le
+  chemin payant les refuse toujours (PAID_RUN_BUDGET_EXCEEDED, fail-closed) ; seul un createRun
+  explicite avec un plafond lève la garde.
 - **Câblage** engineFor (object.ts) : AGENT_RUN_PAID_MODEL (prioritaire sur AGENT_RUN_MODEL) avec le
   binding AI construit le modèle payant de l’exécution (closure sur le run_id) ; sans l’un d’eux,
   comportement inchangé.
 
-Tests : test/collab-store/agentrun/l7d-paid-model.spec.ts (14) : instantané et deny-by-default (les 7
+Tests : test/collab-store/agentrun/l7d-paid-model.spec.ts (15) : instantané et deny-by-default (les 7
 modèles payants du dépôt, aucun modèle gratuit), refus à la construction, enveloppe 0, bornes
 exécution/jour/cycle sans écriture résiduelle, réservation/règlement avec remboursement, rejeu idempotent,
 étape réglée refusée fail-closed, erreur fournisseur au pire cas puis rejeu refusé, non-découvert sous
-usage forgé, A1 jetons bornés sans usage rapporté, parcours moteur complet, Go-s à part, câblage
+usage forgé, A1 jetons bornés sans usage rapporté, parcours moteur complet, Go-s à part, décompte du pool gratuit partagé (B1), câblage
 (simulé, enveloppe absente, priorité payante). Contre-épreuves locales : retirer la relecture de la ligne
 d’étape (double réservation), le plafonnement du règlement (découvert), la garde du lot (dépassement
 silencieux), le refus préemptif du plafond d’exécution ou le fail-closed de l’étape réglée fait échouer au
