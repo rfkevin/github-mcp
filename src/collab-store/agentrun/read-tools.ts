@@ -16,6 +16,7 @@ import { CollabStore } from '../store/collab-store';
 import { ToolRefused, type LookupResult, type ToolCall, type ToolHost, type ToolSpec } from './engine';
 import type { ToolSchema } from './workers-ai-model';
 import { createStoreWriteTools, WRITE_TOOL_SCHEMAS, type WriteToolName } from './store-tools';
+import { createGitHubWriteTools, GITHUB_WRITE_TOOL_SCHEMAS, type GitHubWrites, type GitHubWriteToolName } from './github-tools';
 
 /** Lectures GitHub utilisées par l'hôte (sous-ensemble des clients existants, lecture seule). */
 export interface GitHubReads {
@@ -47,6 +48,8 @@ export const READ_TOOLS_BY_KIND: Readonly<Record<string, readonly ReadToolName[]
   answer: ['store_context', 'store_delta'],
   planning: ['store_context', 'store_delta', 'github_read_file'],
   status: ['store_context', 'store_delta', 'github_check_runs'],
+  // 7c-3 : implémentation sur la branche de l'agent (écritures GitHub de github-tools.ts).
+  implement: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs'],
 });
 
 const SHA_RE = /^[a-f0-9]{40}$/;
@@ -59,6 +62,11 @@ export interface ReadToolHostOptions {
   github: GitHubReads | null;
   /** 7c-2 : ajoute les écritures store de WRITE_TOOLS_BY_KIND (clarify, task.status non-verdict). Absent = lecture seule. */
   storeWrites?: boolean;
+  /**
+   * 7c-3 : écritures GitHub (type `implement` seulement) sur la branche API du participant ;
+   * exigent aussi `repository`. Absent = aucune écriture GitHub.
+   */
+  githubWrites?: { writes: GitHubWrites; baseBranch: string } | null;
 }
 
 interface RunScope { cycle_id: string; participant_id: string }
@@ -79,7 +87,12 @@ function stringArg(args: Record<string, unknown>, name: string, pattern: RegExp)
 
 export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { schemas(taskKind: string): ToolSchema[] } {
   const writes = options.storeWrites ? createStoreWriteTools(options.db) : null;
-  const writeNames = (taskKind: string): readonly WriteToolName[] => writes ? writes.names(taskKind) : [];
+  const gh = options.githubWrites && options.repository !== null
+    ? createGitHubWriteTools({ db: options.db, repository: options.repository, writes: options.githubWrites.writes, baseBranch: options.githubWrites.baseBranch })
+    : null;
+  const writeNames = (taskKind: string): readonly (WriteToolName | GitHubWriteToolName)[] =>
+    [...(writes ? writes.names(taskKind) : []), ...(gh ? gh.names(taskKind) : [])];
+  const isGitHubWrite = (name: string) => GITHUB_WRITE_TOOL_SCHEMAS.some(schema => schema.name === name);
   const allowed = (taskKind: string): readonly ReadToolName[] => {
     const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
     // Sans dépôt ou client GitHub, les outils GitHub ne sont pas proposés du tout.
@@ -92,6 +105,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   }
   async function execute(call: ToolCall, ctx: { run_id: string; effect_key?: string }): Promise<unknown> {
     if (writes && (WRITE_TOOL_SCHEMAS.some(schema => schema.name === call.name))) return writes.execute(call, ctx);
+    if (gh && isGitHubWrite(call.name)) return gh.execute(call, ctx);
     const { cycle_id, participant_id } = await scope(ctx.run_id);
     const args = call.args ?? {};
     const store = new CollabStore(options.db);
@@ -138,11 +152,12 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     },
     schemas(taskKind: string): ToolSchema[] {
       const names = new Set<string>([...allowed(taskKind), ...writeNames(taskKind)]);
-      return [...READ_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
+      return [...READ_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.
     async lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult> {
+      if (gh && isGitHubWrite(call.name)) return gh.lookup(call, ctx);
       return writes ? writes.lookup(call, ctx) : null;
     },
   };

@@ -187,3 +187,32 @@ explicite `AGENT_RUN_PARTICIPANTS` (vide par défaut = aucune lecture, aucune cr
 Tests : `test/collab-store/agentrun/l7c2-store-writes.spec.ts` (14). Contre-épreuves locales : retirer la limite
 `in_progress`/`blocked`, le filtre `answer_question` du planificateur, le réessai STALE ou la conversion des refus typés
 en `ToolRefused` fait échouer au moins un test. Non-régression : suites 7a, 7b et 7c-1 inchangées et vertes.
+
+## Incrément 7c-3 — écritures GitHub sur la branche de l'agent (plan de clôture v1.1, amendement A3)
+
+Toujours éteint : en plus de `AGENT_RUNS_ENABLED="true"`, `AGENT_RUN_MODEL` et `AGENT_RUN_REPOSITORY`, les écritures
+GitHub exigent `AGENT_RUN_GITHUB_WRITES="true"` (absent par défaut). Aucune création automatique d'exécution
+`implement` : le planificateur 7c-2 ne crée toujours que des exécutions `answer`.
+
+- **Outils** `createGitHubWriteTools` (`github-tools.ts`), type de tâche `implement` seulement
+  (`GITHUB_WRITE_TOOLS_BY_KIND`) : `github_create_branch`, `github_commit_files`, `github_open_draft_pr` ; avec les
+  lectures du type `research` et `store_task_status`. Aucun outil de fusion, d'approbation, de suppression ni de
+  résolution de conflit n'existe pour le canal API ; un conflit est un échec propre (`ToolRefused`).
+- **Branche de l'agent** : `mcp/105856986/<participant>-api-<nom>`, construite en code depuis le participant de
+  `agent_runs` (`apiBranch`, préfixe `API_BRANCH_NAMESPACE` figé) ; le modèle ne fournit qu'un nom court. Participant
+  hors `[a-z0-9-]` = aucune écriture GitHub.
+- **Garde-fous** : `expected_head_sha` obligatoire pour tout commit, `base_sha` pour la création ; PR toujours
+  brouillon vers la base de l'hôte (`AGENT_RUN_BASE_BRANCH`, défaut `DEFAULT_API_BASE_BRANCH`, jamais main ni master) ;
+  chemins refusés en code avant tout appel (journaux AGENT_MEMORY.md et TOOL_IMPROVEMENTS.md, `.github`, `scripts`,
+  `wrangler.*`, `.mcp`, `migrations`), en plus des chemins protégés du client ; 20 fichiers et 400 000 caractères au plus.
+- **Idempotence (contrat d'hôte 7a)** : création retrouvée par le nom de branche ; commit retrouvé par le trailer
+  `Agent-Effect: <32 hex de la clé d'effet>` en remontant depuis la tête jusqu'à `expected_head_sha` (atteint sans
+  trailer = pas écrit ; hors fenêtre = incertain, needs_reconcile) ; PR retrouvée par sa branche de tête.
+- **Racine du Worker** (`src/agent-run-object.ts`, invariant C6) : `githubWritesFrom` construit un client au jeton
+  minimal (contents et pull_requests en écriture, dépôt unique, sans allowMerge ni allowApproval) et traduit les refus
+  certains du client (conflit, politique, validation) en `GitHubWriteRefused` ; toute autre erreur reste incertaine.
+
+Tests : `test/collab-store/agentrun/l7c3-github-writes.spec.ts` (11). Contre-épreuves locales : retirer le refus des
+chemins interdits, rendre « pas écrit » un lookup hors fenêtre, construire la branche sans le participant ou ne plus
+convertir les refus certains fait échouer au moins un test. Limite : le passage de `draft: true` par l'adaptateur racine
+est vérifié à la lecture (pas de faux serveur GitHub authentifié dans la suite).

@@ -661,3 +661,13 @@ dans taskStatements avant d'écrire un outil ; (2) le segment client d'un op_id 
 jamais par un replace local ; (3) un refus typé du store (CollabStoreError, StateContractError) est certain et devient
 ToolRefused, toute autre erreur reste ambiguë pour que le moteur appelle lookup. Création automatique : seulement les
 décisions answer_question, run_id déterministe, et rien sans AGENT_RUN_PARTICIPANTS. Merci à GPT-6, Grok et Vibe.
+
+### 2026-10-24-claude-cc5-l7c3-github-writes
+Auteur : Claude | Contexte : cycle cc5-auto2-infra, tâche l7, incrément 7c-3 (plan de clôture v1.1, amendement A3)
+
+Écritures GitHub du canal API limitées à la branche de l'agent (mcp/105856986/<participant>-api-<nom>, construite
+depuis agent_runs), expectedHeadSha obligatoire, PR brouillon seulement, aucun outil de fusion ni de résolution.
+Piège : lister les 30 derniers commits d'une branche ne prouve jamais l'absence d'un commit (l'historique de la base
+remplit la fenêtre) ; le lookup remonte depuis la tête jusqu'à expected_head_sha, parent obligé du commit de l'effet :
+atteint sans trailer = pas écrit, hors fenêtre = incertain. Le store n'importe pas le client GitHub : la racine traduit
+les refus certains en GitHubWriteRefused. Merci à Grok et Vibe.
