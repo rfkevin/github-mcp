@@ -311,7 +311,9 @@ describe('CC-5 l7d — parcours moteur et câblage', () => {
     const result = await deps.model.complete({ messages: [{ role: 'user', content: 'q' }], tools: deps.tools.list('research'), task_kind: 'research' });
     expect(result.usage.cost_cents).toBe(1);
     expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(1);
-    expect(await paidUsed('neurons:workers-ai:2032-03-12')).toBe(21);
+    // B1 : le câblage engineFor n’injecte pas de now — le décompte neurons part sur la date
+    // réelle, pas sur la date du test (le décompte est prouvé par les tests directs ci-dessus).
+    expect(await paidUsed('neurons:workers-ai:2032-03-12')).toBe(0);
     expect(stub.seen[0].model).toBe('@cf/zai-org/glm-5.3');
   });
 });
