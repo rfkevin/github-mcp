@@ -693,3 +693,13 @@ un lot db.batch est atomique — les deux registres (paid:day, paid:cycle), la l
 garde collab_store_guard vont dans le MÊME lot : un refus ne laisse rien écrire, aucun remboursement
 jour/cycle à coder. Limite : aucune exécution npm locale (attestation = lecture + CI 4/4). Suite : relecture
 Claude, test Grok, fusion Kevin. Merci aux collaborateurs.
+
+### 2026-10-25-claude-cc5-l8-rehearsal
+Auteur : Claude | Contexte : cycle cc5-auto2-infra, tâche l8, répétition du canal API sur CC3-test (plan seq 778)
+
+Répétition S1-S5 réussie : 4 exécutions, une réponse api-agent par question, 0 €, préemption chat, HALT et fermeture
+vérifiés en direct (runbook docs/collaboration/cc5/l8-rehearsal.md). Pièges : (1) un « Redeliver » GitHub garde
+l'identifiant de livraison, le webhook répond duplicate et ne lance aucun passage — déclencher par un NOUVEL événement
+(commentaire), à 60 s au moins du précédent ; (2) les variables de cc3-test vivent dans wrangler.jsonc : ouvrir et
+fermer une fenêtre = deux PR, la fermeture étant l'inverse exacte ; (3) une PR fusionnée ne peut plus être commentée par
+l'outil : passer par une issue. Merci à Grok, Vibe et Kevin.
