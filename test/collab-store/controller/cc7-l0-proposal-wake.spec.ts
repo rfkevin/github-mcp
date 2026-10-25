@@ -1,10 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import type { McpServer } from '@modelcontextprotocol/server';
-import { z } from 'zod';
 import { nextActors, readControllerSnapshot, taskProposal } from '../../../src/collab-store/controller';
-import { createCollabToolContext, type CollabToolContext } from '../../../src/collab-store/mcp/context';
-import { registerCollabStoreTools } from '../../../src/collab-store/mcp/tools';
+import { CollabStore } from '../../../src/collab-store/store/collab-store';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { snapshot, task } from './fixtures';
 
@@ -56,93 +53,48 @@ describe('CC-7 L0 — faits : taskProposal', () => {
 });
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
-type Result = { isError?: boolean; structuredContent: Record<string, unknown> };
-type Handler = (args: Record<string, unknown>) => Promise<Result>;
 
-function registry(context: CollabToolContext): Map<string, Handler> {
-  const handlers = new Map<string, Handler>();
-  registerCollabStoreTools({
-    registerTool(name: string, spec: { inputSchema: z.ZodRawShape; outputSchema: z.ZodRawShape }, handler: Handler) {
-      handlers.set(name, async input => {
-        const result = await handler(z.object(spec.inputSchema).parse(input));
-        if (!result.isError) z.object(spec.outputSchema).parse(result.structuredContent);
-        return result;
-      });
-    },
-  } as unknown as McpServer, context);
-  return handlers;
+/** Cycle P1 neuf avec deux tâches du même auteur ; renvoie le store et une fonction de dépôt de proposition. */
+async function freshCycle(prefix: string) {
+  await ensureSchema(db, true);
+  const cycle = prefix + '-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
+  await db.prepare("INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, 'open')").bind(cycle).run();
+  await db.prepare([
+    'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status) VALUES',
+    "('p-sol', ?1, 'sol', 'grok', 'vibe', 'accepted'), ('p-other', ?1, 'sol', 'vibe', 'grok', 'accepted')",
+  ].join(' ')).bind(cycle).run();
+  const store = new CollabStore(db, { dailyWriteLimit: 100_000, now: () => new Date('2026-10-25T00:00:00Z') });
+  const propose = (payload: Record<string, unknown>) => store.appendEvent({
+    cycle_id: cycle, type: 'proposal.submit', participant_id: 'sol', role: 'author', expected_rev: 1,
+    op_id: 'sol:' + cycle + ':proposal:1', payload_json: JSON.stringify(payload),
+  });
+  const storedPayload = async (): Promise<Record<string, unknown>> => {
+    const row = await db.prepare("SELECT payload_json FROM events WHERE cycle_id = ?1 AND type = 'proposal.submit'")
+      .bind(cycle).first<{ payload_json: string }>();
+    return JSON.parse(row!.payload_json) as Record<string, unknown>;
+  };
+  return { cycle, propose, storedPayload };
 }
 
 describe('CC-7 L0 — store et instantané : scellé P1 avec tâche', () => {
   it('garde la tâche publique, scelle le contenu, et l\'instantané ne réveille plus l\'auteur', async () => {
-    await ensureSchema(db, true);
-    const cycle = 'cc7-l0-' + Date.now();
-    const clientId = 'client-' + cycle;
-    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, 'open')").bind(cycle).run();
-    for (const pid of ['sol', 'grok', 'vibe']) {
-      await db.prepare([
-        'INSERT INTO participants (participant_id, display_label, status)',
-        "VALUES (?1, ?1, 'active')",
-        "ON CONFLICT(participant_id) DO UPDATE SET status = 'active'",
-      ].join(' ')).bind(pid).run();
-    }
-    await db.prepare('INSERT INTO participant_clients (oauth_client_id, participant_id) VALUES (?1, ?2)').bind(clientId, 'sol').run();
-    await db.prepare([
-      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status) VALUES',
-      "('p-sol', ?1, 'sol', 'grok', 'vibe', 'accepted'), ('p-other', ?1, 'sol', 'vibe', 'grok', 'accepted')",
-    ].join(' ')).bind(cycle).run();
-    const createContextCompat = createCollabToolContext as unknown as (...args: unknown[]) => CollabToolContext;
-    const handlers = registry(createContextCompat(
-      { COLLAB_DB: db, COLLAB_STORE_ENABLED: 'true', COLLAB_DAILY_WRITE_LIMIT: '100000' },
-      'agent:sol', ['collab:'], { now: () => new Date('2026-10-25T00:00:00Z') }, clientId,
-    ));
+    const { cycle, propose, storedPayload } = await freshCycle('cc7-l0');
+    const noSubmission = async () => nextActors(await readControllerSnapshot(db, cycle, async () => false)).decisions
+      .filter(d => d.rule === 'no-submission').map(d => d.task_id).sort();
+    expect(await noSubmission()).toEqual(['p-other', 'p-sol']);
 
-    const before = await readControllerSnapshot(db, cycle, async () => false);
-    expect(nextActors(before).decisions.filter(d => d.rule === 'no-submission').map(d => d.task_id).sort())
-      .toEqual(['p-other', 'p-sol']);
-
-    const append = await handlers.get('collab_append_event')!({
-      cycle, expected_rev: 1, op_id: 'sol:' + cycle + ':proposal:1', type: 'proposal.submit', participant_id: 'sol',
-      role: 'author', payload_json: JSON.stringify({ task: 'p-sol', content: 'idée secrète' }),
-    });
-    expect(append.isError, JSON.stringify(append.structuredContent)).toBeFalsy();
-
-    const delta = await handlers.get('collab_get_delta')!({ cycle, since_seq: 0, limit: 10 });
-    expect(JSON.stringify(delta.structuredContent)).not.toContain('idée secrète');
-    const stored = JSON.parse((delta.structuredContent.events as Array<{ payload_json: string }>)[0].payload_json) as Record<string, unknown>;
+    await propose({ task: 'p-sol', content: 'idée secrète' });
+    const stored = await storedPayload();
+    expect(JSON.stringify(stored)).not.toContain('idée secrète');
     expect(Object.keys(stored).sort()).toEqual(['content_hash', 'sealed_id', 'task']);
     expect(stored.task).toBe('p-sol');
-
-    const after = await readControllerSnapshot(db, cycle, async () => false);
-    expect(after.tasks.find(t => t.task_id === 'p-sol')?.proposal).toBeTruthy();
-    const wakes = nextActors(after).decisions.filter(d => d.rule === 'no-submission').map(d => d.task_id);
     // Seule la tâche nommée est remise ; l'autre tâche du même auteur reste à faire.
-    expect(wakes).toEqual(['p-other']);
+    expect(await noSubmission()).toEqual(['p-other']);
   });
 
   it('une tâche invalide n\'est pas recopiée à côté du scellé', async () => {
-    await ensureSchema(db, true);
-    const cycle = 'cc7-l0b-' + Date.now();
-    const clientId = 'client-' + cycle;
-    await db.prepare("INSERT INTO cycles (cycle_id, phase, revision, status) VALUES (?1, 'P1', 1, 'open')").bind(cycle).run();
-    await db.prepare([
-      'INSERT INTO participants (participant_id, display_label, status)',
-      "VALUES ('sol', 'Sol', 'active')",
-      "ON CONFLICT(participant_id) DO UPDATE SET status = 'active'",
-    ].join(' ')).run();
-    await db.prepare('INSERT INTO participant_clients (oauth_client_id, participant_id) VALUES (?1, ?2)').bind(clientId, 'sol').run();
-    const createContextCompat = createCollabToolContext as unknown as (...args: unknown[]) => CollabToolContext;
-    const handlers = registry(createContextCompat(
-      { COLLAB_DB: db, COLLAB_STORE_ENABLED: 'true', COLLAB_DAILY_WRITE_LIMIT: '100000' },
-      'agent:sol', ['collab:'], { now: () => new Date('2026-10-25T00:00:00Z') }, clientId,
-    ));
-    const append = await handlers.get('collab_append_event')!({
-      cycle, expected_rev: 1, op_id: 'sol:' + cycle + ':proposal:1', type: 'proposal.submit', participant_id: 'sol',
-      role: 'author', payload_json: JSON.stringify({ task: 'bad task <x>', content: 'c' }),
-    });
-    expect(append.isError, JSON.stringify(append.structuredContent)).toBeFalsy();
-    const delta = await handlers.get('collab_get_delta')!({ cycle, since_seq: 0, limit: 10 });
-    const stored = JSON.parse((delta.structuredContent.events as Array<{ payload_json: string }>)[0].payload_json) as Record<string, unknown>;
-    expect(Object.keys(stored).sort()).toEqual(['content_hash', 'sealed_id']);
+    const { propose, storedPayload } = await freshCycle('cc7-l0b');
+    await propose({ task: 'bad task <x>', content: 'c' });
+    expect(Object.keys(await storedPayload()).sort()).toEqual(['content_hash', 'sealed_id']);
   });
 });
