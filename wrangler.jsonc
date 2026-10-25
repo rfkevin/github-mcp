@@ -80,7 +80,13 @@
         "COLLAB_STORE_ENABLED": "true",
         "CONTROLLER_CRON_ENABLED": "false",
         "CONTROLLER_WEBHOOK_ENABLED": "true",
-        "AGENT_RUNS_ENABLED": "false",
+        "AGENT_RUNS_ENABLED": "true",
+        "AGENT_RUN_MODEL": "workers-ai:@cf/zai-org/glm-4.7-flash",
+        "AGENT_RUN_PARTICIPANTS": "claude",
+        "WORKERS_AI_DAILY_NEURONS": "4000",
+        "AGENT_RUN_DAILY_REQUESTS": "500",
+        "AGENT_RUN_DAILY_ROWS": "3000",
+        "AGENT_RUN_DAILY_GB_S": "1000",
         "OWNER_AUTH_MODE": "secret",
         "GITHUB_CHECKS_CONFIG": "[{\"repository\":\"rfkevin/github-mcp\",\"ref\":\"master\",\"controllerSha\":\"774a3117e5359ca9c164fcef59fa6d6dc8b0bde7\"}]"
       }

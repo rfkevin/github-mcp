@@ -100,14 +100,28 @@ async function setHalt(value: '0' | '1') {
 const T = 1_950_000_000;
 
 describe('CC-5 l7b — configuration', () => {
-  it('binding et migration dans l’env cc3-test seulement, interrupteur éteint, rien au niveau racine', () => {
+  it('binding et migration dans l’env cc3-test seulement, interrupteur éteint ou profil exact de la fenêtre l8, rien au niveau racine', () => {
     const config = JSON.parse(wranglerConfig) as Record<string, unknown> & { env: Record<string, Record<string, unknown>> };
     expect(config.durable_objects).toBeUndefined();
     expect(config.migrations).toBeUndefined();
     const cc3 = config.env['cc3-test'] as { durable_objects: { bindings: unknown[] }; migrations: unknown[]; vars: Record<string, string> };
     expect(cc3.durable_objects.bindings).toEqual([{ name: 'AGENT_RUN', class_name: 'AgentRunObject' }]);
     expect(cc3.migrations).toEqual([{ tag: 'cc5-l7b-agent-run', new_sqlite_classes: ['AgentRunObject'] }]);
-    expect(cc3.vars.AGENT_RUNS_ENABLED).toBe('false');
+    // CC-5 l8 (plan seq 778, R1) : éteint, OU fenêtre de répétition ouverte par Kevin avec EXACTEMENT ce profil
+    // (modèle gratuit, participant API claude seul, quotas réduits ; aucun dépôt, aucune écriture GitHub, aucun payant).
+    // La PR de fermeture rétablit l'assertion stricte « false ».
+    if (cc3.vars.AGENT_RUNS_ENABLED !== 'false') {
+      expect(cc3.vars.AGENT_RUNS_ENABLED).toBe('true');
+      expect(cc3.vars.AGENT_RUN_MODEL).toBe('workers-ai:@cf/zai-org/glm-4.7-flash');
+      expect(cc3.vars.AGENT_RUN_PARTICIPANTS).toBe('claude');
+      expect(Number(cc3.vars.WORKERS_AI_DAILY_NEURONS)).toBeLessThanOrEqual(4000);
+      expect(Number(cc3.vars.AGENT_RUN_DAILY_REQUESTS)).toBeLessThanOrEqual(500);
+      expect(Number(cc3.vars.AGENT_RUN_DAILY_ROWS)).toBeLessThanOrEqual(3000);
+      expect(Number(cc3.vars.AGENT_RUN_DAILY_GB_S)).toBeLessThanOrEqual(1000);
+      for (const absent of ['AGENT_RUN_REPOSITORY', 'AGENT_RUN_GITHUB_WRITES', 'AGENT_RUN_PAID_MODEL', 'AGENT_RUN_PAID_ENVELOPE_CENTS',
+        'AGENT_RUN_PAID_CYCLE_CENTS', 'AGENT_RUN_BASE_BRANCH']) expect(cc3.vars[absent]).toBeUndefined();
+      expect(cc3.vars.CONTROLLER_CRON_ENABLED).toBe('false');
+    }
     for (const [name, value] of Object.entries(config.env)) {
       if (name === 'cc3-test') continue;
       expect(value.durable_objects).toBeUndefined();
