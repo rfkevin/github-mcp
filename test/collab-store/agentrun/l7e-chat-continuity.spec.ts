@@ -7,6 +7,7 @@ import {
   preemptOwnRun,
   releaseOwnRun,
   listRunsForOwner,
+  leaseKeyOf,
 } from '../../../src/collab-store/agentrun/chat-continuity';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
@@ -132,15 +133,52 @@ describe('CC-5 l7e — continuité chat', () => {
     expect(after?.generation).toBe(preemptedGeneration);
   });
 
-  it('préemption refusée si pas propriétaire', async () => {
+  // CC-7 L1 : preemptOwnRun est par identité (lease_key = cycle+participant+task).
+  // Grok qui « préempte » la tâche d'une exécution vibe n'obtient que SON bail ;
+  // le fence de vibe reste intact (propriété plus forte que l'ancien refus not_owner).
+  it('préemption croisée ne touche pas le fence d\'autrui (L1 identité)', async () => {
     const foreign = await makeRun('vibe', 'other');
-    const denied = await preemptOwnRun(db, {
+    const before = await db.prepare(
+      'SELECT lease_key, holder, generation FROM agent_fences WHERE lease_key = (SELECT lease_key FROM agent_runs WHERE run_id = ?1)',
+    ).bind(foreign.runId).first<{ lease_key: string; holder: string; generation: number }>();
+    expect(before).toBeTruthy();
+
+    const claim = await preemptOwnRun(db, {
       participantId: 'grok',
       cycleId: foreign.cycleId,
       taskId: foreign.taskId,
       now: T0 + 70,
     });
-    expect(denied).toEqual({ ok: false, reason: 'not_owner' });
+    expect(claim.ok).toBe(true);
+    if (!claim.ok) return;
+
+    const vibeFence = await db.prepare(
+      'SELECT holder, generation FROM agent_fences WHERE lease_key = ?1',
+    ).bind(before!.lease_key).first<{ holder: string; generation: number }>();
+    expect(vibeFence?.generation).toBe(before!.generation);
+    expect(vibeFence?.holder).toBe(before!.holder);
+
+    const run = await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1')
+      .bind(foreign.runId).first<{ status: string }>();
+    expect(run?.status).toBe('running');
+
+    const grokKey = leaseKeyOf(foreign.cycleId, 'grok', foreign.taskId);
+    const grokFence = await db.prepare(
+      'SELECT holder, generation FROM agent_fences WHERE lease_key = ?1',
+    ).bind(grokKey).first<{ holder: string; generation: number }>();
+    expect(grokFence?.holder).toBe('chat');
+    expect(grokFence?.generation).toBe(claim.generation);
+  });
+
+  it('préemption refusée si participant ou cycle vide', async () => {
+    const emptyPid = await preemptOwnRun(db, {
+      participantId: '', cycleId: 'c', taskId: 't', now: T0 + 71,
+    });
+    expect(emptyPid).toEqual({ ok: false, reason: 'not_owner' });
+    const emptyCycle = await preemptOwnRun(db, {
+      participantId: 'grok', cycleId: '', taskId: 't', now: T0 + 72,
+    });
+    expect(emptyCycle).toEqual({ ok: false, reason: 'not_owner' });
   });
 
   it('release chat après préemption', async () => {

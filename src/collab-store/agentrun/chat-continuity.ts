@@ -71,18 +71,18 @@ export async function runSummaryForParticipant(
 }
 
 /**
- * Préemption chat : vérifie d'abord que le participant possède au moins une
- * exécution pour (cycle, task) — sinon refus sans toucher le fence d'autrui.
+ * CC-7 L1 — préemption chat par identité (S5).
+ * Le bail est dérivé de (cycle, participant, task) via leaseKeyOf : le chat peut
+ * prendre la main AVANT toute exécution API. Plus d'exigence de run préalable
+ * (sinon le chat ne pouvait pas ouvrir le bail automatiquement).
+ * L'identité est celle du jeton serveur ; on ne touche jamais le fence d'autrui.
  */
 export async function preemptOwnRun(
   db: D1Database,
   input: { participantId: string; cycleId: string; taskId: string; now: number; holdSeconds?: number },
 ): Promise<{ ok: true; generation: number } | { ok: false; reason: 'not_owner' }> {
+  if (!input.participantId || !input.cycleId) return { ok: false, reason: 'not_owner' };
   await ensureAgentRunSchema(db);
-  const owned = await db.prepare(
-    'SELECT 1 AS ok FROM agent_runs WHERE cycle_id = ?1 AND participant_id = ?2 AND task_id = ?3 LIMIT 1',
-  ).bind(input.cycleId, input.participantId, input.taskId || '').first<{ ok: number }>();
-  if (!owned) return { ok: false, reason: 'not_owner' };
   const generation = await preemptByChat(db, {
     cycleId: input.cycleId,
     participantId: input.participantId,
@@ -93,15 +93,13 @@ export async function preemptOwnRun(
   return { ok: true, generation };
 }
 
+/** CC-7 L1 — relâchement chat par identité ; pas d'exigence de run préalable. */
 export async function releaseOwnRun(
   db: D1Database,
   input: { participantId: string; cycleId: string; taskId: string; now: number },
 ): Promise<{ ok: true } | { ok: false; reason: 'not_owner' }> {
+  if (!input.participantId || !input.cycleId) return { ok: false, reason: 'not_owner' };
   await ensureAgentRunSchema(db);
-  const owned = await db.prepare(
-    'SELECT 1 AS ok FROM agent_runs WHERE cycle_id = ?1 AND participant_id = ?2 AND task_id = ?3 LIMIT 1',
-  ).bind(input.cycleId, input.participantId, input.taskId || '').first<{ ok: number }>();
-  if (!owned) return { ok: false, reason: 'not_owner' };
   await releaseChat(db, {
     cycleId: input.cycleId,
     participantId: input.participantId,
