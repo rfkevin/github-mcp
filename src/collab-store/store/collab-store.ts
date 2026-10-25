@@ -234,7 +234,11 @@ export class CollabStore {
         // key: long op_ids sharing a 48-char prefix collided on sealed ids.
         const sealedId = 'sealed-' + (await sha256Hex(key + '|' + event.cycle_id));
         const envelope = await createSealedEnvelope(payload.content);
-        event.payload_json = JSON.stringify({ sealed_id: sealedId, content_hash: envelope.content_hash });
+        // CC-7 L0 : l'identifiant de tâche (jamais secret) reste public à côté du scellé, pour que le contrôleur
+        // sache quelle tâche a reçu sa proposition (sinon réveil « no-submission » périmé). Seul `content` est scellé.
+        const sealedTask = typeof payload.task === 'string' && TASK_ID_RE.test(payload.task) ? payload.task : null;
+        event.payload_json = JSON.stringify({ sealed_id: sealedId, content_hash: envelope.content_hash,
+          ...(sealedTask ? { task: sealedTask } : {}) });
         sealedInsert = this.db.prepare([
           'INSERT INTO sealed_items (id, cycle_id, phase, participant_id, content_hash, content, revealed_at)',
           'VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)',

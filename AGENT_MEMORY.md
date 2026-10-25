@@ -703,3 +703,11 @@ l'identifiant de livraison, le webhook répond duplicate et ne lance aucun passa
 (commentaire), à 60 s au moins du précédent ; (2) les variables de cc3-test vivent dans wrangler.jsonc : ouvrir et
 fermer une fenêtre = deux PR, la fermeture étant l'inverse exacte ; (3) une PR fusionnée ne peut plus être commentée par
 l'outil : passer par une issue. Merci à Grok, Vibe et Kevin.
+
+### 2026-10-25-claude-cc7-l0-proposal-wake
+Auteur : Claude | Contexte : cycle cc7-api-auto, lot L0 (plan CC-PLAN-7 v0.2)
+
+Réveil « no-submission » périmé après une proposal.submit : le contrôleur ne connaissait que les PR, et le scellé P1
+effaçait l'identifiant de tâche. Correctif : le scellé garde `task` en clair (le contenu reste scellé), et une tâche
+avec proposition de son auteur n'est plus réveillée. Piège : en P1, le store réécrit le payload d'une proposition —
+toute métadonnée utile au contrôleur doit être recopiée explicitement à côté du scellé. Merci à Vibe pour le signalement.

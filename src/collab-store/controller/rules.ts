@@ -60,6 +60,8 @@ export interface TaskFacts {
   verdicts: VerdictFact[];
   /** Dernière `correction.request` du coordinateur (absent = aucune). */
   correction?: CorrectionFact | null;
+  /** CC-7 L0 : dernière `proposal.submit` de l'auteur pour CETTE tâche (absent = aucune). */
+  proposal?: { seq: number } | null;
 }
 
 /**
@@ -165,6 +167,9 @@ function taskDecisions(task: TaskFacts, byId: Map<string, TaskFacts>): Decision[
     return [corrective, ...pending];
   }
   if (!submission) {
+    // CC-7 L0 : une tâche de conception (propositions, synthèse) est remise par proposal.submit, sans PR ; la suite
+    // (critique, vote) est portée par les sorties attendues de la phase, pas par un réveil de l'auteur.
+    if (task.proposal) return [];
     return [wake(task, task.owner, 'implement', 'no-submission', 'none', 'Tâche ouverte sans soumission de l\'auteur.')];
   }
   const subject = submission.head + '..' + submission.base;

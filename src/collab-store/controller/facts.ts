@@ -98,6 +98,27 @@ export function taskEvidence(taskId: string, roles: { owner: string; reviewer: s
   return { submission, verdicts };
 }
 
+export interface ProposalEvent {
+  seq: number;
+  participant: string;
+  payload_json: string;
+}
+
+/**
+ * CC-7 L0 : dernière `proposal.submit` de l'AUTEUR qui nomme cette tâche (`payload.task`, gardé public même pour
+ * un scellé P1). Une proposition sans tâche, ou d'un autre participant, ne compte jamais.
+ */
+export function taskProposal(taskId: string, owner: string, events: ProposalEvent[]): { seq: number } | null {
+  let latest: { seq: number } | null = null;
+  for (const event of events) {
+    if (event.participant !== owner) continue;
+    const payload = parse(event.payload_json);
+    if (!payload || (text(payload.task) || text(payload.task_id)) !== taskId) continue;
+    if (!latest || event.seq > latest.seq) latest = { seq: event.seq };
+  }
+  return latest;
+}
+
 /** Dépendances d'une cellule CC-STATE-1 (« none », « l0, l1 »). */
 export function parseDependencies(cell: string): string[] {
   const value = cell.trim();
