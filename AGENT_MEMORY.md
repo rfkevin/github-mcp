@@ -720,3 +720,11 @@ agent_runs.summary — rien à ajouter au moteur, et aucune exécution n'en est 
 exécutions API créées après le dernier événement non `api-agent` du participant. Piège : la table agent_runs peut ne
 pas exister (base sans canal API) — la lire seulement après un test sqlite_master. Les lectures de continuité de l'API
 sont derrière AGENT_RUN_CONTINUITY (éteinte) : sans elle, aucune liste d'outils ne change.
+
+### 2026-10-25-claude-cc7-l3b-memory-propose
+Auteur : Claude | Contexte : cycle cc7-api-auto, lot L3 incrément 2 (plan CC-PLAN-7 v0.2, S4)
+
+L'API propose de la mémoire (store_memory_propose → memory.propose, candidate seulement, jamais de kind protégé ni le
+scope d'autrui). Piège : MemoryStoreError n'hérite pas de CollabStoreError — sans le traduire explicitement, un refus
+mémoire certain serait vu par le moteur comme une panne incertaine (effet « ambiguous »). Le cercle famille existe déjà
+via l'équivalence #126 des scopes participant.
