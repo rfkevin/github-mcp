@@ -66,8 +66,8 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
   });
 
   server.registerTool('collab_preempt_agent_run', {
-    title: 'Préempter une exécution API (chat prioritaire, CC-5 l7e)',
-    description: 'Le chat reprend le bail (fencing 7a) pour VOS exécutions seulement. hold_seconds défaut 900. Une étape API en vol perd ses écritures LIVE.',
+    title: 'Préempter le bail API (chat prioritaire, CC-5 l7e / CC-7 L1)',
+    description: 'Le chat prend le bail (fencing 7a) pour VOTRE identité serveur (cycle/task). CC-7 L1 : aucune exécution préalable requise — ouverture de session chat. hold_seconds défaut 900. Une étape API en vol perd ses écritures LIVE.',
     inputSchema: {
       cycle_id: z.string().min(1).max(64),
       task_id: z.string().max(64).optional(),
@@ -86,7 +86,7 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
         holdSeconds: input.hold_seconds ?? CHAT_HOLD_SECONDS_DEFAULT,
       });
       if (!result.ok) {
-        throw new CollabStoreError('AGENT_RUN_NOT_OWNED', 'Aucune exécution à vous pour ce cycle/tâche.');
+        throw new CollabStoreError('AGENT_RUN_NOT_OWNED', 'Identité ou cycle invalide pour la préemption.');
       }
       return { content: [{ type: 'text' as const, text: JSON.stringify({ preempted: true, generation: result.generation }) }] };
     } catch (error) {
@@ -95,8 +95,8 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
   });
 
   server.registerTool('collab_release_agent_run', {
-    title: 'Rendre la main à l’API (CC-5 l7e)',
-    description: 'Libère le bail chat pour VOS exécutions seulement (holder none, sans nouvelle génération).',
+    title: 'Rendre la main à l’API (CC-5 l7e / CC-7 L1)',
+    description: 'Libère le bail chat pour VOTRE identité (holder none). CC-7 L1 : aucune exécution préalable requise.',
     inputSchema: {
       cycle_id: z.string().min(1).max(64),
       task_id: z.string().max(64).optional(),
@@ -113,7 +113,7 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
         now,
       });
       if (!result.ok) {
-        throw new CollabStoreError('AGENT_RUN_NOT_OWNED', 'Aucune exécution à vous pour ce cycle/tâche.');
+        throw new CollabStoreError('AGENT_RUN_NOT_OWNED', 'Identité ou cycle invalide pour le relâchement.');
       }
       return { content: [{ type: 'text' as const, text: JSON.stringify({ released: true }) }] };
     } catch (error) {

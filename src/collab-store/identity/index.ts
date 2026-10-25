@@ -6,3 +6,7 @@ export {
   assertDistinctLogicalParticipants, listIdentityFamilies, IDENTITY_FAMILY_RE,
   type IdentityFamily,
 } from './families';
+export {
+  authorizationKey, normalizeAccessChannel, sameAuthorization,
+  type AccessChannel,
+} from './channel-parity';
