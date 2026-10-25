@@ -53,7 +53,7 @@ export interface ZaiModelOptions {
 export function parseZaiRef(ref: string): { model: string; rate: ApiModelRate } {
   const prefix = 'zai:';
   if (!ref.startsWith(prefix)) {
-    throw new Error('ZAI_MODEL_UNSUPPORTED : fournisseur non pris en charge par l'adaptateur Z.ai : '
+    throw new Error('ZAI_MODEL_UNSUPPORTED : fournisseur non pris en charge par l’adaptateur Z.ai : '
       + ref.split(':')[0] + ' (aucun repli inter-familles).');
   }
   const model = ref.slice(prefix.length);
@@ -77,7 +77,7 @@ export function createZaiModel(options: ZaiModelOptions): ModelClient {
     async complete(input): Promise<{ output: ModelOutput; usage: ModelUsage }> {
       // (1) Enveloppe par participant non financée : refus avant tout appel, aucun quota touché.
       if (!envelopeFunded(options.envelope)) {
-        throw new ModelCallError('PAID_ENVELOPE_NOT_FUNDED : enveloppe owner par participant absente ou nulle ; aucun appel payant n'est fait.', null);
+        throw new ModelCallError('PAID_ENVELOPE_NOT_FUNDED : enveloppe owner par participant absente ou nulle ; aucun appel payant n’est fait.', null);
       }
       // Secret absent : refus typé avant toute réservation, aucun quota touché.
       let secret: string;
@@ -96,7 +96,7 @@ export function createZaiModel(options: ZaiModelOptions): ModelClient {
       const previous = await readPaidStep(options.db, options.runId, n);
       if (previous?.settled) {
         // Coupure entre le règlement et la persistance de la sortie : fail-closed, aucune seconde charge.
-        throw new ModelCallError('PAID_STEP_ALREADY_SETTLED : l'étape ' + n + ' est déjà réglée ; rejeu refusé pour éviter une seconde charge.', null);
+        throw new ModelCallError('PAID_STEP_ALREADY_SETTLED : l’étape ' + n + ' est déjà réglée ; rejeu refusé pour éviter une seconde charge.', null);
       }
       const prepared = prepareProviderCall(options.schemas, options.system, input);
       const worstTokens = prepared.bound + options.maxOutputTokens;
@@ -104,7 +104,7 @@ export function createZaiModel(options: ZaiModelOptions): ModelClient {
       // Borne par exécution : refus PRÉEMPTIF avant toute réservation (jamais de découvert).
       if (run.cost_cents + worstCents > run.max_cost_cents) {
         throw new ModelCallError('PAID_RUN_BUDGET_EXCEEDED : ' + run.cost_cents + ' + ' + worstCents + ' cents > plafond '
-          + run.max_cost_cents + ' de l'exécution ; aucun appel n'est fait.', null);
+          + run.max_cost_cents + ' de l’exécution ; aucun appel n’est fait.', null);
       }
       let reserved: number;
       if (previous) {
