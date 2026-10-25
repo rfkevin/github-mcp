@@ -13,7 +13,7 @@ import { parseStateDocument } from '../export/document';
 import { STATE_IMPORT_KEY_PREFIX } from '../export/state-export';
 import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
-import { taskEvidence, parseDependencies, type EvidenceEvent } from './facts';
+import { taskEvidence, taskProposal, parseDependencies, type EvidenceEvent, type ProposalEvent } from './facts';
 import type { ControllerSnapshot, CorrectionFact, QuestionFact, TaskFacts } from './rules';
 
 interface TaskRow { task_id: string; status: string; revision: number; owner_pid: string; reviewer_pid: string; tester_pid: string }
@@ -102,7 +102,7 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
   const importKey = STATE_IMPORT_KEY_PREFIX + cycleId + ':';
   const importSeq = "COALESCE((SELECT MAX(seq) FROM events WHERE cycle_id = ?1 AND type = 'owner.decision'"
     + " AND participant_id = 'owner' AND substr(idempotency_key, 1, length(?2)) = ?2), 0)";
-  const [cycle, halt, def, tasks, families, imported, evidence, clarify, corrections] = await db.batch([
+  const [cycle, halt, def, tasks, families, imported, evidence, clarify, corrections, proposalRows] = await db.batch([
     db.prepare('SELECT phase, revision FROM cycles WHERE cycle_id = ?1').bind(cycleId),
     db.prepare("SELECT value FROM owner_flags WHERE name = 'halt'"),
     db.prepare('SELECT auto_advance FROM phase_definitions WHERE cycle_id = ?1 AND phase = (SELECT phase FROM cycles WHERE cycle_id = ?1)').bind(cycleId),
@@ -121,6 +121,9 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
       "  GROUP BY json_extract(payload_json, '$.task')",
       ') latest ON latest.seq = e.seq',
     ].join(' ')).bind(cycleId),
+    // CC-7 L0 : propositions déposées (scellées ou non) ; seule leur tâche et leur auteur sont lus.
+    db.prepare("SELECT seq, participant_id, payload_json FROM events WHERE cycle_id = ?1 AND type = 'proposal.submit' ORDER BY seq")
+      .bind(cycleId),
   ]);
   const cycleRow = (cycle.results as Array<{ phase: string; revision: number }>)[0];
   if (!cycleRow) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + cycleId);
@@ -133,10 +136,13 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
   const correctionByTask = latestCorrections(corrections.results as Array<{ seq: number; payload_json: string }>);
   const events: EvidenceEvent[] = (evidence.results as Array<{ seq: number; participant_id: string; payload_json: string; evidence_ref: string }>)
     .map(row => ({ seq: row.seq, participant: logical(row.participant_id), payload_json: row.payload_json, evidence_ref: row.evidence_ref ?? '' }));
+  const proposals: ProposalEvent[] = (proposalRows.results as Array<{ seq: number; participant_id: string; payload_json: string }>)
+    .map(row => ({ seq: row.seq, participant: logical(row.participant_id), payload_json: row.payload_json }));
   const taskFacts: TaskFacts[] = (tasks.results as TaskRow[]).map(row => {
     const roles = { owner: logical(row.owner_pid), reviewer: logical(row.reviewer_pid), tester: logical(row.tester_pid) };
     return { task_id: row.task_id, status: row.status, revision: row.revision, ...roles, dependencies: deps.get(row.task_id) ?? [],
-      ...taskEvidence(row.task_id, roles, events), correction: correctionByTask.get(row.task_id) ?? null };
+      ...taskEvidence(row.task_id, roles, events), correction: correctionByTask.get(row.task_id) ?? null,
+      proposal: taskProposal(row.task_id, roles.owner, proposals) };
   });
   const autoAdvance = (def.results as Array<{ auto_advance: string }>)[0]?.auto_advance ?? 'none';
   return {

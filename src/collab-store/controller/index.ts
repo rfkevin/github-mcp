@@ -1,5 +1,5 @@
 export { nextActors, QUESTION_TTL_REVISIONS, type QuestionFact, type ControllerSnapshot, type Decision, type DecisionKind, type TaskFacts, type VerdictFact, type Submission } from './rules';
-export { taskEvidence, parseDependencies, type EvidenceEvent } from './facts';
+export { taskEvidence, taskProposal, parseDependencies, type EvidenceEvent, type ProposalEvent } from './facts';
 export { readControllerSnapshot, openQuestions } from './snapshot';
 export { recordDecisions, readDecisions, decisionKey, ensureControllerJournal, reminderBucket, REMINDER_INTERVAL_S, REMINDER_MAX, type JournalRow } from './journal';
 export { runController, snapshotHash, type ControllerRunResult, type ControllerRunOptions } from './run';
