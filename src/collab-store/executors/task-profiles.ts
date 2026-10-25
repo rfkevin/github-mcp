@@ -1,5 +1,7 @@
 /**
  * CC-5 L1 — profils modèle × tâche, plafonds de jetons, fenêtres de débit.
+ * CC-7 L2 — plafonds des types de tâche du canal API (answer, planification,
+ * code, revue, test), plan CC-PLAN-7 v0.2 S3.
  *
  * Ordre imposé par le plan : poser les bornes par type de tâche PUIS retirer
  * le plafond global fixe 2048. Le plafond effectif est
@@ -17,13 +19,21 @@
  * à revalider le jour d'activation (X12). Aucune dépense.
  */
 
-/** Types de tâche du chemin gratuit (extensible). */
+/**
+ * Types de tâche du chemin gratuit (extensible). CC-7 L2 (plan CC-PLAN-7 v0.2
+ * S3) : kinds du canal API — answer, planification, code, revue, test.
+ */
 export type TaskKind =
   | 'probe'
   | 'classify'
   | 'review'
   | 'design'
   | 'diagnose'
+  | 'answer'
+  | 'planification'
+  | 'code'
+  | 'revue'
+  | 'test'
   | 'default';
 
 export interface TaskProfile {
@@ -36,6 +46,7 @@ export interface TaskProfile {
 /**
  * Bornes par type de tâche (valeurs initiales L1 ; Kevin peut resserrer via
  * budget coordinateur, le code refuse toute hausse au-dessus du plafond modèle).
+ * CC-7 L2 (S3) : types de tâche du canal API, valeurs initiales resserrables.
  */
 export const TASK_KIND_BOUNDS: Readonly<Record<TaskKind, TaskProfile>> = {
   probe: { max_tokens: 256, thinking: 'off' },
@@ -43,6 +54,11 @@ export const TASK_KIND_BOUNDS: Readonly<Record<TaskKind, TaskProfile>> = {
   review: { max_tokens: 2_048, thinking: 'low' },
   design: { max_tokens: 4_096, thinking: 'low' },
   diagnose: { max_tokens: 1_024, thinking: 'low' },
+  answer: { max_tokens: 2_048, thinking: 'off' },
+  planification: { max_tokens: 4_096, thinking: 'low' },
+  code: { max_tokens: 4_096, thinking: 'low' },
+  revue: { max_tokens: 2_048, thinking: 'low' },
+  test: { max_tokens: 2_048, thinking: 'low' },
   default: { max_tokens: 2_048, thinking: 'off' },
 };
 
@@ -84,7 +100,9 @@ export const PROVIDER_RATE_WINDOWS: Readonly<Record<string, {
 
 export function normalizeTaskKind(value: string | undefined | null): TaskKind {
   if (value === 'probe' || value === 'classify' || value === 'review'
-    || value === 'design' || value === 'diagnose') {
+    || value === 'design' || value === 'diagnose'
+    || value === 'answer' || value === 'planification' || value === 'code'
+    || value === 'revue' || value === 'test') {
     return value;
   }
   return 'default';
