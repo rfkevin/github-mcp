@@ -7,6 +7,7 @@ import {
   preemptOwnRun,
   releaseOwnRun,
   listRunsForOwner,
+  leaseKeyOf,
 } from '../../../src/collab-store/agentrun/chat-continuity';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
