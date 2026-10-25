@@ -15,6 +15,7 @@ import type { EngineDeps } from './engine';
 import { createWorkersAiModel } from './workers-ai-model';
 import { createPaidWorkersAiModel, parsePaidCycleCap, parsePaidEnvelope } from './paid-model';
 import { createReadToolHost, type GitHubReads } from './read-tools';
+import { continuityEnabled } from './plan';
 import { DEFAULT_API_BASE_BRANCH, type GitHubWrites } from './github-tools';
 import type { WorkersAiBinding } from '../executors/adapter';
 import { parseNeuronBudget } from '../executors/run';
@@ -90,7 +91,8 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     ? { writes: githubWrites, baseBranch: apiBaseBranch(env.AGENT_RUN_BASE_BRANCH) } : null;
   return (_runId, stepDb) => {
     const db = stepDb ?? fallbackDb;
-    const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes });
+    const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
+      continuity: continuityEnabled(env) });
     const envelopeCents = parsePaidEnvelope(env.AGENT_RUN_PAID_ENVELOPE_CENTS);
     const model = paidRef
       ? createPaidWorkersAiModel({ ai, ref: paidRef, db, runId: _runId, envelopeCents,

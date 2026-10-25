@@ -60,6 +60,8 @@ export interface AgentRunEnv {
   AGENT_RUN_DAILY_GB_S?: string;
   /** 7c-2 : participants volontaires du canal API (plan.ts) ; vide par défaut = aucune création. */
   AGENT_RUN_PARTICIPANTS?: string;
+  /** CC-7 L3 : « true » pour les lectures de continuité et la consigne de lecture élargie ; absent = inchangé. */
+  AGENT_RUN_CONTINUITY?: string;
 }
 
 export type QuotaKind = 'do_requests' | 'rows_written' | 'do_gb_s';

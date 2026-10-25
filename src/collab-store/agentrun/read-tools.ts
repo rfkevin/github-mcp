@@ -13,6 +13,8 @@
  * store, redactEventsFor) et que le dépôt autorisé par l'hôte.
  */
 import { CollabStore } from '../store/collab-store';
+import { equivalentParticipantIds } from '../identity/families';
+import { loadContinuity, loadVisibleActiveMemory } from '../context';
 import { ToolRefused, type LookupResult, type ToolCall, type ToolHost, type ToolSpec } from './engine';
 import type { ToolSchema } from './workers-ai-model';
 import { createStoreWriteTools, WRITE_TOOL_SCHEMAS, type WriteToolName } from './store-tools';
@@ -41,6 +43,23 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
 
 export type ReadToolName = 'store_context' | 'store_delta' | 'github_read_file' | 'github_pull_request' | 'github_check_runs';
 
+/**
+ * CC-7 L3 (incrément 1) : lectures de continuité, ajoutées à TOUS les types de tâche quand l'hôte est créé avec
+ * `continuity: true` (porte AGENT_RUN_CONTINUITY, éteinte par défaut). Mêmes données que le chat (parité S1, S4) :
+ * mémoire C4 visible du participant et « depuis ta dernière visite » (notes de passation, exécutions précédentes).
+ */
+export const CONTINUITY_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
+  { name: 'store_memory', description: 'Mémoire C4 active visible par votre participant (scopes partagés et votre scope personnel), au plus 40 entrées.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'store_continuity', description: 'Continuité de votre participant : dernière visite du chat, ses notes de passation et vos exécutions API précédentes avec leur message final.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false } },
+]);
+export type ContinuityToolName = 'store_memory' | 'store_continuity';
+const CONTINUITY_TOOLS: readonly ContinuityToolName[] = ['store_memory', 'store_continuity'];
+export const CONTINUITY_MEMORY_LIMIT = 40;
+/** Registre complet des tâches rendu par store_context en mode continuité (écarts E1-E3 de l8). */
+export const REGISTRY_MAX_TASKS = 60;
+
 /** Allowlist par type de tâche, figée en code ; un type inconnu n'a aucun outil. */
 export const READ_TOOLS_BY_KIND: Readonly<Record<string, readonly ReadToolName[]>> = Object.freeze({
   research: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs'],
@@ -67,6 +86,8 @@ export interface ReadToolHostOptions {
    * exigent aussi `repository`. Absent = aucune écriture GitHub.
    */
   githubWrites?: { writes: GitHubWrites; baseBranch: string } | null;
+  /** CC-7 L3 : lectures de continuité (store_memory, store_continuity) et registre complet dans store_context. Absent = inchangé. */
+  continuity?: boolean;
 }
 
 interface RunScope { cycle_id: string; participant_id: string }
@@ -98,6 +119,10 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     // Sans dépôt ou client GitHub, les outils GitHub ne sont pas proposés du tout.
     return tools.filter(name => !name.startsWith('github_') || (options.repository !== null && options.github !== null));
   };
+  // Un type inconnu n'a aucun outil, même en continuité (deny-by-default).
+  const continuityNames = (taskKind: string): readonly ContinuityToolName[] =>
+    options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? CONTINUITY_TOOLS : [];
+  const readNames = (taskKind: string): readonly string[] => [...allowed(taskKind), ...continuityNames(taskKind)];
   async function scope(runId: string): Promise<RunScope> {
     const run = await options.db.prepare('SELECT cycle_id, participant_id FROM agent_runs WHERE run_id = ?1').bind(runId).first<RunScope>();
     if (!run) throw new ToolRefused('unknown_run');
@@ -110,8 +135,15 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     const args = call.args ?? {};
     const store = new CollabStore(options.db);
     switch (call.name as ReadToolName) {
-      case 'store_context':
-        return store.getContext(cycle_id, participant_id);
+      case 'store_context': {
+        const mine = await store.getContext(cycle_id, participant_id);
+        if (!options.continuity) return mine;
+        // E1-E3 (l8) : le registre complet du cycle, en lecture, pas seulement les tâches où l'on a un rôle.
+        const all = await store.getContext(cycle_id);
+        const registry = all.tasks.slice(0, REGISTRY_MAX_TASKS).map(task => ({ task_id: task.task_id, status: task.status,
+          owner: task.owner_pid, reviewer: task.reviewer_pid, tester: task.tester_pid, next_action: String(task.next_action ?? '').slice(0, 300) }));
+        return { ...mine, registry, registry_truncated: all.tasks.length > REGISTRY_MAX_TASKS };
+      }
       case 'store_delta': {
         const since = intArg(args, 'since_seq', 0, Number.MAX_SAFE_INTEGER);
         const limit = intArg(args, 'limit', 1, 50, 50);
@@ -138,21 +170,29 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         return runs.slice(0, 50).map(run => ({ name: run.name, status: run.status, conclusion: run.conclusion, head_sha: run.head_sha }));
       }
       default:
-        throw new ToolRefused('tool_not_allowlisted');
+        break;
     }
+    if (options.continuity && (CONTINUITY_TOOLS as readonly string[]).includes(call.name)) {
+      const ids = await equivalentParticipantIds(options.db, participant_id);
+      if (call.name === 'store_continuity') return loadContinuity(options.db, cycle_id, ids);
+      const cycle = await options.db.prepare('SELECT project FROM cycles WHERE cycle_id = ?1').bind(cycle_id).first<{ project: string | null }>();
+      const memory = await loadVisibleActiveMemory(options.db, { participantId: participant_id, participantIds: new Set(ids), project: cycle?.project ?? null });
+      return { entries: memory.slice(0, CONTINUITY_MEMORY_LIMIT), truncated: memory.length > CONTINUITY_MEMORY_LIMIT };
+    }
+    throw new ToolRefused('tool_not_allowlisted');
   }
   return {
     spec(taskKind: string, name: string): ToolSpec | null {
-      if ((allowed(taskKind) as readonly string[]).includes(name)) return { name, effect: 'read' };
+      if (readNames(taskKind).includes(name)) return { name, effect: 'read' };
       if ((writeNames(taskKind) as readonly string[]).includes(name)) return { name, effect: 'write' };
       return null;
     },
     list(taskKind: string): string[] {
-      return [...allowed(taskKind), ...writeNames(taskKind)];
+      return [...readNames(taskKind), ...writeNames(taskKind)];
     },
     schemas(taskKind: string): ToolSchema[] {
-      const names = new Set<string>([...allowed(taskKind), ...writeNames(taskKind)]);
-      return [...READ_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
+      const names = new Set<string>([...readNames(taskKind), ...writeNames(taskKind)]);
+      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.

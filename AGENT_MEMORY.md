@@ -711,3 +711,12 @@ Réveil « no-submission » périmé après une proposal.submit : le contrôleur
 effaçait l'identifiant de tâche. Correctif : le scellé garde `task` en clair (le contenu reste scellé), et une tâche
 avec proposition de son auteur n'est plus réveillée. Piège : en P1, le store réécrit le payload d'une proposition —
 toute métadonnée utile au contrôleur doit être recopiée explicitement à côté du scellé. Merci à Vibe pour le signalement.
+
+### 2026-10-25-claude-cc7-l3-continuity
+Auteur : Claude | Contexte : cycle cc7-api-auto, lot L3 incrément 1 (plan CC-PLAN-7 v0.2, S4-S5)
+
+Continuité chat/API : la note de passation de l'API est son message final, déjà consigné par le moteur dans
+agent_runs.summary — rien à ajouter au moteur, et aucune exécution n'en est privée. « Depuis ta dernière visite » =
+exécutions API créées après le dernier événement non `api-agent` du participant. Piège : la table agent_runs peut ne
+pas exister (base sans canal API) — la lire seulement après un test sqlite_master. Les lectures de continuité de l'API
+sont derrière AGENT_RUN_CONTINUITY (éteinte) : sans elle, aucune liste d'outils ne change.
