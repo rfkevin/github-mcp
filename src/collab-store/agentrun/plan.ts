@@ -28,7 +28,40 @@ export const PLAN_DEADLINE_S = 900;
 const PARTICIPANT_RE = /^[A-Za-z0-9_-][A-Za-z0-9:_-]{0,127}$/;
 const ASK_SUBJECT_RE = /^ask#([1-9][0-9]{0,9})$/;
 
-export interface PlanEnv { AGENT_RUN_PARTICIPANTS?: string }
+export interface PlanEnv { AGENT_RUN_PARTICIPANTS?: string; AGENT_RUN_CONTINUITY?: string }
+
+/** CC-7 L3 : porte des lectures de continuité, éteinte par défaut (« true » exact seulement). */
+export function continuityEnabled(env: { AGENT_RUN_CONTINUITY?: string }): boolean {
+  return env.AGENT_RUN_CONTINUITY === 'true';
+}
+
+/** Fenêtre de lecture élargie autour d'une question (écarts E1-E3 de l8). */
+export const ANSWER_READ_WINDOW = 20;
+
+/**
+ * Consigne d'une exécution `answer`. Sans continuité : consigne 7c-2 inchangée. Avec continuité : lecture
+ * élargie (registre, mémoire, passation, 20 événements) et message final au format de passation
+ * Fait / Reste / Appris, consigné par le moteur dans agent_runs.summary (note de passation de l'API, S5).
+ */
+export function answerPrompt(cycleId: string, askSeq: number, continuity: boolean): string {
+  if (!continuity) {
+    return [
+      'Question #' + askSeq + ' du cycle ' + cycleId + ' adressée à votre participant.',
+      'Lisez-la avec store_delta (since_seq ' + (askSeq - 1) + ', limit 1) et le contexte avec store_context si utile,',
+      'puis répondez une seule fois avec store_answer (ask_seq ' + askSeq + ').',
+      'Sans réponse sûre, dites-le dans la réponse plutôt que d’inventer.',
+    ].join(' ');
+  }
+  const since = Math.max(0, askSeq - ANSWER_READ_WINDOW);
+  return [
+    'Question #' + askSeq + ' du cycle ' + cycleId + ' adressée à votre participant.',
+    'Avant de répondre, lisez : store_context (registre complet des tâches), store_continuity (notes de passation de',
+    'votre chat et vos exécutions précédentes), store_memory (mémoire visible) et store_delta (since_seq ' + since + ', limit ' + ANSWER_READ_WINDOW + ')',
+    'pour la question et son contexte récent. Répondez une seule fois avec store_answer (ask_seq ' + askSeq + ').',
+    'Sans réponse sûre, dites-le plutôt que d’inventer.',
+    'Votre message final est votre note de passation, en trois rubriques courtes : Fait / Reste / Appris (300 mots au plus).',
+  ].join(' ');
+}
 
 /** Participants serveur volontaires ; entrée invalide ignorée, doublons retirés, au plus PLAN_MAX_PARTICIPANTS. */
 export function apiParticipants(raw: string | undefined): string[] {
@@ -68,12 +101,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         const askSeq = Number(match[1]);
         const result = await createRun(db, {
           runId: await answerRunId(cycleId, participantId, askSeq), cycleId, participantId, taskId: '', taskKind: 'answer',
-          prompt: [
-            'Question #' + askSeq + ' du cycle ' + cycleId + ' adressée à votre participant.',
-            'Lisez-la avec store_delta (since_seq ' + (askSeq - 1) + ', limit 1) et le contexte avec store_context si utile,',
-            'puis répondez une seule fois avec store_answer (ask_seq ' + askSeq + ').',
-            'Sans réponse sûre, dites-le dans la réponse plutôt que d’inventer.',
-          ].join(' '),
+          prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env)),
           maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: 0, deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
         });
         if (result.created) created += 1;

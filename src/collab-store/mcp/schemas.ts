@@ -112,6 +112,19 @@ export const outputSchemas = {
       excluded_memory_ids: z.array(z.string()),
       budget: z.object({ max_tokens: z.number(), estimated_tokens: z.number() }),
     }).optional(),
+    // CC-7 L3 : continuité chat/API du participant (lecture seule, bornée).
+    since_last_visit: z.object({
+      last_visit_seq: z.number(),
+      last_visit_at: z.number(),
+      api_runs: z.array(z.object({
+        run_id: z.string(), task_kind: z.string(), status: z.string(), stop_reason: z.string(),
+        created_at: z.number(), updated_at: z.number(), summary: z.string(),
+      })),
+      handovers: z.array(z.object({
+        seq: z.number(), at: z.number(), channel: z.enum(['api', 'chat']), done: z.string(), todo: z.string(), learned: z.string(),
+      })),
+      truncated: z.object({ api_runs: z.boolean(), handovers: z.boolean() }),
+    }).optional(),
     delta: z.object({
       events: z.array(z.object(storedEvent)),
       hasMore: z.boolean(),

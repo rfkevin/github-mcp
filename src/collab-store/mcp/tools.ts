@@ -11,8 +11,9 @@ import { collabFailure as failure, collabSuccess, toEventOutput } from './result
 import { CollabStoreError, type AppendOutcome } from '../store/collab-store';
 import { MAX_OP_ID_LENGTH, type StoreEventType } from '../contracts';
 import { authorizeAppend, authorizePhaseAdvance } from '../identity';
+import { equivalentParticipantIds } from '../identity/families';
 import { exportCycleState, exportMemoryMarkdown } from '../export';
-import { resolveContextTarget, buildRolePacket } from '../context';
+import { resolveContextTarget, buildRolePacket, loadContinuity } from '../context';
 import { advanceGuarded } from '../phases/gate';
 import type { Phase } from '../../collab/contracts';
 import { dispatchCoordinatorTask } from '../coordinator/tasks';
@@ -136,6 +137,11 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
         approvedBudgetTokens: input.approved_budget_tokens,
         lastSeenSeq: input.last_seen_seq ?? 0,
       });
+      // CC-7 L3 : « depuis ta dernière visite » — exécutions API et notes de passation du participant
+      // (identités équivalentes), jamais celles d'un autre ; client non enregistré : rien.
+      const continuity = identity.status === 'registered'
+        ? await loadContinuity(context.db, resolved.cycle_id, await equivalentParticipantIds(context.db, participantId))
+        : null;
       let delta: Awaited<ReturnType<typeof context.store.getDelta>> | undefined;
       if (input.include_delta) {
         delta = await context.store.getDelta(
@@ -160,6 +166,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
           excluded_memory_ids: packet.excluded_memory_ids,
           budget: packet.budget,
         },
+        ...(continuity ? { since_last_visit: continuity } : {}),
         ...(delta ? { delta: { events: delta.events.map(toEventOutput), hasMore: delta.hasMore } } : {}),
       });
     } catch (error) {

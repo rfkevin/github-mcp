@@ -89,7 +89,8 @@ export function memoryVisible(
   return false;
 }
 
-async function loadVisibleActiveMemory(
+/** Mémoire C4 active visible (I6) ; exportée pour les exécutions API (CC-7 L3, parité S4). */
+export async function loadVisibleActiveMemory(
   db: D1Database,
   ctx: { participantId: string; participantIds?: ReadonlySet<string>; role?: string | null; taskId?: string | null; project?: string | null },
 ): Promise<PacketMemory[]> {
