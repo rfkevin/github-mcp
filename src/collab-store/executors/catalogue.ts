@@ -5,7 +5,7 @@
  * dans les adaptateurs revus. Une entrée listée ne crée ni endpoint, ni sonde.
  */
 export type CatalogueProvider =
-  | 'workers-ai' | 'openrouter' | 'groq' | 'gemini' | 'zai' | 'deepseek';
+  | 'workers-ai' | 'openrouter' | 'groq' | 'gemini' | 'zai' | 'deepseek' | 'xai' | 'anthropic';
 export type CatalogueTier = 'free' | 'paid' | 'unverified';
 export type CredentialContract = 'existing-binding' | 'existing-secret' | 'proposed-secret';
 
@@ -61,6 +61,15 @@ const PROVIDERS: Readonly<Record<CatalogueProvider, ProviderMeta>> = {
     quota_pool: 'deepseek:account', credential_contract: 'proposed-secret',
     secret_name: 'LLM_KEY_DEEPSEEK', source_url: 'https://api-docs.deepseek.com/quick_start/pricing/',
   },
+  // CC-7 L2 (S2) : fournisseurs des API payantes par participant (descriptifs seulement).
+  xai: {
+    quota_pool: 'xai:account', credential_contract: 'proposed-secret',
+    secret_name: 'LLM_KEY_XAI', source_url: 'https://docs.x.ai/developers/pricing',
+  },
+  anthropic: {
+    quota_pool: 'anthropic:organization', credential_contract: 'proposed-secret',
+    secret_name: 'LLM_KEY_ANTHROPIC', source_url: 'https://platform.claude.com/docs/en/about-claude/pricing',
+  },
 };
 
 type ModelSeed = readonly [CatalogueProvider, string, CatalogueTier, string?];
@@ -82,6 +91,15 @@ const MODELS: readonly ModelSeed[] = [
   ['gemini', 'gemini-3.5-flash-lite', 'unverified'],
   ['zai', 'glm-4.7-flash', 'free'],
   ['zai', 'glm-4.7-flashx', 'paid'],
+  // CC-7 L2 : candidats des API payantes par participant (registre réel : executors/model-rates.ts).
+  ['zai', 'glm-5.3', 'paid'],
+  ['zai', 'glm-5.3-flash', 'paid'],
+  ['zai', 'glm-5.3-flashx', 'paid'],
+  ['xai', 'grok-4.7', 'paid'],
+  ['xai', 'grok-4.20-0309-non-reasoning', 'paid'],
+  ['xai', 'grok-build-0.1', 'paid'],
+  ['anthropic', 'claude-sonnet-5-5', 'paid'],
+  ['anthropic', 'claude-haiku-5-5', 'paid'],
   ['deepseek', 'deepseek-flash', 'paid'],
 ];
 

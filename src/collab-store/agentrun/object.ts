@@ -14,6 +14,10 @@ import {
 import type { EngineDeps } from './engine';
 import { createWorkersAiModel } from './workers-ai-model';
 import { createPaidWorkersAiModel, parsePaidCycleCap, parsePaidEnvelope } from './paid-model';
+// CC-7 L2 : adaptateur Z.ai et enveloppe par participant (src/collab-store/executors, chemins du lot L2 ; object.ts signalé au store seq 872).
+import { parseParticipantEnvelope } from '../executors/paid-envelope';
+import { createZaiModel } from '../executors/zai-model';
+import { ABSOLUTE_MAX_OUTPUT_TOKENS } from '../executors/task-profiles';
 import { createReadToolHost, type GitHubReads } from './read-tools';
 import { DEFAULT_API_BASE_BRANCH, type GitHubWrites } from './github-tools';
 import type { WorkersAiBinding } from '../executors/adapter';
@@ -38,6 +42,17 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   AGENT_RUN_PAID_ENVELOPE_CENTS?: string;
   /** 7d : borne par cycle en cents (registre paid:cycle) ; défaut et plafond : l’enveloppe. */
   AGENT_RUN_PAID_CYCLE_CENTS?: string;
+  /** CC-7 L2 : secret Worker de l'API Z.ai, posé par Kevin seul ; absent = refus typé avant tout appel. */
+  LLM_KEY_ZAI?: string;
+  /** CC-7 L2 : enveloppe par participant — cents du jour (GO de financement ; 0, invalide ou absent = refus). */
+  AGENT_RUN_PAID_PARTICIPANT_DAY_CENTS?: string;
+  /** CC-7 L2 : cents par cycle et par participant (GO de financement). */
+  AGENT_RUN_PAID_PARTICIPANT_CYCLE_CENTS?: string;
+  /** CC-7 L2 : garde-fous secondaires par participant (défaut = plafond en code, jamais au-dessus). */
+  AGENT_RUN_PAID_PARTICIPANT_DAY_TOKENS?: string;
+  AGENT_RUN_PAID_PARTICIPANT_CYCLE_TOKENS?: string;
+  AGENT_RUN_PAID_PARTICIPANT_DAY_REQUESTS?: string;
+  AGENT_RUN_PAID_PARTICIPANT_CYCLE_REQUESTS?: string;
   AI?: WorkersAiBinding;
   WORKERS_AI_DAILY_NEURONS?: string;
   GITHUB_APP_ID?: string;
@@ -80,9 +95,13 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   if (testFactory) return testFactory;
   if (!fallbackDb || !env.AI) return simulated;
   const paidRef = env.AGENT_RUN_PAID_MODEL ?? null;
+  // CC-7 L2 : AGENT_RUN_PAID_MODEL accepte aussi les API par participant (zai:… ; xai:/anthropic: refusés jusqu'aux PR 2-2/2-3).
+  const apiRef = paidRef && (paidRef.startsWith('zai:') || paidRef.startsWith('xai:') || paidRef.startsWith('anthropic:'))
+    ? paidRef : null;
   const ref = paidRef ?? (env.AGENT_RUN_MODEL ?? null);
   if (!ref) return simulated;
   const ai = env.AI;
+  const participantLimits = parseParticipantEnvelope(env as unknown as Record<string, string | undefined>);
   const repository = env.AGENT_RUN_REPOSITORY && REPOSITORY_RE.test(env.AGENT_RUN_REPOSITORY) ? env.AGENT_RUN_REPOSITORY : null;
   const github = repository ? githubReads : null;
   // 7c-3 : écritures GitHub seulement avec un dépôt, l'interrupteur dédié et l'adaptateur de la racine.
@@ -92,7 +111,11 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     const db = stepDb ?? fallbackDb;
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes });
     const envelopeCents = parsePaidEnvelope(env.AGENT_RUN_PAID_ENVELOPE_CENTS);
-    const model = paidRef
+    const model = apiRef
+      // CC-7 L2 : API payante par participant — plafond hôte ABSOLUTE_MAX, la borne par type de tâche (S3) mord en plus.
+      ? createZaiModel({ ref: apiRef, db, runId: _runId, secret: env.LLM_KEY_ZAI, limits: participantLimits,
+        schemas: kind => tools.schemas(kind), system: AGENT_RUN_SYSTEM, maxOutputTokens: ABSOLUTE_MAX_OUTPUT_TOKENS })
+      : paidRef
       ? createPaidWorkersAiModel({ ai, ref: paidRef, db, runId: _runId, envelopeCents,
         cycleCents: parsePaidCycleCap(env.AGENT_RUN_PAID_CYCLE_CENTS, envelopeCents),
         schemas: kind => tools.schemas(kind), system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 })

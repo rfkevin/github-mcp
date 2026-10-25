@@ -17,13 +17,17 @@
  * à revalider le jour d'activation (X12). Aucune dépense.
  */
 
-/** Types de tâche du chemin gratuit (extensible). */
+/** Types de tâche du chemin gratuit (extensible) et du canal API payant (CC-7 L2, S3). */
 export type TaskKind =
   | 'probe'
   | 'classify'
   | 'review'
   | 'design'
   | 'diagnose'
+  | 'answer'
+  | 'planning'
+  | 'implement'
+  | 'test'
   | 'default';
 
 export interface TaskProfile {
@@ -43,6 +47,11 @@ export const TASK_KIND_BOUNDS: Readonly<Record<TaskKind, TaskProfile>> = {
   review: { max_tokens: 2_048, thinking: 'low' },
   design: { max_tokens: 4_096, thinking: 'low' },
   diagnose: { max_tokens: 1_024, thinking: 'low' },
+  // CC-7 L2 (S3) : plafonds de jetons par type de tâche du canal API payant.
+  answer: { max_tokens: 2_048, thinking: 'low' },
+  planning: { max_tokens: 4_096, thinking: 'medium' },
+  implement: { max_tokens: 8_192, thinking: 'low' },
+  test: { max_tokens: 2_048, thinking: 'low' },
   default: { max_tokens: 2_048, thinking: 'off' },
 };
 
@@ -84,7 +93,8 @@ export const PROVIDER_RATE_WINDOWS: Readonly<Record<string, {
 
 export function normalizeTaskKind(value: string | undefined | null): TaskKind {
   if (value === 'probe' || value === 'classify' || value === 'review'
-    || value === 'design' || value === 'diagnose') {
+    || value === 'design' || value === 'diagnose' || value === 'answer'
+    || value === 'planning' || value === 'implement' || value === 'test') {
     return value;
   }
   return 'default';
