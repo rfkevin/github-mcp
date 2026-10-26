@@ -12,6 +12,7 @@ export { createPaidWorkersAiModel, parsePaidWorkersAiRef, centsOfNeurons, PAID_M
   readPaidRun, readPaidStep, reserveParticipantStep, settleParticipantStep,
   type ParticipantEnvelope, type ParticipantEnvelopeEnv, type PaidRunRow, type PaidStepRow } from './paid-model';
 export { createZaiModel, parseZaiRef, type ZaiModelOptions } from './zai-model';
+export { createXaiModel, parseXaiRef, type XaiModelOptions } from './xai-model';
 export {
   createReadToolHost, READ_TOOL_SCHEMAS, READ_TOOLS_BY_KIND, CONTINUITY_TOOL_SCHEMAS, CONTINUITY_MEMORY_LIMIT, REGISTRY_MAX_TASKS,
   type GitHubReads, type ReadToolName, type ContinuityToolName,
