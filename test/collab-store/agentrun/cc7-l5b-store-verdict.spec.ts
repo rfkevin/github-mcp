@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
-  createRun, runStep, createReadToolHost, planAgentRuns, verdictOpId, VERDICT_STATES, TASK_KIND_COST_CENTS,
+  createRun, runStep, createReadToolHost, ensureAgentRunSchema, planAgentRuns, verdictOpId, VERDICT_STATES, TASK_KIND_COST_CENTS,
   ToolRefused, type GitHubReads, type ModelClient,
 } from '../../../src/collab-store/agentrun';
 import { engineFor } from '../../../src/collab-store/agentrun/object';
@@ -28,6 +28,8 @@ interface SeededEvent { type: string; participant: string; role: string; payload
 
 /** Cycle ouvert en P6 avec la tâche l5, trois participants actifs, la soumission et les événements donnés. */
 async function seedTask(label: string, extra?: (pids: { owner: string; reviewer: string; tester: string }) => SeededEvent[]) {
+  // Les tables agent_run* sont créées paresseusement : assurer le schéma avant tout accès direct (agent_runs, agent_run_reads).
+  await ensureAgentRunSchema(db);
   const cycle = uniq(label);
   const pids = { owner: 'l5b-own-' + n, reviewer: 'l5b-rev-' + n, tester: 'l5b-tst-' + n };
   await insertCycleRow(db, cycle, 'P6');
