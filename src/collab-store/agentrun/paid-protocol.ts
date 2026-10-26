@@ -143,7 +143,7 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
       // Borne par exécution : refus PRÉEMPTIF avant toute réservation (jamais de découvert).
       if (run.cost_cents + worstCents > run.max_cost_cents) {
         throw new ModelCallError('PAID_RUN_BUDGET_EXCEEDED : ' + run.cost_cents + ' + ' + worstCents + ' cents > plafond '
-          + run.max_cost_cents + ' de l'exécution ; aucun appel n'est fait.', null);
+          + run.max_cost_cents + ' de l’exécution ; aucun appel n’est fait.', null);
       }
       let reserved: number;
       if (previous) {
