@@ -94,6 +94,7 @@ export function salonDashboardPage(opts: {
       + '<option value="blocking">blocking</option></select></label>'
       + '<label>Tâche (obligatoire si blocking) <input name="task" maxlength="64"></label>'
       + '<label>Incident key <input name="incident_key" maxlength="128"></label>'
+      + '<label>Réveiller (participant_id) <input name="wake_to" maxlength="128" placeholder="ex. grok"></label>'
       + '<label><input type="checkbox" name="new_fact" value="1"> Fait nouveau</label>'
       + '<label>Message <textarea name="body" required maxlength="2000" rows="4"></textarea></label>'
       + '<button type="submit">Publier (owner)</button></form>'
