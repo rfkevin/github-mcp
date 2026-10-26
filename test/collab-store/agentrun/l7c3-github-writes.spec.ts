@@ -303,8 +303,10 @@ describe('CC-7 L5a — lookup brouillon ≠ prête', () => {
     expect(await tools.lookup(ready, { run_id: runId, effect_key: KEY('2') })).toMatchObject({ found: true, result: { draft: false } });
     expect(await tools.lookup(draft, { run_id: runId, effect_key: KEY('3') })).toEqual({ found: false });
     await tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'mixd', base_sha: BASE_SHA } }, { run_id: runId, effect_key: KEY('4') });
-    await tools.execute(draft, { run_id: runId, effect_key: KEY('5') });
-    expect(await tools.lookup(draft, { run_id: runId, effect_key: KEY('5') })).toMatchObject({ found: true, result: { draft: true } });
+    const brouillon = { id: 'd2', name: 'github_open_draft_pr', args: { name: 'mixd', title: 'brouillon' } };
+    expect(await tools.lookup(brouillon, { run_id: runId, effect_key: KEY('5') })).toEqual({ found: false });
+    await tools.execute(brouillon, { run_id: runId, effect_key: KEY('5') });
+    expect(await tools.lookup(brouillon, { run_id: runId, effect_key: KEY('5') })).toMatchObject({ found: true, result: { draft: true } });
     expect(await tools.lookup({ id: 'p', name: 'github_open_pr', args: { name: 'mixd', title: 'x' } }, { run_id: runId, effect_key: KEY('6') })).toEqual({ found: false });
   });
 });
