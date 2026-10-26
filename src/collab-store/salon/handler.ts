@@ -64,12 +64,18 @@ export async function handleSalonRequest(
     });
   }
   if (request.headers.get('Origin') !== origin) return denied('origin_mismatch');
-  const length = Number(request.headers.get('Content-Length') ?? '0');
-  if (!Number.isFinite(length) || length > MAX_FORM_BYTES) return denied('form_too_large');
-
+  // L4c : borne même sans Content-Length (lecture plafonnée du corps).
+  const declared = Number(request.headers.get('Content-Length') ?? 'NaN');
+  if (Number.isFinite(declared) && declared > MAX_FORM_BYTES) return denied('form_too_large');
   let form: FormData;
   try {
-    form = await request.formData();
+    const raw = await request.arrayBuffer();
+    if (raw.byteLength > MAX_FORM_BYTES) return denied('form_too_large');
+    form = await new Request(request.url, {
+      method: 'POST',
+      headers: request.headers,
+      body: raw,
+    }).formData();
   } catch {
     return denied('form_invalid');
   }
@@ -105,6 +111,7 @@ export async function handleSalonRequest(
 
   try {
     const level = field('level') as 'info' | 'decision' | 'blocking';
+    const wakeTo = field('wake_to').trim();
     await postSalonMessage(db, env, {
       authorPid: 'owner',
       level,
@@ -114,6 +121,7 @@ export async function handleSalonRequest(
       newFact: field('new_fact') === '1',
       now: Math.floor(Date.now() / 1000),
       skipAgentQuota: true,
+      wakeParticipants: wakeTo ? [wakeTo] : undefined,
     });
     const after = await listSalonMessages(db, { limit: 50 });
     return html(salonDashboardPage({
