@@ -55,7 +55,7 @@ export interface PaidModelCore {
 export function parsePaidProviderRef(ref: string, provider: string): { model: string; rate: ApiModelRate } {
   const prefix = provider + ':';
   if (!ref.startsWith(prefix)) {
-    throw new Error(provider.toUpperCase() + '_MODEL_UNSUPPORTED : fournisseur non pris en charge par l'adaptateur '
+    throw new Error(provider.toUpperCase() + '_MODEL_UNSUPPORTED : fournisseur non pris en charge par l’adaptateur '
       + provider + ' : ' + ref.split(':')[0] + ' (aucun repli inter-familles).');
   }
   const model = ref.slice(prefix.length);
@@ -114,7 +114,7 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
     async complete(input): Promise<{ output: ModelOutput; usage: ModelUsage }> {
       // (1) Enveloppe par participant non financée : refus avant tout appel, aucun quota touché.
       if (!envelopeFunded(options.envelope)) {
-        throw new ModelCallError('PAID_ENVELOPE_NOT_FUNDED : enveloppe owner par participant absente ou nulle ; aucun appel payant n'est fait.', null);
+        throw new ModelCallError('PAID_ENVELOPE_NOT_FUNDED : enveloppe owner par participant absente ou nulle ; aucun appel payant n’est fait.', null);
       }
       // Secret absent : refus typé avant toute réservation, aucun quota touché.
       let secret: string;
@@ -133,7 +133,7 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
       const previous = await readPaidStep(options.db, options.runId, n);
       if (previous?.settled) {
         // Coupure entre le règlement et la persistance de la sortie : fail-closed, aucune seconde charge.
-        throw new ModelCallError('PAID_STEP_ALREADY_SETTLED : l'étape ' + n + ' est déjà réglée ; rejeu refusé pour éviter une seconde charge.', null);
+        throw new ModelCallError('PAID_STEP_ALREADY_SETTLED : l’étape ' + n + ' est déjà réglée ; rejeu refusé pour éviter une seconde charge.', null);
       }
       const prepared = options.protocol.prepare({ model, system: options.system, messages: input.messages,
         tools: input.tools, taskKind: input.task_kind, schemas: options.schemas,
