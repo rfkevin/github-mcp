@@ -9,6 +9,7 @@ import { collabStoreEnabled, type CollabStoreEnv } from './collab-store/store/co
 import { collabMcpHandler } from './collab-store/mcp/handler';
 import { parseFallbackState, storeFallback } from './collab-store/export/fallback';
 import { OWNER_PATH, handleOwnerRequest, type OwnerRouteEnv } from './collab-store/owner/handler';
+import { SALON_PATH, handleSalonRequest, type SalonRouteEnv } from './collab-store/salon/handler';
 import { controllerCronEnabled, runScheduledControllers } from './collab-store/controller/scheduled';
 import { WEBHOOK_PATH, handleGitHubWebhook, type WebhookEnv } from './collab-store/controller/webhook';
 import { agentRunPass } from './collab-store/agentrun/orchestrator';
@@ -106,6 +107,11 @@ export default {
       const owner = await handleOwnerRequest(request, env as unknown as OwnerRouteEnv, origin, undefined,
         () => listOAuthClientIds(oauth));
       if (owner) return owner;
+    }
+    // CC-7 L4b — salon d'équipe : même preuve owner que /owner, hors OAuth MCP.
+    if (pathname === SALON_PATH) {
+      const salon = await handleSalonRequest(request, env as unknown as SalonRouteEnv, origin);
+      if (salon) return salon;
     }
     // Our application owns authorization and upstream GitHub callback; the same
     // helpers now restore either resource's grant at POST /authorize and /callback.

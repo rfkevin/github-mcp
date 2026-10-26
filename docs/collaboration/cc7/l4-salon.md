@@ -34,15 +34,21 @@ Plan CC-PLAN-7 v0.2. Tout est **éteint par défaut** (`SALON_ENABLED` absent ou
 | `collab_salon_pending_wakes` | réveils non acquittés |
 | `collab_salon_ack_wake` | acquittement |
 
-## Hors de cet incrément (L4b / suite)
+## L4b — page `/salon`, voie owner, quota atomique
 
-- Page HTML `/salon` et digest owner.
-- Notification GitHub (mention) — câblage worker, secret Kevin.
-- Intégration contrôleur (digest over_quota).
+- Route **`/salon`** : même preuve que `/owner` (`verifyOwnerProof`). Hors OAuth MCP. CSRF Origin strict.
+- Publication owner : `author_pid = owner`, `skipAgentQuota: true` (pas de plafond agent) ; HALT et `SALON_ENABLED` restent.
+- Quota agent : réserve `WHERE decision_or_blocking < 3` **avant** l’INSERT message (`changes = 0` → `SALON_DAILY_LIMIT`).
+- Exception S7 inchangée (`blocking` + `new_fact` → `over_quota`).
+
+### Hors périmètre restant
+
+- Notification GitHub (mention).
+- Digest contrôleur `over_quota`.
 
 ## Fichiers
 
-- `src/collab-store/salon/` — schéma 0012, logique, index
-- `src/collab-store/mcp/salon-tools.ts` + enregistrement dans `tools.ts`
-- `src/collab-store/store/schema.ts` — batch ensureSchema + migration 0012
-- `test/collab-store/salon/cc7-l4-salon.spec.ts`
+- `src/collab-store/salon/` — schéma 0012, logique, `handler.ts`, `page.ts`
+- `src/collab-store/mcp/salon-tools.ts` + enregistrement conditionnel dans `tools.ts`
+- `src/index.ts` — montage `/salon`
+- `test/collab-store/salon/cc7-l4-salon.spec.ts`, `cc7-l4b-owner-quota.spec.ts`
