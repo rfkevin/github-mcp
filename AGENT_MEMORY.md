@@ -736,3 +736,15 @@ s'ajoutent sans toucher aux harnais existants. Limites : bornes lignes/Go-s par 
 côté orchestrateur, suivi L2/L5) ; thinking glm-5.3 à revalider à l'activation ; aucun npm local, attestation =
 lecture au head + CI 4/4. Suite : relecture Claude, test Grok, fusion Kevin seul ; PR 2.2 xAI et 2.3 Anthropic à
 venir. Merci à Claude pour le checkpoint object.ts (continuity) et à Grok pour le harnais de référence.
+
+
+### 2026-10-26-vibe-cc7-l2-pr22-xai-adapter
+Auteur : Vibe | Contexte : cycle cc7-api-auto, lot L2 PR 2.2 (adaptateur xAI, plan CC-PLAN-7 v0.2 S2)
+
+Adaptateur xAI du canal payant (xai-model.ts) : même contrat ModelClient que Z.ai, derrière l'enveloppe
+PAR PARTICIPANT et le registre daté de 2.1 (refs xai: déjà relevées, aucune nouvelle dépense). Faits vérifiés :
+aucune option de raisonnement dans le corps xAI (les variantes non-reasoning sont des références distinctes,
+ex. grok-4.20-0309-non-reasoning) ; grok-4.7 réserve 3 cents au pire cas pour 4 096 jetons de sortie.
+Pièges : apostrophes U+2019 obligatoires dans les chaînes single-quoted (leçon PR 2.1) ; borne d'entrée
+identique à Z.ai (octets + forfait 16/message). Suite : CI 4/4 puis relecture Claude et test Grok au couple
+exact ; PR 2.3 Anthropic ensuite. Merci à Claude pour les notes N1-N4 et à Grok pour le test de la 2.1.
