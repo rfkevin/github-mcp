@@ -64,6 +64,11 @@ export interface PostSalonInput {
   now: number;
   /** Liste des participants à réveiller (hors auteur). */
   wakeParticipants?: string[];
+  /**
+   * CC-7 L4b : voie owner (Kevin) — pas de quota journalier agent.
+   * HALT et porte SALON_ENABLED restent appliqués.
+   */
+  skipAgentQuota?: boolean;
 }
 
 export interface PostSalonResult {
@@ -113,38 +118,41 @@ export async function postSalonMessage(
     }
   }
 
+  const skipQuota = input.skipAgentQuota === true;
   let overQuota = false;
-  if (countsAsQuota) {
-    const row = await db.prepare(
-      'SELECT decision_or_blocking AS n FROM salon_day_counts WHERE author_pid = ?1 AND day = ?2',
-    ).bind(input.authorPid, day).first<{ n: number }>();
-    const n = row?.n ?? 0;
-    if (n >= SALON_DAILY_LIMIT) {
-      // Exception de sûreté S7 : blocking + new_fact jamais refusé.
-      if (input.level === 'blocking' && newFact) {
-        overQuota = true;
-      } else {
-        throw new SalonError('SALON_DAILY_LIMIT', 'Quota journalier de ' + SALON_DAILY_LIMIT + ' decision/blocking atteint.');
-      }
-    }
-  }
+  // L4b : quota atomique dans le même batch (plus de read-then-write hors transaction).
+  // Exception S7 : blocking + new_fact peut dépasser (over_quota=1).
+  const forceOverQuota = countsAsQuota && !skipQuota && input.level === 'blocking' && newFact;
 
   const msgId = msgIdOf();
   const taskId = (input.taskId ?? '').trim().slice(0, 64);
 
-  // Lot unique : message + compteur + wakes.
-  const stmts: D1PreparedStatement[] = [
-    db.prepare(
-      'INSERT INTO salon_messages (msg_id, at, author_pid, level, body, task_id, incident_key, new_fact, over_quota, masked) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0)',
-    ).bind(msgId, input.now, input.authorPid, input.level, body, taskId, incidentKey, newFact ? 1 : 0, overQuota ? 1 : 0),
-  ];
-  if (countsAsQuota) {
+  const stmts: D1PreparedStatement[] = [];
+  if (countsAsQuota && !skipQuota && !forceOverQuota) {
+    // INSERT 1 ou +1 seulement si encore sous le plafond ; sinon 0 ligne touchée → SALON_DAILY_LIMIT.
     stmts.push(
       db.prepare(
-        'INSERT INTO salon_day_counts (author_pid, day, decision_or_blocking) VALUES (?1,?2,1) ON CONFLICT(author_pid, day) DO UPDATE SET decision_or_blocking = decision_or_blocking + 1',
+        `INSERT INTO salon_day_counts (author_pid, day, decision_or_blocking) VALUES (?1, ?2, 1)
+         ON CONFLICT(author_pid, day) DO UPDATE SET decision_or_blocking = decision_or_blocking + 1
+         WHERE decision_or_blocking < ?3`,
+      ).bind(input.authorPid, day, SALON_DAILY_LIMIT),
+    );
+  } else if (countsAsQuota && !skipQuota && forceOverQuota) {
+    overQuota = true;
+    stmts.push(
+      db.prepare(
+        `INSERT INTO salon_day_counts (author_pid, day, decision_or_blocking) VALUES (?1, ?2, 1)
+         ON CONFLICT(author_pid, day) DO UPDATE SET decision_or_blocking = decision_or_blocking + 1`,
       ).bind(input.authorPid, day),
     );
   }
+
+  stmts.push(
+    db.prepare(
+      'INSERT INTO salon_messages (msg_id, at, author_pid, level, body, task_id, incident_key, new_fact, over_quota, masked) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0)',
+    ).bind(msgId, input.now, input.authorPid, input.level, body, taskId, incidentKey, newFact ? 1 : 0, overQuota ? 1 : 0),
+  );
+
   const wakes = (input.wakeParticipants ?? []).filter(p => p && p !== input.authorPid);
   for (const pid of wakes) {
     stmts.push(
@@ -153,7 +161,14 @@ export async function postSalonMessage(
       ).bind(msgId, pid),
     );
   }
-  await db.batch(stmts);
+
+  const batchResult = await db.batch(stmts);
+  if (countsAsQuota && !skipQuota && !forceOverQuota) {
+    const quotaMeta = batchResult[0]?.meta as { changes?: number } | undefined;
+    if ((quotaMeta?.changes ?? 0) === 0) {
+      throw new SalonError('SALON_DAILY_LIMIT', 'Quota journalier de ' + SALON_DAILY_LIMIT + ' decision/blocking atteint.');
+    }
+  }
   return { msg_id: msgId, at: input.now, over_quota: overQuota };
 }
 
