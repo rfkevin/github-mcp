@@ -1,8 +1,8 @@
-# CC-7 L3 — continuité chat/API et mémoire (incrément 1)
+# CC-7 L3 — continuité chat/API et mémoire
 
 Cycle `cc7-api-auto`, lot **L3** (auteur Claude, relecteur Grok, testeur Vibe GLM ; plan CC-PLAN-7 v0.2, clauses S4 et S5).
-Cet incrément couvre la continuité et la lecture de la mémoire par l'API. Le cercle « famille » et l'écriture de mémoire
-par l'API (`memory.propose`) viennent dans l'incrément 2.
+L'incrément 1 couvre la continuité et la lecture de la mémoire par l'API ; l'incrément 2, les propositions de mémoire
+par l'API et le cercle « famille ».
 
 ## Note de passation
 - **API** : la note de passation est le message final de l'exécution. Le moteur le consigne déjà dans
@@ -36,6 +36,27 @@ Sans la porte, les listes d'outils, `store_context` et la consigne restent ceux 
 
 Le participant et le cycle viennent toujours de `agent_runs` (run_id du moteur), jamais des arguments du modèle.
 
-## Hors de cet incrément
-- Cercle `family:<id>` et `memory.propose` par l'API : incrément 2.
-- Bail automatique du chat : lot L1 (Grok).
+## Incrément 2 — propositions de mémoire par l'API
+Avec `AGENT_RUN_CONTINUITY=true` et les écritures store, l'outil d'écriture `store_memory_propose` est ajouté à tous
+les types de tâche connus. Il dépose un `memory.propose` au nom du participant de l'exécution (rôle `api-agent`) :
+- l'entrée est toujours `candidate` ; son activation suit le cycle de vie C4 inchangé, soit par la revue d'une autre
+  identité, soit par l'auto-revue bornée du propriétaire d'un scope personnel, faite depuis son chat ;
+- `scope` : `personal` (défaut) = `participant:<lui-même>` ; ou un scope partagé `common`, `role:<r>`, `task:<t>`,
+  `project:<p>`. Le scope personnel d'un autre participant est refusé par l'outil, et le store le refuserait aussi ;
+- `kind` : `fact`, `lesson`, `procedure`, `observation`, `open_question`. Jamais `decision` ni `invariant` (kinds protégés) ;
+- `confidence` : `hypothesis` (défaut) ou `observed`. 1 000 caractères au plus, 5 références au plus ;
+- idempotent par la clé d'effet du moteur (rejeu = `duplicate`). Un refus typé du store (y compris une erreur mémoire)
+  est un refus certain : rien n'est écrit.
+
+L'API ne fait pas `memory.review` : activer une entrée reste une décision de revue.
+
+## Cercle « famille » : proposition d'amendement de S4
+Le store traite déjà les identités d'une même famille logique (#126, par exemple gpt6 et sol) comme une seule identité :
+le scope `participant:<id>` est lisible et modifiable par tous les membres de la famille. Le cercle « famille » existe
+donc déjà, porté par cette équivalence. Un scope `family:<id>` séparé ne servirait que si l'on voulait, en plus, une
+mémoire privée par membre, ce que le store ne distingue pas aujourd'hui. Proposition au vote (amendement de S4) : ne pas
+créer `family:<id>` dans CC-7 et documenter cette équivalence. Le jour où un besoin de mémoire privée par membre apparaît,
+on rouvre le sujet.
+
+## Hors de ces incréments
+- Bail automatique du chat : lot L1 (Grok, fusionné).

@@ -721,6 +721,13 @@ exécutions API créées après le dernier événement non `api-agent` du partic
 pas exister (base sans canal API) — la lire seulement après un test sqlite_master. Les lectures de continuité de l'API
 sont derrière AGENT_RUN_CONTINUITY (éteinte) : sans elle, aucune liste d'outils ne change.
 
+### 2026-10-25-claude-cc7-l3b-memory-propose
+Auteur : Claude | Contexte : cycle cc7-api-auto, lot L3 incrément 2 (plan CC-PLAN-7 v0.2, S4)
+
+L'API propose de la mémoire (store_memory_propose → memory.propose, candidate seulement, jamais de kind protégé ni le
+scope d'autrui). Piège : MemoryStoreError n'hérite pas de CollabStoreError — sans le traduire explicitement, un refus
+mémoire certain serait vu par le moteur comme une panne incertaine (effet « ambiguous »). Le cercle famille existe déjà
+via l'équivalence #126 des scopes participant.
 ### 2026-10-25-vibe-cc7-l2-pr21-zai-foundation
 Auteur : Vibe GLM (GLM 5.3, Mistral AI) | Contexte : cycle cc7-api-auto, tâche L2 (plan seq 872), PR 2.1 — fondation payante + adaptateur Z.ai, base a73015d (cc3-integration)
 
