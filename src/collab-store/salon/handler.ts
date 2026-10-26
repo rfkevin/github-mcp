@@ -5,9 +5,11 @@
 import { ownerChannelConfig, type OwnerChannelEnv } from '../owner/config';
 import { defaultJwksResolver, verifyOwnerProof, type JwksResolver } from '../owner/proof';
 import { listSalonMessages, postSalonMessage, SalonError, salonEnabled } from './salon';
-import { SALON_PAGE_CSP, salonPage } from './page';
+import { SALON_PAGE_CSP, salonLoginPage, salonDashboardPage } from './page';
 
 export const SALON_PATH = '/salon';
+/** Même ordre de grandeur que les formulaires courts owner. */
+const MAX_FORM_BYTES = 32_768;
 
 export interface SalonRouteEnv extends OwnerChannelEnv {
   COLLAB_DB?: D1Database;
@@ -45,14 +47,14 @@ export async function handleSalonRequest(
   const enabled = salonEnabled(env);
 
   if (request.method === 'GET') {
-    // Mode secret : la preuve est dans le formulaire POST ; GET affiche la page
-    // (comme /owner login) sans exiger encore le secret, pour pouvoir saisir.
-    if (config.mode === 'access') {
-      const proof = await verifyOwnerProof(request, config, null, jwks);
-      if (!proof) return denied('proof_invalid');
+    if (config.mode === 'secret') {
+      // Aucune lecture store avant preuve (FAIL Claude seq 954).
+      return html(salonLoginPage());
     }
+    const proof = await verifyOwnerProof(request, config, null, jwks);
+    if (!proof) return denied('proof_invalid');
     const messages = enabled ? await listSalonMessages(db, { limit: 50 }) : [];
-    return html(salonPage({ messages, mode: config.mode, enabled }));
+    return html(salonDashboardPage({ messages, mode: 'access', enabled }));
   }
 
   if (request.method !== 'POST') {
@@ -62,6 +64,9 @@ export async function handleSalonRequest(
     });
   }
   if (request.headers.get('Origin') !== origin) return denied('origin_mismatch');
+  const length = Number(request.headers.get('Content-Length') ?? '0');
+  if (!Number.isFinite(length) || length > MAX_FORM_BYTES) return denied('form_too_large');
+
   let form: FormData;
   try {
     form = await request.formData();
@@ -80,12 +85,22 @@ export async function handleSalonRequest(
   );
   if (!proof) return denied('proof_invalid');
 
-  const messages = enabled ? await listSalonMessages(db, { limit: 50 }) : [];
+  const action = field('action') || 'publish';
+  if (action !== 'view' && action !== 'publish') return denied('unknown_action');
+
   if (!enabled) {
-    return html(salonPage({
-      messages, mode: config.mode, enabled,
+    if (config.mode === 'secret' && action === 'view') {
+      return html(salonLoginPage({ text: 'Salon éteint.', error: true }), 403);
+    }
+    return html(salonDashboardPage({
+      messages: [], mode: config.mode, enabled,
       flash: { text: 'Salon éteint.', error: true },
     }), 403);
+  }
+
+  if (action === 'view') {
+    const messages = await listSalonMessages(db, { limit: 50 });
+    return html(salonDashboardPage({ messages, mode: config.mode, enabled }));
   }
 
   try {
@@ -101,13 +116,14 @@ export async function handleSalonRequest(
       skipAgentQuota: true,
     });
     const after = await listSalonMessages(db, { limit: 50 });
-    return html(salonPage({
+    return html(salonDashboardPage({
       messages: after, mode: config.mode, enabled,
       flash: { text: 'Message publié.', error: false },
     }));
   } catch (error) {
+    const messages = await listSalonMessages(db, { limit: 50 });
     const text = error instanceof SalonError ? error.message : 'Publication impossible.';
-    return html(salonPage({
+    return html(salonDashboardPage({
       messages, mode: config.mode, enabled,
       flash: { text, error: true },
     }), 400);
