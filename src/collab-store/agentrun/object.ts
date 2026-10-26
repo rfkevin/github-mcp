@@ -16,6 +16,7 @@ import { createWorkersAiModel } from './workers-ai-model';
 import { createPaidWorkersAiModel, parseParticipantEnvelope } from './paid-model';
 import { createZaiModel } from './zai-model';
 import { createXaiModel } from './xai-model';
+import { createAnthropicModel } from './anthropic-model';
 import { createReadToolHost, type GitHubReads } from './read-tools';
 import { continuityEnabled } from './plan';
 import { DEFAULT_API_BASE_BRANCH, type GitHubWrites } from './github-tools';
@@ -35,7 +36,7 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   AGENT_RUN_GITHUB_WRITES?: string;
   /** 7c-3 : branche de base des branches API et cible des PR brouillons (défaut DEFAULT_API_BASE_BRANCH, jamais main/master). */
   AGENT_RUN_BASE_BRANCH?: string;
-  /** 7d / CC-7 L2 : modèle payant workers-ai:@cf/vendor/model, zai:<modèle> ou xai:<modèle> derrière l’enveloppe par participant ; absent = chemin 7c-1 inchangé. */
+  /** 7d / CC-7 L2 : modèle payant workers-ai:@cf/vendor/model, zai:<modèle>, xai:<modèle> ou anthropic:<modèle> derrière l’enveloppe par participant ; absent = chemin 7c-1 inchangé. */
   AGENT_RUN_PAID_MODEL?: string;
   /** CC-7 L2 : enveloppe payante PAR PARTICIPANT, cents US par jour (P5 Q1 : 200) ; 0, invalide ou absent = refus avant tout appel payant. */
   AGENT_RUN_PAID_PARTICIPANT_DAY_CENTS?: string;
@@ -48,6 +49,8 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   /** CC-7 L2 : secret Z.ai (adaptateur zai:<modèle>), posé par Kevin seul sur le Worker. */
   LLM_KEY_ZAI?: string;
   /** CC-7 L2 (PR 2.2) : secret xAI (adaptateur xai:<modèle>), posé par Kevin seul sur le Worker. */
+  /** CC-7 L2 (PR 2.3) : secret Anthropic (adaptateur anthropic:<modèle>), posé par Kevin seul sur le Worker. */
+  LLM_KEY_ANTHROPIC?: string;
   LLM_KEY_XAI?: string;
   AI?: WorkersAiBinding;
   WORKERS_AI_DAILY_NEURONS?: string;
@@ -82,8 +85,9 @@ const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
  * 7d / CC-7 L2 : AGENT_RUN_PAID_MODEL (prioritaire sur AGENT_RUN_MODEL) prend le
  * chemin payant derrière l’enveloppe PAR PARTICIPANT ; sans enveloppe financée,
  * chaque appel est refusé en code. Le préfixe de la référence décide du
- * fournisseur : workers-ai:@cf/vendor/model (binding AI requis), zai:<modèle> ou
- * xai:<modèle> (secrets LLM_KEY_ZAI / LLM_KEY_XAI, aucun binding AI) ; hors
+ * fournisseur : workers-ai:@cf/vendor/model (binding AI requis), zai:<modèle>, xai:<modèle> ou
+ * anthropic:<modèle> (secrets LLM_KEY_ZAI / LLM_KEY_XAI /
+ * LLM_KEY_ANTHROPIC, aucun binding AI) ; hors
  * registre = refus à la construction.
  * 7c-1 : modèle Workers AI réel et outils de lecture si AGENT_RUN_MODEL est posé et
  * (7c-2 : plus les écritures store non-verdict de WRITE_TOOLS_BY_KIND, avec lookup)
@@ -99,9 +103,10 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   if (!ref) return simulated;
   const zaiRef = paidRef !== null && paidRef.startsWith('zai:') ? paidRef : null;
   const xaiRef = paidRef !== null && paidRef.startsWith('xai:') ? paidRef : null;
+  const anthropicRef = paidRef !== null && paidRef.startsWith('anthropic:') ? paidRef : null;
   const ai = env.AI;
-  // CC-7 L2 : les chemins zai: et xai: n'utilisent jamais le binding AI ; les chemins Workers AI l'exigent.
-  if (!zaiRef && !xaiRef && !ai) return simulated;
+  // CC-7 L2 : les chemins zai:, xai: et anthropic: n'utilisent jamais le binding AI ; les chemins Workers AI l'exigent.
+  if (!zaiRef && !xaiRef && !anthropicRef && !ai) return simulated;
   const repository = env.AGENT_RUN_REPOSITORY && REPOSITORY_RE.test(env.AGENT_RUN_REPOSITORY) ? env.AGENT_RUN_REPOSITORY : null;
   const github = repository ? githubReads : null;
   // 7c-3 : écritures GitHub seulement avec un dépôt, l'interrupteur dédié et l'adaptateur de la racine.
@@ -120,6 +125,11 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     }
     if (xaiRef) {
       const model = createXaiModel({ env, ref: xaiRef, db, runId: _runId, envelope,
+        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 });
+      return { model, tools, now };
+    }
+    if (anthropicRef) {
+      const model = createAnthropicModel({ env, ref: anthropicRef, db, runId: _runId, envelope,
         schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 });
       return { model, tools, now };
     }

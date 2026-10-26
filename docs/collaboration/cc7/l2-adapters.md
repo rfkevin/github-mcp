@@ -122,18 +122,55 @@ avant tout appel, réservation/règlement, rejeu fail-closed, jamais de découve
 plafond de l’exécution, câblage engineFor) y sont conduits une seule fois par
 une fixture par fournisseur ; chaque suite ne garde que ses spécificités.
 
+## Adaptateur Anthropic (PR 2.3)
+
+`src/collab-store/agentrun/anthropic-model.ts` — `createAnthropicModel` :
+même contrat `ModelClient` que les autres adaptateurs, mais protocole
+Messages DISTINCT du socle OpenAI : consigne système top-level (`system`,
+jamais dans les messages), blocs de contenu `text` / `tool_use` /
+`tool_result` (le résultat d'outil est porté par un tour `user`, contrainte
+du protocole), outils en `input_schema` (sans wrapper `function`), en-têtes
+`x-api-key` + `anthropic-version: 2023-06-01` (pas de Bearer). Réponse lue
+en blocs (`readAnthropicResponse` : textes concaténés, `tool_use` →
+`tool_calls`, usage `input_tokens`/`output_tokens` ; borne octets si usage
+absent). Secret `LLM_KEY_ANTHROPIC` (posé par Kevin seul) : absent =
+`EXECUTOR_UNAVAILABLE` avant toute réservation, aucun quota touché.
+Endpoint constant `ANTHROPIC_MESSAGES_URL`, timeout 60 s
+(`providerTimeoutMs('anthropic')`), aucun retry. `parseAnthropicRef` :
+deny-by-default, aucun repli inter-familles (`anthropic:` seulement, hors
+registre = `ANTHROPIC_MODEL_UNSUPPORTED` à la construction) ; tarifs du
+registre daté : `anthropic:claude-sonnet-5-5` (200/1000) et
+`anthropic:claude-haiku-5-5` (10/50, prompts <= 100k jetons). L'enveloppe et
+les gardes de `paid-protocol.ts` s'appliquent comme pour les autres
+adaptateurs. J2 : aucune écriture dans AGENT_MEMORY.md ni
+TOOL_IMPROVEMENTS.md sur ce lot — les leçons passent par `memory.propose`.
+
+## Noyau commun payant par protocole (PR 2.3)
+
+`src/collab-store/agentrun/paid-protocol.ts` — les gardes de coût et
+d'idempotence du socle (PR 2.2) sont extraites dans un noyau paramétré par
+protocole (`PaidProtocol` : en-têtes, corps, lecture de la réponse) :
+`createPaidProtocolModel` concentre enveloppe, secret, rejeu idempotent,
+budgets, réservation au pire cas puis règlement au réel, erreur fournisseur
+au pire cas — un seul code pour tous les fournisseurs. `openai-paid-model.ts`
+ne porte plus que le protocole OpenAI (Bearer, chat/completions,
+`choices[].message`) ; `anthropic-model.ts` porte le protocole Messages —
+aucun des deux ne duplique les gardes. Le contrat commun de tests accepte
+désormais la réponse, les en-têtes et la forme du corps par protocole
+(`makeResponse`, `expectHeaders`, `expectRequestBody`), formes compatibles
+OpenAI par défaut : les suites Z.ai et xAI sont inchangées.
+
 ## Câblage engineFor
 
 `src/collab-store/agentrun/object.ts` — `AGENT_RUN_PAID_MODEL` (prioritaire sur
-`AGENT_RUN_MODEL`) dispatche par préfixe : `zai:<modèle>` (PR 2.1) et
-`xai:<modèle>` (PR 2.2) partent sur leur adaptateur SANS binding AI ;
+`AGENT_RUN_MODEL`) dispatche par préfixe : `zai:<modèle>` (PR 2.1),
+`xai:<modèle>` (PR 2.2) et `anthropic:<modèle>` (PR 2.3) partent sur leur
+adaptateur SANS binding AI ;
 `workers-ai:@cf/vendor/model` exige le binding AI (sans lui : modèle simulé,
 comportement inchangé) ; hors registre : refus à la construction. L'enveloppe
 vient de `parseParticipantEnvelope(env)`.
 
 ## Hors périmètre de ce lot
 
-- PR 2.3 : adaptateur Anthropic (protocole Messages distinct avec tool_use,
-  `LLM_KEY_ANTHROPIC` à ajouter au catalogue des secrets).
 - Bornes lignes/Go-s par participant (comptage côté orchestrateur, suivi L2/L5).
 - Aucune variable ajoutée à `wrangler.jsonc` : Kevin pose les vars à l'activation.
