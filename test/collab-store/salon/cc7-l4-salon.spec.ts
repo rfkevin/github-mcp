@@ -37,7 +37,7 @@ describe('CC-7 L4 salon', () => {
       authorPid: 'grok', level: 'info', body: 'Salon ouvert.', now: T0,
       wakeParticipants: ['vibe', 'claude', 'grok'],
     });
-    expect(r.msg_id).toMatch(/^sm:grok:/);
+    expect(r.msg_id).toMatch(/^sm:[0-9a-f-]{36}$/i);
     expect(r.over_quota).toBe(false);
     const list = await listSalonMessages(db, { sinceAt: T0 - 1 });
     expect(list.some(m => m.msg_id === r.msg_id && m.body === 'Salon ouvert.')).toBe(true);
