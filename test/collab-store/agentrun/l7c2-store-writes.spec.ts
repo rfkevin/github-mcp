@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   runStep, createReadToolHost, createStoreWriteTools, effectOpId, WRITE_TOOLS_BY_KIND, planAgentRuns, apiParticipants, answerRunId,
-  ToolRefused, type ModelClient, type ModelOutput,
+  taskRunId, ToolRefused, type ModelClient, type ModelOutput,
 } from '../../../src/collab-store/agentrun';
 import { agentRunPass } from '../../../src/collab-store/agentrun/orchestrator';
 import { engineFor, AGENT_RUN_SYSTEM } from '../../../src/collab-store/agentrun/object';
@@ -15,7 +15,7 @@ import { insertCycleRow, insertEventRow, insertPhaseDefinition, insertTaskRow } 
 
 // CC-5 l7 incrément 7c-2 — écritures store non-verdict du canal API (clarify, task.status
 // in_progress/blocked), idempotentes par clé d'effet, et création d'exécutions depuis les
-// décisions du contrôleur (answer_question seulement), éteinte par défaut.
+// décisions du contrôleur (question adressée, et réveils de tâche depuis L5a), éteinte par défaut.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const T = 1_970_000_000;
 let n = 0;
@@ -240,13 +240,20 @@ describe('CC-5 l7c-2 — création depuis les décisions du contrôleur', () => 
     expect((await db.prepare('SELECT COUNT(*) AS c FROM agent_runs WHERE cycle_id = ?1').bind(q.cycle).first<{ c: number }>())!.c).toBe(1);
   });
 
-  it('décisions à verdict ou d’implémentation : jamais d’exécution API (owner, reviewer volontaires)', async () => {
-    const q = await seedQuestion('plan-verdict', 'p-plan-elsewhere');
+  it('réveil de tâche : l’auteur volontaire obtient une exécution implement, le relecteur sans soumission rien (L5a)', async () => {
+    const q = await seedQuestion('plan-task', 'p-plan-elsewhere');
     const view = await previewNextActions(db, q.cycle, q.owner);
     expect(view.mine.map(d => d.action)).toContain('implement');
     const out = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: q.owner + ',' + q.reviewer }, { now: T });
-    expect(out.created).toBe(0);
-    expect((await db.prepare('SELECT COUNT(*) AS c FROM agent_runs WHERE cycle_id = ?1').bind(q.cycle).first<{ c: number }>())!.c).toBe(0);
+    expect(out.created).toBe(1);
+    const runId = await taskRunId('implement', q.cycle, q.owner, 'l7', 'none');
+    const run = (await db.prepare('SELECT participant_id, task_id, task_kind, status FROM agent_runs WHERE run_id = ?1').bind(runId)
+      .first<{ participant_id: string; task_id: string; task_kind: string; status: string }>())!;
+    expect(run).toMatchObject({ participant_id: q.owner, task_id: 'l7', task_kind: 'implement', status: 'running' });
+    // Le relecteur sans soumission n’a aucune décision, et un rejeu ne crée jamais la seconde exécution.
+    const again = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: q.owner + ',' + q.reviewer }, { now: T + 5 });
+    expect(again.created).toBe(0);
+    expect((await db.prepare('SELECT COUNT(*) AS c FROM agent_runs WHERE cycle_id = ?1').bind(q.cycle).first<{ c: number }>())!.c).toBe(1);
   });
 
   it('passage activé : la création précède la livraison, le réveil part dans le même passage', async () => {

@@ -10,8 +10,8 @@ import { githubWritesFrom } from '../../../src/agent-run-object';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
 // CC-5 l7 incrément 7c-3 — écritures GitHub des exécutions API : branche de l'agent seulement,
-// expectedHeadSha obligatoire, PR brouillon seulement, aucune fusion ni résolution de conflit,
-// effets idempotents (nom de branche, trailer de commit, tête de PR) et lookup avant réessai.
+// expectedHeadSha obligatoire, PR brouillon ou prête à la revue (L5a), aucune fusion ni résolution
+// de conflit, effets idempotents (nom de branche, trailer de commit, tête de PR) et lookup avant réessai.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const T = 1_980_000_000;
 const REPO = 'rfkevin/github-mcp';
@@ -73,9 +73,16 @@ function fakeGitHub() {
       prs.push(pr);
       return { number: pr.number, head_sha: refs.get(branch)! };
     },
+    async openPullRequest(_repo, branch, base, title, body) {
+      calls.push('ready:' + branch + '->' + base);
+      if (prs.some(pr => pr.branch === branch)) throw new GitHubWriteRefused('CONFLICT');
+      const pr = { number: 300 + prs.length, branch, base, title, body, draft: false };
+      prs.push(pr);
+      return { number: pr.number, head_sha: refs.get(branch)! };
+    },
     async findPullRequest(_repo, branch) {
       const pr = prs.find(item => item.branch === branch);
-      return pr ? { number: pr.number, head_sha: refs.get(branch)! } : null;
+      return pr ? { number: pr.number, head_sha: refs.get(branch)!, draft: pr.draft } : null;
     },
   };
   return { writes, refs, commits, prs, calls };
@@ -109,10 +116,10 @@ describe('CC-5 l7c-3 — allowlist et branche de l’agent', () => {
   it('écritures GitHub seulement pour implement, avec un dépôt et l’adaptateur ; aucun outil de fusion, approbation ou résolution', () => {
     const { writes } = fakeGitHub();
     const host = createReadToolHost({ db, repository: REPO, github: null, storeWrites: true, githubWrites: { writes, baseBranch: BASE } });
-    expect(host.list('implement')).toEqual(['store_context', 'store_delta', 'store_task_status', 'github_create_branch', 'github_commit_files', 'github_open_draft_pr']);
-    for (const name of ['github_create_branch', 'github_commit_files', 'github_open_draft_pr']) {
+    expect(host.list('implement')).toEqual(['store_context', 'store_delta', 'store_task_status', 'github_create_branch', 'github_commit_files', 'github_open_draft_pr', 'github_open_pr']);
+    for (const name of ['github_create_branch', 'github_commit_files', 'github_open_draft_pr', 'github_open_pr']) {
       expect(host.spec('implement', name)).toEqual({ name, effect: 'write' });
-      for (const kind of ['answer', 'planning', 'status', 'research']) expect(host.spec(kind, name)).toBeNull();
+      for (const kind of ['answer', 'planning', 'status', 'research', 'review', 'test']) expect(host.spec(kind, name)).toBeNull();
     }
     expect(createReadToolHost({ db, repository: null, github: null, storeWrites: true, githubWrites: { writes, baseBranch: BASE } }).list('implement'))
       .toEqual(['store_context', 'store_delta', 'store_task_status']);
@@ -195,7 +202,7 @@ describe('CC-5 l7c-3 — parcours et refus', () => {
     expect(gh.calls).toEqual([]);
   });
 
-  it('PR toujours brouillon, une seule par branche (seconde = conflit certain)', async () => {
+  it('github_open_draft_pr : brouillon imposé même si draft:false, une seule par branche (seconde = conflit)', async () => {
     const gh = fakeGitHub();
     const runId = await newRun('vibe');
     const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
@@ -278,6 +285,26 @@ describe('CC-5 l7c-3 — câblage', () => {
     expect(apiBaseBranch('mcp/105856986/cc3-integration')).toBe('mcp/105856986/cc3-integration');
     expect(githubWritesFrom({}, REPO)).toBeNull();
     const writes = githubWritesFrom({ GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: '2', GITHUB_PRIVATE_KEY: 'test-only-not-a-key' }, REPO);
-    expect(Object.keys(writes ?? {}).sort()).toEqual(['branchHead', 'commitFiles', 'createBranch', 'findPullRequest', 'openDraftPullRequest', 'recentCommits']);
+    expect(Object.keys(writes ?? {}).sort()).toEqual(['branchHead', 'commitFiles', 'createBranch', 'findPullRequest', 'openDraftPullRequest', 'openPullRequest', 'recentCommits']);
+  });
+});
+
+describe('CC-7 L5a — lookup brouillon ≠ prête', () => {
+  it('github_open_draft_pr ne retrouve qu’un brouillon, github_open_pr qu’une PR prête', async () => {
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    await tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'mix', base_sha: BASE_SHA } }, { run_id: runId, effect_key: KEY('1') });
+    const ready = { id: 'p', name: 'github_open_pr', args: { name: 'mix', title: 'prête' } };
+    const draft = { id: 'd', name: 'github_open_draft_pr', args: { name: 'mix', title: 'brouillon' } };
+    expect(await tools.lookup(ready, { run_id: runId, effect_key: KEY('2') })).toEqual({ found: false });
+    await tools.execute(ready, { run_id: runId, effect_key: KEY('2') });
+    // La PR prête existe : c’est l’effet de github_open_pr, pas celui du brouillon.
+    expect(await tools.lookup(ready, { run_id: runId, effect_key: KEY('2') })).toMatchObject({ found: true, result: { draft: false } });
+    expect(await tools.lookup(draft, { run_id: runId, effect_key: KEY('3') })).toEqual({ found: false });
+    await tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'mixd', base_sha: BASE_SHA } }, { run_id: runId, effect_key: KEY('4') });
+    await tools.execute(draft, { run_id: runId, effect_key: KEY('5') });
+    expect(await tools.lookup(draft, { run_id: runId, effect_key: KEY('5') })).toMatchObject({ found: true, result: { draft: true } });
+    expect(await tools.lookup({ id: 'p', name: 'github_open_pr', args: { name: 'mixd', title: 'x' } }, { run_id: runId, effect_key: KEY('6') })).toEqual({ found: false });
   });
 });

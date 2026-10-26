@@ -16,10 +16,10 @@ export { createXaiModel, parseXaiRef, type XaiModelOptions } from './xai-model';
 export { createAnthropicModel, parseAnthropicRef, ANTHROPIC_MESSAGES_URL, readAnthropicResponse, toAnthropicMessages, type AnthropicModelOptions } from './anthropic-model';
 export {
   createReadToolHost, READ_TOOL_SCHEMAS, READ_TOOLS_BY_KIND, CONTINUITY_TOOL_SCHEMAS, CONTINUITY_MEMORY_LIMIT, REGISTRY_MAX_TASKS,
-  type GitHubReads, type ReadToolName, type ContinuityToolName,
+  DIFF_MAX_FILES, DIFF_PATCH_CHARS, type GitHubReads, type ReadToolName, type ContinuityToolName,
 } from './read-tools';
 export { createStoreWriteTools, effectOpId, WRITE_TOOL_SCHEMAS, WRITE_TOOLS_BY_KIND, type WriteToolName, type StoreWriteTools } from './store-tools';
-export { planAgentRuns, apiParticipants, answerRunId, answerPrompt, continuityEnabled, ANSWER_READ_WINDOW, PLAN_LIMIT, PLAN_MAX_STEPS, PLAN_MAX_TOKENS, PLAN_DEADLINE_S, type PlanEnv, type PlanResult } from './plan';
+export { planAgentRuns, apiParticipants, answerRunId, answerPrompt, taskRunId, taskPrompt, continuityEnabled, ANSWER_READ_WINDOW, PLAN_LIMIT, PLAN_MAX_STEPS, PLAN_MAX_TOKENS, PLAN_DEADLINE_S, type PlanEnv, type PlanResult, type PlannedTaskKind, type TaskWakeKind } from './plan';
 export {
   createGitHubWriteTools, apiBranch, effectTrailer, GitHubWriteRefused, GITHUB_WRITE_TOOL_SCHEMAS, GITHUB_WRITE_TOOLS_BY_KIND,
   API_BRANCH_NAMESPACE, DEFAULT_API_BASE_BRANCH, type GitHubWrites, type GitHubWriteToolName, type GitHubWriteTools,

@@ -7,6 +7,10 @@
  * moteur refuse en plus API_AGENT_FORBIDDEN et tronque chaque résultat
  * (RESULT_MAX_CHARS) avant de le rendre au modèle comme donnée.
  *
+ * CC-7 L5a (S9) : github_diff donne aux types `review` et `test` le couple
+ * head/base exact de la soumission (head = SHA de 40 caractères, base = SHA ou
+ * branche), avec bornage des fichiers et des patchs rendus au modèle.
+ *
  * Le participant et le cycle d'un appel sont relus dans agent_runs à partir
  * du run_id fourni par le moteur, jamais pris dans les arguments du modèle :
  * une exécution ne lit que le contexte de SON participant (masquage CR-C du
@@ -25,7 +29,13 @@ export interface GitHubReads {
   getTextFile(repository: string, path: string, ref: string): Promise<{ path: string; sha: string; content: string; size: number }>;
   getPullRequest(repository: string, pullNumber: number): Promise<unknown>;
   listCheckRuns(repository: string, ref: string): Promise<unknown[]>;
+  /** CC-7 L5a : diff entre une base et un head exact (compare du client, lecture seule). */
+  compareRefs(repository: string, base: string, head: string): Promise<unknown>;
 }
+
+/** CC-7 L5a : bornes du diff rendu au modèle (fichiers et patchs, S9). */
+export const DIFF_MAX_FILES = 50;
+export const DIFF_PATCH_CHARS = 2000;
 
 export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
   { name: 'store_context', description: 'Contexte du cycle de cette exécution : phase, révision et tâches où votre participant a un rôle.',
@@ -39,9 +49,12 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
     parameters: { type: 'object', properties: { number: { type: 'integer', minimum: 1 } }, required: ['number'], additionalProperties: false } },
   { name: 'github_check_runs', description: 'Contrôles CI d’un commit exact (SHA de 40 caractères) du dépôt autorisé.',
     parameters: { type: 'object', properties: { sha: { type: 'string' } }, required: ['sha'], additionalProperties: false } },
+  { name: 'github_diff', description: 'Diff entre une base (SHA ou branche) et un head exact (SHA de 40 caractères) du dépôt autorisé : fichiers, statuts et patchs bornés.',
+    parameters: { type: 'object', properties: { base: { type: 'string' }, head: { type: 'string', pattern: '^[a-f0-9]{40}$' } },
+      required: ['base', 'head'], additionalProperties: false } },
 ]);
 
-export type ReadToolName = 'store_context' | 'store_delta' | 'github_read_file' | 'github_pull_request' | 'github_check_runs';
+export type ReadToolName = 'store_context' | 'store_delta' | 'github_read_file' | 'github_pull_request' | 'github_check_runs' | 'github_diff';
 
 /**
  * CC-7 L3 (incrément 1) : lectures de continuité, ajoutées à TOUS les types de tâche quand l'hôte est créé avec
@@ -69,6 +82,9 @@ export const READ_TOOLS_BY_KIND: Readonly<Record<string, readonly ReadToolName[]
   status: ['store_context', 'store_delta', 'github_check_runs'],
   // 7c-3 : implémentation sur la branche de l'agent (écritures GitHub de github-tools.ts).
   implement: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs'],
+  // CC-7 L5a (S9) : réveils de relecture et de test — lecture du couple head/base exact.
+  review: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs', 'github_diff'],
+  test: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs', 'github_diff'],
 });
 
 const SHA_RE = /^[a-f0-9]{40}$/;
@@ -171,6 +187,20 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const sha = stringArg(args, 'sha', SHA_RE);
         const runs = await options.github!.listCheckRuns(options.repository!, sha) as Array<Record<string, unknown>>;
         return runs.slice(0, 50).map(run => ({ name: run.name, status: run.status, conclusion: run.conclusion, head_sha: run.head_sha }));
+      }
+      case 'github_diff': {
+        const head = stringArg(args, 'head', SHA_RE);
+        const base = stringArg(args, 'base', REF_RE);
+        const comparison = await options.github!.compareRefs(options.repository!, base, head) as Record<string, unknown>;
+        const raw = Array.isArray(comparison.files) ? comparison.files as Array<Record<string, unknown>> : [];
+        // L5a : le diff est borné avant d'entrer dans le contexte du modèle (données, jamais instructions).
+        const files = raw.slice(0, DIFF_MAX_FILES).map(file => {
+          const patch = typeof file.patch === 'string' ? file.patch : '';
+          return { filename: file.filename, status: file.status, additions: file.additions, deletions: file.deletions,
+            patch: patch.slice(0, DIFF_PATCH_CHARS), patch_truncated: patch.length > DIFF_PATCH_CHARS };
+        });
+        return { base, head, status: comparison.status, ahead_by: comparison.ahead_by, behind_by: comparison.behind_by,
+          total_commits: comparison.total_commits, files, files_truncated: raw.length > DIFF_MAX_FILES };
       }
       default:
         break;

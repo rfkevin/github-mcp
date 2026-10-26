@@ -4,8 +4,9 @@
  * Plan de clôture v1.1, amendement A3 : une exécution API n'écrit que sur SA branche
  * `mcp/105856986/<participant>-api-<nom>` (préfixe construit ici depuis le participant
  * de agent_runs, jamais pris dans les arguments du modèle) ; expectedHeadSha obligatoire
- * pour tout commit ; une PR ouverte par un agent API est TOUJOURS un brouillon vers la
- * branche de base fixée par l'hôte ; aucun outil de fusion, d'approbation ni de
+ * pour tout commit ; une PR ouverte par un agent API est un brouillon (github_open_draft_pr)
+ * ou, depuis CC-7 L5a (S9), une PR prête à la revue (github_open_pr), vers la branche de
+ * base fixée par l'hôte ; aucun outil de fusion, d'approbation ni de
  * résolution de conflit n'existe pour ce canal : un conflit est un échec propre.
  *
  * Le store n'importe jamais le client GitHub (invariant CC-3 C6) : la racine du Worker
@@ -16,6 +17,8 @@
  * Contrat d'hôte 7a : chaque effet porte une empreinte dérivée de la clé d'effet du
  * moteur — nom de branche pour la création, trailer `Agent-Effect:` dans le message
  * de commit, branche de tête pour la PR — et `lookup` la recherche avant tout réessai.
+ * L5a : l'état brouillon fait partie de l'empreinte d'une PR — github_open_draft_pr
+ * ne retrouve qu'un brouillon, github_open_pr qu'une PR prête.
  */
 import { ToolRefused, type LookupResult, type ToolCall } from './engine';
 import type { ToolSchema } from './workers-ai-model';
@@ -30,8 +33,10 @@ export interface GitHubWrites {
   /** Derniers commits de la branche (plus récent d'abord), message complet. */
   recentCommits(repository: string, branch: string, limit: number): Promise<Array<{ sha: string; message: string }>>;
   openDraftPullRequest(repository: string, branch: string, baseBranch: string, title: string, body: string): Promise<{ number: number; head_sha: string }>;
-  /** PR (tout état) dont la tête est cette branche, ou null. */
-  findPullRequest(repository: string, branch: string): Promise<{ number: number; head_sha: string } | null>;
+  /** CC-7 L5a : PR PRÊTE à la revue (draft false côté client) ; jamais de fusion. */
+  openPullRequest(repository: string, branch: string, baseBranch: string, title: string, body: string): Promise<{ number: number; head_sha: string }>;
+  /** PR (tout état) dont la tête est cette branche, ou null ; `draft` distingue brouillon et PR prête (L5a). */
+  findPullRequest(repository: string, branch: string): Promise<{ number: number; head_sha: string; draft: boolean } | null>;
 }
 
 /** Refus certain du client GitHub (rien n'a été écrit) ; levé par l'adaptateur de la racine. */
@@ -42,7 +47,7 @@ export class GitHubWriteRefused extends Error {
   }
 }
 
-export type GitHubWriteToolName = 'github_create_branch' | 'github_commit_files' | 'github_open_draft_pr';
+export type GitHubWriteToolName = 'github_create_branch' | 'github_commit_files' | 'github_open_draft_pr' | 'github_open_pr';
 
 /** Espace de noms des branches API, figé en code (A3). */
 export const API_BRANCH_NAMESPACE = 'mcp/105856986';
@@ -78,11 +83,14 @@ export const GITHUB_WRITE_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
   { name: 'github_open_draft_pr', description: 'Ouvrir une PR BROUILLON de VOTRE branche <name> vers la branche de base de l’hôte. Jamais de fusion.',
     parameters: { type: 'object', properties: { name: { type: 'string', pattern: NAME_RE.source }, title: { type: 'string', maxLength: 200 },
       body: { type: 'string', maxLength: 8000 } }, required: ['name', 'title'], additionalProperties: false } },
+  { name: 'github_open_pr', description: 'Ouvrir une PR PRÊTE à la revue de VOTRE branche <name> vers la branche de base de l’hôte (L5a) : revue et test D12 par d’autres familles. Jamais de fusion.',
+    parameters: { type: 'object', properties: { name: { type: 'string', pattern: NAME_RE.source }, title: { type: 'string', maxLength: 200 },
+      body: { type: 'string', maxLength: 8000 } }, required: ['name', 'title'], additionalProperties: false } },
 ]);
 
 /** Écritures GitHub par type de tâche, figées en code ; seul `implement` écrit sur GitHub. */
 export const GITHUB_WRITE_TOOLS_BY_KIND: Readonly<Record<string, readonly GitHubWriteToolName[]>> = Object.freeze({
-  implement: ['github_create_branch', 'github_commit_files', 'github_open_draft_pr'],
+  implement: ['github_create_branch', 'github_commit_files', 'github_open_draft_pr', 'github_open_pr'],
 });
 
 /** Branche API d'un participant ; refus si le participant ou le nom ne tient pas dans la politique de branches. */
@@ -142,7 +150,7 @@ export interface GitHubWriteToolsOptions {
   db: D1Database;
   repository: string;
   writes: GitHubWrites;
-  /** Branche cible des PR brouillons et base des branches créées ; jamais main ni master. */
+  /** Branche cible des PR (brouillon ou prête, L5a) et base des branches créées ; jamais main ni master. */
   baseBranch: string;
 }
 
@@ -202,6 +210,16 @@ export function createGitHubWriteTools(options: GitHubWriteToolsOptions): GitHub
           const pr = await refusedOnCertain(() => options.writes.openDraftPullRequest(options.repository, branch, base, title, body));
           return { branch, number: pr.number, head_sha: pr.head_sha, draft: true, base };
         }
+        case 'github_open_pr': {
+          const title = line(args, 'title', 200);
+          const bodyArg = args.body;
+          if (bodyArg !== undefined && (typeof bodyArg !== 'string' || bodyArg.length > 8000)) throw new ToolRefused('body : 8000 caractères au plus.');
+          const body = (typeof bodyArg === 'string' ? bodyArg + '\n\n' : '')
+            + '---\nPR prête ouverte par une exécution API (participant ' + participant_id + ', exécution ' + ctx.run_id + ').\n'
+            + 'Revue et test D12 par d’autres familles ; fusion par le propriétaire uniquement.\n' + trailer;
+          const pr = await refusedOnCertain(() => options.writes.openPullRequest(options.repository, branch, base, title, body));
+          return { branch, number: pr.number, head_sha: pr.head_sha, draft: false, base };
+        }
         default:
           throw new ToolRefused('tool_not_allowlisted');
       }
@@ -234,7 +252,17 @@ export function createGitHubWriteTools(options: GitHubWriteToolsOptions): GitHub
         }
         case 'github_open_draft_pr': {
           const pr = await options.writes.findPullRequest(options.repository, branch);
-          return pr ? { found: true, result: { branch, number: pr.number, head_sha: pr.head_sha, draft: true, base, status: 'duplicate' } } : { found: false };
+          // L5a : une PR prête n'est pas l'effet de cet outil ; trouvé seulement pour un brouillon.
+          return pr && pr.draft
+            ? { found: true, result: { branch, number: pr.number, head_sha: pr.head_sha, draft: true, base, status: 'duplicate' } }
+            : { found: false };
+        }
+        case 'github_open_pr': {
+          const pr = await options.writes.findPullRequest(options.repository, branch);
+          // L5a : un brouillon n'est pas l'effet de cet outil ; trouvé seulement pour une PR prête.
+          return pr && !pr.draft
+            ? { found: true, result: { branch, number: pr.number, head_sha: pr.head_sha, draft: false, base, status: 'duplicate' } }
+            : { found: false };
         }
         default:
           return null;
