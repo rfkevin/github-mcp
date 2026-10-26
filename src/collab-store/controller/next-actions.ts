@@ -43,7 +43,11 @@ export async function previewNextActions(db: D1Database, cycleId: string, partic
   const participant = await logicalIdentityOf(db, participantId);
   let snapshot;
   try {
-    snapshot = await readControllerSnapshot(db, cycleId, async id => (await inspectPhase(db, id)).outputsSatisfied);
+    snapshot = await readControllerSnapshot(db, cycleId, async id => {
+      // CC-7 L6b : détail des sorties attendues pour les réveils de phase.
+      const facts = await inspectPhase(db, id);
+      return { satisfied: facts.outputsSatisfied, outputs: facts.outputs };
+    });
   } catch (error) {
     const code = (error as { code?: unknown } | null)?.code;
     return { cycle_id: cycleId, mode: 'degraded', revision: null, error: typeof code === 'string' ? code : 'CONTROLLER_SNAPSHOT_UNAVAILABLE',

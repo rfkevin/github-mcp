@@ -44,7 +44,11 @@ export interface ControllerRunOptions {
 export async function runController(db: D1Database, cycleId: string, options: ControllerRunOptions = {}): Promise<ControllerRunResult> {
   let snapshot: ControllerSnapshot;
   try {
-    snapshot = await readControllerSnapshot(db, cycleId, async id => (await inspectPhase(db, id)).outputsSatisfied);
+    snapshot = await readControllerSnapshot(db, cycleId, async id => {
+      // CC-7 L6b : détail des sorties attendues pour les réveils de phase.
+      const facts = await inspectPhase(db, id);
+      return { satisfied: facts.outputsSatisfied, outputs: facts.outputs };
+    });
   } catch (error) {
     return { mode: 'degraded', error: errorCode(error), decisions: [], recorded: 0 };
   }

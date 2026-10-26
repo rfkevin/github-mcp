@@ -23,6 +23,7 @@ import { DEFAULT_API_BASE_BRANCH, type GitHubWrites } from './github-tools';
 import type { WorkersAiBinding } from '../executors/adapter';
 import { parseNeuronBudget } from '../executors/run';
 import { resolveEffectiveMaxTokens } from '../executors/task-profiles';
+import { parseRequiredChecks } from './verdict-tools';
 
 export interface AgentRunObjectEnv extends AgentRunEnv {
   COLLAB_DB?: D1Database;
@@ -49,6 +50,8 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   AGENT_RUN_PAID_PARTICIPANT_DAY_REQUESTS?: string;
   /** CC-7 L2 : secret Z.ai (adaptateur zai:<modèle>), posé par Kevin seul sur le Worker. */
   LLM_KEY_ZAI?: string;
+  /** CC-7 L6b : contrôles CI exigés pour store_verdict, noms séparés par des virgules ; absent = les 4 contrôles du dépôt. */
+  AGENT_RUN_REQUIRED_CHECKS?: string;
   /** CC-7 L2 (PR 2.2) : secret xAI (adaptateur xai:<modèle>), posé par Kevin seul sur le Worker. */
   /** CC-7 L2 (PR 2.3) : secret Anthropic (adaptateur anthropic:<modèle>), posé par Kevin seul sur le Worker. */
   LLM_KEY_ANTHROPIC?: string;
@@ -116,11 +119,13 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   const envelope = parseParticipantEnvelope(env);
   // CC-7 L5b (N1) : plafond de sortie PAR type de tâche (TASK_KIND_BOUNDS via le résolveur).
   const maxOutputTokensFor = (kind: string) => resolveEffectiveMaxTokens({ task_kind: kind });
+  // CC-7 L6b : store_verdict exige les contrôles CI nommés (S10 « CI 4/4 »).
+  const requiredChecks = parseRequiredChecks(env.AGENT_RUN_REQUIRED_CHECKS);
   return (_runId, stepDb) => {
     const db = stepDb ?? fallbackDb;
     // CC-7 L5b (S10) : store_verdict proposé aux kinds review/test dès que les lectures GitHub existent.
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
-      verdicts: github !== null, continuity: continuityEnabled(env) });
+      verdicts: github !== null, requiredChecks, continuity: continuityEnabled(env) });
     const schemas = (kind: string) => tools.schemas(kind);
     if (zaiRef) {
       const model = createZaiModel({ env, ref: zaiRef, db, runId: _runId, envelope,

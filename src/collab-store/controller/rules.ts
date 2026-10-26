@@ -16,7 +16,9 @@ export type DecisionKind =
   | 'advance_phase';  // sorties attendues satisfaites : avance par policy possible
 
 export type WakeAction = 'implement' | 'review' | 'test' | 'renew_verdict' | 'address_feedback'
-  | 'answer_question' | 'renew_or_close_question' | 'address_correction';
+  | 'answer_question' | 'renew_or_close_question' | 'address_correction'
+  // CC-7 L6b : sortie attendue de la phase courante (proposition, critique, synthèse, vote) pas encore déposée.
+  | 'contribute';
 
 export interface Decision {
   kind: DecisionKind;
@@ -87,6 +89,19 @@ export interface ControllerSnapshot {
   tasks: TaskFacts[];
   /** Questions ouvertes du cycle (absent = aucune, compatibilité incrément 1). */
   questions?: QuestionFact[];
+  /** CC-7 L6b : sorties attendues NON satisfaites de la phase courante et leurs titulaires manquants (absent = aucune). */
+  phase_outputs?: PhaseOutputGap[];
+}
+
+/** CC-7 L6b : sortie attendue non satisfaite de la phase courante. */
+export interface PhaseOutputGap {
+  role: string;
+  kind: string;
+  task_id: string | null;
+  states: string[] | null;
+  entry_seq: number;
+  /** Titulaires du rôle (identité logique) qui n'ont pas encore produit la sortie, avec la tâche où ils agissent. */
+  missing: Array<{ who: string; task_id: string }>;
 }
 
 /**
@@ -210,6 +225,31 @@ function questionDecisions(snapshot: ControllerSnapshot): Decision[] {
   return out;
 }
 
+/**
+ * CC-7 L6b : réveil des titulaires d'une sortie attendue non déposée (proposition,
+ * critique, synthèse, vote) — c'est ce qui enchaîne les phases de conception sans
+ * Kevin. Un participant déjà réveillé sur la même tâche par une règle de tâche
+ * n'est pas réveillé deux fois. Seulement quand la phase a une policy (auto_advance).
+ */
+function phaseOutputDecisions(snapshot: ControllerSnapshot, existing: Decision[]): Decision[] {
+  if (snapshot.auto_advance === 'none') return [];
+  const taken = new Set(existing.filter(d => d.kind === 'wake').map(d => d.actor + '|' + (d.task_id ?? '')));
+  const out: Decision[] = [];
+  for (const gap of snapshot.phase_outputs ?? []) {
+    for (const holder of gap.missing) {
+      const key = holder.who + '|' + holder.task_id;
+      if (taken.has(key)) continue;
+      taken.add(key);
+      out.push({ kind: 'wake', actor: holder.who, task_id: holder.task_id, action: 'contribute', rule: 'phase-output-missing',
+        subject: snapshot.phase + ':' + gap.kind + ':' + gap.role + (gap.task_id ? ':' + gap.task_id : ''),
+        episode: 'phase:' + snapshot.phase + ':e' + gap.entry_seq,
+        reason: 'Phase ' + snapshot.phase + ' : déposer ' + gap.kind + ' en ' + gap.role + ' sur la tâche ' + holder.task_id
+          + (gap.states ? ' (état ' + gap.states.join(' ou ') + ' pour compter ; OBJECTION bloque l\'avance)' : '') + '.' });
+    }
+  }
+  return out;
+}
+
 function nextPhase(phase: string): string | null {
   const index = (PHASES as readonly string[]).indexOf(phase);
   return index >= 0 && index + 1 < PHASES.length ? PHASES[index + 1] : null;
@@ -220,6 +260,7 @@ export function nextActors(snapshot: ControllerSnapshot): { mode: ControllerMode
   if (snapshot.halted) return { mode: 'halted', decisions: [] };
   const byId = new Map(snapshot.tasks.map(task => [task.task_id, task]));
   const decisions = [...snapshot.tasks.flatMap(task => taskDecisions(task, byId)), ...questionDecisions(snapshot)];
+  decisions.push(...phaseOutputDecisions(snapshot, decisions));
   const target = nextPhase(snapshot.phase);
   if (snapshot.auto_advance !== 'none' && snapshot.outputs_satisfied && target) {
     decisions.push({ kind: 'advance_phase', actor: 'policy:' + snapshot.auto_advance, task_id: null, action: 'advance',

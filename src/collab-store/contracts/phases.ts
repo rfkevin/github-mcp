@@ -6,12 +6,15 @@
 import { StateContractError, assertPhase, type Phase } from '../../collab/contracts';
 import { TASK_ID_RE } from './tasks';
 
+const OUTPUT_STATE_RE = /^[A-Z][A-Z0-9_]{0,31}$/;
+
 export interface PhaseDefinition {
   cycle_id: string;
   phase: Phase;
   entry_conditions: string[];
   // CC-4 A0 (point 5) : task_id optionnel lie la sortie attendue à SA tâche.
-  expected_outputs: Array<{ role: string; kind: string; count: number; task_id?: string }>;
+  // CC-7 L6b : states optionnel — seule compte une identité dont la dernière contribution a un state de la liste.
+  expected_outputs: Array<{ role: string; kind: string; count: number; task_id?: string; states?: string[] }>;
   exit_conditions: string[];
   auto_advance: 'none' | string;
 }
@@ -37,6 +40,15 @@ export function validatePhaseDefinition(def: PhaseDefinition): PhaseDefinition {
     // CC-4 A0 (point 5) : task_id optionnel, validé quand présent.
     // Review GPT-6 R2 : même grammaire que les tâches du store (insensible à la
     // casse : C7, F6-A10, T1…), une seule source de vérité (contracts/tasks.ts).
+    // CC-7 L6b : states optionnel, 1 à 8 jetons en majuscules (ex. AGREE, AMEND).
+    if (out.states !== undefined && (!Array.isArray(out.states) || out.states.length < 1 || out.states.length > 8
+      || !out.states.every(state => typeof state === 'string' && OUTPUT_STATE_RE.test(state)))) {
+      throw new StateContractError(
+        'INVALID_PHASE_OUTPUT_STATES',
+        'expected_outputs states must be 1 to 8 uppercase tokens ([A-Z][A-Z0-9_]{0,31})',
+        'expected_outputs',
+      );
+    }
     if (out.task_id !== undefined && !TASK_ID_RE.test(out.task_id)) {
       throw new StateContractError(
         'INVALID_PHASE_OUTPUT_TASK',

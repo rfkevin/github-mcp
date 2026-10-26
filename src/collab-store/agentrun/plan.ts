@@ -44,6 +44,22 @@ export const TASK_KIND_COST_CENTS: Readonly<Record<PlannedTaskKind, number>> = O
   implement: 0,
 });
 
+/** CC-7 L6b : plafond haut d'une variable owner de coût par exécution (cents US) — l'enveloppe par participant borne en plus. */
+export const RUN_COST_CENTS_CEILING = 1_000;
+
+/**
+ * CC-7 L6b : plafond de coût d'une exécution du type `kind`, lu dans la variable owner
+ * AGENT_RUN_COST_CENTS_<KIND> (entier 0 à RUN_COST_CENTS_CEILING, posé par Kevin seul sur
+ * le Worker). Absente ou invalide = TASK_KIND_COST_CENTS (0, fail-closed) : aucune PR n'est
+ * plus nécessaire pour financer un type, et rien n'est financé par défaut.
+ */
+export function taskKindCostCents(env: PlanEnv, kind: PlannedTaskKind): number {
+  const raw = env[('AGENT_RUN_COST_CENTS_' + kind.toUpperCase()) as keyof PlanEnv];
+  if (raw === undefined || !/^(0|[1-9][0-9]{0,9})$/.test(raw)) return TASK_KIND_COST_CENTS[kind];
+  const value = Number(raw);
+  return value <= RUN_COST_CENTS_CEILING ? value : TASK_KIND_COST_CENTS[kind];
+}
+
 const PARTICIPANT_RE = /^[A-Za-z0-9_-][A-Za-z0-9:_-]{0,127}$/;
 const ASK_SUBJECT_RE = /^ask#([1-9][0-9]{0,9})$/;
 /** Sujet d'un réveil de vérificateur : le couple exact de la soumission, head..base. */
@@ -54,7 +70,15 @@ export type PlannedTaskKind = 'answer' | 'review' | 'test' | 'implement';
 /** CC-7 L5a : types d'un réveil de tâche (`answer` garde son run_id à part, answerRunId). */
 export type TaskWakeKind = Exclude<PlannedTaskKind, 'answer'>;
 
-export interface PlanEnv { AGENT_RUN_PARTICIPANTS?: string; AGENT_RUN_CONTINUITY?: string }
+export interface PlanEnv {
+  AGENT_RUN_PARTICIPANTS?: string;
+  AGENT_RUN_CONTINUITY?: string;
+  /** CC-7 L6b : plafonds de coût par exécution et par type (cents US, 0 à 1 000) ; absents = 0. */
+  AGENT_RUN_COST_CENTS_ANSWER?: string;
+  AGENT_RUN_COST_CENTS_REVIEW?: string;
+  AGENT_RUN_COST_CENTS_TEST?: string;
+  AGENT_RUN_COST_CENTS_IMPLEMENT?: string;
+}
 
 /** CC-7 L3 : porte des lectures de continuité, éteinte par défaut (« true » exact seulement). */
 export function continuityEnabled(env: { AGENT_RUN_CONTINUITY?: string }): boolean {
@@ -194,7 +218,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           const result = await createRun(db, {
             runId: await answerRunId(cycleId, participantId, askSeq), cycleId, participantId, taskId: '', taskKind: 'answer',
             prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env)),
-            maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: TASK_KIND_COST_CENTS.answer, deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+            maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
           });
           if (result.created) created += 1;
           continue;
@@ -208,7 +232,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         const result = await createRun(db, {
           runId: await taskRunId(kind, cycleId, participantId, taskId, decision.subject), cycleId, participantId,
           taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
-          maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: TASK_KIND_COST_CENTS[kind], deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+          maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: taskKindCostCents(env, kind), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
         });
         if (result.created) created += 1;
       }
