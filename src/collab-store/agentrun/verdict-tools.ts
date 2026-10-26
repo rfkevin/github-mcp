@@ -137,7 +137,12 @@ export function createVerdictTools(options: VerdictToolHostOptions): VerdictTool
       throw new ToolRefused('VERDICT_ROLE_FORBIDDEN');
     }
     // ④ D12 : un verdict ne porte jamais sur la soumission de sa propre identité logique (familles #126).
-    await assertNotSelfReview(options.db, participant_id, taskRow.owner_pid);
+    try {
+      await assertNotSelfReview(options.db, participant_id, taskRow.owner_pid);
+    } catch (error) {
+      if (error instanceof StateContractError) throw new ToolRefused(error.code);
+      throw error;
+    }
     // ⑤ Couple exact relu sur GitHub : PR connue, ouverte, au couple fourni, pas fusionnée.
     const pull = await options.github.getPullRequest(options.repository, args.pr) as Record<string, unknown> | null;
     if (!pull) throw new ToolRefused('VERDICT_PR_UNKNOWN');
