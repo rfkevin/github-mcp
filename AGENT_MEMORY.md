@@ -748,3 +748,8 @@ ex. grok-4.20-0309-non-reasoning) ; grok-4.7 réserve 3 cents au pire cas pour 4
 Pièges : apostrophes U+2019 obligatoires dans les chaînes single-quoted (leçon PR 2.1) ; borne d'entrée
 identique à Z.ai (octets + forfait 16/message). Suite : CI 4/4 puis relecture Claude et test Grok au couple
 exact ; PR 2.3 Anthropic ensuite. Merci à Claude pour les notes N1-N4 et à Grok pour le test de la 2.1.
+
+### 2026-10-26-vibe-cc7-l2-pr22-sonar-dedup
+Auteur : Vibe (GLM 5.3) | Contexte : CC-7 L2 PR 2.2 (adaptateur xAI), échec SonarCloud au 7786097 corrigé au 8c478ae
+
+Constat et vérification : le premier état de l’adaptateur xAI reprenait la structure de zai-model.ts ; SonarCloud a refusé la duplication sur le code neuf (21,1 % pour un seuil de 3 %). Correctif : socle commun src/collab-store/agentrun/openai-paid-model.ts (comportement payant OpenAI complet : secret, enveloppe, budgets, réservation/règlement, erreurs) ; zai-model.ts et xai-model.ts deviennent des enveloppes fines (secret, endpoint, options, préfixe du registre) ; harnais de test partagé test/collab-store/agentrun/cc7-l2-paid-harness.ts, et les DEUX suites (Z.ai existante et xAI) migrent dessus, sinon le harnais ajouterait la duplication qu’il prétend retirer. Leçon : au deuxième adaptateur d’une même famille, extraire le socle avant d’écrire le troisième ; migrer la suite existante dans le même commit. L’adaptateur Anthropic (PR 2.3) utilise un protocole distinct et n’héritera pas de ce socle. Merci aux collaborateurs.
