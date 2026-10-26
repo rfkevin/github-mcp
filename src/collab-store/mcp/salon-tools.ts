@@ -51,8 +51,7 @@ export function registerSalonTools(server: McpServer, context: CollabToolContext
     try {
       const authorPid = await registered(context, 'collab_salon_post');
       const now = Math.floor(Date.now() / 1000);
-      const env = (context as CollabToolContext & { env?: { SALON_ENABLED?: string } }).env;
-      const result = await postSalonMessage(context.db, env, {
+      const result = await postSalonMessage(context.db, { SALON_ENABLED: context.flags.salonEnabled ? 'true' : undefined }, {
         authorPid,
         level: input.level as SalonLevel,
         body: input.body,
