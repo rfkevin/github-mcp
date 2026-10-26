@@ -234,6 +234,13 @@ Toujours éteint : sans AGENT_RUN_PAID_MODEL, le câblage ne change pas (chemin 
 (PAID_ENVELOPE_NOT_FUNDED) avant tout quota ; la borne par cycle AGENT_RUN_PAID_CYCLE_CENTS vaut
 l’enveloppe par défaut et ne peut la dépasser. Aucune variable nouvelle dans wrangler.jsonc.
 
+> Note CC-7 L2 (2026-10-26, PR 2.1/2.2) : l’enveloppe owner de 7d
+> (`AGENT_RUN_PAID_ENVELOPE_CENTS`, `AGENT_RUN_PAID_CYCLE_CENTS`, registres
+> `paid:day:` / `paid:cycle:`) est remplacée par l’enveloppe PAR PARTICIPANT —
+> variables `AGENT_RUN_PAID_PARTICIPANT_*`, registres `paid:participant:<pid>:…`,
+> adaptateurs fournisseurs `zai:` / `xai:` — voir
+> `docs/collaboration/cc7/l2-adapters.md`.
+
 - **Modèle** createPaidWorkersAiModel (paid-model.ts) : mêmes messages, filtrage d’outils et lecture de
   réponse que 7c-1 (réutilise toProviderMessages, inputTokenBound, readModelResponse, withTimeout, bytes,
   désormais exportés), mais un coût en cents. Références payantes seulement, d’une liste datée figée en

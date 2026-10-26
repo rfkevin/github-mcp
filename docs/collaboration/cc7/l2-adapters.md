@@ -65,6 +65,11 @@ orchestrateur (suivi L2/L5).
 Le plafond effectif reste `min(absolu, modèle, task_kind, endpoint, demandé)`
 (`resolveEffectiveMaxTokens`) — inchangé.
 
+NB (relecture PR 2.1, note N1) : ces bornes ne sont pas encore câblées au canal
+API ni alignées sur ses types de tâche (`answer`, `planning`, `status`,
+`implement`, `research`) — le canal API n'applique aujourd'hui que
+`maxOutputTokens` de l'adaptateur ; alignement et câblage prévus en L5.
+
 ## Adaptateur Z.ai
 
 `src/collab-store/agentrun/zai-model.ts` — `createZaiModel` : même contrat
@@ -80,17 +85,54 @@ l'activation). L'enveloppe et les gardes de `paid-model.ts` s'appliquent telles
 quelles (réservation/règlement par participant, participant relu depuis
 `agent_runs`, jamais des arguments).
 
+## Adaptateur xAI (PR 2.2)
+
+`src/collab-store/agentrun/xai-model.ts` — `createXaiModel` : même contrat
+`ModelClient` que les autres adaptateurs, tool_calls au format OpenAI. Secret
+`LLM_KEY_XAI` (posé par Kevin seul) : absent = `EXECUTOR_UNAVAILABLE` avant
+toute réservation, aucun quota touché. Endpoint constant
+`XAI_CHAT_COMPLETIONS_URL`, timeout 60 s (`providerTimeoutMs('xai')`), aucun
+retry. `parseXaiRef` : deny-by-default, aucun repli inter-familles (`xai:`
+seulement, hors registre = `XAI_MODEL_UNSUPPORTED` à la construction).
+Aucune option de raisonnement dans le corps : xAI gère le raisonnement côté
+modèle, les variantes non-reasoning sont des références distinctes du registre
+(ex. `xai:grok-4.20-0309-non-reasoning`). L'enveloppe et les gardes de
+`paid-model.ts` s'appliquent telles quelles (réservation/règlement par
+participant, participant relu depuis `agent_runs`, jamais des arguments).
+
+## Socle commun payant OpenAI (PR 2.2)
+
+`src/collab-store/agentrun/openai-paid-model.ts` — `createOpenAiPaidModel` :
+socle partagé des adaptateurs payants compatibles OpenAI. Il concentre le
+comportement commun : secret via `requireSecret` (`EXECUTOR_UNAVAILABLE` avant
+toute réservation, aucun quota touché), refus `PAID_ENVELOPE_NOT_FUNDED`, rejeu
+idempotent (`PAID_STEP_ALREADY_SETTLED`), budgets par participant
+(`PAID_RUN_BUDGET_EXCEEDED` et bornes jour/cycle/jetons/appels), réservation au
+pire cas puis règlement au réel avec remboursement (jamais de découvert), erreur
+fournisseur = \`<provider>_error:\` + corps, et `requestOptions` par fournisseur
+(étalées dans le corps de la requête). `parsePaidProviderRef(ref, provider)` :
+deny-by-default, un seul préfixe accepté (`zai:` ou `xai:`), hors registre =
+`<PROVIDER>_MODEL_UNSUPPORTED` à la construction. `zai-model.ts` et
+`xai-model.ts` sont des enveloppes fines : secret, endpoint, options et préfixe
+du registre ; tout le reste délègue au socle. Les suites Z.ai et xAI partagent
+le harnais `test/collab-store/agentrun/cc7-l2-paid-harness.ts` (financement,
+fetch stub, `freshRun`/`quotaOf`/`stepRow`) et le contrat commun
+`test/collab-store/agentrun/cc7-l2-paid-contract.ts` : les invariants (gardes
+avant tout appel, réservation/règlement, rejeu fail-closed, jamais de découvert,
+plafond de l’exécution, câblage engineFor) y sont conduits une seule fois par
+une fixture par fournisseur ; chaque suite ne garde que ses spécificités.
+
 ## Câblage engineFor
 
 `src/collab-store/agentrun/object.ts` — `AGENT_RUN_PAID_MODEL` (prioritaire sur
-`AGENT_RUN_MODEL`) dispatche par préfixe : `zai:<modèle>` part sur l'adaptateur
-Z.ai SANS binding AI ; `workers-ai:@cf/vendor/model` exige le binding AI (sans
-lui : modèle simulé, comportement inchangé) ; hors registre : refus à la
-construction. L'enveloppe vient de `parseParticipantEnvelope(env)`.
+`AGENT_RUN_MODEL`) dispatche par préfixe : `zai:<modèle>` (PR 2.1) et
+`xai:<modèle>` (PR 2.2) partent sur leur adaptateur SANS binding AI ;
+`workers-ai:@cf/vendor/model` exige le binding AI (sans lui : modèle simulé,
+comportement inchangé) ; hors registre : refus à la construction. L'enveloppe
+vient de `parseParticipantEnvelope(env)`.
 
 ## Hors périmètre de ce lot
 
-- PR 2.2 : adaptateur xAI (`LLM_KEY_XAI`, refs `xai:`, même contrat ModelClient).
 - PR 2.3 : adaptateur Anthropic (protocole Messages distinct avec tool_use,
   `LLM_KEY_ANTHROPIC` à ajouter au catalogue des secrets).
 - Bornes lignes/Go-s par participant (comptage côté orchestrateur, suivi L2/L5).
