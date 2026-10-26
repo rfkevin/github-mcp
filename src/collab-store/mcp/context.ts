@@ -14,6 +14,8 @@ import {
 export interface CollabExecutionEnv extends CollabStoreEnv, ProviderAdapterEnv {
   EXECUTOR_DAILY_CAP?: string;
   WORKERS_AI_DAILY_NEURONS?: string;
+  /** CC-7 L4 : porte du salon d'équipe (« true » exact seulement). */
+  SALON_ENABLED?: string;
 }
 
 export interface CollabToolContext {
@@ -26,6 +28,8 @@ export interface CollabToolContext {
   fallback: StoreFallback;
   db: D1Database;
   executor: { factory: AdapterFactory; dailyCap: number; neuronBudget: number; now: () => Date };
+  /** CC-7 L4 : variables de porte lues à la construction (salon). */
+  flags: { salonEnabled: boolean };
 }
 
 export function createCollabToolContext(
@@ -52,6 +56,7 @@ export function createCollabToolContext(
       neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
       now,
     },
+    flags: { salonEnabled: env.SALON_ENABLED === 'true' },
     // clientId vient du jeton validé (handler.ts) : seul chemin qui enregistre un client observé.
     identity: () => (resolved ??= resolveTokenParticipant(db, clientId)) };
 }

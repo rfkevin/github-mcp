@@ -13,6 +13,7 @@
 import { estimateTokens } from '../contracts/memory';
 import { MERGE_INTENT_SCHEMA } from '../gates/merge-intent';
 import { INVOCATION_MIGRATION_0010, INVOCATION_SCHEMA_0006 } from '../invocations/schema';
+import { STORE_MIGRATION_0012_SALON } from '../salon/schema';
 
 export const CANONICAL_SCHEMA_SQL = [
   '-- CC-3 C1 — 0001_init.sql : portable standard SQL (D1 + stock SQLite).',
@@ -360,6 +361,8 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     ...MERGE_INTENT_SCHEMA.map(statement => db.prepare(statement)),
     // CC-Owner V2 L3 (0011) : classifications owner des demandes d'agent (drain append-only).
     ...STORE_MIGRATION_0011.map(statement => db.prepare(statement)),
+    // CC-7 L4 (0012) : salon d'équipe (messages, wakes, quotas journaliers).
+    ...STORE_MIGRATION_0012_SALON.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.
