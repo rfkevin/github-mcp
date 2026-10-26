@@ -121,8 +121,8 @@ export async function postSalonMessage(
   const skipQuota = input.skipAgentQuota === true;
   let overQuota = false;
   // L4c : quota + message (+ wakes) dans le MÊME lot D1 (transaction).
-  // Après upsert conditionnel : INSERT collab_store_guard (ok) SELECT CASE WHEN changes()>0
-  // THEN 1 ELSE 0 END — CHECK(ok=1) annule tout le lot si la réserve a échoué.
+  // Garde store existante (STORE_INTERNAL_SCHEMA) : INSERT (ok) SELECT CASE WHEN
+  // changes()>0 THEN 1 ELSE 0 END — CHECK(ok=1) annule le lot si réserve échouée.
   // Exception S7 : blocking + new_fact peut dépasser (over_quota=1).
   const forceOverQuota = countsAsQuota && !skipQuota && input.level === 'blocking' && newFact;
   if (forceOverQuota) overQuota = true;
@@ -141,8 +141,8 @@ export async function postSalonMessage(
     );
     stmts.push(
       db.prepare(
-        'INSERT INTO collab_store_guard (token, ok) SELECT ?1, CASE WHEN changes() > 0 THEN 1 ELSE 0 END',
-      ).bind(msgId),
+        'INSERT INTO collab_store_guard (ok) SELECT CASE WHEN changes() > 0 THEN 1 ELSE 0 END',
+      ),
     );
   } else if (countsAsQuota && !skipQuota && forceOverQuota) {
     stmts.push(
@@ -167,13 +167,14 @@ export async function postSalonMessage(
     );
   }
   if (countsAsQuota && !skipQuota && !forceOverQuota) {
-    stmts.push(db.prepare('DELETE FROM collab_store_guard WHERE token = ?1').bind(msgId));
+    stmts.push(db.prepare('DELETE FROM collab_store_guard'));
   }
   try {
     await db.batch(stmts);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    if (/CHECK|constraint|collab_store_guard|SALON_DAILY_LIMIT/i.test(msg)) {
+    // Uniquement l'échec CHECK de la garde → quota ; toute autre erreur remonte brute.
+    if (/CHECK constraint failed/i.test(msg)) {
       throw new SalonError('SALON_DAILY_LIMIT', 'Quota journalier de ' + SALON_DAILY_LIMIT + ' decision/blocking atteint.');
     }
     throw error;
