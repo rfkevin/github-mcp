@@ -1,7 +1,10 @@
 /**
  * CC-5 L1 — profils modèle × tâche, plafonds de jetons, fenêtres de débit.
  * CC-7 L2 — plafonds des types de tâche du canal API (answer, planification,
- * code, revue, test), plan CC-PLAN-7 v0.2 S3.
+ * code, revue, test), plan CC-PLAN-7 v0.2 S3. CC-7 L5b (N1) : kinds réels du
+ * canal API (planning, status, implement, research) câblés au canal API par
+ * engineFor (maxOutputTokensFor) ; les alias historiques du chemin gratuit
+ * restent (revue double review, mêmes bornes).
  *
  * Ordre imposé par le plan : poser les bornes par type de tâche PUIS retirer
  * le plafond global fixe 2048. Le plafond effectif est
@@ -21,7 +24,9 @@
 
 /**
  * Types de tâche du chemin gratuit (extensible). CC-7 L2 (plan CC-PLAN-7 v0.2
- * S3) : kinds du canal API — answer, planification, code, revue, test.
+ * S3) : answer, planification, code, revue, test. CC-7 L5b (N1) : kinds réels
+ * du canal API — planning, status, implement, research (agentrun) ; les alias
+ * historiques du chemin gratuit restent.
  */
 export type TaskKind =
   | 'probe'
@@ -34,6 +39,10 @@ export type TaskKind =
   | 'code'
   | 'revue'
   | 'test'
+  | 'planning'
+  | 'status'
+  | 'implement'
+  | 'research'
   | 'default';
 
 export interface TaskProfile {
@@ -59,6 +68,12 @@ export const TASK_KIND_BOUNDS: Readonly<Record<TaskKind, TaskProfile>> = {
   code: { max_tokens: 4_096, thinking: 'low' },
   revue: { max_tokens: 2_048, thinking: 'low' },
   test: { max_tokens: 2_048, thinking: 'low' },
+  // CC-7 L5b (N1) : kinds réels du canal API (agentrun) ; « revue » reste un
+  // alias historique du chemin gratuit pour « review » (mêmes bornes).
+  planning: { max_tokens: 4_096, thinking: 'low' },
+  status: { max_tokens: 2_048, thinking: 'off' },
+  implement: { max_tokens: 4_096, thinking: 'low' },
+  research: { max_tokens: 4_096, thinking: 'low' },
   default: { max_tokens: 2_048, thinking: 'off' },
 };
 
@@ -102,7 +117,9 @@ export function normalizeTaskKind(value: string | undefined | null): TaskKind {
   if (value === 'probe' || value === 'classify' || value === 'review'
     || value === 'design' || value === 'diagnose'
     || value === 'answer' || value === 'planification' || value === 'code'
-    || value === 'revue' || value === 'test') {
+    || value === 'revue' || value === 'test'
+    || value === 'planning' || value === 'status' || value === 'implement'
+    || value === 'research') {
     return value;
   }
   return 'default';

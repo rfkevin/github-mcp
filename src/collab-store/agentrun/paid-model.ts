@@ -46,7 +46,7 @@
 import { MODEL_CALL_OPTIONS, type WorkersAiBinding } from '../executors/adapter';
 import { ensureSchema } from '../store/schema';
 import { ModelCallError, type AgentMessage, type ModelClient, type ModelOutput, type ModelUsage } from './engine';
-import { bytes, inputTokenBound, readModelResponse, toProviderMessages, withTimeout, type ToolSchema } from './workers-ai-model';
+import { bytes, effectiveMaxOutputTokens, inputTokenBound, readModelResponse, toProviderMessages, withTimeout, type ToolSchema } from './workers-ai-model';
 
 /** Taux payants relevés sur la page tarifaire Workers AI le 2026-10-24 (neurons par million de jetons). */
 export const PAID_MODEL_RATES: Readonly<Record<string, { input_per_m: number; output_per_m: number }>> = {
@@ -288,6 +288,8 @@ export interface PaidModelOptions {
   /** Consigne système du rôle (persona) ; les données restent dans les messages. */
   system: string;
   maxOutputTokens: number;
+  /** CC-7 L5b (N1) : plafond de sortie PAR type de tâche (canal API, TASK_KIND_BOUNDS) ; absent = maxOutputTokens. */
+  maxOutputTokensFor?: (taskKind: string) => number;
   timeoutMs?: number;
   now?: () => Date;
 }
@@ -330,9 +332,11 @@ export function createPaidWorkersAiModel(options: PaidModelOptions): ModelClient
         throw new ModelCallError('PAID_STEP_ALREADY_SETTLED : l’étape ' + n + ' est déjà réglée ; rejeu refusé pour éviter une seconde charge.', null);
       }
       const prepared = prepareProviderCall(options.schemas, options.system, input);
-      const worstNeurons = neurons(prepared.bound, options.maxOutputTokens);
+      // CC-7 L5b (N1) : plafond de sortie par type de tâche quand le canal API fournit le résolveur.
+      const maxOutputTokens = effectiveMaxOutputTokens(options, input.task_kind);
+      const worstNeurons = neurons(prepared.bound, maxOutputTokens);
       const worstCents = Math.min(centsOfNeurons(worstNeurons), MAX_PAID_CENTS);
-      const worstTokens = prepared.bound + options.maxOutputTokens;
+      const worstTokens = prepared.bound + maxOutputTokens;
       // (4) Borne par exécution : refus PRÉEMPTIF avant toute réservation (jamais de découvert).
       if (run.cost_cents + worstCents > run.max_cost_cents) {
         throw new ModelCallError('PAID_RUN_BUDGET_EXCEEDED : ' + run.cost_cents + ' + ' + worstCents + ' cents > plafond '
@@ -350,7 +354,7 @@ export function createPaidWorkersAiModel(options: PaidModelOptions): ModelClient
       let raw: unknown;
       try {
         raw = await withTimeout(options.ai.run(model, {
-          ...MODEL_CALL_OPTIONS[model], messages: prepared.messages, max_tokens: options.maxOutputTokens,
+          ...MODEL_CALL_OPTIONS[model], messages: prepared.messages, max_tokens: maxOutputTokens,
           ...(prepared.tools.length ? { tools: prepared.tools } : {}),
         }), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
       } catch (error) {

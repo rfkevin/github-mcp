@@ -11,9 +11,10 @@
  * depuis L5a, les réveils de tâche — `review` ou `renew_verdict` du relecteur
  * (type `review`), `test` ou `renew_verdict` du testeur (type `test`),
  * `implement`, `address_feedback` et `address_correction` de l'auteur (type
- * `implement`). Le canal API n'émet toujours aucun verdict D12 : une relecture
- * ou un test conclut dans son message final, `evidence.add` reste interdit au
- * canal API, et la fusion comme les actes du propriétaire ne passent jamais
+ * `implement`). Le canal API n'émet toujours aucun verdict D12 LIBRE : depuis
+ * L5b, un verdict de relecture ou de test ne se dépose QUE par store_verdict
+ * (contrôles serveur au couple exact, S10), `evidence.add` libre reste interdit
+ * au canal API, et la fusion comme les actes du propriétaire ne passent jamais
  * par lui. run_id déterministe (cycle, participant, question ou tâche et
  * objet) : un passage rejoué ne crée jamais une seconde exécution pour la même
  * décision (createRun idempotent), et createRun refuse toujours si HALT, si le
@@ -30,6 +31,18 @@ export const PLAN_LIMIT = 5;
 export const PLAN_MAX_STEPS = 6;
 export const PLAN_MAX_TOKENS = 24_000;
 export const PLAN_DEADLINE_S = 900;
+
+/**
+ * CC-7 L5b (N2) : plafond de coût PAR TYPE DE TÂCHE de chaque exécution API,
+ * en cents US. Tout à 0 = éteint fail-closed : aucun appel payant possible
+ * tant que Kevin ne lève pas une valeur par type (P5).
+ */
+export const TASK_KIND_COST_CENTS: Readonly<Record<PlannedTaskKind, number>> = Object.freeze({
+  answer: 0,
+  review: 0,
+  test: 0,
+  implement: 0,
+});
 
 const PARTICIPANT_RE = /^[A-Za-z0-9_-][A-Za-z0-9:_-]{0,127}$/;
 const ASK_SUBJECT_RE = /^ask#([1-9][0-9]{0,9})$/;
@@ -104,8 +117,9 @@ export async function taskRunId(kind: TaskWakeKind, cycleId: string, participant
 /**
  * CC-7 L5a : consigne d'un réveil de tâche. Relecture et test : lecture du
  * couple head/base exact de la soumission (github_diff, github_read_file,
- * github_check_runs), conclusion dans le message final, AUCUN verdict émis
- * (D12 ; les écritures serveur de verdict sont le sujet de L5b). Implémentation :
+ * github_check_runs), verdict déposé UNIQUEMENT par store_verdict (L5b, S10 :
+ * contrôles serveur au couple exact) ou conclusion dans le message final.
+ * Implémentation :
  * branche API, commit au SHA attendu, PR prête à la revue (github_open_pr,
  * jamais de fusion), puis note de passation Fait / Reste / Appris (S5).
  */
@@ -128,7 +142,9 @@ export function taskPrompt(kind: TaskWakeKind, cycleId: string, taskId: string, 
     couple,
     'Lisez le diff avec github_diff (head et base exacts), les fichiers concernés avec github_read_file et la CI du head avec github_check_runs.',
     'Consignez votre conclusion dans votre message final : constats, risques et prochaine action proposée.',
-    'Vous n’émettez aucun verdict de ' + label + ' (D12) : aucune écriture de verdict n’existe sur ce canal.',
+    'Votre verdict ne se dépose QUE par store_verdict (task, pr, head, base exacts, state '
+    + (kind === 'review' ? 'AGREE ou CHANGES_REQUESTED' : 'PASS ou FAIL') + ', review) :',
+    'le serveur relit le couple, la CI et vos lectures avant d’écrire ; sans certitude, concluez dans votre message final sans verdict.',
   ].join(' ');
 }
 
@@ -178,7 +194,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           const result = await createRun(db, {
             runId: await answerRunId(cycleId, participantId, askSeq), cycleId, participantId, taskId: '', taskKind: 'answer',
             prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env)),
-            maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: 0, deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+            maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: TASK_KIND_COST_CENTS.answer, deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
           });
           if (result.created) created += 1;
           continue;
@@ -192,7 +208,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         const result = await createRun(db, {
           runId: await taskRunId(kind, cycleId, participantId, taskId, decision.subject), cycleId, participantId,
           taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
-          maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: 0, deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+          maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: TASK_KIND_COST_CENTS[kind], deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
         });
         if (result.created) created += 1;
       }

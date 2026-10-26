@@ -61,14 +61,17 @@ orchestrateur (suivi L2/L5).
 
 `src/collab-store/executors/task-profiles.ts` — `TaskKind` et
 `TASK_KIND_BOUNDS` étendus aux kinds du canal API : `answer` 2048/off,
-`planification` 4096/low, `code` 4096/low, `revue` 2048/low, `test` 2048/low.
-Le plafond effectif reste `min(absolu, modèle, task_kind, endpoint, demandé)`
+`planification` 4096/low, `code` 4096/low, `revue` 2048/low, `test` 2048/low,
+puis (L5b, N1) les kinds réels du canal API : `planning` 4096/low,
+`status` 2048/off, `implement` 4096/low, `research` 4096/low. Le plafond
+effectif reste `min(absolu, modèle, task_kind, endpoint, demandé)`
 (`resolveEffectiveMaxTokens`) — inchangé.
 
-NB (relecture PR 2.1, note N1) : ces bornes ne sont pas encore câblées au canal
-API ni alignées sur ses types de tâche (`answer`, `planning`, `status`,
-`implement`, `research`) — le canal API n'applique aujourd'hui que
-`maxOutputTokens` de l'adaptateur ; alignement et câblage prévus en L5.
+Câblage L5b (N1) : `engineFor` (object.ts) passe `maxOutputTokensFor` aux
+cinq constructions de modèle — le canal API applique désormais la borne de SON
+type de tâche (review/test/answer/status 2048, planning/implement/research
+4096) via `effectiveMaxOutputTokens` ; les constructions directes (suites,
+contrats L2) restent à `maxOutputTokens` tel quel.
 
 ## Adaptateur Z.ai
 

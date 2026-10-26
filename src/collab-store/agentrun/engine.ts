@@ -25,8 +25,10 @@
  *   sûre, l'exécution passe en `needs_reconcile`.
  * - Retries bornés : MAX_STEP_ATTEMPTS réclamations par étape, puis `failed`.
  * - Plafonds (R5) vérifiés à chaque étape : étapes, jetons, coût, échéance.
- * - Le canal API n'émet aucun verdict D12 (L7-6) : outils interdits refusés en
- *   code même si l'hôte les déclare, et `assertNotD12Verdict` sur toute écriture.
+ * - Le canal API n'émet aucun verdict D12 LIBRE (L7-6) : outils interdits refusés en
+ *   code même si l'hôte les déclare ; toute écriture reste soumise à
+ *   `assertNotD12Verdict` SAUF `store_verdict` (L5b, S10), l'unique porte à
+ *   verdict du canal API, re-vérifiée serveur (verdict-tools.ts).
  *
  * Écritures hors garde, volontairement (audit) : l'usage d'un appel modèle (toujours
  * comptabilisé, même si l'étape est ensuite refusée ou si l'appel échoue, leçon L0),
@@ -388,11 +390,17 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       }
       continue;
     }
-    try {
-      assertNotD12Verdict(call.args);
-    } catch {
-      refused('d12_verdict_forbidden_on_api_channel');
-      continue;
+    // CC-7 L5b (S10) : store_verdict est la seule écriture à verdict permise au canal
+    // API — le serveur re-vérifie tout dans verdict-tools (rôle, identité, couple exact
+    // relu, CI au head, preuve de lecture github_diff, idempotence déterministe). Tout
+    // autre appel d'écriture reste soumis au refus D12.
+    if (call.name !== 'store_verdict') {
+      try {
+        assertNotD12Verdict(call.args);
+      } catch {
+        refused('d12_verdict_forbidden_on_api_channel');
+        continue;
+      }
     }
     const effect = await runEffect(db, runId, claim, idx, call, deps);
     if ('outcome' in effect) return effect;

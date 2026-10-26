@@ -491,6 +491,7 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `IDENTITY_FAMILY_PARTICIPANT_INACTIVE` | #126 | Un membre de la famille n’est pas un participant actif | Enregistrer/réactiver le participant avant approbation |
 | `IDENTITY_FAMILY_CONFLICT` | #126 | Un membre appartient déjà à une autre famille logique | Le retirer de l’ancienne famille par un acte owner distinct avant de le déplacer |
 | `IDENTITY_FAMILY_D12_CONFLICT` | #126 | La famille rendrait au moins une tâche d’un cycle ouvert non conforme D12 en réunissant deux rôles sous une seule identité logique | Réattribuer les tâches citées puis redéposer/approuver la demande |
+| `SELF_REVIEW` | CC-7 L5b | Verdict (`store_verdict`) refusé : l'émetteur et l'auteur de la soumission partagent la même identité logique (famille #126) | Faire relire ou tester par une identité logique distincte (D12) |
 
 ### 7.3 Phases, contexte et scellement (C3)
 

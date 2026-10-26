@@ -41,6 +41,8 @@ export interface WorkersAiModelOptions {
   /** Consigne système du rôle (persona) ; les données restent dans les messages. */
   system: string;
   maxOutputTokens: number;
+  /** CC-7 L5b (N1) : plafond de sortie PAR type de tâche (canal API, TASK_KIND_BOUNDS) ; absent = maxOutputTokens. */
+  maxOutputTokensFor?: (taskKind: string) => number;
   timeoutMs?: number;
   now?: () => Date;
 }
@@ -135,6 +137,23 @@ export async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T
   }
 }
 
+/**
+ * CC-7 L5b (N1) : plafond de sortie effectif de l'appel. Résolveur optionnel du
+ * canal API (engineFor) : borne PAR type de tâche (TASK_KIND_BOUNDS via
+ * resolveEffectiveMaxTokens) ; sans résolveur, maxOutputTokens s'applique tel
+ * quel — les constructions directes (suites, contrats L2) sont inchangées.
+ */
+export function effectiveMaxOutputTokens(options: {
+  maxOutputTokens: number; maxOutputTokensFor?: (taskKind: string) => number;
+}, taskKind: string): number {
+  const resolved = options.maxOutputTokensFor?.(taskKind);
+  if (resolved === undefined) return options.maxOutputTokens;
+  if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > 8192) {
+    throw new Error('maxOutputTokensFor doit renvoyer un entier entre 1 et 8192.');
+  }
+  return resolved;
+}
+
 export function createWorkersAiModel(options: WorkersAiModelOptions): ModelClient {
   const model = parseWorkersAiRef(options.ref);
   const rates = FREE_MODEL_RATES[model];
@@ -149,7 +168,9 @@ export function createWorkersAiModel(options: WorkersAiModelOptions): ModelClien
         .map(schema => ({ type: 'function', function: { name: schema.name, description: schema.description, parameters: schema.parameters } }));
       const messages = toProviderMessages(options.system, input.messages);
       const bound = inputTokenBound(messages, tools);
-      const worst = neurons(bound, options.maxOutputTokens);
+      // CC-7 L5b (N1) : plafond de sortie par type de tâche quand le canal API fournit le résolveur.
+      const maxOutputTokens = effectiveMaxOutputTokens(options, input.task_kind);
+      const worst = neurons(bound, maxOutputTokens);
       const now = options.now?.() ?? new Date();
       await ensureSchema(options.db);
       let key: string;
@@ -162,7 +183,7 @@ export function createWorkersAiModel(options: WorkersAiModelOptions): ModelClien
       let raw: unknown;
       try {
         raw = await withTimeout(options.ai.run(model, {
-          ...MODEL_CALL_OPTIONS[model], messages, max_tokens: options.maxOutputTokens,
+          ...MODEL_CALL_OPTIONS[model], messages, max_tokens: maxOutputTokens,
           ...(tools.length ? { tools } : {}),
         }), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
       } catch (error) {

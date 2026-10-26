@@ -199,7 +199,8 @@ describe('CC-7 L2 — plafonds de jetons par type de tâche', () => {
     expect(normalizeTaskKind('code')).toBe('code');
     expect(normalizeTaskKind('revue')).toBe('revue');
     // Absent, inconnu ou casse différente → default (politique volontaire).
-    expect(normalizeTaskKind('research')).toBe('default');
+    // « research » est un kind réel du canal API depuis L5b (N1) : l'exemple inconnu devient « inconnu ».
+    expect(normalizeTaskKind('inconnu')).toBe('default');
     expect(normalizeTaskKind('ANSWER')).toBe('default');
     expect(normalizeTaskKind(undefined)).toBe('default');
   });
