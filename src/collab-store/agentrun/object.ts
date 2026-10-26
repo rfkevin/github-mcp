@@ -13,7 +13,8 @@ import {
 } from './orchestrator';
 import type { EngineDeps } from './engine';
 import { createWorkersAiModel } from './workers-ai-model';
-import { createPaidWorkersAiModel, parsePaidCycleCap, parsePaidEnvelope } from './paid-model';
+import { createPaidWorkersAiModel, parseParticipantEnvelope } from './paid-model';
+import { createZaiModel } from './zai-model';
 import { createReadToolHost, type GitHubReads } from './read-tools';
 import { continuityEnabled } from './plan';
 import { DEFAULT_API_BASE_BRANCH, type GitHubWrites } from './github-tools';
@@ -33,12 +34,18 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   AGENT_RUN_GITHUB_WRITES?: string;
   /** 7c-3 : branche de base des branches API et cible des PR brouillons (défaut DEFAULT_API_BASE_BRANCH, jamais main/master). */
   AGENT_RUN_BASE_BRANCH?: string;
-  /** 7d : modèle payant workers-ai:@cf/vendor/model derrière l’enveloppe de coût ; absent = chemin 7c-1 inchangé. */
+  /** 7d / CC-7 L2 : modèle payant workers-ai:@cf/vendor/model ou zai:<modèle> derrière l’enveloppe par participant ; absent = chemin 7c-1 inchangé. */
   AGENT_RUN_PAID_MODEL?: string;
-  /** 7d : enveloppe owner du jour en cents (registre paid:day) ; 0, invalide ou absent = aucun appel payant. */
-  AGENT_RUN_PAID_ENVELOPE_CENTS?: string;
-  /** 7d : borne par cycle en cents (registre paid:cycle) ; défaut et plafond : l’enveloppe. */
-  AGENT_RUN_PAID_CYCLE_CENTS?: string;
+  /** CC-7 L2 : enveloppe payante PAR PARTICIPANT, cents US par jour (P5 Q1 : 200) ; 0, invalide ou absent = refus avant tout appel payant. */
+  AGENT_RUN_PAID_PARTICIPANT_DAY_CENTS?: string;
+  /** CC-7 L2 : borne PAR PARTICIPANT par cycle, cents US (P5 Q1 : 1000) ; 0, invalide ou absent = refus avant tout appel payant. */
+  AGENT_RUN_PAID_PARTICIPANT_CYCLE_CENTS?: string;
+  /** CC-7 L2 : plafond optionnel de jetons PAR PARTICIPANT par jour ; 0 ou absent = pas de plafond supplémentaire. */
+  AGENT_RUN_PAID_PARTICIPANT_DAY_TOKENS?: string;
+  /** CC-7 L2 : plafond optionnel d’appels PAR PARTICIPANT par jour ; 0 ou absent = pas de plafond supplémentaire. */
+  AGENT_RUN_PAID_PARTICIPANT_DAY_REQUESTS?: string;
+  /** CC-7 L2 : secret Z.ai (adaptateur zai:<modèle>), posé par Kevin seul sur le Worker. */
+  LLM_KEY_ZAI?: string;
   AI?: WorkersAiBinding;
   WORKERS_AI_DAILY_NEURONS?: string;
   GITHUB_APP_ID?: string;
@@ -69,8 +76,11 @@ export const AGENT_RUN_SYSTEM = [
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /**
- * 7d : AGENT_RUN_PAID_MODEL (prioritaire sur AGENT_RUN_MODEL) prend le chemin payant
- * derrière l’enveloppe owner ; sans enveloppe financée, chaque appel est refusé en code.
+ * 7d / CC-7 L2 : AGENT_RUN_PAID_MODEL (prioritaire sur AGENT_RUN_MODEL) prend le
+ * chemin payant derrière l’enveloppe PAR PARTICIPANT ; sans enveloppe financée,
+ * chaque appel est refusé en code. Le préfixe de la référence décide du
+ * fournisseur : workers-ai:@cf/vendor/model (binding AI requis) ou zai:<modèle>
+ * (secret LLM_KEY_ZAI, aucun binding AI) ; hors registre = refus à la construction.
  * 7c-1 : modèle Workers AI réel et outils de lecture si AGENT_RUN_MODEL est posé et
  * (7c-2 : plus les écritures store non-verdict de WRITE_TOOLS_BY_KIND, avec lookup)
  * le binding AI présent ; sinon le modèle simulé de 7b. L'interrupteur général
@@ -79,27 +89,36 @@ const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undefined, githubReads: GitHubReads | null = null,
   githubWrites: GitHubWrites | null = null): EngineFactory {
   if (testFactory) return testFactory;
-  if (!fallbackDb || !env.AI) return simulated;
+  if (!fallbackDb) return simulated;
   const paidRef = env.AGENT_RUN_PAID_MODEL ?? null;
   const ref = paidRef ?? (env.AGENT_RUN_MODEL ?? null);
   if (!ref) return simulated;
+  const zaiRef = paidRef !== null && paidRef.startsWith('zai:') ? paidRef : null;
   const ai = env.AI;
+  // CC-7 L2 : le chemin zai: n'utilise jamais le binding AI ; les chemins Workers AI l'exigent.
+  if (!zaiRef && !ai) return simulated;
   const repository = env.AGENT_RUN_REPOSITORY && REPOSITORY_RE.test(env.AGENT_RUN_REPOSITORY) ? env.AGENT_RUN_REPOSITORY : null;
   const github = repository ? githubReads : null;
   // 7c-3 : écritures GitHub seulement avec un dépôt, l'interrupteur dédié et l'adaptateur de la racine.
   const writes = repository && env.AGENT_RUN_GITHUB_WRITES === 'true' && githubWrites
     ? { writes: githubWrites, baseBranch: apiBaseBranch(env.AGENT_RUN_BASE_BRANCH) } : null;
+  const envelope = parseParticipantEnvelope(env);
   return (_runId, stepDb) => {
     const db = stepDb ?? fallbackDb;
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
       continuity: continuityEnabled(env) });
-    const envelopeCents = parsePaidEnvelope(env.AGENT_RUN_PAID_ENVELOPE_CENTS);
+    const schemas = (kind: string) => tools.schemas(kind);
+    if (zaiRef) {
+      const model = createZaiModel({ env, ref: zaiRef, db, runId: _runId, envelope,
+        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 });
+      return { model, tools, now };
+    }
+    if (!ai) return simulated(_runId, stepDb); // inatteignable : garde ci-dessus (chemins Workers AI).
     const model = paidRef
-      ? createPaidWorkersAiModel({ ai, ref: paidRef, db, runId: _runId, envelopeCents,
-        cycleCents: parsePaidCycleCap(env.AGENT_RUN_PAID_CYCLE_CENTS, envelopeCents),
-        schemas: kind => tools.schemas(kind), system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 })
+      ? createPaidWorkersAiModel({ ai, ref: paidRef, db, runId: _runId, envelope,
+        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 })
       : createWorkersAiModel({ ai, ref, db, neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
-        schemas: kind => tools.schemas(kind), system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 });
+        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024 });
     return { model, tools, now };
   };
 }

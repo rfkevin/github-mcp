@@ -7,7 +7,11 @@ export {
 } from './engine';
 export { meteredDb, type MeteredDb } from './metered-db';
 export { createWorkersAiModel, readModelResponse, inputTokenBound, type ToolSchema, type WorkersAiModelOptions } from './workers-ai-model';
-export { createPaidWorkersAiModel, parsePaidWorkersAiRef, parsePaidEnvelope, parsePaidCycleCap, centsOfNeurons, PAID_MODEL_RATES, type PaidModelOptions } from './paid-model';
+export { createPaidWorkersAiModel, parsePaidWorkersAiRef, centsOfNeurons, PAID_MODEL_RATES, type PaidModelOptions,
+  parseParticipantEnvelope, envelopeFunded, participantDayKeys, participantCycleKey, prepareProviderCall,
+  readPaidRun, readPaidStep, reserveParticipantStep, settleParticipantStep,
+  type ParticipantEnvelope, type ParticipantEnvelopeEnv, type PaidRunRow, type PaidStepRow } from './paid-model';
+export { createZaiModel, parseZaiRef, type ZaiModelOptions } from './zai-model';
 export {
   createReadToolHost, READ_TOOL_SCHEMAS, READ_TOOLS_BY_KIND, CONTINUITY_TOOL_SCHEMAS, CONTINUITY_MEMORY_LIMIT, REGISTRY_MAX_TASKS,
   type GitHubReads, type ReadToolName, type ContinuityToolName,

@@ -13,6 +13,8 @@ import { reserveNeurons } from '../../../src/collab-store/executors/run';
 // CC-5 l7 incrément 7d (amendement A5) — modèles Workers AI payants derrière l’enveloppe
 // owner : bornes typées, réservation par étape idempotente, règlement au réel,
 // jamais de découvert. Aucun appel réel : binding AI simulé, tarifs datés en code.
+// CC-7 L2 (PR 2.1) — enveloppe PAR PARTICIPANT : registres paid:participant:vibe:…,
+// variables AGENT_RUN_PAID_PARTICIPANT_* ; le helper paid() passe { envelope }.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const GLM53 = 'workers-ai:@cf/zai-org/glm-5.3';
 const T = 1_975_000_000;
@@ -77,7 +79,8 @@ function paid(opts: { ai: ReturnType<typeof aiStub>; runId: string; at: Date; en
   cycleCents?: number; maxOutputTokens?: number; ref?: string }) {
   return createPaidWorkersAiModel({
     ai: opts.ai, ref: opts.ref ?? GLM53, db, runId: opts.runId,
-    envelopeCents: opts.envelopeCents, cycleCents: opts.cycleCents ?? opts.envelopeCents,
+    envelope: { dayCents: opts.envelopeCents, cycleCents: opts.cycleCents ?? opts.envelopeCents,
+      dayTokens: 0, dayRequests: 0 },
     schemas: () => [], system: 'S', maxOutputTokens: opts.maxOutputTokens ?? 4096, now: () => opts.at,
   });
 }
@@ -99,7 +102,8 @@ describe('CC-5 l7d — instantané daté et deny-by-default', () => {
   });
 
   it('référence hors liste payante (modèle gratuit, inconnu, autre fournisseur) refusée à la construction', () => {
-    const base = { ai: aiStub([]), db, runId: 'l7d-x', envelopeCents: 100, cycleCents: 100,
+    const base = { ai: aiStub([]), db, runId: 'l7d-x',
+      envelope: { dayCents: 100, cycleCents: 100, dayTokens: 0, dayRequests: 0 },
       schemas: () => [], system: 'S', maxOutputTokens: 64 };
     expect(() => createPaidWorkersAiModel({ ...base, ref: 'workers-ai:@cf/zai-org/glm-4.7-flash' })).toThrow(/PAID_MODEL_UNSUPPORTED/);
     expect(() => createPaidWorkersAiModel({ ...base, ref: 'workers-ai:@cf/nobody/inconnu' })).toThrow(/PAID_MODEL_UNSUPPORTED/);
@@ -119,8 +123,8 @@ describe('CC-5 l7d — enveloppe et bornes typées', () => {
     expect((error as ModelCallError).usage).toBeNull();
     expect(stub.seen.length).toBe(0);
     expect(await paidStep(run.runId, 0)).toBeNull();
-    expect(await paidUsed('paid:day:2032-03-01')).toBe(0);
-    expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(0);
+    expect(await paidUsed('paid:participant:vibe:day:2032-03-01')).toBe(0);
+    expect(await paidUsed('paid:participant:vibe:cycle:' + run.cycleId)).toBe(0);
   });
 
   it('PAID_RUN_BUDGET_EXCEEDED : refus préemptif avant toute réservation si le pire cas dépasse le plafond', async () => {
@@ -132,7 +136,7 @@ describe('CC-5 l7d — enveloppe et bornes typées', () => {
     expect((error as ModelCallError).usage).toBeNull();
     expect(stub.seen.length).toBe(0);
     expect(await paidStep(run.runId, 0)).toBeNull();
-    expect(await paidUsed('paid:day:2032-03-02')).toBe(0);
+    expect(await paidUsed('paid:participant:vibe:day:2032-03-02')).toBe(0);
   });
 
   it('PAID_DAILY_BUDGET_EXCEEDED : le jour épuisé refuse la seconde exécution sans rien écrire', async () => {
@@ -146,8 +150,8 @@ describe('CC-5 l7d — enveloppe et bornes typées', () => {
     expect((error as ModelCallError).message).toMatch(/PAID_DAILY_BUDGET_EXCEEDED/);
     expect(stub.seen.length).toBe(1);
     expect(await paidStep(second.runId, 0)).toBeNull();
-    expect(await paidUsed('paid:day:2032-03-03')).toBe(1);
-    expect(await paidUsed('paid:cycle:' + second.cycleId)).toBe(0);
+    expect(await paidUsed('paid:participant:vibe:day:2032-03-03')).toBe(1);
+    expect(await paidUsed('paid:participant:vibe:cycle:' + second.cycleId)).toBe(0);
   });
 
   it('PAID_CYCLE_BUDGET_EXCEEDED : lot atomique — ni registre du jour ni ligne d’étape écrits', async () => {
@@ -159,8 +163,8 @@ describe('CC-5 l7d — enveloppe et bornes typées', () => {
     expect((error as ModelCallError).usage).toBeNull();
     expect(stub.seen.length).toBe(0);
     expect(await paidStep(run.runId, 0)).toBeNull();
-    expect(await paidUsed('paid:day:2032-03-04')).toBe(0);
-    expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(0);
+    expect(await paidUsed('paid:participant:vibe:day:2032-03-04')).toBe(0);
+    expect(await paidUsed('paid:participant:vibe:cycle:' + run.cycleId)).toBe(0);
   });
 });
 
@@ -178,8 +182,8 @@ describe('CC-5 l7d — réservation, règlement, idempotence', () => {
     // Pire cas : ~1 652 neurons → 2 cents ; réel : ~21 neurons → 1 cent.
     expect(result.usage.cost_cents).toBe(1);
     expect(await paidStep(run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 1, settled: 1 });
-    expect(await paidUsed('paid:day:2032-03-05')).toBe(1);
-    expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(1);
+    expect(await paidUsed('paid:participant:vibe:day:2032-03-05')).toBe(1);
+    expect(await paidUsed('paid:participant:vibe:cycle:' + run.cycleId)).toBe(1);
     // B1 : les neurons réels (100 + 20 jetons → 21) décomptent le pool gratuit partagé du compte.
     expect(await paidUsed('neurons:workers-ai:2032-03-05')).toBe(21);
   });
@@ -194,8 +198,8 @@ describe('CC-5 l7d — réservation, règlement, idempotence', () => {
     expect(stub.seen.length).toBe(1);
     expect(result.usage.cost_cents).toBe(1);
     // Aucune nouvelle réservation : les registres restent absents, la ligne existante est réglée.
-    expect(await paidUsed('paid:day:2032-03-06')).toBe(0);
-    expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(0);
+    expect(await paidUsed('paid:participant:vibe:day:2032-03-06')).toBe(0);
+    expect(await paidUsed('paid:participant:vibe:cycle:' + run.cycleId)).toBe(0);
     expect(await paidStep(run.runId, 0)).toEqual({ reserved_cents: 100, actual_cents: 1, settled: 1 });
   });
 
@@ -219,8 +223,8 @@ describe('CC-5 l7d — réservation, règlement, idempotence', () => {
     expect(error).toBeInstanceOf(ModelCallError);
     expect(error.usage!.tokens).toBeGreaterThan(0);
     expect(error.usage!.cost_cents).toBe(2);
-    expect(await paidUsed('paid:day:2032-03-08')).toBe(2);
-    expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(2);
+    expect(await paidUsed('paid:participant:vibe:day:2032-03-08')).toBe(2);
+    expect(await paidUsed('paid:participant:vibe:cycle:' + run.cycleId)).toBe(2);
     // B1 : sur erreur fournisseur, le pire cas en neurons décompte aussi le pool gratuit partagé.
     expect(await paidUsed('neurons:workers-ai:2032-03-08')).toBeGreaterThan(0);
     expect(await paidStep(run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 2, settled: 1 });
@@ -235,8 +239,8 @@ describe('CC-5 l7d — réservation, règlement, idempotence', () => {
     const stub = aiStub([reply('gouffre', { prompt_tokens: 500_000_000, completion_tokens: 500_000_000 })]);
     const result = await call(paid({ ai: stub, runId: run.runId, at, envelopeCents: 1_000 }));
     expect(result.usage.cost_cents).toBe(2);
-    expect(await paidUsed('paid:day:2032-03-09')).toBe(2);
-    expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(2);
+    expect(await paidUsed('paid:participant:vibe:day:2032-03-09')).toBe(2);
+    expect(await paidUsed('paid:participant:vibe:cycle:' + run.cycleId)).toBe(2);
     expect(await paidStep(run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 2, settled: 1 });
   });
 
@@ -280,7 +284,8 @@ describe('CC-5 l7d — parcours moteur et câblage', () => {
       reply('Résumé : rien à signaler.', { prompt_tokens: 100, completion_tokens: 20 }),
     ]);
     const host = createReadToolHost({ db, repository: null, github: null });
-    const model = createPaidWorkersAiModel({ ai: stub, ref: GLM53, db, runId: run.runId, envelopeCents: 100, cycleCents: 100,
+    const model = createPaidWorkersAiModel({ ai: stub, ref: GLM53, db, runId: run.runId,
+      envelope: { dayCents: 100, cycleCents: 100, dayTokens: 0, dayRequests: 0 },
       schemas: kind => host.schemas(kind), system: 'S', maxOutputTokens: 4096, now: () => at });
     const deps = { model, tools: host, now: () => T + 1_000, workerId: 'w' };
     expect((await runStep(db, run.runId, deps)).outcome).toBe('stepped');
@@ -290,7 +295,7 @@ describe('CC-5 l7d — parcours moteur et câblage', () => {
     expect(row).toEqual({ cost_cents: 2, steps_done: 2 });
     expect(await paidStep(run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 1, settled: 1 });
     expect(await paidStep(run.runId, 1)).toEqual({ reserved_cents: 2, actual_cents: 1, settled: 1 });
-    expect(await paidUsed('paid:day:2032-03-11')).toBe(2);
+    expect(await paidUsed('paid:participant:vibe:day:2032-03-11')).toBe(2);
     // Go-s à part ; B1 : les neurons réels des 2 étapes décomptent le pool gratuit partagé du compte.
     expect(await paidUsed('neurons:workers-ai:2032-03-11')).toBe(42);
     expect((await db.prepare('SELECT COUNT(*) AS c FROM agent_run_quota WHERE day = ?1').bind('2032-03-11').first<{ c: number }>())?.c ?? 0).toBe(0);
@@ -307,10 +312,11 @@ describe('CC-5 l7d — parcours moteur et câblage', () => {
     await seedCycle(run.cycleId);
     const stub = aiStub([reply('fin', { prompt_tokens: 100, completion_tokens: 20 })]);
     const deps = engineFor({ AGENT_RUN_PAID_MODEL: GLM53, AGENT_RUN_MODEL: 'workers-ai:@cf/zai-org/glm-4.7-flash',
-      AI: stub, AGENT_RUN_PAID_ENVELOPE_CENTS: '100' }, db)(run.runId);
+      AI: stub, AGENT_RUN_PAID_PARTICIPANT_DAY_CENTS: '100',
+      AGENT_RUN_PAID_PARTICIPANT_CYCLE_CENTS: '100' }, db)(run.runId);
     const result = await deps.model.complete({ messages: [{ role: 'user', content: 'q' }], tools: deps.tools.list('research'), task_kind: 'research' });
     expect(result.usage.cost_cents).toBe(1);
-    expect(await paidUsed('paid:cycle:' + run.cycleId)).toBe(1);
+    expect(await paidUsed('paid:participant:vibe:cycle:' + run.cycleId)).toBe(1);
     // B1 : le câblage engineFor n’injecte pas de now — le décompte neurons part sur la date
     // réelle, pas sur la date du test (le décompte est prouvé par les tests directs ci-dessus).
     expect(await paidUsed('neurons:workers-ai:2032-03-12')).toBe(0);
