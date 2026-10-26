@@ -29,6 +29,7 @@ export const PROVIDER_TIMEOUT_MS: Readonly<Record<string, { default_ms: number; 
   openrouter: { default_ms: 60_000, max_ms: 120_000 },
   deepseek: { default_ms: 60_000, max_ms: 120_000 },
   xai: { default_ms: 60_000, max_ms: 120_000 },
+  anthropic: { default_ms: 60_000, max_ms: 120_000 },
   'workers-ai': { default_ms: 60_000, max_ms: 120_000 },
 };
 
