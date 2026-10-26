@@ -116,7 +116,11 @@ deny-by-default, un seul préfixe accepté (`zai:` ou `xai:`), hors registre =
 `xai-model.ts` sont des enveloppes fines : secret, endpoint, options et préfixe
 du registre ; tout le reste délègue au socle. Les suites Z.ai et xAI partagent
 le harnais `test/collab-store/agentrun/cc7-l2-paid-harness.ts` (financement,
-fetch stub, `freshRun`/`quotaOf`/`stepRow`).
+fetch stub, `freshRun`/`quotaOf`/`stepRow`) et le contrat commun
+`test/collab-store/agentrun/cc7-l2-paid-contract.ts` : les invariants (gardes
+avant tout appel, réservation/règlement, rejeu fail-closed, jamais de découvert,
+plafond de l’exécution, câblage engineFor) y sont conduits une seule fois par
+une fixture par fournisseur ; chaque suite ne garde que ses spécificités.
 
 ## Câblage engineFor
 

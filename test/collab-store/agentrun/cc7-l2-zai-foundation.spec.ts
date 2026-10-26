@@ -3,9 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ModelCallError,
   createZaiModel, parseZaiRef, parseParticipantEnvelope, envelopeFunded, participantDayKeys, participantCycleKey,
-  type ModelClient, type ParticipantEnvelope,
+  type ModelClient,
 } from '../../../src/collab-store/agentrun';
-import { engineFor } from '../../../src/collab-store/agentrun/object';
 import {
   API_MODEL_RATES, API_RATE_SNAPSHOT_DATE, apiModelRate, centsOfApiTokens,
 } from '../../../src/collab-store/executors/model-rates';
@@ -14,31 +13,49 @@ import {
 } from '../../../src/collab-store/executors/task-profiles';
 import { ZAI_CHAT_COMPLETIONS_URL } from '../../../src/collab-store/executors/openai-compatible';
 import { FUNDED, fetchStub, freshRun, quotaOf, reply, stepRow } from './cc7-l2-paid-harness';
+import { paidAdapterContract, paidContractCall, type PaidContractCall } from './cc7-l2-paid-contract';
 
 // CC-7 L2 (PR 2.1, plan CC-PLAN-7 v0.2 S2/S3) — fondation du canal payant : registre
 // des tarifs daté (deny-by-default), enveloppe PAR PARTICIPANT (tout à 0 par
 // défaut), plafonds de jetons par type de tâche, adaptateur Z.ai (tool_calls au
 // format OpenAI) et câblage engineFor. Aucun appel réel : fetch scripté, secret
-// factice, dates futures distinctes (2032-04-XX) pour isoler les registres.
-// PR 2.2 : les helpers partagés (fetch scripté, exécution fraîche, registres,
-// lignes d'étape) vivent dans cc7-l2-paid-harness.ts, commun aux adaptateurs.
+// factice, dates futures distinctes pour isoler les registres. Les invariants
+// partagés avec xAI (PR 2.2) — gardes avant tout appel, réservation au pire
+// cas, règlement au réel, rejeu fail-closed, jamais de découvert, plafond de
+// l’exécution, câblage engineFor — sont conduits une seule fois par le contrat
+// commun cc7-l2-paid-contract.ts (jours 01-08 du mois 2032-04) ; cette suite
+// garde les spécificités Z.ai (jours 10 et suivants). Les helpers partagés
+// (fetch scripté, exécution fraîche, registres, lignes d'étape) vivent dans
+// cc7-l2-paid-harness.ts.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const T = 1_975_000_000;
 
 /** Modèle Z.ai de test : enveloppe financée, secret factice, fetch injecté, horloge fixée. */
-function zaiModel(opts: { fetchImpl: typeof fetch; runId: string; at: Date; envelope?: ParticipantEnvelope;
-  env?: { LLM_KEY_ZAI?: string }; maxOutputTokens?: number }) {
+function zaiModel(opts: PaidContractCall): ModelClient {
   return createZaiModel({
-    env: opts.env ?? { LLM_KEY_ZAI: 'zai-test-key-CANARY-never-store' }, ref: 'zai:glm-5.3', db, runId: opts.runId,
+    env: (opts.env ?? { LLM_KEY_ZAI: 'zai-test-key-CANARY-never-store' }) as { LLM_KEY_ZAI?: string },
+    ref: opts.ref ?? 'zai:glm-5.3', db, runId: opts.runId,
     envelope: opts.envelope ?? FUNDED,
     schemas: () => [{ name: 'store_context', description: 'Lit le contexte du cycle.', parameters: { type: 'object' } }],
-    system: 'S', maxOutputTokens: opts.maxOutputTokens ?? 4_096, fetchImpl: opts.fetchImpl, now: () => opts.at,
+    system: 'S', maxOutputTokens: 4_096, fetchImpl: opts.fetchImpl, now: () => opts.at,
   });
 }
 
-function call(model: ModelClient, tools: string[] = []) {
-  return model.complete({ messages: [{ role: 'user', content: 'go' }], tools, task_kind: 'answer' });
-}
+// Invariants communs des adaptateurs payants du canal API, conduits pour Z.ai.
+paidAdapterContract(db, {
+  prefix: 'l2z',
+  ref: 'zai:glm-5.3',
+  provider: 'zai',
+  url: ZAI_CHAT_COMPLETIONS_URL,
+  testSecret: 'zai-test-key-CANARY-never-store',
+  worstCents: 2,
+  actualCents: 1,
+  month: '2032-04',
+  offRegistryRef: 'zai:glm-4.7-flash',
+  toolDescription: 'Lit le contexte du cycle.',
+  expectBody: body => expect(body.thinking).toEqual({ type: 'disabled' }),
+  model: opts => zaiModel(opts),
+});
 
 describe('CC-7 L2 — registre des tarifs daté (deny-by-default)', () => {
   it('exactement les 8 références relevées le 2026-10-25, source par entrée, grok-4.1-fast absent', () => {
@@ -106,30 +123,30 @@ describe('CC-7 L2 — enveloppe par participant', () => {
   });
 
   it('isolation : deux participants le même jour ne touchent que leurs propres registres', async () => {
-    const at = new Date('2032-04-04T10:00:00Z');
+    const at = new Date('2032-04-12T10:00:00Z');
     const vibe = await freshRun(db, 'l2z', T + 300);
     const claude = await freshRun(db, 'l2z', T + 300, 10_000, 'claude');
     const stub = fetchStub([
       reply('ok', { prompt_tokens: 1_000, completion_tokens: 1_000 }),
       reply('ok aussi', { prompt_tokens: 1_000, completion_tokens: 1_000 }),
     ]);
-    const first = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: vibe.runId, at }));
-    const second = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: claude.runId, at }));
+    const first = await paidContractCall(zaiModel({ fetchImpl: stub.fetchImpl, runId: vibe.runId, at }));
+    const second = await paidContractCall(zaiModel({ fetchImpl: stub.fetchImpl, runId: claude.runId, at }));
     expect(first.usage.cost_cents).toBe(1);
     expect(second.usage.cost_cents).toBe(1);
     // Sans outil allowlisté, le corps de l’appel part sans tools.
     expect(stub.seen[0].body.tools).toBeUndefined();
     for (const pid of ['vibe', 'claude']) {
-      expect(await quotaOf(db, 'paid:participant:' + pid + ':day:2032-04-04')).toBe(1);
-      expect(await quotaOf(db, 'paid:participant:' + pid + ':day:2032-04-04:tokens')).toBe(2_000);
-      expect(await quotaOf(db, 'paid:participant:' + pid + ':day:2032-04-04:requests')).toBe(1);
+      expect(await quotaOf(db, 'paid:participant:' + pid + ':day:2032-04-12')).toBe(1);
+      expect(await quotaOf(db, 'paid:participant:' + pid + ':day:2032-04-12:tokens')).toBe(2_000);
+      expect(await quotaOf(db, 'paid:participant:' + pid + ':day:2032-04-12:requests')).toBe(1);
     }
     expect(await quotaOf(db, 'paid:participant:vibe:cycle:' + vibe.cycleId)).toBe(1);
     expect(await quotaOf(db, 'paid:participant:claude:cycle:' + claude.cycleId)).toBe(1);
   });
 });
 
-describe('CC-7 L2 — adaptateur Z.ai', () => {
+describe('CC-7 L2 — adaptateur Z.ai : spécificités', () => {
   it('références refusées à la construction : hors registre Z.ai, autre fournisseur, maxOutputTokens', () => {
     expect(() => parseZaiRef('zai:glm-4.7-flash')).toThrow(/ZAI_MODEL_UNSUPPORTED/);
     expect(() => parseZaiRef('xai:grok-4.7')).toThrow(/ZAI_MODEL_UNSUPPORTED/);
@@ -139,138 +156,11 @@ describe('CC-7 L2 — adaptateur Z.ai', () => {
     expect(() => createZaiModel({ ...base, ref: 'zai:glm-5.3', maxOutputTokens: 0 })).toThrow(/maxOutputTokens/);
   });
 
-  it('enveloppe 0 : PAID_ENVELOPE_NOT_FUNDED avant tout appel, aucun quota touché', async () => {
-    const at = new Date('2032-04-01T10:00:00Z');
-    const run = await freshRun(db, 'l2z', T + 100);
-    const stub = fetchStub([reply('jamais', { prompt_tokens: 1, completion_tokens: 1 })]);
-    const error = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at,
-      envelope: { dayCents: 0, cycleCents: 0, dayTokens: 0, dayRequests: 0 } })).catch(e => e);
-    expect(error).toBeInstanceOf(ModelCallError);
-    expect((error as ModelCallError).message).toMatch(/PAID_ENVELOPE_NOT_FUNDED/);
-    expect((error as ModelCallError).usage).toBeNull();
-    expect(stub.seen.length).toBe(0);
-    expect(await stepRow(db, run.runId, 0)).toBeNull();
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-01')).toBe(0);
-    expect(await quotaOf(db, 'paid:participant:vibe:cycle:' + run.cycleId)).toBe(0);
-  });
-
-  it('secret LLM_KEY_ZAI absent : EXECUTOR_UNAVAILABLE avant toute réservation, aucun quota touché', async () => {
-    const at = new Date('2032-04-02T10:00:00Z');
-    const run = await freshRun(db, 'l2z', T + 150);
-    const stub = fetchStub([reply('jamais', { prompt_tokens: 1, completion_tokens: 1 })]);
-    const error = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at, env: {} })).catch(e => e);
-    expect(error).toBeInstanceOf(ModelCallError);
-    expect((error as ModelCallError).message).toMatch(/EXECUTOR_UNAVAILABLE/);
-    expect((error as ModelCallError).usage).toBeNull();
-    expect(stub.seen.length).toBe(0);
-    expect(await stepRow(db, run.runId, 0)).toBeNull();
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-02')).toBe(0);
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-02:requests')).toBe(0);
-  });
-
-  it('parcours nominal : réservation au pire cas, règlement au réel, remboursement, requêtes, corps de l’appel', async () => {
-    const at = new Date('2032-04-03T10:00:00Z');
-    const run = await freshRun(db, 'l2z', T + 200);
-    const stub = fetchStub([reply('lu', { prompt_tokens: 1_000, completion_tokens: 1_000 })]);
-    const result = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at }), ['store_context']);
-    expect(stub.seen.length).toBe(1);
-    expect(stub.seen[0].url).toBe(ZAI_CHAT_COMPLETIONS_URL);
-    expect(stub.seen[0].headers.get('Authorization')).toBe('Bearer zai-test-key-CANARY-never-store');
-    const body = stub.seen[0].body;
-    expect(body.model).toBe('glm-5.3');
-    expect(body.max_tokens).toBe(4_096);
-    expect(body.thinking).toEqual({ type: 'disabled' });
-    const messages = body.messages as Array<{ role: string; content: string }>;
-    expect(messages[0]).toEqual({ role: 'system', content: 'S' });
-    expect(messages[1]).toEqual({ role: 'user', content: 'go' });
-    expect(body.tools).toEqual([{ type: 'function',
-      function: { name: 'store_context', description: 'Lit le contexte du cycle.', parameters: { type: 'object' } } }]);
-    // Pire cas : borne d’entrée (octets + forfait par message) + 4096 de sortie au tarif relevé
-    // → 2 cents réservés ; réel : 1 000 + 1 000 jetons glm-5.3 → 1 cent ; trop-versé rendu.
-    expect(result.usage.cost_cents).toBe(1);
-    expect(await stepRow(db, run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 1, settled: 1 });
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-03')).toBe(1);
-    expect(await quotaOf(db, 'paid:participant:vibe:cycle:' + run.cycleId)).toBe(1);
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-03:tokens')).toBe(2_000);
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-03:requests')).toBe(1);
-  });
-
-  it('rejeu idempotent : une étape déjà réservée (non réglée) ne réserve jamais deux fois', async () => {
-    const at = new Date('2032-04-05T10:00:00Z');
-    const run = await freshRun(db, 'l2z', T + 400);
-    await db.prepare('INSERT INTO agent_paid_steps (run_id, n, reserved_cents, actual_cents, settled, updated_at) VALUES (?1, 0, 100, 0, 0, 1)')
-      .bind(run.runId).run();
-    const stub = fetchStub([reply('reprise', { prompt_tokens: 1_000, completion_tokens: 1_000 })]);
-    const result = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at }));
-    expect(stub.seen.length).toBe(1);
-    expect(result.usage.cost_cents).toBe(1);
-    expect(await stepRow(db, run.runId, 0)).toEqual({ reserved_cents: 100, actual_cents: 1, settled: 1 });
-    // Aucune nouvelle réservation : les registres du participant restent absents.
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-05')).toBe(0);
-    expect(await quotaOf(db, 'paid:participant:vibe:cycle:' + run.cycleId)).toBe(0);
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-05:requests')).toBe(0);
-  });
-
-  it('PAID_STEP_ALREADY_SETTLED : une étape déjà réglée rejouée est refusée fail-closed, sans appel', async () => {
-    const at = new Date('2032-04-06T10:00:00Z');
-    const run = await freshRun(db, 'l2z', T + 500);
-    await db.prepare('INSERT INTO agent_paid_steps (run_id, n, reserved_cents, actual_cents, settled, updated_at) VALUES (?1, 0, 2, 1, 1, 1)')
-      .bind(run.runId).run();
-    const stub = fetchStub([]);
-    const error = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at })).catch(e => e);
-    expect((error as ModelCallError).message).toMatch(/PAID_STEP_ALREADY_SETTLED/);
-    expect((error as ModelCallError).usage).toBeNull();
-    expect(stub.seen.length).toBe(0);
-  });
-
-  it('erreur du fournisseur : réserve laissée au pire cas, usage au pire cas, rejeu refusé', async () => {
-    const at = new Date('2032-04-07T10:00:00Z');
-    const run = await freshRun(db, 'l2z', T + 600);
-    const stub = fetchStub([new Error('boom')]);
-    const error = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at })).catch(e => e) as ModelCallError;
-    expect(error).toBeInstanceOf(ModelCallError);
-    expect(error.message).toMatch(/zai_error/);
-    expect(error.usage!.tokens).toBeGreaterThan(0);
-    expect(error.usage!.cost_cents).toBe(2);
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-07')).toBe(2);
-    expect(await quotaOf(db, 'paid:participant:vibe:cycle:' + run.cycleId)).toBe(2);
-    // Jetons réservés au pire cas (borne d’entrée + sortie maximale), aucun remboursement.
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-07:tokens')).toBeGreaterThan(4_000);
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-07:requests')).toBe(1);
-    expect(await stepRow(db, run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 2, settled: 1 });
-    const replay = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at })).catch(e => e);
-    expect((replay as ModelCallError).message).toMatch(/PAID_STEP_ALREADY_SETTLED/);
-    expect(stub.seen.length).toBe(1);
-  });
-
-  it('jamais de découvert : un usage forgé énorme est plafonné à la réservation', async () => {
-    const at = new Date('2032-04-08T10:00:00Z');
-    const run = await freshRun(db, 'l2z', T + 700);
-    const stub = fetchStub([reply('gouffre', { prompt_tokens: 500_000_000, completion_tokens: 500_000_000 })]);
-    const result = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at }));
-    expect(result.usage.cost_cents).toBe(2);
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-08')).toBe(2);
-    expect(await quotaOf(db, 'paid:participant:vibe:cycle:' + run.cycleId)).toBe(2);
-    expect(await stepRow(db, run.runId, 0)).toEqual({ reserved_cents: 2, actual_cents: 2, settled: 1 });
-  });
-
-  it('PAID_RUN_BUDGET_EXCEEDED : refus préemptif avant toute réservation si le pire cas dépasse le plafond de l’exécution', async () => {
-    const at = new Date('2032-04-09T10:00:00Z');
-    const run = await freshRun(db, 'l2z', T + 800, 1);
-    const stub = fetchStub([]);
-    const error = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at })).catch(e => e);
-    expect((error as ModelCallError).message).toMatch(/PAID_RUN_BUDGET_EXCEEDED/);
-    expect((error as ModelCallError).usage).toBeNull();
-    expect(stub.seen.length).toBe(0);
-    expect(await stepRow(db, run.runId, 0)).toBeNull();
-    expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-09')).toBe(0);
-  });
-
   it('PAID_TOKEN_BUDGET_EXCEEDED : plafond de jetons du jour atteint pour ce participant, rien d’écrit', async () => {
     const at = new Date('2032-04-10T10:00:00Z');
     const run = await freshRun(db, 'l2z', T + 900);
     const stub = fetchStub([]);
-    const error = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at,
+    const error = await paidContractCall(zaiModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at,
       envelope: { dayCents: 200, cycleCents: 1_000, dayTokens: 100, dayRequests: 0 } })).catch(e => e);
     expect((error as ModelCallError).message).toMatch(/PAID_TOKEN_BUDGET_EXCEEDED/);
     expect((error as ModelCallError).usage).toBeNull();
@@ -286,10 +176,10 @@ describe('CC-7 L2 — adaptateur Z.ai', () => {
     const second = await freshRun(db, 'l2z', T + 1_000);
     const capped = { dayCents: 200, cycleCents: 1_000, dayTokens: 0, dayRequests: 1 };
     const stub = fetchStub([reply('premier', { prompt_tokens: 1_000, completion_tokens: 1_000 })]);
-    const ok = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: first.runId, at, envelope: capped }));
+    const ok = await paidContractCall(zaiModel({ fetchImpl: stub.fetchImpl, runId: first.runId, at, envelope: capped }));
     expect(ok.usage.cost_cents).toBe(1);
     expect(await quotaOf(db, 'paid:participant:vibe:day:2032-04-11:requests')).toBe(1);
-    const error = await call(zaiModel({ fetchImpl: stub.fetchImpl, runId: second.runId, at, envelope: capped })).catch(e => e);
+    const error = await paidContractCall(zaiModel({ fetchImpl: stub.fetchImpl, runId: second.runId, at, envelope: capped })).catch(e => e);
     expect((error as ModelCallError).message).toMatch(/PAID_REQUEST_BUDGET_EXCEEDED/);
     expect(stub.seen.length).toBe(1);
     expect(await stepRow(db, second.runId, 0)).toBeNull();
@@ -326,23 +216,3 @@ describe('CC-7 L2 — plafonds de jetons par type de tâche', () => {
   });
 });
 
-describe('CC-7 L2 — câblage engineFor', () => {
-  it('zai: sans binding AI part sur l’adaptateur Z.ai, pas sur le modèle simulé', async () => {
-    // Contraste : un payant workers-ai sans binding AI retombe sur le simulé (garde 7c-1).
-    const noAi = engineFor({ AGENT_RUN_PAID_MODEL: 'workers-ai:@cf/zai-org/glm-5.3' }, db)('r');
-    expect((await noAi.model.complete({ messages: [], tools: [], task_kind: 'answer' })).output.text).toContain('simulée');
-    // zai: sans secret, enveloppe financée : refus typé de l’adaptateur, preuve du dispatch.
-    const zai = engineFor({ AGENT_RUN_PAID_MODEL: 'zai:glm-5.3',
-      AGENT_RUN_PAID_PARTICIPANT_DAY_CENTS: '200', AGENT_RUN_PAID_PARTICIPANT_CYCLE_CENTS: '1000' }, db)('r');
-    const error = await zai.model.complete({ messages: [{ role: 'user', content: 'q' }], tools: [], task_kind: 'answer' }).catch(e => e);
-    expect((error as ModelCallError).message).toMatch(/EXECUTOR_UNAVAILABLE/);
-    // Sans variables d’enveloppe : fail-closed avant tout appel.
-    const noEnvelope = engineFor({ AGENT_RUN_PAID_MODEL: 'zai:glm-5.3' }, db)('r');
-    const refused = await noEnvelope.model.complete({ messages: [{ role: 'user', content: 'q' }], tools: [], task_kind: 'answer' }).catch(e => e);
-    expect((refused as ModelCallError).message).toMatch(/PAID_ENVELOPE_NOT_FUNDED/);
-    // Référence zai: hors registre : refus à la construction.
-    expect(() => engineFor({ AGENT_RUN_PAID_MODEL: 'zai:glm-4.7-flash',
-      AGENT_RUN_PAID_PARTICIPANT_DAY_CENTS: '200', AGENT_RUN_PAID_PARTICIPANT_CYCLE_CENTS: '1000' }, db)('r'))
-      .toThrow(/ZAI_MODEL_UNSUPPORTED/);
-  });
-});
