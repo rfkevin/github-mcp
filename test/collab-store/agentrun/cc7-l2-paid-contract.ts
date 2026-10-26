@@ -5,12 +5,16 @@ import { fetchStub, freshRun, quotaOf, reply, stepRow } from './cc7-l2-paid-harn
 
 /**
  * CC-7 L2 — contrat commun des adaptateurs payants du canal API (Z.ai PR 2.1,
- * xAI PR 2.2) : une seule implémentation des invariants (gardes avant tout
- * appel, réservation au pire cas, règlement au réel, rejeu fail-closed, jamais
- * de découvert, plafond de l’exécution, dispatch engineFor), conduite par une
- * fixture par fournisseur. La base D1 vient de la suite appelante ; chaque
- * adaptateur occupe son propre mois de dates futures (jours 01 à 08) pour
- * isoler les registres du participant, ses tests propres au-delà.
+ * xAI PR 2.2, Anthropic PR 2.3) : une seule implémentation des invariants
+ * (gardes avant tout appel, réservation au pire cas, règlement au réel, rejeu
+ * fail-closed, jamais de découvert, plafond de l’exécution, dispatch
+ * engineFor), conduite par une fixture par fournisseur. La base D1 vient de
+ * la suite appelante ; chaque adaptateur occupe son propre mois de dates
+ * futures (jours 01 à 08) pour isoler les registres du participant, ses tests
+ * propres au-delà. La réponse du fournisseur, les en-têtes et la forme du
+ * corps restent au protocole : makeResponse / expectHeaders /
+ * expectRequestBody, avec les formes compatibles OpenAI par défaut (suites
+ * Z.ai et xAI inchangées).
  */
 
 /** Options d’un appel de test du contrat : fetch injecté, exécution, horloge ; enveloppe, secret et référence surchargables. */
@@ -47,6 +51,12 @@ export interface PaidAdapterFixture {
   toolDescription: string;
   /** Vérifications de corps propres au fournisseur (ex. thinking pour Z.ai). */
   expectBody?: (body: Record<string, unknown>) => void;
+  /** Réponse du fournisseur pour ce protocole (PR 2.3) ; défaut : forme compatible OpenAI. */
+  makeResponse?: (text: string, usage: { input: number; output: number }) => unknown;
+  /** En-têtes du protocole (PR 2.3) ; défaut : Authorization Bearer. */
+  expectHeaders?: (headers: Headers) => void;
+  /** Forme du corps pour ce protocole (PR 2.3) ; défaut : messages système + outils au format OpenAI. */
+  expectRequestBody?: (body: Record<string, unknown>) => void;
   /** Modèle de test de l’adaptateur (enveloppe financée, secret factice, fetch injecté, horloge fixée). */
   model: (call: PaidContractCall) => ModelClient;
 }
@@ -61,11 +71,26 @@ export function paidAdapterContract(db: D1Database, f: PaidAdapterFixture): void
   const day = (n: number) => f.month + '-' + String(n).padStart(2, '0');
   const at = (n: number) => new Date(day(n) + 'T10:00:00Z');
   const caught = (promise: Promise<unknown>) => promise.catch(e => e);
+  // Réponse du fournisseur : la forme reste au protocole, défaut compatible OpenAI (PR 2.3).
+  const make = f.makeResponse ?? ((text: string, usage: { input: number; output: number }) =>
+    reply(text, { prompt_tokens: usage.input, completion_tokens: usage.output }));
+  // En-têtes du protocole : défaut Bearer (PR 2.3 ; ex. x-api-key + anthropic-version pour Anthropic).
+  const checkHeaders = f.expectHeaders ?? ((headers: Headers) => {
+    expect(headers.get('Authorization')).toBe('Bearer ' + f.testSecret);
+  });
+  // Forme du corps : défaut messages système + outils au format OpenAI (PR 2.3).
+  const checkBody = f.expectRequestBody ?? ((body: Record<string, unknown>) => {
+    const messages = body.messages as Array<{ role: string; content: string }>;
+    expect(messages[0]).toEqual({ role: 'system', content: 'S' });
+    expect(messages[1]).toEqual({ role: 'user', content: 'ping' });
+    expect(body.tools).toEqual([{ type: 'function',
+      function: { name: 'store_context', description: f.toolDescription, parameters: { type: 'object' } } }]);
+  });
 
   describe('CC-7 L2 — contrat commun des adaptateurs payants (' + f.ref + ')', () => {
     it('enveloppe 0 : PAID_ENVELOPE_NOT_FUNDED avant tout appel, aucun quota touché', async () => {
       const run = await freshRun(db, f.prefix, 1_976_000_000);
-      const stub = fetchStub([reply('jamais', { prompt_tokens: 1, completion_tokens: 1 })]);
+      const stub = fetchStub([make('jamais', { input: 1, output: 1 })]);
       const error = await caught(paidContractCall(f.model({ fetchImpl: stub.fetchImpl, runId: run.runId, at: at(1),
         envelope: { dayCents: 0, cycleCents: 0, dayTokens: 0, dayRequests: 0 } })));
       expect(error).toBeInstanceOf(ModelCallError);
@@ -79,7 +104,7 @@ export function paidAdapterContract(db: D1Database, f: PaidAdapterFixture): void
 
     it('secret du fournisseur absent : EXECUTOR_UNAVAILABLE avant toute réservation, aucun quota touché', async () => {
       const run = await freshRun(db, f.prefix, 1_976_000_050);
-      const stub = fetchStub([reply('jamais', { prompt_tokens: 1, completion_tokens: 1 })]);
+      const stub = fetchStub([make('jamais', { input: 1, output: 1 })]);
       const error = await caught(paidContractCall(f.model({ fetchImpl: stub.fetchImpl, runId: run.runId, at: at(2), env: {} })));
       expect(error).toBeInstanceOf(ModelCallError);
       expect((error as ModelCallError).message).toMatch(/EXECUTOR_UNAVAILABLE/);
@@ -92,20 +117,16 @@ export function paidAdapterContract(db: D1Database, f: PaidAdapterFixture): void
 
     it('parcours nominal : endpoint et secret du fournisseur, réservation au pire cas, règlement au réel', async () => {
       const run = await freshRun(db, f.prefix, 1_976_000_100);
-      const stub = fetchStub([reply('lu', { prompt_tokens: 1_000, completion_tokens: 1_000 })]);
+      const stub = fetchStub([make('lu', { input: 1_000, output: 1_000 })]);
       const result = await paidContractCall(f.model({ fetchImpl: stub.fetchImpl, runId: run.runId, at: at(3) }), ['store_context']);
       expect(stub.seen.length).toBe(1);
       expect(stub.seen[0].url).toBe(f.url);
-      expect(stub.seen[0].headers.get('Authorization')).toBe('Bearer ' + f.testSecret);
+      checkHeaders(stub.seen[0].headers);
       const body = stub.seen[0].body;
       expect(body.model).toBe(f.ref.slice(f.ref.indexOf(':') + 1));
       expect(body.max_tokens).toBe(4_096);
       f.expectBody?.(body);
-      const messages = body.messages as Array<{ role: string; content: string }>;
-      expect(messages[0]).toEqual({ role: 'system', content: 'S' });
-      expect(messages[1]).toEqual({ role: 'user', content: 'ping' });
-      expect(body.tools).toEqual([{ type: 'function',
-        function: { name: 'store_context', description: f.toolDescription, parameters: { type: 'object' } } }]);
+      checkBody(body);
       // Pire cas réservé au tarif relevé, règlement au réel : trop-versé rendu.
       expect(result.usage.cost_cents).toBe(f.actualCents);
       expect(await stepRow(db, run.runId, 0)).toEqual({ reserved_cents: f.worstCents, actual_cents: f.actualCents, settled: 1 });
@@ -119,7 +140,7 @@ export function paidAdapterContract(db: D1Database, f: PaidAdapterFixture): void
       const run = await freshRun(db, f.prefix, 1_976_000_150);
       await db.prepare('INSERT INTO agent_paid_steps (run_id, n, reserved_cents, actual_cents, settled, updated_at) VALUES (?1, 0, 100, 0, 0, 1)')
         .bind(run.runId).run();
-      const stub = fetchStub([reply('reprise', { prompt_tokens: 1_000, completion_tokens: 1_000 })]);
+      const stub = fetchStub([make('reprise', { input: 1_000, output: 1_000 })]);
       const result = await paidContractCall(f.model({ fetchImpl: stub.fetchImpl, runId: run.runId, at: at(4) }));
       expect(stub.seen.length).toBe(1);
       expect(result.usage.cost_cents).toBe(f.actualCents);
@@ -162,7 +183,7 @@ export function paidAdapterContract(db: D1Database, f: PaidAdapterFixture): void
 
     it('jamais de découvert : un usage forgé énorme est plafonné à la réservation', async () => {
       const run = await freshRun(db, f.prefix, 1_976_000_300);
-      const stub = fetchStub([reply('gouffre', { prompt_tokens: 500_000_000, completion_tokens: 500_000_000 })]);
+      const stub = fetchStub([make('gouffre', { input: 500_000_000, output: 500_000_000 })]);
       const result = await paidContractCall(f.model({ fetchImpl: stub.fetchImpl, runId: run.runId, at: at(7) }));
       expect(result.usage.cost_cents).toBe(f.worstCents);
       expect(await quotaOf(db, 'paid:participant:vibe:day:' + day(7))).toBe(f.worstCents);
