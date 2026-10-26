@@ -171,7 +171,7 @@ describe('CC-7 L5b — store_verdict contrôlé serveur', () => {
     expect(await refusal(host.execute(verdictCall({ state: 'PASS' }), { run_id: reviewRun, effect_key: '5'.repeat(64) }))).toBe('VERDICT_KIND_FORBIDDEN');
   });
 
-  it('rôles : verdict de relecture refusé à l'auteur et au testeur de la tâche', async () => {
+  it('rôles : verdict de relecture refusé à l’auteur et au testeur de la tâche', async () => {
     const q = await seedTask('roles');
     const host = createReadToolHost({ db, repository: REPO, github: fakeReads(), verdicts: true });
     const ownerRun = await newRun(q.cycle, q.owner, 'review');
@@ -180,7 +180,7 @@ describe('CC-7 L5b — store_verdict contrôlé serveur', () => {
     expect(await refusal(host.execute(verdictCall(), { run_id: testerRun, effect_key: '7'.repeat(64) }))).toBe('VERDICT_ROLE_FORBIDDEN');
   });
 
-  it('participant inactif : UNREGISTERED_PARTICIPANT, rien d'écrit', async () => {
+  it('participant inactif : UNREGISTERED_PARTICIPANT, rien n’est écrit', async () => {
     const q = await seedTask('inactive');
     await db.prepare("UPDATE participants SET status = 'inactive' WHERE participant_id = ?1").bind(q.reviewer).run();
     const runId = await newRun(q.cycle, q.reviewer, 'review');
@@ -195,7 +195,7 @@ describe('CC-7 L5b — store_verdict contrôlé serveur', () => {
     expect(await refusal(host.execute(verdictCall({ task: 'l6' }), { run_id: runId, effect_key: '9'.repeat(64) }))).toBe('TASK_UNKNOWN');
   });
 
-  it('identités confondues : SELF_REVIEW quand l'auteur et le relecteur partagent une famille logique', async () => {
+  it('identités confondues : SELF_REVIEW quand l’auteur et le relecteur partagent une famille logique', async () => {
     const q = await seedTask('self');
     await db.prepare('INSERT INTO participant_identity_families (participant_id, family_id, event_seq, updated_at) VALUES (?1, ?2, NULL, ?3), (?4, ?2, NULL, ?3)')
       .bind(q.owner, 'l5b-fam-1', T, q.reviewer).run();
