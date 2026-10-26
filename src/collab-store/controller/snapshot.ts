@@ -14,7 +14,19 @@ import { STATE_IMPORT_KEY_PREFIX } from '../export/state-export';
 import { CollabStoreError } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
 import { taskEvidence, taskProposal, parseDependencies, type EvidenceEvent, type ProposalEvent } from './facts';
-import type { ControllerSnapshot, CorrectionFact, QuestionFact, TaskFacts } from './rules';
+import type { ControllerSnapshot, CorrectionFact, PhaseOutputGap, QuestionFact, TaskFacts } from './rules';
+import type { PhaseOutputStatus } from '../phases/engine';
+
+/** CC-7 L6b : l'appelant rend l'état des sorties attendues (booléen seul accepté, compatibilité). */
+export type PhaseOutputsReader = (cycleId: string) => Promise<boolean | { satisfied: boolean; outputs?: PhaseOutputStatus[] }>;
+
+/** Sorties non satisfaites et titulaires manquants (identités ramenées à la famille logique par l'appelant). */
+export function phaseOutputGaps(outputs: readonly PhaseOutputStatus[]): PhaseOutputGap[] {
+  return outputs.filter(output => !output.satisfied).map(output => ({ role: output.role, kind: output.kind,
+    task_id: output.task_id, states: output.states, entry_seq: output.entry_seq,
+    missing: output.holders.filter(holder => !output.producers.includes(holder.who)) }))
+    .filter(gap => gap.missing.length > 0);
+}
 
 interface TaskRow { task_id: string; status: string; revision: number; owner_pid: string; reviewer_pid: string; tester_pid: string }
 interface ClarifyRow { seq: number; type: string; participant_id: string; payload_json: string; expected_rev: number }
@@ -97,7 +109,7 @@ function dependenciesFromState(content: string | null): Map<string, string[]> {
  * est fourni par l'appelant (moteur de phase existant).
  */
 export async function readControllerSnapshot(db: D1Database, cycleId: string,
-  outputsSatisfied: (cycleId: string) => Promise<boolean>): Promise<ControllerSnapshot> {
+  outputsSatisfied: PhaseOutputsReader): Promise<ControllerSnapshot> {
   await ensureSchema(db);
   const importKey = STATE_IMPORT_KEY_PREFIX + cycleId + ':';
   const importSeq = "COALESCE((SELECT MAX(seq) FROM events WHERE cycle_id = ?1 AND type = 'owner.decision'"
@@ -145,13 +157,17 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
       proposal: taskProposal(row.task_id, roles.owner, proposals) };
   });
   const autoAdvance = (def.results as Array<{ auto_advance: string }>)[0]?.auto_advance ?? 'none';
+  const phaseOutputs = autoAdvance === 'none' ? false : await outputsSatisfied(cycleId);
+  const satisfied = typeof phaseOutputs === 'boolean' ? phaseOutputs : phaseOutputs.satisfied;
+  const gaps = typeof phaseOutputs === 'boolean' ? [] : phaseOutputGaps(phaseOutputs.outputs ?? []);
   return {
     cycle_id: cycleId,
     revision: cycleRow.revision,
     phase: cycleRow.phase,
     halted: (halt.results as Array<{ value: string }>)[0]?.value === '1',
     auto_advance: autoAdvance,
-    outputs_satisfied: autoAdvance === 'none' ? false : await outputsSatisfied(cycleId),
+    outputs_satisfied: satisfied,
+    ...(gaps.length ? { phase_outputs: gaps } : {}),
     tasks: taskFacts,
     questions: openQuestions([...(clarify.results as ClarifyRow[])].reverse(), tasks.results as TaskRow[], logical),
   };

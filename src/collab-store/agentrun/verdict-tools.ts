@@ -10,7 +10,9 @@
  * ④ identité logique de l'émetteur = vérificateur attendu du type, et distincte
  *    de celle de l'auteur (D12, SELF_REVIEW, familles #126) ;
  * ⑤ couple exact relu sur GitHub : PR connue, ouverte, head et base identiques ;
- * ⑥ CI du head entièrement verte (listCheckRuns) ;
+ * ⑥ CI du head entièrement verte (listCheckRuns) ; CC-7 L6b : avec `requiredChecks`
+ *    (production : les 4 contrôles du dépôt, AGENT_RUN_REQUIRED_CHECKS), chaque contrôle
+ *    nommé doit avoir réussi et aucun ne doit être en cours ;
  * ⑦ preuve de lecture `github_diff` au head dans agent_run_reads.
  *
  * L'événement evidence.add est écrit par le SERVEUR (appendEvent, rôle reviewer
@@ -82,6 +84,36 @@ export interface VerdictToolHostOptions {
   db: D1Database;
   repository: string;
   github: GitHubReads;
+  /** CC-7 L6b : contrôles CI exigés par nom (S10 « CI 4/4 ») ; vide ou absent = tous les contrôles présents verts. */
+  requiredChecks?: readonly string[];
+}
+
+/** CC-7 L6b : les 4 contrôles exigés par D12 sur rfkevin/github-mcp (S10, « CI 4/4 »). */
+export const VERDICT_REQUIRED_CHECKS: readonly string[] = Object.freeze([
+  'ci', 'Workers Builds: github-mcp', 'GitGuardian Security Checks', 'SonarCloud Code Analysis',
+]);
+
+/**
+ * CC-7 L6b : contrôles exigés lus dans AGENT_RUN_REQUIRED_CHECKS (noms séparés par des
+ * virgules, 1 à 10, 100 caractères au plus chacun) ; absent ou invalide = VERDICT_REQUIRED_CHECKS.
+ */
+export function parseRequiredChecks(raw: string | undefined): readonly string[] {
+  if (raw === undefined) return VERDICT_REQUIRED_CHECKS;
+  const names = raw.split(',').map(name => name.trim()).filter(Boolean);
+  if (names.length < 1 || names.length > 10 || names.some(name => name.length > 100)) return VERDICT_REQUIRED_CHECKS;
+  return Object.freeze([...new Set(names)]);
+}
+
+/** ⑥ : CI verte au head. Avec des noms exigés : chacun a réussi au moins une fois et aucun n'est en cours. */
+export function ciGreen(checks: ReadonlyArray<Record<string, unknown>>, required: readonly string[]): boolean {
+  if (required.length === 0) {
+    return checks.length > 0 && checks.every(check => check.status === 'completed' && check.conclusion === 'success');
+  }
+  return required.every(name => {
+    const runs = checks.filter(check => check.name === name);
+    return runs.some(check => check.status === 'completed' && check.conclusion === 'success')
+      && runs.every(check => check.status === 'completed');
+  });
 }
 
 export interface VerdictTools {
@@ -153,7 +185,7 @@ export function createVerdictTools(options: VerdictToolHostOptions): VerdictTool
     }
     // ⑥ CI du head entièrement verte : au moins un contrôle, tous terminés avec succès.
     const checks = await options.github.listCheckRuns(options.repository, args.head) as Array<Record<string, unknown>>;
-    if (checks.length === 0 || checks.some(check => check.status !== 'completed' || check.conclusion !== 'success')) {
+    if (!ciGreen(checks, options.requiredChecks ?? [])) {
       throw new ToolRefused('VERDICT_CI_NOT_GREEN');
     }
     // ⑦ Preuve de lecture : github_diff au head par CETTE exécution (journal S10).

@@ -87,7 +87,9 @@ export function normalizePhaseDefinitions(cycleId: string, source: string): Phas
       // CC-4 A0 (point 5) : conserver task_id optionnel — sans cette ligne il
       // serait silencieusement perdu à l'install et la sortie attendue ne
       // serait plus liée à sa tâche.
-      expected_outputs: outputs.map(out => ({ role: String(out?.role ?? ''), kind: String(out?.kind ?? ''), count: Number(out?.count), ...(typeof out?.task_id === 'string' ? { task_id: out.task_id } : {}) })),
+      expected_outputs: outputs.map(out => ({ role: String(out?.role ?? ''), kind: String(out?.kind ?? ''), count: Number(out?.count), ...(typeof out?.task_id === 'string' ? { task_id: out.task_id } : {}),
+        // CC-7 L6b : states conservé tel quel (validé par le contrat C1).
+        ...(out?.states !== undefined ? { states: out.states } : {}) })),
       auto_advance: autoAdvance,
     });
   });

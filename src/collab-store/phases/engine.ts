@@ -10,6 +10,8 @@ import { CYCLE_OPEN_GUARD } from '../owner/close';
 export interface PhaseFacts {
   definition: PhaseDefinition;
   outputsSatisfied: boolean;
+  /** CC-7 L6b : détail par sortie attendue (réveils du contrôleur). */
+  outputs: PhaseOutputStatus[];
 }
 
 async function definition(db: D1Database, cycleId: string, phase: string): Promise<PhaseDefinition> {
@@ -34,26 +36,54 @@ async function definition(db: D1Database, cycleId: string, phase: string): Promi
 // garde « une sortie par ronde ») sans importer le moteur ni créer de cycle
 // d'imports.
 
-async function outputsSatisfied(db: D1Database, def: PhaseDefinition): Promise<boolean> {
-  // CR-F01: only count contributions from the *current* visit to this phase.
+/** CC-7 L6b : état d'une sortie attendue de la phase courante (titulaires du rôle, producteurs, manquants). */
+export interface PhaseOutputStatus {
+  role: string;
+  kind: string;
+  count: number;
+  task_id: string | null;
+  states: string[] | null;
+  /** Identités logiques qui ont produit la sortie dans la visite courante (dernier état admis si `states`). */
+  producers: string[];
+  /** Identités logiques qui tiennent le rôle (sur la tâche nommée, sinon sur une tâche du cycle), avec une tâche où elles le tiennent. */
+  holders: Array<{ who: string; task_id: string }>;
+  satisfied: boolean;
+  /** seq de l'entrée dans la phase (0 = première visite) : borne de la visite courante. */
+  entry_seq: number;
+}
+
+const ACTIVE_TASK_STATUSES = new Set(['accepted', 'in_progress', 'review', 'proposed']);
+
+/**
+ * Sorties attendues de la visite courante (CR-F01 : seules les contributions après
+ * l'entrée dans la phase comptent). #126 : un id historique tient le rôle de toute
+ * sa famille logique, et la famille ne compte qu'une fois.
+ * CC-7 L6b : `states` facultatif — seule compte l'identité dont la DERNIÈRE
+ * contribution de la visite a un `state` de la liste (un vote OBJECTION ne compte
+ * pas, et un AGREE suivi d'une OBJECTION non plus).
+ */
+export async function phaseOutputStatus(db: D1Database, def: PhaseDefinition): Promise<PhaseOutputStatus[]> {
   const entrySeq = await phaseEntrySeq(db, def.cycle_id, def.phase);
+  const eventIdentity = "COALESCE((SELECT family_id FROM participant_identity_families ef WHERE ef.participant_id = e.participant_id), e.participant_id)";
+  const ownerIdentity = "COALESCE((SELECT family_id FROM participant_identity_families tf WHERE tf.participant_id = t.owner_pid), t.owner_pid)";
+  const reviewerIdentity = "COALESCE((SELECT family_id FROM participant_identity_families tf WHERE tf.participant_id = t.reviewer_pid), t.reviewer_pid)";
+  const testerIdentity = "COALESCE((SELECT family_id FROM participant_identity_families tf WHERE tf.participant_id = t.tester_pid), t.tester_pid)";
+  const roleChecks = [
+    "((?3 = 'author' OR ?3 = 'owner') AND " + ownerIdentity + ' = ' + eventIdentity + ')',
+    "(?3 = 'reviewer' AND " + reviewerIdentity + ' = ' + eventIdentity + ')',
+    "(?3 = 'tester' AND " + testerIdentity + ' = ' + eventIdentity + ')',
+  ];
+  const { results: taskRows } = await db.prepare([
+    'SELECT t.task_id, t.status,', ownerIdentity, 'AS owner,', reviewerIdentity, 'AS reviewer,', testerIdentity, 'AS tester',
+    'FROM tasks t WHERE t.cycle_id = ?1 ORDER BY t.task_id',
+  ].join(' ')).bind(def.cycle_id).all<{ task_id: string; status: string; owner: string; reviewer: string; tester: string }>();
+  const out: PhaseOutputStatus[] = [];
   for (const expected of def.expected_outputs) {
-    // #126 : un id historique (gpt6/sol) tient le rôle de toute sa famille
-    // logique, mais la famille ne compte qu'une fois dans COUNT(DISTINCT).
-    const eventIdentity = "COALESCE((SELECT family_id FROM participant_identity_families ef WHERE ef.participant_id = e.participant_id), e.participant_id)";
-    const ownerIdentity = "COALESCE((SELECT family_id FROM participant_identity_families tf WHERE tf.participant_id = t.owner_pid), t.owner_pid)";
-    const reviewerIdentity = "COALESCE((SELECT family_id FROM participant_identity_families tf WHERE tf.participant_id = t.reviewer_pid), t.reviewer_pid)";
-    const testerIdentity = "COALESCE((SELECT family_id FROM participant_identity_families tf WHERE tf.participant_id = t.tester_pid), t.tester_pid)";
     const lines = [
-      'SELECT COUNT(DISTINCT ' + eventIdentity + ') AS n',
+      'SELECT ' + eventIdentity + " AS who, CASE WHEN json_valid(e.payload_json) THEN json_extract(e.payload_json, '$.state') END AS state",
       'FROM events e',
       'WHERE e.cycle_id = ?1 AND e.type = ?2',
       'AND e.seq > ?4',
-    ];
-    const roleChecks = [
-      "((?3 = 'author' OR ?3 = 'owner') AND " + ownerIdentity + ' = ' + eventIdentity + ')',
-      "(?3 = 'reviewer' AND " + reviewerIdentity + ' = ' + eventIdentity + ')',
-      "(?3 = 'tester' AND " + testerIdentity + ' = ' + eventIdentity + ')',
     ];
     const params: unknown[] = [def.cycle_id, expected.kind, expected.role, entrySeq];
     if (expected.task_id) {
@@ -69,11 +99,31 @@ async function outputsSatisfied(db: D1Database, def: PhaseDefinition): Promise<b
         'AND EXISTS (SELECT 1 FROM tasks t WHERE t.cycle_id = e.cycle_id AND (' + roleChecks.join(' OR ') + '))',
       );
     }
-    const count = await db.prepare(lines.join(' ')).bind(...params).first<{ n: number }>();
-    if ((count?.n ?? 0) < expected.count) return false;
+    lines.push('ORDER BY e.seq');
+    const { results } = await db.prepare(lines.join(' ')).bind(...params).all<{ who: string; state: unknown }>();
+    const states = expected.states ?? null;
+    const latest = new Map<string, unknown>();
+    for (const row of results) latest.set(row.who, row.state);
+    const producers = [...latest.entries()]
+      .filter(([, state]) => !states || (typeof state === 'string' && states.includes(state)))
+      .map(([who]) => who).sort((a, b) => a.localeCompare(b));
+    const field = expected.role === 'reviewer' ? 'reviewer' : expected.role === 'tester' ? 'tester'
+      : (expected.role === 'author' || expected.role === 'owner') ? 'owner' : null;
+    const holders = new Map<string, string>();
+    if (field) {
+      const scoped = taskRows.filter(row => !expected.task_id || row.task_id === expected.task_id);
+      // Une tâche active d'abord (l'agent y agit), sinon n'importe quelle tâche où l'identité tient le rôle.
+      for (const row of [...scoped.filter(r => ACTIVE_TASK_STATUSES.has(r.status)), ...scoped]) {
+        if (!holders.has(row[field])) holders.set(row[field], row.task_id);
+      }
+    }
+    out.push({ role: expected.role, kind: expected.kind, count: expected.count, task_id: expected.task_id ?? null, states,
+      producers, holders: [...holders.entries()].map(([who, task_id]) => ({ who, task_id })).sort((a, b) => a.who.localeCompare(b.who)),
+      satisfied: producers.length >= expected.count, entry_seq: entrySeq });
   }
-  return true;
+  return out;
 }
+
 
 export async function inspectPhase(db: D1Database, cycleId: string): Promise<PhaseFacts & { revision: number; phase: Phase }> {
   await ensureSchema(db);
@@ -82,7 +132,9 @@ export async function inspectPhase(db: D1Database, cycleId: string): Promise<Pha
   if (!cycle) throw new CollabStoreError('UNKNOWN_CYCLE', 'Cycle inconnu : ' + cycleId);
   assertPhase(cycle.phase);
   const def = await definition(db, cycleId, cycle.phase);
-  return { phase: cycle.phase, revision: cycle.revision, definition: def, outputsSatisfied: await outputsSatisfied(db, def) };
+  const outputs = await phaseOutputStatus(db, def);
+  return { phase: cycle.phase, revision: cycle.revision, definition: def, outputs,
+    outputsSatisfied: outputs.every(output => output.satisfied) };
 }
 
 export async function advanceByPolicy(db: D1Database, input: {

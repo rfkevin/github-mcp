@@ -446,7 +446,8 @@ function phaseSection(secret: string): string {
     + '<p class="note">Installe l’ensemble des phases d’un cycle (remplace l’ensemble précédent), enregistré comme décision owner. '
     + 'Laisser vide : P1–P6 sans condition, <code>auto_advance</code> = <code>none</code> (aucune avance tant qu’une policy n’est pas nommée). '
     + 'Format : liste JSON, par ex. <code>[{"phase":"P1","auto_advance":"cc3-p1"},{"phase":"P2"}]</code> ; champs facultatifs '
-    + '<code>entry_conditions</code>, <code>exit_conditions</code>, <code>expected_outputs</code> ([{role, kind, count}]).</p>'
+    + '<code>entry_conditions</code>, <code>exit_conditions</code>, <code>expected_outputs</code> ([{role, kind, count, task_id?, states?}] ; '
+    + '<code>states</code> : seule compte une identité dont le dernier dépôt a cet état, ex. ["AGREE","AMEND"]).</p>'
     + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="install_phases">'
     + '<label>Cycle <input type="text" name="cycle_id" required pattern="[a-z0-9][a-z0-9_-]{0,63}"></label>'
     + '<label>Définitions (JSON, facultatif) <textarea name="phases"></textarea></label>' + secret
@@ -457,7 +458,8 @@ function phaseSection(secret: string): string {
 function productSection(enabled: boolean, secret: string): string {
   return '<h2 id="product">Nouveau produit</h2>'
     + '<p class="note">Un seul acte owner crée le cycle complet depuis le gabarit versionné CC-PRODUCT-1 : phase P1, définitions P1–P6 '
-    + '(P1→P2 quand toutes les propositions sont scellées, P2→P3 quand chacun a critiqué, P3→P4 à la synthèse ; P4–P6 manuels), '
+    + '(P1→P2 quand toutes les propositions sont scellées, P2→P3 quand chacun a critiqué, P3→P4 à la synthèse, '
+    + 'P4→P5 quand le vote est sans OBJECTION ; P5 attend ta validation sauf si tu coches la case ; P6 manuel), '
     + 'une tâche de proposition par participant et la synthèse, avec une matrice D12 en rotation sur des familles distinctes. '
     + 'Le premier participant coordonne et rédige la synthèse. 3 à 6 participants enregistrés, identifiants séparés par des virgules.'
     + (enabled ? '' : ' <strong>Éteint</strong> : PRODUCT_CREATE_ENABLED n’est pas « true », la création est refusée.') + '</p>'
@@ -466,6 +468,7 @@ function productSection(enabled: boolean, secret: string): string {
     + '<label>Participants (ordre de rotation) <input type="text" name="participants" required maxlength="800" placeholder="claude, grok, vibe"></label>'
     + '<label>Dépôt du produit (owner/repo, facultatif) <input type="text" name="repository" maxlength="200"></label>'
     + '<label>SHA de départ du dépôt (facultatif) <input type="text" name="based_on_sha" maxlength="40" pattern="[0-9a-fA-F]{7,40}"></label>'
+    + '<label><input type="checkbox" name="auto_p5"> P5 sans ma validation quand le vote P4 est sans OBJECTION (Q3)</label>'
     + '<label>Objectif <textarea name="goal" required maxlength="4000"></textarea></label>' + secret
     + '<p><button type="submit">Créer le produit</button></p></form></fieldset>';
 }

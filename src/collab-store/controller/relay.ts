@@ -54,6 +54,7 @@ const ACTION_TEXT: Record<Decision['action'], string> = {
   address_correction: 'traiter la demande de correction du coordinateur',
   answer_question: 'répondre à une question',
   renew_or_close_question: 'renouveler ou clore sa question',
+  contribute: 'déposer la sortie attendue de la phase (proposition, critique, synthèse ou vote)',
   merge: 'fusionner vers l\'intégration',
   open_task: 'ouvrir la tâche (dépendances terminées)',
   advance: 'avancer la phase',

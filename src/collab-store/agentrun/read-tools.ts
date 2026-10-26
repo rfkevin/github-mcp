@@ -123,6 +123,8 @@ export interface ReadToolHostOptions {
   continuity?: boolean;
   /** CC-7 L5b (S10) : store_verdict (verdicts contrôlés serveur) pour les kinds review et test ; absent = aucun verdict. */
   verdicts?: boolean;
+  /** CC-7 L6b : contrôles CI exigés par nom pour store_verdict (absent = tous les contrôles présents verts). */
+  requiredChecks?: readonly string[];
 }
 
 interface RunScope { cycle_id: string; participant_id: string }
@@ -148,7 +150,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     : null;
   // CC-7 L5b (S10) : store_verdict, seulement avec un dépôt ET des lectures GitHub.
   const verdicts = options.verdicts && options.repository !== null && options.github !== null
-    ? createVerdictTools({ db: options.db, repository: options.repository, github: options.github })
+    ? createVerdictTools({ db: options.db, repository: options.repository, github: options.github, requiredChecks: options.requiredChecks })
     : null;
   // CC-7 L3 (incrément 2) : proposition de mémoire, seulement avec écritures store ET continuité, types connus.
   const memoryWrite = (taskKind: string): readonly WriteToolName[] =>
