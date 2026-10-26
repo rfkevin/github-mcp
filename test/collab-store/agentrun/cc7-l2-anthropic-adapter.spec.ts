@@ -125,7 +125,7 @@ describe('CC-7 L2 PR 2.3 — adaptateur Anthropic : protocole Messages', () => {
     const run = await freshRun(db, 'l2a', 1_976_000_450);
     const stub = fetchStub([{ content: [{ type: 'text', text: 'sans usage' }] }]);
     const result = await paidContractCall(anthropicModel({ fetchImpl: stub.fetchImpl, runId: run.runId, at }));
-    expect(result.usage.tokens).toBeGreaterThan(200);
+    expect(result.usage.tokens).toBeGreaterThan(100); // borne octets Messages (79) + sortie (36) = 115, jamais 0.
     expect(result.usage.cost_cents).toBeLessThanOrEqual(5);
   });
 });
