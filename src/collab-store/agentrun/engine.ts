@@ -27,7 +27,8 @@
  * - Plafonds (R5) vérifiés à chaque étape : étapes, jetons, coût, échéance.
  * - Le canal API n'émet aucun verdict D12 LIBRE (L7-6) : outils interdits refusés en
  *   code même si l'hôte les déclare ; toute écriture reste soumise à
- *   `assertNotD12Verdict` SAUF `store_verdict` (L5b, S10), l'unique porte à
+ *   `assertNotD12Verdict` SAUF `store_verdict` (L5b, S10) et `store_contribute`
+ *   (L6b-2, sortie de phase de conception sans PR), seules portes à
  *   verdict du canal API, re-vérifiée serveur (verdict-tools.ts).
  *
  * Écritures hors garde, volontairement (audit) : l'usage d'un appel modèle (toujours
@@ -394,7 +395,9 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // API — le serveur re-vérifie tout dans verdict-tools (rôle, identité, couple exact
     // relu, CI au head, preuve de lecture github_diff, idempotence déterministe). Tout
     // autre appel d'écriture reste soumis au refus D12.
-    if (call.name !== 'store_verdict') {
+    // CC-7 L6b-2 : store_contribute porte un état de conception (AGREE/AMEND/OBJECTION) sans PR ni
+    // head/base, re-vérifié serveur contre la phase courante (contribution-tools) : même exception.
+    if (call.name !== 'store_verdict' && call.name !== 'store_contribute') {
       try {
         assertNotD12Verdict(call.args);
       } catch {

@@ -61,9 +61,10 @@ describe('CC-7 L6b — un produit avance seul de P1 à P5', () => {
   it('chaque phase réveille exactement les titulaires manquants, sans doublon avec les réveils de tâche', async () => {
     const q = await product(false);
     const [a, b, c] = q.pids;
-    // P1 : la règle de tâche (no-submission) réveille déjà chaque auteur ; aucun réveil de phase en double.
-    expect((await q.wakes()).filter(d => d.rule === 'no-submission').map(d => d.actor).sort()).toEqual([a, b, c].sort());
-    expect(await q.contribute()).toEqual([]);
+    // P1 : chaque auteur est réveillé pour PROPOSER (contribute) ; L6b-2 : le réveil « no-submission »
+    // (implémenter) de la même tâche est remplacé, jamais doublé.
+    expect((await q.wakes()).filter(d => d.rule === 'no-submission')).toEqual([]);
+    expect((await q.contribute()).sort()).toEqual([a, b, c].map(pid => [pid, proposalTaskId(pid), 'P1:proposal.submit:author']).sort());
     for (const pid of q.pids) await q.append(pid, 'proposal.submit', 'author', { task: proposalTaskId(pid), content: 'idée ' + pid });
     await q.advance('P2');
 

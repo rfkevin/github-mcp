@@ -42,6 +42,7 @@ export const TASK_KIND_COST_CENTS: Readonly<Record<PlannedTaskKind, number>> = O
   review: 0,
   test: 0,
   implement: 0,
+  design: 0,
 });
 
 /** CC-7 L6b : plafond haut d'une variable owner de coût par exécution (cents US) — l'enveloppe par participant borne en plus. */
@@ -66,7 +67,8 @@ const ASK_SUBJECT_RE = /^ask#([1-9][0-9]{0,9})$/;
 const SHA_PAIR_RE = /^([a-f0-9]{40})\.\.([a-f0-9]{40})$/;
 
 /** CC-7 L5a : types d'exécution planifiables depuis les décisions du contrôleur. */
-export type PlannedTaskKind = 'answer' | 'review' | 'test' | 'implement';
+/** CC-7 L6b-2 : `design` = contribution de conception (proposer, critiquer, synthétiser, voter). */
+export type PlannedTaskKind = 'answer' | 'review' | 'test' | 'implement' | 'design';
 /** CC-7 L5a : types d'un réveil de tâche (`answer` garde son run_id à part, answerRunId). */
 export type TaskWakeKind = Exclude<PlannedTaskKind, 'answer'>;
 
@@ -78,6 +80,8 @@ export interface PlanEnv {
   AGENT_RUN_COST_CENTS_REVIEW?: string;
   AGENT_RUN_COST_CENTS_TEST?: string;
   AGENT_RUN_COST_CENTS_IMPLEMENT?: string;
+  /** CC-7 L6b-2 : contributions de conception (réveils `contribute`). */
+  AGENT_RUN_COST_CENTS_DESIGN?: string;
 }
 
 /** CC-7 L3 : porte des lectures de continuité, éteinte par défaut (« true » exact seulement). */
@@ -148,6 +152,22 @@ export async function taskRunId(kind: TaskWakeKind, cycleId: string, participant
  * jamais de fusion), puis note de passation Fait / Reste / Appris (S5).
  */
 export function taskPrompt(kind: TaskWakeKind, cycleId: string, taskId: string, subject: string): string {
+  if (kind === 'design') {
+    // Sujet du réveil : <phase>:<type d'événement>:<rôle>[:<tâche>] (règle phase-output-missing).
+    const [phase, eventKind, role] = subject.split(':');
+    const what = eventKind === 'proposal.submit'
+      ? (role === 'author' && phase === 'P3' ? 'la synthèse des propositions et des critiques' : 'votre proposition')
+      : (phase === 'P4' ? 'votre vote sur la synthèse' : 'votre critique de la proposition');
+    return [
+      'Cycle ' + cycleId + ', phase ' + (phase ?? '?') + ' : la tâche ' + taskId + ' attend ' + what + '.',
+      'Lisez le contexte avec store_context et store_delta (objectif, propositions révélées, critiques).',
+      eventKind === 'proposal.submit'
+        ? 'Déposez-la UNE fois avec store_contribute (task ' + taskId + ', content : texte complet et autonome).'
+        : 'Déposez-la UNE fois avec store_contribute (task ' + taskId + ', state AGREE, AMEND ou OBJECTION, review : vos arguments, clause par clause si utile).',
+      'Le serveur vérifie que cette sortie vous est demandée ; ce n’est jamais un verdict de PR.',
+      'Votre message final est votre note de passation : Fait / Reste / Appris (300 mots au plus).',
+    ].join(' ');
+  }
   if (kind === 'implement') {
     const object = subject === 'none' ? '' : ' Objet de la décision : ' + subject + '.';
     return [
@@ -180,6 +200,8 @@ export function taskPrompt(kind: TaskWakeKind, cycleId: string, taskId: string, 
  */
 async function plannedKindOf(db: D1Database, cycleId: string, participantId: string,
   decision: { action: string; task_id: string | null }): Promise<TaskWakeKind | null> {
+  // CC-7 L6b-2 : sortie attendue d'une phase de conception → exécution `design` (store_contribute).
+  if (decision.action === 'contribute') return 'design';
   if (decision.action === 'review') return 'review';
   if (decision.action === 'test') return 'test';
   if (decision.action === 'implement' || decision.action === 'address_feedback' || decision.action === 'address_correction') return 'implement';

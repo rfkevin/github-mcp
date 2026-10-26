@@ -125,7 +125,7 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     const db = stepDb ?? fallbackDb;
     // CC-7 L5b (S10) : store_verdict proposé aux kinds review/test dès que les lectures GitHub existent.
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
-      verdicts: github !== null, requiredChecks, continuity: continuityEnabled(env) });
+      verdicts: github !== null, requiredChecks, contributions: true, continuity: continuityEnabled(env) });
     const schemas = (kind: string) => tools.schemas(kind);
     if (zaiRef) {
       const model = createZaiModel({ env, ref: zaiRef, db, runId: _runId, envelope,

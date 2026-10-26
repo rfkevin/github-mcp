@@ -302,7 +302,7 @@ describe('CC-7 L5b — N1 : plafonds de jetons par type de tâche', () => {
 describe('CC-7 L5b — N2 : plafond de coût par type de tâche', () => {
   it('registre figé à 0 (fail-closed) et planAgentRuns le passe à chaque exécution', async () => {
     expect(Object.isFrozen(TASK_KIND_COST_CENTS)).toBe(true);
-    expect(TASK_KIND_COST_CENTS).toEqual({ answer: 0, review: 0, test: 0, implement: 0 });
+    expect(TASK_KIND_COST_CENTS).toEqual({ answer: 0, review: 0, test: 0, implement: 0, design: 0 });
     const q = await seedTask('n2');
     const out = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: q.reviewer + ',' + q.tester }, { now: T });
     expect(out.created).toBe(2);
