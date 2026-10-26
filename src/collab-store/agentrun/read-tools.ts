@@ -111,8 +111,11 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   const gh = options.githubWrites && options.repository !== null
     ? createGitHubWriteTools({ db: options.db, repository: options.repository, writes: options.githubWrites.writes, baseBranch: options.githubWrites.baseBranch })
     : null;
+  // CC-7 L3 (incrément 2) : proposition de mémoire, seulement avec écritures store ET continuité, types connus.
+  const memoryWrite = (taskKind: string): readonly WriteToolName[] =>
+    writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose'] : [];
   const writeNames = (taskKind: string): readonly (WriteToolName | GitHubWriteToolName)[] =>
-    [...(writes ? writes.names(taskKind) : []), ...(gh ? gh.names(taskKind) : [])];
+    [...(writes ? writes.names(taskKind) : []), ...memoryWrite(taskKind), ...(gh ? gh.names(taskKind) : [])];
   const isGitHubWrite = (name: string) => GITHUB_WRITE_TOOL_SCHEMAS.some(schema => schema.name === name);
   const allowed = (taskKind: string): readonly ReadToolName[] => {
     const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
