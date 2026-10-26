@@ -11,6 +11,10 @@
  * head/base exact de la soumission (head = SHA de 40 caractères, base = SHA ou
  * branche), avec bornage des fichiers et des patchs rendus au modèle.
  *
+ * CC-7 L5b (S10) : store_verdict dépose le verdict D12 d'une relecture ou d'un
+ * test APRÈS re-vérification serveur (verdict-tools.ts) ; chaque lecture GitHub
+ * réussie est journalée dans agent_run_reads (preuve au SHA exact).
+ *
  * Le participant et le cycle d'un appel sont relus dans agent_runs à partir
  * du run_id fourni par le moteur, jamais pris dans les arguments du modèle :
  * une exécution ne lit que le contexte de SON participant (masquage CR-C du
@@ -23,6 +27,8 @@ import { ToolRefused, type LookupResult, type ToolCall, type ToolHost, type Tool
 import type { ToolSchema } from './workers-ai-model';
 import { createStoreWriteTools, WRITE_TOOL_SCHEMAS, type WriteToolName } from './store-tools';
 import { createGitHubWriteTools, GITHUB_WRITE_TOOL_SCHEMAS, type GitHubWrites, type GitHubWriteToolName } from './github-tools';
+import { sha256Hex } from '../store/hash';
+import { createVerdictTools, VERDICT_TOOL_SCHEMAS } from './verdict-tools';
 
 /** Lectures GitHub utilisées par l'hôte (sous-ensemble des clients existants, lecture seule). */
 export interface GitHubReads {
@@ -90,6 +96,17 @@ export const READ_TOOLS_BY_KIND: Readonly<Record<string, readonly ReadToolName[]
 const SHA_RE = /^[a-f0-9]{40}$/;
 const REF_RE = /^[A-Za-z0-9._/-]{1,200}$/;
 
+/**
+ * CC-7 L5b (S10) : journalise une lecture GitHub réussie de l'exécution dans
+ * agent_run_reads (INSERT OR IGNORE, empreinte (run_id, tool, ref_sha)) — la
+ * preuve de lecture au SHA exact exigée par store_verdict (contrôle ⑦).
+ */
+async function journalRead(db: D1Database, runId: string, tool: string, refSha: string): Promise<void> {
+  const effectKey = await sha256Hex([runId, tool, refSha].join('\u001f'));
+  await db.prepare("INSERT OR IGNORE INTO agent_run_reads (effect_key, run_id, tool, ref_sha, status, at) VALUES (?1, ?2, ?3, ?4, 'completed', ?5)")
+    .bind(effectKey, runId, tool, refSha, Math.floor(Date.now() / 1000)).run();
+}
+
 export interface ReadToolHostOptions {
   db: D1Database;
   /** Unique dépôt lisible par l'exécution (ex. rfkevin/github-mcp) ; null = aucun outil GitHub. */
@@ -104,6 +121,8 @@ export interface ReadToolHostOptions {
   githubWrites?: { writes: GitHubWrites; baseBranch: string } | null;
   /** CC-7 L3 : lectures de continuité (store_memory, store_continuity) et registre complet dans store_context. Absent = inchangé. */
   continuity?: boolean;
+  /** CC-7 L5b (S10) : store_verdict (verdicts contrôlés serveur) pour les kinds review et test ; absent = aucun verdict. */
+  verdicts?: boolean;
 }
 
 interface RunScope { cycle_id: string; participant_id: string }
@@ -127,11 +146,16 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   const gh = options.githubWrites && options.repository !== null
     ? createGitHubWriteTools({ db: options.db, repository: options.repository, writes: options.githubWrites.writes, baseBranch: options.githubWrites.baseBranch })
     : null;
+  // CC-7 L5b (S10) : store_verdict, seulement avec un dépôt ET des lectures GitHub.
+  const verdicts = options.verdicts && options.repository !== null && options.github !== null
+    ? createVerdictTools({ db: options.db, repository: options.repository, github: options.github })
+    : null;
   // CC-7 L3 (incrément 2) : proposition de mémoire, seulement avec écritures store ET continuité, types connus.
   const memoryWrite = (taskKind: string): readonly WriteToolName[] =>
     writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose'] : [];
-  const writeNames = (taskKind: string): readonly (WriteToolName | GitHubWriteToolName)[] =>
-    [...(writes ? writes.names(taskKind) : []), ...memoryWrite(taskKind), ...(gh ? gh.names(taskKind) : [])];
+  const writeNames = (taskKind: string): readonly (WriteToolName | GitHubWriteToolName | 'store_verdict')[] =>
+    [...(writes ? writes.names(taskKind) : []), ...memoryWrite(taskKind), ...(gh ? gh.names(taskKind) : []),
+      ...(verdicts && (taskKind === 'review' || taskKind === 'test') ? ['store_verdict' as const] : [])];
   const isGitHubWrite = (name: string) => GITHUB_WRITE_TOOL_SCHEMAS.some(schema => schema.name === name);
   const allowed = (taskKind: string): readonly ReadToolName[] => {
     const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
@@ -150,6 +174,8 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   async function execute(call: ToolCall, ctx: { run_id: string; effect_key?: string }): Promise<unknown> {
     if (writes && (WRITE_TOOL_SCHEMAS.some(schema => schema.name === call.name))) return writes.execute(call, ctx);
     if (gh && isGitHubWrite(call.name)) return gh.execute(call, ctx);
+    // CC-7 L5b (S10) : verdict contrôlé serveur (rôle, identité, couple, CI, preuve).
+    if (verdicts && call.name === 'store_verdict') return verdicts.execute(call, ctx);
     const { cycle_id, participant_id } = await scope(ctx.run_id);
     const args = call.args ?? {};
     const store = new CollabStore(options.db);
@@ -173,11 +199,13 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const path = stringArg(args, 'path', /^[^\0]{1,400}$/);
         const ref = stringArg(args, 'ref', REF_RE);
         const file = await options.github!.getTextFile(options.repository!, path, ref);
+        await journalRead(options.db, ctx.run_id, 'github_read_file', SHA_RE.test(ref) ? ref : '');
         return { path: file.path, sha: file.sha, size: file.size, content: file.content };
       }
       case 'github_pull_request': {
         const number = intArg(args, 'number', 1, 10_000_000);
         const pr = await options.github!.getPullRequest(options.repository!, number) as Record<string, unknown>;
+        await journalRead(options.db, ctx.run_id, 'github_pull_request', '');
         const head = (pr.head ?? {}) as Record<string, unknown>;
         const base = (pr.base ?? {}) as Record<string, unknown>;
         return { number: pr.number, title: pr.title, state: pr.state, draft: pr.draft, merged: pr.merged,
@@ -186,12 +214,14 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       case 'github_check_runs': {
         const sha = stringArg(args, 'sha', SHA_RE);
         const runs = await options.github!.listCheckRuns(options.repository!, sha) as Array<Record<string, unknown>>;
+        await journalRead(options.db, ctx.run_id, 'github_check_runs', sha);
         return runs.slice(0, 50).map(run => ({ name: run.name, status: run.status, conclusion: run.conclusion, head_sha: run.head_sha }));
       }
       case 'github_diff': {
         const head = stringArg(args, 'head', SHA_RE);
         const base = stringArg(args, 'base', REF_RE);
         const comparison = await options.github!.compareRefs(options.repository!, base, head) as Record<string, unknown>;
+        await journalRead(options.db, ctx.run_id, 'github_diff', head);
         const raw = Array.isArray(comparison.files) ? comparison.files as Array<Record<string, unknown>> : [];
         // L5a : le diff est borné avant d'entrer dans le contexte du modèle (données, jamais instructions).
         const files = raw.slice(0, DIFF_MAX_FILES).map(file => {
@@ -225,11 +255,12 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     },
     schemas(taskKind: string): ToolSchema[] {
       const names = new Set<string>([...readNames(taskKind), ...writeNames(taskKind)]);
-      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
+      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS, ...VERDICT_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.
     async lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult> {
+      if (verdicts && call.name === 'store_verdict') return verdicts.lookup(call, ctx);
       if (gh && isGitHubWrite(call.name)) return gh.lookup(call, ctx);
       return writes ? writes.lookup(call, ctx) : null;
     },

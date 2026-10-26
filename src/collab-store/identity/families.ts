@@ -49,6 +49,21 @@ export async function assertDistinctLogicalParticipants(db: D1Database, pids: re
   }
 }
 
+/**
+ * CC-7 L5b (S10, contrôle ④) : un verdict ne porte jamais sur une soumission
+ * de sa propre identité logique (D12). L'auteur et le vérificateur doivent
+ * rester deux identités distinctes AU MOMENT du verdict, même si une famille a
+ * été créée après l'attribution de la tâche.
+ */
+export async function assertNotSelfReview(db: D1Database, verdictPid: string, authorPid: string): Promise<void> {
+  if (await logicalIdentityOf(db, verdictPid) === await logicalIdentityOf(db, authorPid)) {
+    throw new StateContractError(
+      'SELF_REVIEW',
+      'D12 : un verdict ne peut pas porter sur une soumission de sa propre identité logique.',
+    );
+  }
+}
+
 export async function listIdentityFamilies(db: D1Database): Promise<IdentityFamily[]> {
   await ensureSchema(db);
   const { results } = await db.prepare([

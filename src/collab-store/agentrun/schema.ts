@@ -23,6 +23,9 @@
  * - agent_run_quota : compteurs journaliers UTC des quotas Durable Objects Free.
  * - agent_run_journal : journal append-only des décisions de l'orchestrateur et du passage.
  *
+ * CC-7 L5b (S10) : agent_run_reads — journal append-only des lectures GitHub
+ * réussies d'une exécution (preuve de lecture au SHA exact pour store_verdict).
+ *
  * Aucune suppression : un trigger refuse DELETE sur toutes ces tables.
  */
 const TABLES = [
@@ -122,10 +125,19 @@ const TABLES = [
     "  run_id TEXT NOT NULL DEFAULT '',",
     "  detail TEXT NOT NULL DEFAULT ''",
     ')'].join(' '),
+  ['CREATE TABLE IF NOT EXISTS agent_run_reads (',
+    '  effect_key TEXT PRIMARY KEY,',
+    '  run_id TEXT NOT NULL,',
+    '  tool TEXT NOT NULL,',
+    "  ref_sha TEXT NOT NULL DEFAULT '',",
+    "  status TEXT NOT NULL CHECK (status IN ('completed','failed')),",
+    '  at INTEGER NOT NULL',
+    ')'].join(' '),
+  'CREATE INDEX IF NOT EXISTS agent_run_reads_run ON agent_run_reads (run_id)',
 ];
 
 const NO_DELETE = ['agent_fences', 'agent_runs', 'agent_run_steps', 'agent_run_effects', 'agent_run_wakeups',
-  'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal'].map(table =>
+  'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal', 'agent_run_reads'].map(table =>
   'CREATE TRIGGER IF NOT EXISTS ' + table + '_no_delete BEFORE DELETE ON ' + table
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END");
 

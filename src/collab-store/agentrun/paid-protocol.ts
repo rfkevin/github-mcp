@@ -29,7 +29,7 @@ import {
   envelopeFunded, MAX_PAID_CENTS, readPaidRun, readPaidStep, reserveParticipantStep, settleParticipantStep,
   type ParticipantEnvelope,
 } from './paid-model';
-import { bytes, type ToolSchema } from './workers-ai-model';
+import { bytes, effectiveMaxOutputTokens, type ToolSchema } from './workers-ai-model';
 
 /** Options communes d'un modèle payant du canal API, fournisseur-agnostiques. */
 export interface PaidModelCore {
@@ -45,6 +45,8 @@ export interface PaidModelCore {
   /** Consigne système du rôle (persona) ; les données restent dans les messages. */
   system: string;
   maxOutputTokens: number;
+  /** CC-7 L5b (N1) : plafond de sortie PAR type de tâche (canal API, TASK_KIND_BOUNDS) ; absent = maxOutputTokens. */
+  maxOutputTokensFor?: (taskKind: string) => number;
   timeoutMs?: number;
   /** Tests seulement : fetch injecté ; la production utilise le fetch du Worker. */
   fetchImpl?: typeof fetch;
@@ -135,11 +137,13 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
         // Coupure entre le règlement et la persistance de la sortie : fail-closed, aucune seconde charge.
         throw new ModelCallError('PAID_STEP_ALREADY_SETTLED : l’étape ' + n + ' est déjà réglée ; rejeu refusé pour éviter une seconde charge.', null);
       }
+      // CC-7 L5b (N1) : plafond de sortie par type de tâche quand le canal API fournit le résolveur.
+      const maxOutputTokens = effectiveMaxOutputTokens(options, input.task_kind);
       const prepared = options.protocol.prepare({ model, system: options.system, messages: input.messages,
         tools: input.tools, taskKind: input.task_kind, schemas: options.schemas,
-        maxOutputTokens: options.maxOutputTokens, requestOptions: options.requestOptions });
-      const worstTokens = prepared.bound + options.maxOutputTokens;
-      const worstCents = Math.min(centsOfApiTokens(rate, prepared.bound, options.maxOutputTokens), MAX_PAID_CENTS);
+        maxOutputTokens, requestOptions: options.requestOptions });
+      const worstTokens = prepared.bound + maxOutputTokens;
+      const worstCents = Math.min(centsOfApiTokens(rate, prepared.bound, maxOutputTokens), MAX_PAID_CENTS);
       // Borne par exécution : refus PRÉEMPTIF avant toute réservation (jamais de découvert).
       if (run.cost_cents + worstCents > run.max_cost_cents) {
         throw new ModelCallError('PAID_RUN_BUDGET_EXCEEDED : ' + run.cost_cents + ' + ' + worstCents + ' cents > plafond '
