@@ -120,39 +120,34 @@ export async function postSalonMessage(
 
   const skipQuota = input.skipAgentQuota === true;
   let overQuota = false;
-  // L4b : quota atomique dans le même batch (plus de read-then-write hors transaction).
+  // L4b : réserve de quota AVANT l’INSERT message (changes=0 → refus, rien d’écrit).
   // Exception S7 : blocking + new_fact peut dépasser (over_quota=1).
   const forceOverQuota = countsAsQuota && !skipQuota && input.level === 'blocking' && newFact;
 
-  const msgId = msgIdOf();
-  const taskId = (input.taskId ?? '').trim().slice(0, 64);
-
-  const stmts: D1PreparedStatement[] = [];
   if (countsAsQuota && !skipQuota && !forceOverQuota) {
-    // INSERT 1 ou +1 seulement si encore sous le plafond ; sinon 0 ligne touchée → SALON_DAILY_LIMIT.
-    stmts.push(
-      db.prepare(
-        `INSERT INTO salon_day_counts (author_pid, day, decision_or_blocking) VALUES (?1, ?2, 1)
-         ON CONFLICT(author_pid, day) DO UPDATE SET decision_or_blocking = decision_or_blocking + 1
-         WHERE decision_or_blocking < ?3`,
-      ).bind(input.authorPid, day, SALON_DAILY_LIMIT),
-    );
+    const quota = await db.prepare(
+      `INSERT INTO salon_day_counts (author_pid, day, decision_or_blocking) VALUES (?1, ?2, 1)
+       ON CONFLICT(author_pid, day) DO UPDATE SET decision_or_blocking = decision_or_blocking + 1
+       WHERE decision_or_blocking < ?3`,
+    ).bind(input.authorPid, day, SALON_DAILY_LIMIT).run();
+    if ((quota.meta?.changes ?? 0) === 0) {
+      throw new SalonError('SALON_DAILY_LIMIT', 'Quota journalier de ' + SALON_DAILY_LIMIT + ' decision/blocking atteint.');
+    }
   } else if (countsAsQuota && !skipQuota && forceOverQuota) {
     overQuota = true;
-    stmts.push(
-      db.prepare(
-        `INSERT INTO salon_day_counts (author_pid, day, decision_or_blocking) VALUES (?1, ?2, 1)
-         ON CONFLICT(author_pid, day) DO UPDATE SET decision_or_blocking = decision_or_blocking + 1`,
-      ).bind(input.authorPid, day),
-    );
+    await db.prepare(
+      `INSERT INTO salon_day_counts (author_pid, day, decision_or_blocking) VALUES (?1, ?2, 1)
+       ON CONFLICT(author_pid, day) DO UPDATE SET decision_or_blocking = decision_or_blocking + 1`,
+    ).bind(input.authorPid, day).run();
   }
 
-  stmts.push(
+  const msgId = msgIdOf();
+  const taskId = (input.taskId ?? '').trim().slice(0, 64);
+  const stmts: D1PreparedStatement[] = [
     db.prepare(
       'INSERT INTO salon_messages (msg_id, at, author_pid, level, body, task_id, incident_key, new_fact, over_quota, masked) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0)',
     ).bind(msgId, input.now, input.authorPid, input.level, body, taskId, incidentKey, newFact ? 1 : 0, overQuota ? 1 : 0),
-  );
-
+  ];
   const wakes = (input.wakeParticipants ?? []).filter(p => p && p !== input.authorPid);
   for (const pid of wakes) {
     stmts.push(
@@ -161,14 +156,7 @@ export async function postSalonMessage(
       ).bind(msgId, pid),
     );
   }
-
-  const batchResult = await db.batch(stmts);
-  if (countsAsQuota && !skipQuota && !forceOverQuota) {
-    const quotaMeta = batchResult[0]?.meta as { changes?: number } | undefined;
-    if ((quotaMeta?.changes ?? 0) === 0) {
-      throw new SalonError('SALON_DAILY_LIMIT', 'Quota journalier de ' + SALON_DAILY_LIMIT + ' decision/blocking atteint.');
-    }
-  }
+  await db.batch(stmts);
   return { msg_id: msgId, at: input.now, over_quota: overQuota };
 }
 
