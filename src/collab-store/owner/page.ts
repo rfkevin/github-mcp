@@ -101,6 +101,8 @@ export interface DashboardData {
   executors?: CapabilityRow[];
   /** CC-5 l3d 2b-2a : décisions courantes du contrôleur à relayer aux agents (lecture seule). */
   relay?: RelayLine[];
+  /** CC-7 L6a : formulaire « Nouveau produit » allumé (PRODUCT_CREATE_ENABLED). */
+  productEnabled?: boolean;
   /** CC-Owner V2 L4 : cycles de travail ouverts et clos (bandeau de synthèse, lecture seule). */
   cycles?: { open: number; closed: number };
   /** CC-5 l7e : dernières exécutions API (lecture seule, tous participants). */
@@ -168,7 +170,8 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + '<label>Client OAuth <input type="text" name="oauth_client_id" required maxlength="512"></label>' + secret
     + '<p><button type="submit">Retirer l’association</button></p></form></fieldset>'
     + importSection(data.imports ?? [], secret)
-    + phaseSection(secret));
+    + phaseSection(secret)
+    + productSection(data.productEnabled ?? false, secret));
 }
 
 /**
@@ -273,7 +276,7 @@ function ownerNav(): string {
     ['#agent-runs', 'Exécutions API'],
     ['#automation', 'Automatisation'], ['#coordinators', 'Coordinateurs'], ['#mandate', 'Mandat'],
     ['#close', 'Clôture'], ['#executors', 'Exécuteurs'], ['#participants', 'Participants'],
-    ['#families', 'Identités'], ['#clients', 'Clients'], ['#imports', 'Imports'], ['#phases', 'Phases'],
+    ['#families', 'Identités'], ['#clients', 'Clients'], ['#imports', 'Imports'], ['#phases', 'Phases'], ['#product', 'Nouveau produit'],
   ];
   return '<nav class="toc" aria-label="Ancres de la page owner"><ul>'
     + links.map(([href, label]) => '<li><a href="' + href + '">' + label + '</a></li>').join('')
@@ -448,6 +451,23 @@ function phaseSection(secret: string): string {
     + '<label>Cycle <input type="text" name="cycle_id" required pattern="[a-z0-9][a-z0-9_-]{0,63}"></label>'
     + '<label>Définitions (JSON, facultatif) <textarea name="phases"></textarea></label>' + secret
     + '<p><button type="submit">Installer les phases</button></p></form></fieldset>';
+}
+
+/** CC-7 L6a : « Nouveau produit » en un prompt (gabarit CC-PRODUCT-1, acte owner unique). */
+function productSection(enabled: boolean, secret: string): string {
+  return '<h2 id="product">Nouveau produit</h2>'
+    + '<p class="note">Un seul acte owner crée le cycle complet depuis le gabarit versionné CC-PRODUCT-1 : phase P1, définitions P1–P6 '
+    + '(P1→P2 quand toutes les propositions sont scellées, P2→P3 quand chacun a critiqué, P3→P4 à la synthèse ; P4–P6 manuels), '
+    + 'une tâche de proposition par participant et la synthèse, avec une matrice D12 en rotation sur des familles distinctes. '
+    + 'Le premier participant coordonne et rédige la synthèse. 3 à 6 participants enregistrés, identifiants séparés par des virgules.'
+    + (enabled ? '' : ' <strong>Éteint</strong> : PRODUCT_CREATE_ENABLED n’est pas « true », la création est refusée.') + '</p>'
+    + '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="create_product">'
+    + '<label>Cycle (nouvel identifiant) <input type="text" name="cycle_id" required pattern="[a-z0-9][a-z0-9_-]{0,63}"></label>'
+    + '<label>Participants (ordre de rotation) <input type="text" name="participants" required maxlength="800" placeholder="claude, grok, vibe"></label>'
+    + '<label>Dépôt du produit (owner/repo, facultatif) <input type="text" name="repository" maxlength="200"></label>'
+    + '<label>SHA de départ du dépôt (facultatif) <input type="text" name="based_on_sha" maxlength="40" pattern="[0-9a-fA-F]{7,40}"></label>'
+    + '<label>Objectif <textarea name="goal" required maxlength="4000"></textarea></label>' + secret
+    + '<p><button type="submit">Créer le produit</button></p></form></fieldset>';
 }
 
 /** CC-Owner V2 L3 : audit des demandes classées + formulaire de classification (drain append-only). */

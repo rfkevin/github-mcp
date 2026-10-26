@@ -276,6 +276,7 @@ Toute erreur non typée du store (D1 indisponible, binding absent) répond `STOR
 | K8 | Promouvoir vers `master` et la production | Fin | à faire |
 | K-import | Importer l’état CC-STATE-1 fusionné du cycle sur `/owner` (section 4), puis réimporter après chaque fusion d’export | Avant C7, puis à chaque fusion | à faire |
 | K-phases | Installer les définitions de phase d’un cycle sur `/owner` (« Définitions de phase ») : liste JSON validée, qui remplace l’ensemble précédent ; vide = P1–P6 sans condition avec `auto_advance` = `none`. Nommer une policy (`auto_advance`) pour une phase autorise les participants du cycle à déclencher l’avance depuis cette phase. Réinstaller le même ensemble ne change rien (doublon) | À l’ouverture d’un cycle, puis à chaque changement de règles | à faire |
+| K-product | CC-7 L6a : « Nouveau produit » sur `/owner` (porte `PRODUCT_CREATE_ENABLED`, éteinte par défaut). Un seul acte owner crée le cycle depuis le gabarit `CC-PRODUCT-1` : phase P1, définitions P1–P6 (`product-p1` à `product-p3`, P4–P6 manuels), une tâche de proposition par participant et la synthèse, matrice D12 en rotation. Voir `docs/collaboration/cc7/l6-product.md` | À l’ouverture d’un produit | facultatif |
 | K-fallback | Facultatif : définir `COLLAB_FALLBACK_STATE` sur l’environnement (non secret) | Avec K4 | facultatif |
 | K-decide | Trancher les `owner.request` et `phase.request` sur `/owner` (approuver ou refuser). Chaque bouton vise la demande affichée (cycle et `seq`). Toutes les demandes non tranchées sont listées, des plus récentes aux plus anciennes, avec leur total et le bouton « Demandes plus anciennes ». Aucune n’est masquée, y compris celles qui sont non décidables (identifiant invalide ou déjà tranché) | En continu | — |
 | K-rotate | Changer le secret owner au moindre soupçon d’exposition : l’ancien secret est refusé immédiatement | Au besoin | — |
@@ -447,6 +448,11 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `SALON_INCIDENT_DUP` | CC-7 L4 | Second message sans `new_fact` pour le même `incident_key` | Nouveau fait ou autre incident |
 | `SALON_DAILY_LIMIT` | CC-7 L4 | Quota journalier de 3 `decision`/`blocking` atteint (hors exception `blocking`+`new_fact`) | Attendre le jour UTC suivant ou escalader avec fait nouveau |
 | `SALON_WAKE_UNKNOWN` | CC-7 L4 | `collab_salon_ack_wake` : réveil inconnu pour ce participant | Relire `collab_salon_pending_wakes` |
+| `PRODUCT_CREATE_DISABLED` | CC-7 L6a | « Nouveau produit » demandé alors que `PRODUCT_CREATE_ENABLED` n’est pas `true` ; rien n’est écrit | Kevin allume la porte, ou ouvre le cycle par K-phases et K-import |
+| `PRODUCT_INVALID` | CC-7 L6a | Identifiant de cycle, objectif (1 à 4 000 caractères), dépôt `owner/repo` ou SHA de départ invalide | Corriger le formulaire |
+| `PRODUCT_PARTICIPANTS` | CC-7 L6a | Moins de 3 ou plus de 6 participants, doublon, participant non enregistré ou inactif, ou deux participants qui donnent la même tâche de proposition | Enregistrer les participants (K6) ou corriger la liste |
+| `PRODUCT_FAMILIES` | CC-7 L6a | Deux participants partagent une identité logique (#126) : une famille = une voix | Choisir des participants de familles distinctes |
+| `PRODUCT_CYCLE_EXISTS` | CC-7 L6a | Le cycle existe déjà (vérifié avant et dans le lot) ; rien n’est modifié | Choisir un nouvel identifiant |
 | `UNREGISTERED_PARTICIPANT` | F1 | Rôle de tâche sans participant enregistré actif sur `/owner` (K6) | Enregistrer le participant |
 | `IDEMPOTENCY_CONFLICT` | F1 | `op_id` rejoué avec une intention différente | Incrémenter le compteur `n` de l’op_id |
 | `UNKNOWN_CYCLE` | C2 | Cycle inconnu | Vérifier l’identifiant |
