@@ -5,12 +5,17 @@
  * la racine du Worker injecte ici des lectures en LECTURE SEULE, un jeton minimal par
  * famille (comme src/mcp/context.ts). Rien n'est lu sans AGENT_RUN_REPOSITORY.
  *
+ * CC-7 L5a (S9) : compareRefs complète les lectures (diff du couple exact) ; le patch des
+ * fichiers sensibles (SENSITIVE_FILE) y est retiré avant d'entrer dans le store, et
+ * github_open_pr ouvre une PR PRÊTE à la revue (jamais de fusion) à côté du brouillon 7c-3.
+ *
  * 7c-3 : écritures GitHub (contents + pull_requests en écriture, dépôt unique) seulement si
  * AGENT_RUN_GITHUB_WRITES vaut « true ». Aucune fusion, approbation ni résolution de conflit :
  * le client est construit sans allowMerge ni allowApproval. Les refus certains du client
  * (conflit, politique, validation) deviennent GitHubWriteRefused ; le reste reste incertain.
  */
 import { GitHubClient } from './github/client';
+import { SENSITIVE_FILE } from './github/files';
 import { GitHubApiError, GitHubConflictError, InputValidationError } from './github/types';
 import { PolicyViolationError } from './security/policy';
 import { AgentRunObject as StoreAgentRunObject } from './collab-store/agentrun/object';
@@ -27,6 +32,12 @@ export function githubReadsFrom(env: { GITHUB_APP_ID?: string; GITHUB_INSTALLATI
     getTextFile: (repository, path, ref) => contents.files.getTextFile(repository, path, ref),
     getPullRequest: (repository, number) => pulls.pullRequests.getPullRequest(repository, number),
     listCheckRuns: (repository, ref) => checks.actions.listCheckRuns(repository, ref),
+    // L5a : diff du couple exact ; un fichier sensible garde ses métadonnées mais perd son patch.
+    compareRefs: async (repository, base, head) => {
+      const comparison = await contents.commits.compareRefs(repository, base, head);
+      return { ...comparison, files: (comparison.files ?? []).map(file =>
+        SENSITIVE_FILE.test(file.filename) ? (({ patch: _ignored, ...safe }) => safe)(file) : file) };
+    },
   };
 }
 
@@ -73,10 +84,16 @@ export function githubWritesFrom(env: AppEnv, repository: string): GitHubWrites 
         const pr = await client.pullRequests.createPullRequest(repo, branch, base, title, body, { draft: true });
         return { number: pr.number, head_sha: pr.head.sha };
       }),
+    // L5a : PR prête à la revue (draft false) ; la fusion reste au propriétaire.
+    openPullRequest: (repo, branch, base, title, body) =>
+      certain(async () => {
+        const pr = await client.pullRequests.createPullRequest(repo, branch, base, title, body, { draft: false });
+        return { number: pr.number, head_sha: pr.head.sha };
+      }),
     async findPullRequest(repo, branch) {
       const owner = repo.split('/')[0];
       const [pr] = await client.pullRequests.listPullRequests(repo, { state: 'all', head: owner + ':' + branch, limit: 1 });
-      return pr ? { number: pr.number, head_sha: pr.head.sha } : null;
+      return pr ? { number: pr.number, head_sha: pr.head.sha, draft: !!(pr as { draft?: boolean }).draft } : null;
     },
   };
 }

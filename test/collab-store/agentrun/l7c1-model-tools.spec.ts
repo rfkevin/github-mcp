@@ -65,6 +65,7 @@ function fakeGithub(): GitHubReads & { calls: string[] } {
     async getTextFile(repository, path, ref) { calls.push('file:' + repository + ':' + path + '@' + ref); return { path, sha: 'a'.repeat(40), size: 5, content: 'x'.repeat(40_000) }; },
     async getPullRequest(repository, number) { calls.push('pr:' + repository + '#' + number); return { number, title: 't', state: 'open', draft: true, merged: false, head: { ref: 'h', sha: 'b'.repeat(40) }, base: { ref: 'b', sha: 'c'.repeat(40) }, body: 'SECRET-LIKE BODY' }; },
     async listCheckRuns(repository, ref) { calls.push('checks:' + repository + '@' + ref); return [{ name: 'ci', status: 'completed', conclusion: 'success', head_sha: ref, output: { text: 'long' } }]; },
+    async compareRefs(repository, base, head) { calls.push('diff:' + repository + ':' + base + '..' + head); return { status: 'ahead', ahead_by: 1, behind_by: 0, total_commits: 1, commits: [], files: [{ filename: 'a.txt', status: 'modified', additions: 1, deletions: 0, patch: '@@ -1 +1 @@' }] }; },
   };
 }
 
@@ -334,6 +335,6 @@ describe('CC-5 l7c-1 — câblage', () => {
     expect(githubReadsFrom({})).toBeNull();
     expect(githubReadsFrom({ GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: '2' })).toBeNull();
     const reads = githubReadsFrom({ GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: '2', GITHUB_PRIVATE_KEY: 'test-only-not-a-key' });
-    expect(Object.keys(reads ?? {}).sort()).toEqual(['getPullRequest', 'getTextFile', 'listCheckRuns']);
+    expect(Object.keys(reads ?? {}).sort()).toEqual(['compareRefs', 'getPullRequest', 'getTextFile', 'listCheckRuns']);
   });
 });
