@@ -26,6 +26,20 @@ describe('CC-7 L4c salon polish', () => {
     expect(row?.n ?? -1).toBe(0);
   });
 
+  it('sous le quota, decision est accepté', async () => {
+    await ensureSchema(db, true);
+    const r = await postSalonMessage(db, ON, {
+      authorPid: 'grok', level: 'decision', body: 'sous plafond', now: T0 + 50,
+      incidentKey: 'under-quota-1',
+    });
+    expect(r.msg_id).toMatch(/^sm:/);
+    expect(r.over_quota).toBe(false);
+    const row = await db.prepare(
+      'SELECT body FROM salon_messages WHERE msg_id = ?1',
+    ).bind(r.msg_id).first<{ body: string }>();
+    expect(row?.body).toBe('sous plafond');
+  });
+
   it('owner peut réveiller un destinataire', async () => {
     await ensureSchema(db, true);
     const r = await postSalonMessage(db, ON, {

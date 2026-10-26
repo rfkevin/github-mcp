@@ -39,4 +39,11 @@ export const STORE_MIGRATION_0012_SALON = [
     '  PRIMARY KEY (author_pid, day)',
     ')',
   ].join(' '),
+  // Garde transactionnelle (RAISE hors trigger interdit en SQLite) : ok doit rester 1.
+  [
+    'CREATE TABLE IF NOT EXISTS collab_store_guard (',
+    '  token TEXT PRIMARY KEY,',
+    '  ok INTEGER NOT NULL CHECK (ok = 1)',
+    ')',
+  ].join(' '),
 ];
