@@ -15,6 +15,7 @@ import { sightedClientIds, unregisteredParticipantId } from '../identity';
 import { importStateSnapshot, listImportedStates } from './state-import';
 import { parseExportTarget } from '../export/state-import-plan';
 import { installPhaseDefinitions } from './phase-install';
+import { createProduct, productCreateEnabled } from './product';
 import { capabilityMatrix } from '../executors/registry';
 import { parseDailyCap, parseNeuronBudget, probeEndpoint, providerAdapterFactory, type ProviderAdapterEnv } from '../executors/run';
 import { runOwnerTrial } from './trials';
@@ -37,6 +38,8 @@ export interface OwnerRouteEnv extends OwnerChannelEnv, ProviderAdapterEnv {
   EXECUTOR_DAILY_CAP?: string;
   /** CC-4 A3 : budget journalier de neurons Workers AI (défaut 8 000, max 9 500, sous les 10 000 gratuits). */
   WORKERS_AI_DAILY_NEURONS?: string;
+  /** CC-7 L6a : formulaire « Nouveau produit » (« true » exact seulement ; éteint par défaut). */
+  PRODUCT_CREATE_ENABLED?: string;
 }
 
 function html(body: string, status = 200): Response {
@@ -60,11 +63,12 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-export const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator', 'close_cycle', 'classify_request'] as const;
+export const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator', 'close_cycle', 'classify_request', 'create_product'] as const;
 
 /** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
-async function dashboardData(db: D1Database, before?: number) {
+async function dashboardData(db: D1Database, before?: number, productEnabled = false) {
   return {
+    productEnabled,
     pending: await describePending(await listPendingPage(db, { before }), undefined, db),
     // CC-Owner V2 L3 : audit des demandes classées (jamais effacées).
     classified: await listClassified(db),
@@ -101,7 +105,7 @@ export async function handleOwnerRequest(
     const proof = await verifyOwnerProof(request, config, null, jwks);
     if (!proof) return denied('proof_invalid');
     audit('view', 'ok');
-    return html(dashboardPage(config, await dashboardData(db)));
+    return html(dashboardPage(config, await dashboardData(db, undefined, productCreateEnabled(env))));
   }
   if (request.method !== 'POST') {
     return new Response('Méthode non autorisée.', { status: 405, headers: { Allow: 'GET, POST', 'Cache-Control': 'no-store' } });
@@ -228,6 +232,15 @@ export async function handleOwnerRequest(
         endpoint_id: field('endpoint_id'), strengths: field('strengths'), weaknesses: field('weaknesses'), proof, op,
       });
       message = { text: 'Notes owner enregistrées pour ' + field('endpoint_id') + ' (seq ' + result.event.seq + ').', error: false };
+    } else if (action === 'create_product') {
+      // CC-7 L6a : « Nouveau produit » — cycle, phases, tâches et matrice D12 en un seul acte owner.
+      const result = await createProduct(db, {
+        enabled: productCreateEnabled(env), cycle_id: field('cycle_id'), goal: field('goal'),
+        participants: field('participants').split(/[\s,]+/), repository: field('repository'), based_on_sha: field('based_on_sha'), proof,
+      });
+      message = { text: (result.status === 'duplicate' ? 'Produit déjà créé : ' : 'Produit créé : ') + result.cycle_id
+        + ' (' + result.template_version + ', seq ' + result.event.seq + '), tâches ' + result.tasks.join(', ')
+        + ', état sha256 ' + result.content_sha256.slice(0, 12) + '. Le contrôleur réveille maintenant les auteurs de P1.', error: false };
     } else if (action === 'install_phases') {
       // CR-A / CR-03 : amorçage owner des définitions de phase (vide = P1–P6, auto_advance none).
       const result = await installPhaseDefinitions(db, { cycle_id: field('cycle_id'), definitions: field('phases'), proof });
@@ -246,7 +259,7 @@ export async function handleOwnerRequest(
   }
   // F2/A06 : pagination des demandes après filtrage ; `before` vient du bouton « plus anciennes ».
   const before = action === 'view' && /^[1-9][0-9]{0,15}$/.test(field('before')) ? Number(field('before')) : undefined;
-  return html(dashboardPage(config, { ...await dashboardData(db, before), message }), message?.error ? 409 : 200);
+  return html(dashboardPage(config, { ...await dashboardData(db, before, productCreateEnabled(env)), message }), message?.error ? 409 : 200);
 }
 
 /**

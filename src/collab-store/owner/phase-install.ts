@@ -98,6 +98,15 @@ function canonical(definitions: PhaseDefinition[]): string {
   return JSON.stringify(definitions.map(def => [def.phase, def.entry_conditions, def.expected_outputs, def.exit_conditions, def.auto_advance]));
 }
 
+/** Lignes phase_definitions d'un ensemble validé (partagé avec CC-7 L6a « Nouveau produit »). */
+export function phaseDefinitionStatements(db: D1Database, cycleId: string, definitions: readonly PhaseDefinition[]): D1PreparedStatement[] {
+  return definitions.map(def => db.prepare([
+    'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
+    'VALUES (?1, ?2, ?3, ?4, ?5, ?6)',
+  ].join(' ')).bind(cycleId, def.phase, JSON.stringify(def.entry_conditions), JSON.stringify(def.expected_outputs),
+    JSON.stringify(def.exit_conditions), def.auto_advance));
+}
+
 export async function installPhaseDefinitions(db: D1Database, input: {
   cycle_id: string;
   definitions: string;
@@ -147,11 +156,7 @@ export async function installPhaseDefinitions(db: D1Database, input: {
       sideEffects: eventKey => [
         ...(binding ? bindingStatements(db, binding, input.proof, eventKey, input.now) : []),
         db.prepare('DELETE FROM phase_definitions WHERE cycle_id = ?1').bind(cycleId),
-        ...definitions.map(def => db.prepare([
-          'INSERT INTO phase_definitions (cycle_id, phase, entry_conditions, expected_outputs, exit_conditions, auto_advance)',
-          'VALUES (?1, ?2, ?3, ?4, ?5, ?6)',
-        ].join(' ')).bind(cycleId, def.phase, JSON.stringify(def.entry_conditions), JSON.stringify(def.expected_outputs),
-          JSON.stringify(def.exit_conditions), def.auto_advance)),
+        ...phaseDefinitionStatements(db, cycleId, definitions),
       ],
       now: input.now,
     });

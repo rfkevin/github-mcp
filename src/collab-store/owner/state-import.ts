@@ -15,7 +15,7 @@ import { ensureSchema } from '../store/schema';
 import { ensureContextSchema } from '../context/schema';
 import { withResolvedPlanGuard } from './state-diff-store';
 import { loadLabelDirectory, DEFAULT_OWNER_LABEL } from '../export/labels';
-import { planStateImport, type ExportTarget } from '../export/state-import-plan';
+import { planStateImport, type ExportTarget, type PlannedTask } from '../export/state-import-plan';
 import { STATE_IMPORT_KEY_PREFIX } from '../export/state-export';
 import { ownerAppend, type OwnerWriteResult } from './decisions';
 import { CYCLE_OPEN_GUARD, rethrowIfCycleClosed } from './close';
@@ -34,6 +34,16 @@ export interface StateImportResult extends OwnerWriteResult {
   issue_refs: string[];
   /** Issues that were mapped to another cycle before this import (the owner import reassigns them). */
   reassigned_issues: string[];
+}
+
+/** Lignes tasks d'un état validé, à la révision du cycle dans le même lot (partagé avec CC-7 L6a). */
+export function taskInsertStatements(db: D1Database, cycleId: string, tasks: readonly PlannedTask[]): D1PreparedStatement[] {
+  return tasks.map(task => db.prepare([
+    'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status,',
+    '                  owned_paths, target_ref, next_action, revision)',
+    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '', ?8, (SELECT revision FROM cycles WHERE cycle_id = ?2))",
+  ].join(' ')).bind(task.task_id, cycleId, task.owner_pid, task.reviewer_pid, task.tester_pid,
+    task.status, JSON.stringify(task.owned_paths), task.next_action));
 }
 
 export async function importStateSnapshot(db: D1Database, input: {
@@ -122,12 +132,7 @@ export async function importStateSnapshot(db: D1Database, input: {
         db.prepare("UPDATE cycles SET phase = ?2, project = CASE WHEN project = '' THEN ?3 ELSE project END WHERE cycle_id = ?1")
           .bind(plan.cycle_id, plan.phase, plan.target?.repository ?? ''),
         db.prepare('DELETE FROM tasks WHERE cycle_id = ?1').bind(plan.cycle_id),
-        ...plan.tasks.map(task => db.prepare([
-          'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status,',
-          '                  owned_paths, target_ref, next_action, revision)',
-          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '', ?8, (SELECT revision FROM cycles WHERE cycle_id = ?2))",
-        ].join(' ')).bind(task.task_id, plan.cycle_id, task.owner_pid, task.reviewer_pid, task.tester_pid,
-          task.status, JSON.stringify(task.owned_paths), task.next_action)),
+        ...taskInsertStatements(db, plan.cycle_id, plan.tasks),
         // Issue index (C3): the cycle's previous mappings are replaced by the imported file's references.
         db.prepare('DELETE FROM cycle_issue_refs_v2 WHERE cycle_id = ?1').bind(plan.cycle_id),
         ...plan.issue_refs.map(ref => db.prepare([

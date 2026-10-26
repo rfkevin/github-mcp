@@ -45,10 +45,10 @@ function actionValues(html: string): string[] {
 }
 
 const SECTIONS = ['pending', 'classified', 'relay', 'agent-runs', 'automation', 'coordinators', 'mandate',
-  'close', 'executors', 'participants', 'families', 'clients', 'imports', 'phases'];
+  'close', 'executors', 'participants', 'families', 'clients', 'imports', 'phases', 'product'];
 
 describe('CC-Owner V2 L4 — inventaire de la page owner', () => {
-  it('les 15 actions déclarées sont joignables (halt/resume exclusifs), aucune action inconnue n’est rendue', () => {
+  it('les 16 actions déclarées sont joignables (halt/resume exclusifs), aucune action inconnue n’est rendue', () => {
     const values = [...actionValues(dashboardPage(config, inventoryData(false))), ...actionValues(dashboardPage(config, inventoryData(true)))];
     expect(new Set(values)).toEqual(new Set([...ACTIONS]));
     for (const value of values) expect([...ACTIONS]).toContain(value);
@@ -68,7 +68,7 @@ describe('CC-Owner V2 L4 — inventaire de la page owner', () => {
     expect(dashboardPage(config, withoutCycles)).not.toContain('Cycles :');
   });
 
-  it('navigation par ancres : liens vers les 14 sections, chaque ancre résolue, collante et tactile', () => {
+  it('navigation par ancres : liens vers les 15 sections, chaque ancre résolue, collante et tactile', () => {
     const html = dashboardPage(config, inventoryData(false));
     expect(html).toContain('<nav class="toc"');
     const hrefs = [...html.matchAll(/<a href="#([^"]+)"/g)].map(match => match[1]);
