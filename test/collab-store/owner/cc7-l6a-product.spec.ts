@@ -38,7 +38,7 @@ describe('CC-7 L6a — gabarit CC-PRODUCT-1 (fonction pure)', () => {
     expect(plan.tasks.at(-1)).toMatchObject({ status: 'blocked', dependencies: ['p-a1', 'p-b2', 'p-c3', 'p-d4'] });
     expect(plan.coordinator).toBe('a1');
     expect(plan.definitions.map(d => [d.phase, d.auto_advance])).toEqual([
-      ['P1', 'product-p1'], ['P2', 'product-p2'], ['P3', 'product-p3'], ['P4', 'none'], ['P5', 'none'], ['P6', 'none']]);
+      ['P1', 'product-p1'], ['P2', 'product-p2'], ['P3', 'product-p3'], ['P4', 'product-p4'], ['P5', 'none'], ['P6', 'none']]);
     expect(plan.definitions[0].expected_outputs).toEqual([{ role: 'author', kind: 'proposal.submit', count: 4 }]);
     expect(plan.definitions[1].expected_outputs).toEqual([{ role: 'reviewer', kind: 'evidence.add', count: 4 }]);
     expect(plan.definitions[2].expected_outputs).toEqual([{ role: 'author', kind: 'proposal.submit', count: 1, task_id: 'synthesis' }]);

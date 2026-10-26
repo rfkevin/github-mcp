@@ -236,7 +236,8 @@ export async function handleOwnerRequest(
       // CC-7 L6a : « Nouveau produit » — cycle, phases, tâches et matrice D12 en un seul acte owner.
       const result = await createProduct(db, {
         enabled: productCreateEnabled(env), cycle_id: field('cycle_id'), goal: field('goal'),
-        participants: field('participants').split(/[\s,]+/), repository: field('repository'), based_on_sha: field('based_on_sha'), proof,
+        participants: field('participants').split(/[\s,]+/), repository: field('repository'), based_on_sha: field('based_on_sha'),
+        auto_p5: field('auto_p5') === 'on', proof,
       });
       message = { text: (result.status === 'duplicate' ? 'Produit déjà créé : ' : 'Produit créé : ') + result.cycle_id
         + ' (' + result.template_version + ', seq ' + result.event.seq + '), tâches ' + result.tasks.join(', ')

@@ -10,7 +10,8 @@
  * - la phase P1 et le dépôt du produit sur la ligne `cycles` ;
  * - les définitions de phase P1–P6 (P1 → P2 quand chaque participant a scellé sa
  *   proposition, P2 → P3 quand chacun a critiqué, P3 → P4 quand la synthèse est
- *   déposée ; P4–P6 manuels : vote, validation P5 de Kevin, lots) ;
+ *   déposée, P4 → P5 quand le vote est sans OBJECTION (L6b) ; P5 (validation de
+ *   Kevin) passe seule seulement si l'owner l'a choisi (auto_p5, Q3) ; P6 manuel) ;
  * - une tâche de proposition par participant et la tâche de synthèse, avec une
  *   matrice D12 en rotation (auteur i, relecteur i+1, testeur i+2).
  *
@@ -61,7 +62,16 @@ export interface ProductInput {
   repository?: string;
   /** SHA de départ du dépôt (7 à 40 hexadécimaux), facultatif ; absent = NO_BASE_SHA. */
   based_on_sha?: string;
+  /**
+   * CC-7 L6b (Q3) : la validation P5 de Kevin passe d'elle-même quand le vote P4 est
+   * sans OBJECTION. Choix explicite de l'owner à la création, faux par défaut :
+   * sans lui, P5 attend toujours Kevin.
+   */
+  auto_p5?: boolean;
 }
+
+/** CC-7 L6b : états de vote qui comptent en P4 (une OBJECTION ne compte jamais). */
+export const P4_PASSING_STATES: readonly string[] = Object.freeze(['AGREE', 'AMEND']);
 
 /** SHA de départ quand l'owner n'en donne pas : l'état exige un SHA, celui-ci signifie « aucun ». */
 export const NO_BASE_SHA = '0000000';
@@ -154,7 +164,13 @@ export function planProduct(input: ProductInput): ProductPlan {
     { phase: 'P2', auto_advance: 'product-p2', expected_outputs: [{ role: 'reviewer', kind: 'evidence.add', count: n }] },
     { phase: 'P3', auto_advance: 'product-p3',
       expected_outputs: [{ role: 'author', kind: 'proposal.submit', count: 1, task_id: SYNTHESIS_TASK }] },
-    { phase: 'P4' }, { phase: 'P5' }, { phase: 'P6' },
+    // CC-7 L6b : P4 → P5 quand le relecteur ET le testeur de la synthèse ont voté AGREE ou AMEND (dernier vote).
+    { phase: 'P4', auto_advance: 'product-p4', expected_outputs: [
+      { role: 'reviewer', kind: 'evidence.add', count: 1, task_id: SYNTHESIS_TASK, states: [...P4_PASSING_STATES] },
+      { role: 'tester', kind: 'evidence.add', count: 1, task_id: SYNTHESIS_TASK, states: [...P4_PASSING_STATES] }] },
+    // CC-7 L6b (Q3) : P5 passe sans Kevin seulement si l'owner l'a choisi à la création.
+    input.auto_p5 === true ? { phase: 'P5', auto_advance: 'product-p5' } : { phase: 'P5' },
+    { phase: 'P6' },
   ]));
 
   const markdown = [
@@ -165,7 +181,9 @@ export function planProduct(input: ProductInput): ProductPlan {
     'base_revision: 1',
     'next_action: P1 open. Each participant researches, then submits ONE sealed proposal on its own task without reading the others.'
       + ' P1->P2 when all proposals are sealed; P2 = cross critique (evidence.add as reviewer); P3 = synthesis by the coordinator;'
-      + ' P4 vote; P5 owner validation; P6 lots. No main/master, no production, no paid spend without the owner.',
+      + ' P4 vote (reviewer and tester of synthesis: AGREE, AMEND or OBJECTION; P4->P5 when both latest votes are AGREE or AMEND);'
+      + (input.auto_p5 === true ? ' P5 passes without the owner (owner choice at creation, Q3);' : ' P5 owner validation;')
+      + ' P6 lots. No main/master, no production, no paid spend without the owner.',
     'canonical_ref: main',
     'based_on_sha: ' + basedOn,
     'phase: P1',
@@ -248,6 +266,7 @@ export async function createProduct(db: D1Database, input: ProductInput & {
       payload: {
         action: 'create_product', template_version: PRODUCT_TEMPLATE_VERSION, cycle_id: plan.cycle_id,
         goal: plan.goal, participants: plan.participants, coordinator: plan.coordinator, repository: plan.repository,
+        auto_p5: input.auto_p5 === true,
         definitions_sha256: definitionsSha, definitions: plan.definitions.map(({ cycle_id: _cycle, ...def }) => def),
         // Champs d'un import d'état : l'acte est la base CC-STATE-1 du cycle (collab_export, contrôleur).
         workflow_id: state.workflow_id, state_revision: state.state_revision, content_sha256: state.content_sha256,
