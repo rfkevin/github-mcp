@@ -32,10 +32,9 @@ function dayKey(now: number): string {
   return new Date(now * 1000).toISOString().slice(0, 10);
 }
 
-function msgIdOf(authorPid: string, now: number, body: string): string {
-  // Deterministic-ish id without crypto import; uniqueness by author+now+prefix.
-  const prefix = body.slice(0, 24).replace(/[^A-Za-z0-9_-]/g, '_');
-  return 'sm:' + authorPid + ':' + now + ':' + prefix.slice(0, 16);
+/** Identifiant unique (Workers crypto.randomUUID) — pas de collision même seconde/auteur. */
+function msgIdOf(): string {
+  return 'sm:' + crypto.randomUUID();
 }
 
 async function ensureSalonSchema(db: D1Database): Promise<void> {
@@ -130,7 +129,7 @@ export async function postSalonMessage(
     }
   }
 
-  const msgId = msgIdOf(input.authorPid, input.now, body);
+  const msgId = msgIdOf();
   const taskId = (input.taskId ?? '').trim().slice(0, 64);
 
   // Lot unique : message + compteur + wakes.

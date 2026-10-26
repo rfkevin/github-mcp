@@ -47,4 +47,23 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
     expect([404, 503]).toContain(response.status);
   });
+
+  // CC-7 L4 : porte SALON_ENABLED allumée → 4 outils salon en plus (catalogue défaut reste 15).
+  it('avec SALON_ENABLED=true le catalogue ajoute les 4 outils collab_salon_*', async () => {
+    const fixture = createOAuthFixture({
+      COLLAB_DB: bindings.COLLAB_DB_C2, COLLAB_STORE_ENABLED: 'true', SALON_ENABLED: 'true',
+    });
+    const session = await fixture.mcpSession('mcp:read collab: offline_access', 'http://localhost:4321/callback',
+      fixture.ORIGIN + '/collab/mcp');
+    const response = await fixture.send('/collab/mcp', { method: 'POST', headers: session.headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
+    const result = fixture.rpcResult(await response.text()) as { tools: Array<{ name: string }> };
+    const names = result.tools.map(tool => tool.name).sort();
+    expect(names).toContain('collab_salon_post');
+    expect(names).toContain('collab_salon_list');
+    expect(names).toContain('collab_salon_pending_wakes');
+    expect(names).toContain('collab_salon_ack_wake');
+    expect(names.filter(n => n.startsWith('collab_salon_'))).toHaveLength(4);
+    expect(names.length).toBe(19);
+  });
 });

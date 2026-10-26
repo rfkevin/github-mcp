@@ -100,4 +100,17 @@ describe('CC-7 L4 salon', () => {
     expect(e).toBeInstanceOf(Error);
     expect(e.code).toBe('SALON_DISABLED');
   });
+
+  it('msg_id unique même auteur/seconde/corps (UUID)', async () => {
+    await ensureSchema(db, true);
+    const a = await postSalonMessage(db, ON, {
+      authorPid: 'grok', level: 'info', body: 'même texte', now: T0 + 100,
+    });
+    const b = await postSalonMessage(db, ON, {
+      authorPid: 'grok', level: 'info', body: 'même texte', now: T0 + 100,
+    });
+    expect(a.msg_id).not.toBe(b.msg_id);
+    expect(a.msg_id).toMatch(/^sm:[0-9a-f-]{36}$/i);
+    expect(b.msg_id).toMatch(/^sm:[0-9a-f-]{36}$/i);
+  });
 });

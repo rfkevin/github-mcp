@@ -41,7 +41,8 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   registerDelegationTools(server, context);
   registerControllerTools(server, context);
   registerAgentRunTools(server, context);
-  registerSalonTools(server, context);
+  // CC-7 L4 : outils salon absents du catalogue tant que la porte est éteinte.
+  if (context.flags.salonEnabled) registerSalonTools(server, context);
   const collabFailure = (error: unknown, fallback: string, extra: Record<string, unknown> = {}) =>
     failure(error, fallback, extra, context.fallback);
 
