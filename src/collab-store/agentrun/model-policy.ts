@@ -210,7 +210,7 @@ export function chooseModel(env: PolicyEnv, policy: ParticipantPolicy, kind: str
       + ' ; budget restant jour ' + (budget.day_limit - budget.day_spent) + 'c, cycle ' + (budget.cycle_limit - budget.cycle_spent) + 'c.');
   }
   if (STRONG_KINDS.includes(kind)) return pick(usable[0], 'serveur', 'défaut : le plus fort abordable (' + kind + ')');
-  const cheapest = usable.reduce((best, option) => (option.est_step_cents ?? 0) < (best.est_step_cents ?? 0) ? option : best);
+  const cheapest = usable.reduce((best, option) => (option.est_step_cents ?? 0) < (best.est_step_cents ?? 0) ? option : best, usable[0]);
   return pick(cheapest, 'serveur', 'défaut : le moins cher (' + kind + ')');
 }
 
