@@ -19,7 +19,8 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
   });
 
   it('le scope collab: expose les 15 outils du store, dont la délégation owner CC-5, L3d, et la continuité chat l7e', async () => {
-    const fixture = createOAuthFixture({ COLLAB_DB: bindings.COLLAB_DB_C2, COLLAB_STORE_ENABLED: 'true' });
+    // AGENT_RUNS_ENABLED explicitement éteint (défaut du Worker) : la config vitest l'allume pour les suites agentrun (CC-7 L9a).
+    const fixture = createOAuthFixture({ COLLAB_DB: bindings.COLLAB_DB_C2, COLLAB_STORE_ENABLED: 'true', AGENT_RUNS_ENABLED: 'false' });
     const session = await fixture.mcpSession('mcp:read collab: offline_access', 'http://localhost:4321/callback',
       fixture.ORIGIN + '/collab/mcp');
     const response = await fixture.send('/collab/mcp', { method: 'POST', headers: session.headers,
@@ -51,7 +52,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
   // CC-7 L4 : porte SALON_ENABLED allumée → 4 outils salon en plus (catalogue défaut reste 15).
   it('avec SALON_ENABLED=true le catalogue ajoute les 4 outils collab_salon_*', async () => {
     const fixture = createOAuthFixture({
-      COLLAB_DB: bindings.COLLAB_DB_C2, COLLAB_STORE_ENABLED: 'true', SALON_ENABLED: 'true',
+      COLLAB_DB: bindings.COLLAB_DB_C2, COLLAB_STORE_ENABLED: 'true', SALON_ENABLED: 'true', AGENT_RUNS_ENABLED: 'false',
     });
     const session = await fixture.mcpSession('mcp:read collab: offline_access', 'http://localhost:4321/callback',
       fixture.ORIGIN + '/collab/mcp');
@@ -65,5 +66,21 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     expect(names).toContain('collab_salon_ack_wake');
     expect(names.filter(n => n.startsWith('collab_salon_'))).toHaveLength(4);
     expect(names.length).toBe(19);
+  });
+
+  // CC-7 L9a : porte AGENT_RUNS_ENABLED allumée → catalogue des modèles et choix de modèle (catalogue défaut reste 15).
+  it('avec AGENT_RUNS_ENABLED=true le catalogue ajoute collab_model_catalog et collab_choose_model', async () => {
+    const fixture = createOAuthFixture({
+      COLLAB_DB: bindings.COLLAB_DB_C2, COLLAB_STORE_ENABLED: 'true', AGENT_RUNS_ENABLED: 'true',
+    });
+    const session = await fixture.mcpSession('mcp:read collab: offline_access', 'http://localhost:4321/callback',
+      fixture.ORIGIN + '/collab/mcp');
+    const response = await fixture.send('/collab/mcp', { method: 'POST', headers: session.headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
+    const result = fixture.rpcResult(await response.text()) as { tools: Array<{ name: string }> };
+    const names = result.tools.map(tool => tool.name);
+    expect(names).toContain('collab_model_catalog');
+    expect(names).toContain('collab_choose_model');
+    expect(names.length).toBe(17);
   });
 });

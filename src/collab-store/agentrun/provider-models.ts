@@ -33,6 +33,7 @@ import { createOpenAiPaidModel } from './openai-paid-model';
 import { createPaidWorkersAiModel, type ParticipantEnvelope } from './paid-model';
 import { createPaidProtocolModel } from './paid-protocol';
 import { createWorkersAiModel, type ToolSchema } from './workers-ai-model';
+import { budgetState, chooseModel, modelPreference, participantEnvelope, participantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
 export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-27';
@@ -91,9 +92,9 @@ export function participantModelVar(participantId: string): string {
   return 'AGENT_RUN_MODEL_' + participantId.toUpperCase().replace(/[^A-Z0-9]/g, '_');
 }
 
-/** Au moins un aiguillage par participant est posé sur le Worker. */
+/** Au moins un aiguillage par participant (L8 : AGENT_RUN_MODEL_<P> ; L9a : AGENT_RUN_MODELS_<P>) est posé sur le Worker. */
 export function hasParticipantModels(env: object): boolean {
-  return Object.entries(env).some(([key, value]) => key.startsWith('AGENT_RUN_MODEL_') && typeof value === 'string' && value.trim() !== '');
+  return Object.entries(env).some(([key, value]) => /^AGENT_RUN_MODELS?_/.test(key) && typeof value === 'string' && value.trim() !== '');
 }
 
 /** Modèle d'un participant : sa variable, sinon le réglage global ; null = aucun modèle. */
@@ -180,32 +181,74 @@ export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderM
 }
 
 /**
- * Modèle aiguillé à l'exécution : participant relu dans agent_runs, modèle construit une fois par
- * exécution. Un refus (aucun modèle, référence non permise) fait échouer l'étape proprement
- * (ModelCallError sans usage), jamais un repli vers un autre fournisseur.
+ * Modèle aiguillé à l'exécution : participant relu dans agent_runs à CHAQUE étape. Sans politique
+ * (CC-7 L8) : sa référence unique ; avec politique (CC-7 L9a, AGENT_RUN_FAMILY_<P> + AGENT_RUN_MODELS_<P>) :
+ * choix serveur par étape dans sa famille et sous son budget, journalisé. Un refus fait échouer l'étape
+ * proprement (ModelCallError sans usage), jamais un repli vers un autre fournisseur ou une autre famille.
+ * L'enveloppe payante est celle de l'agent (AGENT_RUN_PAID_*_CENTS_<P>, sinon l'enveloppe commune).
  */
 export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string; AGENT_RUN_PAID_MODEL?: string },
   ctx: ProviderModelContext): ModelClient {
-  let model: Promise<ModelClient> | null = null;
-  const resolve = async (): Promise<ModelClient> => {
-    const run = await ctx.db.prepare('SELECT participant_id FROM agent_runs WHERE run_id = ?1')
-      .bind(ctx.runId).first<{ participant_id: string }>();
-    if (!run) throw new ModelCallError('MODEL_ROUTE_UNKNOWN_RUN : exécution ' + ctx.runId + ' introuvable.', null);
-    const route = participantModelRoute(env, run.participant_id);
-    if (!route) {
-      throw new ModelCallError('MODEL_ROUTE_NONE : aucun modèle pour ' + run.participant_id + ' (' + participantModelVar(run.participant_id)
-        + ' ou AGENT_RUN_MODEL).', null);
+  const models = new Map<string, ModelClient>();
+  const build = (ref: string, tier: ModelTier, envelope: ProviderModelContext['envelope']): ModelClient => {
+    const key = tier + '|' + ref;
+    let model = models.get(key);
+    if (!model) {
+      try {
+        model = createProviderModel(ref, tier, { ...ctx, envelope });
+      } catch (error) {
+        throw new ModelCallError('MODEL_ROUTE_REFUSED : ' + (error instanceof Error ? error.message : String(error)), null);
+      }
+      models.set(key, model);
     }
-    try {
-      return createProviderModel(route.ref, route.tier, ctx);
-    } catch (error) {
-      throw new ModelCallError('MODEL_ROUTE_REFUSED : ' + (error instanceof Error ? error.message : String(error)), null);
-    }
+    return model;
   };
   return {
     async complete(input) {
-      model ??= resolve();
-      return (await model).complete(input);
+      const run = await ctx.db.prepare('SELECT participant_id, cycle_id, task_id, task_kind, steps_done FROM agent_runs WHERE run_id = ?1')
+        .bind(ctx.runId).first<{ participant_id: string; cycle_id: string; task_id: string; task_kind: string; steps_done: number }>();
+      if (!run) throw new ModelCallError('MODEL_ROUTE_UNKNOWN_RUN : exécution ' + ctx.runId + ' introuvable.', null);
+      const now = ctx.now?.() ?? new Date();
+      let policy;
+      try {
+        policy = participantPolicy(env as PolicyEnv, run.participant_id);
+      } catch (error) {
+        throw new ModelCallError('MODEL_ROUTE_REFUSED : ' + (error instanceof Error ? error.message : String(error)), null);
+      }
+      let ref: string;
+      let model: ModelClient;
+      if (policy) {
+        const kind = input.task_kind || run.task_kind;
+        const budget = await budgetState(ctx.db, policy.envelope, run.participant_id, run.cycle_id, now);
+        const preference = await modelPreference(ctx.db, run.cycle_id, run.participant_id, run.task_id);
+        let choice;
+        try {
+          choice = chooseModel(env as PolicyEnv, policy, kind, budget, preference);
+        } catch (error) {
+          throw new ModelCallError(error instanceof Error ? (error as Error & { code?: string }).code + ' : ' + error.message : String(error), null);
+        }
+        await recordModelChoice(ctx.db, ctx.runId, run.steps_done, run.participant_id, choice, Math.floor(now.getTime() / 1000));
+        ref = choice.ref;
+        model = build(ref, 'auto', policy.envelope);
+      } else {
+        const route = participantModelRoute(env, run.participant_id);
+        if (!route) {
+          throw new ModelCallError('MODEL_ROUTE_NONE : aucun modèle pour ' + run.participant_id + ' (' + participantModelVar(run.participant_id)
+            + ' ou AGENT_RUN_MODEL).', null);
+        }
+        ref = route.ref;
+        model = build(ref, route.tier, participantEnvelope(env as PolicyEnv, run.participant_id));
+      }
+      const started = Date.now();
+      try {
+        const result = await model.complete(input);
+        await recordModelCall(ctx.db, ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
+        return result;
+      } catch (error) {
+        await recordModelCall(ctx.db, ref, { ok: false, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started,
+          error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
     },
   };
 }
