@@ -192,6 +192,14 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **CC-7 L4** : marque livré le réveil `msg_id` pour votre participant (idempotent). Inconnu → `SALON_WAKE_UNKNOWN`.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `SALON_WAKE_UNKNOWN`, `STORE_UNAVAILABLE`.
 
+### `collab_model_catalog`
+- **CC-7 L9a** : lecture seule, tout participant enregistré. Présent dans le catalogue **uniquement** si `AGENT_RUNS_ENABLED="true"`. Pour chaque agent API (`AGENT_RUN_PARTICIPANTS`) : famille, modèles autorisés (gratuit / payant / indisponible), tarif daté (périmé au-delà de 30 jours), clé présente (oui / non, jamais sa valeur), disponibilité mesurée (appels réussis / en échec, dernière erreur, latence), budget restant (jour, cycle), modèle retenu par défaut par type de tâche, préférences posées. `cycle?` pour le budget du cycle et les préférences.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `STORE_UNAVAILABLE`.
+
+### `collab_choose_model`
+- **CC-7 L9a** : pose (`ref`) ou retire (`ref: null`) la préférence de modèle d’un agent pour un `cycle` (et une `task?`). L’agent pour lui-même, ou un coordinateur actif pour n’importe quel agent (`participant?`). Le modèle doit être dans `AGENT_RUN_MODELS_<P>` (famille de l’agent) ; appliqué à chaque étape s’il est abordable, sinon option suivante de la liste (journalisée). Même porte que `collab_model_catalog`.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `MODEL_CHOICE_FORBIDDEN`, `MODEL_CHOICE_INVALID`, `MODEL_NOT_ALLOWED`, `MODEL_FAMILY_UNKNOWN`, `STORE_UNAVAILABLE`.
+
 ### Identités logiques équivalentes (#126)
 
 **Réattribuer une tâche (CC-5 l3d, `reassign_task`)** : demande exécutable déposée par un agent (`owner.request`, `action: "reassign_task"`, `params` = `{ cycle_id, task_id, owner_pid, reviewer_pid, tester_pid, expected_revision, expected_owner_pid, expected_reviewer_pid, expected_tester_pid }` — les trois derniers figent les rôles lus au dépôt, couverts par l’empreinte approuvée, `preconditions.previous_seq` = dernière réattribution de cette tâche, cible affichée `cycle/tâche`), approuvée par Kevin sur `/owner`. Dans le lot d’écriture : demande non tranchée, précondition inchangée, tâche à la révision attendue avec exactement les rôles figés dans la demande (un changement de rôles sans changement de révision suffit à refuser) et non terminée (`TASK_CLOSED` ; une tâche `blocked` reste réattribuable), trois participants enregistrés actifs (`UNREGISTERED_PARTICIPANT`) et trois identités logiques distinctes (`DUPLICATE_LOGICAL_IDENTITY`). Tout écart : `OWNER_PRECONDITION_FAILED`, aucun effet. La tâche prend la révision du cycle : les réveils du contrôleur sont réarmés pour les nouveaux titulaires. Non délégable dans ce contrat (`DELEGATED_FORBIDDEN` ; la politique L3c le refuse aussi : `owner_guard_not_delegable`) ; les verdicts déjà rendus restent attachés à leur couple SHA.
@@ -463,6 +471,11 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `GROQ_MODEL_UNSUPPORTED` | CC-7 L8 | Modèle Groq hors registres (le gratuit gpt-oss-20b exige `GROQ_FREE_PROJECT_ATTESTED="true"` et l’origine cc3-test) | Attester le compte gratuit ou choisir un modèle tarifé |
 | `OPENROUTER_MODEL_UNSUPPORTED` | CC-7 L8 | Modèle OpenRouter ni « :free » ni tarifé | Utiliser un modèle `…:free` |
 | `DEEPSEEK_MODEL_UNSUPPORTED` | CC-7 L8 | Aucun tarif DeepSeek relevé (deny-by-default) : modèle refusé avant tout appel | Relever un tarif daté sur la page officielle avant activation |
+| `MODEL_FAMILY_UNKNOWN` | CC-7 L9a | `AGENT_RUN_FAMILY_<P>` hors des familles connues (anthropic, xai, zai, google, openai, deepseek, qwen, meta, mistral) | Kevin corrige la famille de l’agent |
+| `MODEL_BUDGET_EXHAUSTED` | CC-7 L9a | Aucun modèle de la liste de l’agent n’est abordable (gratuit permis absent, budget restant du jour ou du cycle insuffisant pour une étape) ; aucun appel | Attendre le jour suivant, ajouter un gratuit à la liste, ou Kevin relève le budget de l’agent |
+| `MODEL_CHOICE_FORBIDDEN` | CC-7 L9a | Préférence de modèle posée pour un autre agent sans être coordinateur actif | L’agent choisit pour lui-même, ou passer par le coordinateur |
+| `MODEL_CHOICE_INVALID` | CC-7 L9a | Cycle ou tâche invalide dans `collab_choose_model` | Corriger les identifiants |
+| `MODEL_NOT_ALLOWED` | CC-7 L9a | Modèle hors de la liste `AGENT_RUN_MODELS_<P>` de l’agent (autre famille ou non listé) | Choisir un modèle de la liste (voir `collab_model_catalog`) |
 | `PRODUCT_CREATE_DISABLED` | CC-7 L6a | « Nouveau produit » demandé alors que `PRODUCT_CREATE_ENABLED` n’est pas `true` ; rien n’est écrit | Kevin allume la porte, ou ouvre le cycle par K-phases et K-import |
 | `PRODUCT_INVALID` | CC-7 L6a | Identifiant de cycle, objectif (1 à 4 000 caractères), dépôt `owner/repo` ou SHA de départ invalide | Corriger le formulaire |
 | `PRODUCT_PARTICIPANTS` | CC-7 L6a | Moins de 3 ou plus de 6 participants, doublon, participant non enregistré ou inactif, ou deux participants qui donnent la même tâche de proposition | Enregistrer les participants (K6) ou corriger la liste |

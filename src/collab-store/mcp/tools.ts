@@ -23,6 +23,7 @@ import { registerDelegationTools } from './delegation-tools';
 import { registerControllerTools } from './controller-tools';
 import { registerAgentRunTools } from './agentrun-tools';
 import { registerSalonTools } from './salon-tools';
+import { registerModelTools } from './model-tools';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -43,6 +44,8 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   registerAgentRunTools(server, context);
   // CC-7 L4 : outils salon absents du catalogue tant que la porte est éteinte.
   if (context.flags.salonEnabled) registerSalonTools(server, context);
+  // CC-7 L9a : catalogue et choix de modèle absents tant que les exécutions API sont éteintes.
+  if (context.flags.agentRunsEnabled) registerModelTools(server, context);
   const collabFailure = (error: unknown, fallback: string, extra: Record<string, unknown> = {}) =>
     failure(error, fallback, extra, context.fallback);
 
