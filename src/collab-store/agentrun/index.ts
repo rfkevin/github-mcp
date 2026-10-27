@@ -13,6 +13,11 @@ export { createPaidWorkersAiModel, parsePaidWorkersAiRef, centsOfNeurons, PAID_M
   type ParticipantEnvelope, type ParticipantEnvelopeEnv, type PaidRunRow, type PaidStepRow } from './paid-model';
 export { createZaiModel, parseZaiRef, type ZaiModelOptions } from './zai-model';
 export { createXaiModel, parseXaiRef, type XaiModelOptions } from './xai-model';
+export {
+  createProviderModel, createRoutedModel, participantModelRoute, participantModelVar, hasParticipantModels, freeAllowed, isFreeApiModel,
+  API_FREE_MODELS, API_FREE_MODELS_SNAPSHOT_DATE, API_PROVIDERS, type ApiProvider, type ModelTier, type ProviderEnv, type ProviderModelContext,
+} from './provider-models';
+export { GEMINI_PROTOCOL, GEMINI_SKIP_SIGNATURE, geminiGenerateUrl, readGeminiResponse, toGeminiContents } from './gemini-model';
 export { createAnthropicModel, parseAnthropicRef, ANTHROPIC_MESSAGES_URL, readAnthropicResponse, toAnthropicMessages, type AnthropicModelOptions } from './anthropic-model';
 export {
   createReadToolHost, READ_TOOL_SCHEMAS, READ_TOOLS_BY_KIND, CONTINUITY_TOOL_SCHEMAS, CONTINUITY_MEMORY_LIMIT, REGISTRY_MAX_TASKS,

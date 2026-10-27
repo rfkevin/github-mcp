@@ -455,6 +455,14 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `CONTRIBUTION_KIND_UNSUPPORTED` | CC-7 L6b-2 | La sortie attendue n’est ni `proposal.submit` ni `evidence.add` | Passer par le chat ou par Kevin |
 | `AUTO_MERGE_PATH_OUTSIDE_REPOSITORY` | CC-7 L6b-3 | Fusion automatique : écriture REST hors du dépôt configuré (`AUTO_MERGE_REPOSITORY`) ; refusée avant tout appel | Défaut de code : signaler, ne pas contourner |
 | `AUTO_MERGE_INVALID_REF` | CC-7 L6b-3 | La tête de la branche d’intégration lue sur GitHub n’est pas un SHA de 40 caractères ; passage interrompu pour ce candidat | Relire la branche ; aucune fusion n’a été tentée |
+| `MODEL_ROUTE_NONE` | CC-7 L8 | Exécution API d’un participant sans modèle : ni `AGENT_RUN_MODEL_<PARTICIPANT>`, ni réglage global ; l’étape échoue sans appel | Kevin pose le modèle de ce participant, ou le retire de `AGENT_RUN_PARTICIPANTS` |
+| `MODEL_ROUTE_REFUSED` | CC-7 L8 | Le modèle du participant est refusé à la construction (fournisseur inconnu, ni gratuit permis ni tarif daté) ; aucun appel, aucun repli vers un autre fournisseur | Corriger la référence `<fournisseur>:<modèle>` ou relever un tarif daté |
+| `MODEL_ROUTE_UNKNOWN_RUN` | CC-7 L8 | Exécution introuvable dans `agent_runs` au moment de choisir le modèle | Relancer l’exécution depuis le contrôleur |
+| `MODEL_PROVIDER_UNSUPPORTED` | CC-7 L8 | Préfixe de référence hors des fournisseurs du canal API (workers-ai, zai, xai, anthropic, gemini, groq, openrouter, deepseek) | Choisir un fournisseur pris en charge |
+| `GEMINI_MODEL_UNSUPPORTED` | CC-7 L8 | Modèle Gemini hors du registre gratuit permis et du registre des tarifs daté, ou gratuit non attesté sous `AGENT_RUN_MODEL` | `GEMINI_FREE_PROJECT_ATTESTED="true"` sur cc3-test pour le gratuit, ou modèle tarifé avec enveloppe |
+| `GROQ_MODEL_UNSUPPORTED` | CC-7 L8 | Modèle Groq hors registres (le gratuit gpt-oss-20b exige `GROQ_FREE_PROJECT_ATTESTED="true"` et l’origine cc3-test) | Attester le compte gratuit ou choisir un modèle tarifé |
+| `OPENROUTER_MODEL_UNSUPPORTED` | CC-7 L8 | Modèle OpenRouter ni « :free » ni tarifé | Utiliser un modèle `…:free` |
+| `DEEPSEEK_MODEL_UNSUPPORTED` | CC-7 L8 | Aucun tarif DeepSeek relevé (deny-by-default) : modèle refusé avant tout appel | Relever un tarif daté sur la page officielle avant activation |
 | `PRODUCT_CREATE_DISABLED` | CC-7 L6a | « Nouveau produit » demandé alors que `PRODUCT_CREATE_ENABLED` n’est pas `true` ; rien n’est écrit | Kevin allume la porte, ou ouvre le cycle par K-phases et K-import |
 | `PRODUCT_INVALID` | CC-7 L6a | Identifiant de cycle, objectif (1 à 4 000 caractères), dépôt `owner/repo` ou SHA de départ invalide | Corriger le formulaire |
 | `PRODUCT_PARTICIPANTS` | CC-7 L6a | Moins de 3 ou plus de 6 participants, doublon, participant non enregistré ou inactif, ou deux participants qui donnent la même tâche de proposition | Enregistrer les participants (K6) ou corriger la liste |

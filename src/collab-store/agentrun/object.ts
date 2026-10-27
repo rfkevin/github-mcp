@@ -17,6 +17,7 @@ import { createPaidWorkersAiModel, parseParticipantEnvelope } from './paid-model
 import { createZaiModel } from './zai-model';
 import { createXaiModel } from './xai-model';
 import { createAnthropicModel } from './anthropic-model';
+import { createProviderModel, createRoutedModel, hasParticipantModels, isL8ProviderRef } from './provider-models';
 import { createReadToolHost, type GitHubReads } from './read-tools';
 import { continuityEnabled } from './plan';
 import { DEFAULT_API_BASE_BRANCH, type GitHubWrites } from './github-tools';
@@ -56,6 +57,15 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   /** CC-7 L2 (PR 2.3) : secret Anthropic (adaptateur anthropic:<modèle>), posé par Kevin seul sur le Worker. */
   LLM_KEY_ANTHROPIC?: string;
   LLM_KEY_XAI?: string;
+  /** CC-7 L8 : secrets des autres fournisseurs du canal API (posés par Kevin seul). */
+  LLM_KEY_GEMINI?: string;
+  LLM_KEY_GROQ?: string;
+  LLM_KEY_OPENROUTER?: string;
+  LLM_KEY_DEEPSEEK?: string;
+  /** CC-7 L8 : attestations owner des comptes gratuits Gemini et Groq (avec PUBLIC_ORIGIN = cc3-test, précédent CC-4). */
+  GEMINI_FREE_PROJECT_ATTESTED?: string;
+  GROQ_FREE_PROJECT_ATTESTED?: string;
+  PUBLIC_ORIGIN?: string;
   AI?: WorkersAiBinding;
   WORKERS_AI_DAILY_NEURONS?: string;
   GITHUB_APP_ID?: string;
@@ -102,15 +112,20 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   githubWrites: GitHubWrites | null = null): EngineFactory {
   if (testFactory) return testFactory;
   if (!fallbackDb) return simulated;
+  // CC-7 L8 : un modèle par participant (AGENT_RUN_MODEL_<PARTICIPANT>) ; sans aucune de ces variables,
+  // le câblage historique ci-dessous est inchangé.
+  const routed = hasParticipantModels(env);
   const paidRef = env.AGENT_RUN_PAID_MODEL ?? null;
   const ref = paidRef ?? (env.AGENT_RUN_MODEL ?? null);
-  if (!ref) return simulated;
+  if (!ref && !routed) return simulated;
   const zaiRef = paidRef !== null && paidRef.startsWith('zai:') ? paidRef : null;
   const xaiRef = paidRef !== null && paidRef.startsWith('xai:') ? paidRef : null;
   const anthropicRef = paidRef !== null && paidRef.startsWith('anthropic:') ? paidRef : null;
   const ai = env.AI;
   // CC-7 L2 : les chemins zai:, xai: et anthropic: n'utilisent jamais le binding AI ; les chemins Workers AI l'exigent.
-  if (!zaiRef && !xaiRef && !anthropicRef && !ai) return simulated;
+  // CC-7 L8 : gemini:, groq:, openrouter: et deepseek: en réglage global passent par la fabrique (sans binding AI).
+  const otherRef = isL8ProviderRef(ref) ? ref : null;
+  if (!routed && !zaiRef && !xaiRef && !anthropicRef && !otherRef && !ai) return simulated;
   const repository = env.AGENT_RUN_REPOSITORY && REPOSITORY_RE.test(env.AGENT_RUN_REPOSITORY) ? env.AGENT_RUN_REPOSITORY : null;
   const github = repository ? githubReads : null;
   // 7c-3 : écritures GitHub seulement avec un dépôt, l'interrupteur dédié et l'adaptateur de la racine.
@@ -127,6 +142,16 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
       verdicts: github !== null, requiredChecks, contributions: true, continuity: continuityEnabled(env) });
     const schemas = (kind: string) => tools.schemas(kind);
+    if (routed) {
+      const model = createRoutedModel(env, { env, db, runId: _runId, envelope, schemas, system: AGENT_RUN_SYSTEM,
+        maxOutputTokens: 1024, maxOutputTokensFor, ai, neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS) });
+      return { model, tools, now };
+    }
+    if (otherRef) {
+      const model = createProviderModel(otherRef, paidRef ? 'paid' : 'free', { env, db, runId: _runId, envelope, schemas,
+        system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
+      return { model, tools, now };
+    }
     if (zaiRef) {
       const model = createZaiModel({ env, ref: zaiRef, db, runId: _runId, envelope,
         schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
@@ -142,7 +167,7 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
         schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
       return { model, tools, now };
     }
-    if (!ai) return simulated(_runId, stepDb); // inatteignable : garde ci-dessus (chemins Workers AI).
+    if (!ai || !ref) return simulated(_runId, stepDb); // inatteignable : gardes ci-dessus (chemins Workers AI, référence globale).
     const model = paidRef
       ? createPaidWorkersAiModel({ ai, ref: paidRef, db, runId: _runId, envelope,
         schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor })

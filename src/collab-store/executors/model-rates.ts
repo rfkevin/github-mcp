@@ -30,6 +30,10 @@ export const API_RATE_SNAPSHOT_DATE = '2026-10-25';
 const ZAI_PRICING = 'https://docs.z.ai/guides/overview/pricing';
 const XAI_PRICING = 'https://docs.x.ai/docs/models';
 const ANTHROPIC_PRICING = 'https://www.anthropic.com/pricing';
+// CC-7 L8 : relevés du 2026-10-27 sur les pages officielles (Gemini : palier Standard payant ;
+// gemini-3.6-flash passe à 150 / 750 le 2027-01-01 — à revalider avant cette date).
+const GEMINI_PRICING = 'https://ai.google.dev/gemini-api/docs/pricing';
+const GROQ_GPT_OSS_120B_PRICING = 'https://console.groq.com/docs/model/openai/gpt-oss-120b';
 
 /**
  * Tarifs relevés le 2026-10-25 (cents US / million de jetons), deny-by-default.
@@ -45,6 +49,9 @@ export const API_MODEL_RATES: Readonly<Record<string, ApiModelRate>> = {
   'xai:grok-build-0.1': { input_per_m: 100, output_per_m: 200, source_url: XAI_PRICING },
   'anthropic:claude-sonnet-5-5': { input_per_m: 200, output_per_m: 1000, source_url: ANTHROPIC_PRICING },
   'anthropic:claude-haiku-5-5': { input_per_m: 10, output_per_m: 50, source_url: ANTHROPIC_PRICING },
+  'gemini:gemini-3.5-flash-lite': { input_per_m: 30, output_per_m: 250, source_url: GEMINI_PRICING },
+  'gemini:gemini-3.6-flash': { input_per_m: 75, output_per_m: 375, source_url: GEMINI_PRICING },
+  'groq:openai/gpt-oss-120b': { input_per_m: 15, output_per_m: 60, source_url: GROQ_GPT_OSS_120B_PRICING },
 };
 
 /** Recherche par référence complète <fournisseur>:<modèle> ; absente = null (deny-by-default). */

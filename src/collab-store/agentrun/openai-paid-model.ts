@@ -32,6 +32,8 @@ export interface OpenAiPaidModelOptions extends PaidModelCore {
   provider: string;
   /** Options de corps propres au fournisseur (ex. thinking désactivé pour Z.ai). */
   requestOptions?: Readonly<Record<string, unknown>>;
+  /** CC-7 L8 : modèle gratuit vérifié (provider-models.ts) — coût 0, aucune enveloppe. */
+  free?: boolean;
 }
 
 /** Protocole OpenAI : en-tête Bearer, messages système au début, outils en wrapper function. */

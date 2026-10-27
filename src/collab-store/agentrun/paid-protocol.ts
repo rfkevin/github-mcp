@@ -100,7 +100,23 @@ export interface PaidProtocolModelOptions extends PaidModelCore {
   requestOptions?: Readonly<Record<string, unknown>>;
   /** Protocole du fournisseur (en-têtes, corps, lecture de la réponse). */
   protocol: PaidProtocol;
+  /**
+   * CC-7 L8 : modèle GRATUIT vérifié (registre API_FREE_MODELS, résolu par provider-models.ts) :
+   * coût 0, aucune enveloppe ni réservation ; le secret reste exigé, aucun repli payant.
+   */
+  free?: boolean;
 }
+
+/** CC-7 L8 : référence gratuite <fournisseur>:<modèle> — le préfixe doit correspondre, le registre gratuit est vérifié par l'appelant. */
+function freeModelOf(ref: string, provider: string): string {
+  const prefix = provider + ':';
+  const model = ref.startsWith(prefix) ? ref.slice(prefix.length) : '';
+  if (!model) {
+    throw new Error(provider.toUpperCase() + '_MODEL_UNSUPPORTED : référence gratuite invalide pour ' + provider + ' : ' + ref + '.');
+  }
+  return model;
+}
+
 
 /**
  * Modèle payant du canal API : même contrat ModelClient que les chemins
@@ -108,10 +124,11 @@ export interface PaidProtocolModelOptions extends PaidModelCore {
  * un seul code, le protocole est porté par l'hôte.
  */
 export function createPaidProtocolModel(options: PaidProtocolModelOptions): ModelClient {
-  const { model, rate } = parsePaidProviderRef(options.ref, options.provider);
   if (!Number.isSafeInteger(options.maxOutputTokens) || options.maxOutputTokens < 1 || options.maxOutputTokens > 8192) {
     throw new Error('maxOutputTokens entre 1 et 8192.');
   }
+  if (options.free) return createFreeProtocolModel(options, freeModelOf(options.ref, options.provider));
+  const { model, rate } = parsePaidProviderRef(options.ref, options.provider);
   return {
     async complete(input): Promise<{ output: ModelOutput; usage: ModelUsage }> {
       // (1) Enveloppe par participant non financée : refus avant tout appel, aucun quota touché.
@@ -182,6 +199,44 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
       await settleParticipantStep(options.db, { runId: options.runId, n, participantId: run.participant_id, cycleId: run.cycle_id,
         day, reservedCents: reserved, actualCents, reservedTokens: worstTokens, actualTokens, nowSec });
       return { output: parsed.output, usage: { tokens: actualTokens, cost_cents: actualCents } };
+    },
+  };
+}
+
+/**
+ * CC-7 L8 : chemin GRATUIT du même protocole — aucun centime réservé ni réglé (modèle gratuit vérifié),
+ * secret exigé (EXECUTOR_UNAVAILABLE avant tout appel), même endpoint constant, même lecture de réponse.
+ * Les bornes d'appels restent celles de l'orchestrateur (quota quotidien, pas par exécution).
+ */
+function createFreeProtocolModel(options: PaidProtocolModelOptions, model: string): ModelClient {
+  return {
+    async complete(input): Promise<{ output: ModelOutput; usage: ModelUsage }> {
+      let secret: string;
+      try {
+        secret = requireSecret(options.secret);
+      } catch (error) {
+        throw new ModelCallError('EXECUTOR_UNAVAILABLE : ' + (error instanceof Error ? error.message : String(error)), null);
+      }
+      const maxOutputTokens = effectiveMaxOutputTokens(options, input.task_kind);
+      const prepared = options.protocol.prepare({ model, system: options.system, messages: input.messages,
+        tools: input.tools, taskKind: input.task_kind, schemas: options.schemas,
+        maxOutputTokens, requestOptions: options.requestOptions });
+      let raw: unknown;
+      try {
+        const response = await fetchWithTimeout(options.fetchImpl ?? fetch, options.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...options.protocol.headers(secret) },
+          body: JSON.stringify(prepared.body),
+        }, providerTimeoutMs(options.provider, options.timeoutMs));
+        raw = await readUpstreamJson(response);
+      } catch (error) {
+        throw new ModelCallError(options.provider + '_error: ' + (error instanceof Error ? error.message : String(error)),
+          { tokens: prepared.bound, cost_cents: 0 });
+      }
+      const parsed = options.protocol.parse(raw);
+      const inputTokens = parsed.input ?? prepared.bound;
+      const outputTokens = parsed.output_tokens ?? bytes(JSON.stringify(parsed.output));
+      return { output: parsed.output, usage: { tokens: inputTokens + outputTokens, cost_cents: 0 } };
     },
   };
 }
