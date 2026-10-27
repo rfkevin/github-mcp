@@ -100,18 +100,27 @@ async function setHalt(value: '0' | '1') {
 const T = 1_950_000_000;
 
 describe('CC-5 l7b — configuration', () => {
-  it('binding et migration dans l’env cc3-test seulement, interrupteur éteint, rien au niveau racine', () => {
+  it('binding et migration dans l’env cc3-test seulement, rien au niveau racine ; exécutions API allumées sur cc3-test seulement, gratuites', () => {
     const config = JSON.parse(wranglerConfig) as Record<string, unknown> & { env: Record<string, Record<string, unknown>> };
     expect(config.durable_objects).toBeUndefined();
     expect(config.migrations).toBeUndefined();
     const cc3 = config.env['cc3-test'] as { durable_objects: { bindings: unknown[] }; migrations: unknown[]; vars: Record<string, string> };
     expect(cc3.durable_objects.bindings).toEqual([{ name: 'AGENT_RUN', class_name: 'AgentRunObject' }]);
     expect(cc3.migrations).toEqual([{ tag: 'cc5-l7b-agent-run', new_sqlite_classes: ['AgentRunObject'] }]);
-    expect(cc3.vars.AGENT_RUNS_ENABLED).toBe('false');
+    // CC-7 L7-0 (GO de Kevin par fusion) : la répétition finale allume les exécutions API sur cc3-test
+    // UNIQUEMENT, avec un modèle gratuit Workers AI, sans aucune variable payante ni fusion automatique.
+    expect(cc3.vars.AGENT_RUNS_ENABLED).toBe('true');
+    expect(cc3.vars.AGENT_RUN_MODEL).toMatch(/^workers-ai:/);
+    expect(Object.keys(cc3.vars).filter(key => /PAID|COST_CENTS|^LLM_KEY_|^AUTO_MERGE_/.test(key))).toEqual([]);
+    expect((config as { vars?: Record<string, string> }).vars?.AGENT_RUNS_ENABLED).not.toBe('true');
     for (const [name, value] of Object.entries(config.env)) {
       if (name === 'cc3-test') continue;
       expect(value.durable_objects).toBeUndefined();
       expect(value.migrations).toBeUndefined();
+      const vars = (value as { vars?: Record<string, string> }).vars ?? {};
+      for (const gate of ['AGENT_RUNS_ENABLED', 'SALON_ENABLED', 'PRODUCT_CREATE_ENABLED', 'AUTO_MERGE_INTEGRATION']) {
+        expect(vars[gate], name + ' ' + gate).not.toBe('true');
+      }
     }
   });
 });
