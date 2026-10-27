@@ -20,6 +20,7 @@ export {
 } from './read-tools';
 export { createVerdictTools, verdictOpId, VERDICT_TOOL_SCHEMAS, VERDICT_STATES, VERDICT_REVIEW_MAX_CHARS, VERDICT_REQUIRED_CHECKS, parseRequiredChecks, ciGreen,
   type VerdictTaskKind, type VerdictTools } from './verdict-tools';
+export { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_STATES, CONTRIBUTION_TOOL_SCHEMAS, type ContributionTools } from './contribution-tools';
 export { createStoreWriteTools, effectOpId, WRITE_TOOL_SCHEMAS, WRITE_TOOLS_BY_KIND, type WriteToolName, type StoreWriteTools } from './store-tools';
 export { planAgentRuns, apiParticipants, answerRunId, answerPrompt, taskRunId, taskPrompt, continuityEnabled, ANSWER_READ_WINDOW, PLAN_LIMIT, PLAN_MAX_STEPS, PLAN_MAX_TOKENS, PLAN_DEADLINE_S, TASK_KIND_COST_CENTS, RUN_COST_CENTS_CEILING, taskKindCostCents, type PlanEnv, type PlanResult, type PlannedTaskKind, type TaskWakeKind } from './plan';
 export {

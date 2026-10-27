@@ -233,7 +233,11 @@ function questionDecisions(snapshot: ControllerSnapshot): Decision[] {
  */
 function phaseOutputDecisions(snapshot: ControllerSnapshot, existing: Decision[]): Decision[] {
   if (snapshot.auto_advance === 'none') return [];
-  const taken = new Set(existing.filter(d => d.kind === 'wake').map(d => d.actor + '|' + (d.task_id ?? '')));
+  // CC-7 L6b-2 : un réveil « no-submission » (implémenter) sur une tâche dont la phase attend une
+  // contribution de conception est REMPLACÉ par `contribute` (l'auteur doit proposer, pas coder) ;
+  // tout autre réveil de tâche garde la priorité.
+  const replaceable = (d: Decision) => d.kind === 'wake' && d.rule === 'no-submission';
+  const taken = new Set(existing.filter(d => d.kind === 'wake' && !replaceable(d)).map(d => d.actor + '|' + (d.task_id ?? '')));
   const out: Decision[] = [];
   for (const gap of snapshot.phase_outputs ?? []) {
     for (const holder of gap.missing) {
@@ -260,7 +264,12 @@ export function nextActors(snapshot: ControllerSnapshot): { mode: ControllerMode
   if (snapshot.halted) return { mode: 'halted', decisions: [] };
   const byId = new Map(snapshot.tasks.map(task => [task.task_id, task]));
   const decisions = [...snapshot.tasks.flatMap(task => taskDecisions(task, byId)), ...questionDecisions(snapshot)];
-  decisions.push(...phaseOutputDecisions(snapshot, decisions));
+  const phaseWakes = phaseOutputDecisions(snapshot, decisions);
+  // CC-7 L6b-2 : la contribution attendue remplace le réveil « no-submission » de la même tâche.
+  const replaced = new Set(phaseWakes.map(d => d.actor + '|' + (d.task_id ?? '')));
+  const kept = decisions.filter(d => !(d.kind === 'wake' && d.rule === 'no-submission' && replaced.has(d.actor + '|' + (d.task_id ?? ''))));
+  decisions.length = 0;
+  decisions.push(...kept, ...phaseWakes);
   const target = nextPhase(snapshot.phase);
   if (snapshot.auto_advance !== 'none' && snapshot.outputs_satisfied && target) {
     decisions.push({ kind: 'advance_phase', actor: 'policy:' + snapshot.auto_advance, task_id: null, action: 'advance',
