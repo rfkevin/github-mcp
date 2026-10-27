@@ -448,6 +448,13 @@ Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAIL
 | `SALON_INCIDENT_DUP` | CC-7 L4 | Second message sans `new_fact` pour le même `incident_key` | Nouveau fait ou autre incident |
 | `SALON_DAILY_LIMIT` | CC-7 L4 | Quota journalier de 3 `decision`/`blocking` atteint (hors exception `blocking`+`new_fact`) | Attendre le jour UTC suivant ou escalader avec fait nouveau |
 | `SALON_WAKE_UNKNOWN` | CC-7 L4 | `collab_salon_ack_wake` : réveil inconnu pour ce participant | Relire `collab_salon_pending_wakes` |
+| `CONTRIBUTION_KIND_FORBIDDEN` | CC-7 L6b-2 | `store_contribute` appelé par une exécution API qui n’est pas de type `design` ; rien n’est écrit | Seuls les réveils `contribute` (type `design`) déposent une sortie de conception |
+| `CONTRIBUTION_NOT_EXPECTED` | CC-7 L6b-2 | La phase courante n’attend pas cette sortie de ce participant sur cette tâche (déjà produite, satisfaite, ou pas titulaire) | Relire le contexte : seule la sortie manquante qui vous est demandée est acceptée |
+| `CONTRIBUTION_ARGS_INVALID` | CC-7 L6b-2 | `task` invalide, ou `content` / `review` vide ou trop long (20 000 / 8 000 caractères) | Corriger les arguments |
+| `CONTRIBUTION_STATE_INVALID` | CC-7 L6b-2 | Critique ou vote sans état `AGREE`, `AMEND` ou `OBJECTION` | Donner un état de conception (pas `PASS`/`FAIL`, réservés aux verdicts D12) |
+| `CONTRIBUTION_KIND_UNSUPPORTED` | CC-7 L6b-2 | La sortie attendue n’est ni `proposal.submit` ni `evidence.add` | Passer par le chat ou par Kevin |
+| `AUTO_MERGE_PATH_OUTSIDE_REPOSITORY` | CC-7 L6b-3 | Fusion automatique : écriture REST hors du dépôt configuré (`AUTO_MERGE_REPOSITORY`) ; refusée avant tout appel | Défaut de code : signaler, ne pas contourner |
+| `AUTO_MERGE_INVALID_REF` | CC-7 L6b-3 | La tête de la branche d’intégration lue sur GitHub n’est pas un SHA de 40 caractères ; passage interrompu pour ce candidat | Relire la branche ; aucune fusion n’a été tentée |
 | `PRODUCT_CREATE_DISABLED` | CC-7 L6a | « Nouveau produit » demandé alors que `PRODUCT_CREATE_ENABLED` n’est pas `true` ; rien n’est écrit | Kevin allume la porte, ou ouvre le cycle par K-phases et K-import |
 | `PRODUCT_INVALID` | CC-7 L6a | Identifiant de cycle, objectif (1 à 4 000 caractères), dépôt `owner/repo` ou SHA de départ invalide | Corriger le formulaire |
 | `PRODUCT_PARTICIPANTS` | CC-7 L6a | Moins de 3 ou plus de 6 participants, doublon, participant non enregistré ou inactif, ou deux participants qui donnent la même tâche de proposition | Enregistrer les participants (K6) ou corriger la liste |

@@ -14,6 +14,8 @@ import { controllerCronEnabled, runScheduledControllers } from './collab-store/c
 import { WEBHOOK_PATH, handleGitHubWebhook, type WebhookEnv } from './collab-store/controller/webhook';
 import { agentRunPass } from './collab-store/agentrun/orchestrator';
 import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './collab-store/agentrun/object';
+import { announceReadyToPromote, runAutoMergePass } from './collab-store/gates/auto-merge';
+import { autoMergeGitHubFrom, type AutoMergeRootEnv } from './auto-merge-root';
 
 // CC-5 l7 7b — orchestrateur des exécutions d'agents (binding AGENT_RUN, env cc3-test seulement ; inactif par défaut).
 export { AgentRunObject } from './agent-run-object';
@@ -25,6 +27,18 @@ function scheduleAgentRunPass(env: unknown, ctx: ExecutionContext): void {
   ctx.waitUntil(agentRunPass(agentRunDb(agentEnv), agentEnv, {
     now: Math.floor(Date.now() / 1000), deliverer: 'pass:' + crypto.randomUUID(), wake: wakeViaNamespace(agentEnv.AGENT_RUN),
   }).catch(() => undefined));
+}
+
+/**
+ * CC-7 L6b-3 — après le passage du contrôleur : fusion automatique vers l'intégration (éteinte sauf
+ * AUTO_MERGE_INTEGRATION="true" + dépôt et branche d'intégration + secrets de l'App) puis annonce
+ * « prêt à promouvoir » au salon (éteinte sauf SALON_ENABLED="true"). Une erreur n'arrête rien d'autre.
+ */
+async function integrationPass(db: D1Database, env: unknown): Promise<void> {
+  const rootEnv = env as AutoMergeRootEnv;
+  const github = autoMergeGitHubFrom(rootEnv);
+  if (github) await runAutoMergePass(db, rootEnv, github).catch(() => undefined);
+  await announceReadyToPromote(db, rootEnv).catch(() => undefined);
 }
 
 export default {
@@ -146,7 +160,8 @@ export default {
     const store = env as AppEnv & CollabStoreEnv & { CONTROLLER_CRON_ENABLED?: string };
     if (!controllerCronEnabled(store.CONTROLLER_CRON_ENABLED)) return;
     if (!collabStoreEnabled(store.COLLAB_STORE_ENABLED) || !store.COLLAB_DB) return;
-    ctx.waitUntil(runScheduledControllers(store.COLLAB_DB).then(() => undefined));
+    const db = store.COLLAB_DB;
+    ctx.waitUntil(runScheduledControllers(db).then(() => integrationPass(db, env)).then(() => undefined));
     scheduleAgentRunPass(env, ctx);
   },
 } satisfies ExportedHandler<AppEnv>;
