@@ -58,10 +58,12 @@ paidAdapterContract(db, {
 });
 
 describe('CC-7 L2 — registre des tarifs daté (deny-by-default)', () => {
-  it('exactement les 8 références relevées le 2026-10-25 plus les 3 du 2026-10-27 (CC-7 L8), source par entrée, grok-4.1-fast absent', () => {
+  it('exactement les 8 références relevées le 2026-10-25 plus les 5 du 2026-10-27 (CC-7 L8, L9b), source par entrée, grok-4.1-fast absent', () => {
     expect(API_RATE_SNAPSHOT_DATE).toBe('2026-10-25');
     expect(Object.keys(API_MODEL_RATES).sort()).toEqual([
+      'anthropic:claude-fable-5-1',
       'anthropic:claude-haiku-5-5',
+      'anthropic:claude-opus-5-5',
       'anthropic:claude-sonnet-5-5',
       'gemini:gemini-3.5-flash-lite',
       'gemini:gemini-3.6-flash',

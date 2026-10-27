@@ -51,6 +51,10 @@ export const API_MODEL_RATES: Readonly<Record<string, ApiModelRate>> = {
   'xai:grok-build-0.1': { input_per_m: 100, output_per_m: 200, source_url: XAI_PRICING },
   'anthropic:claude-sonnet-5-5': { input_per_m: 200, output_per_m: 1000, source_url: ANTHROPIC_PRICING },
   'anthropic:claude-haiku-5-5': { input_per_m: 10, output_per_m: 50, source_url: ANTHROPIC_PRICING },
+  // CC-7 L9b : relevé du 2026-10-27 (page tarifaire de la plateforme Claude).
+  'anthropic:claude-opus-5-5': { input_per_m: 400, output_per_m: 2000, source_url: 'https://platform.claude.com/docs/en/about-claude/pricing', as_of: '2026-10-27' },
+  // Gamme Mythos (au-dessus d'Opus), version publique avec protections renforcées ; même relevé.
+  'anthropic:claude-fable-5-1': { input_per_m: 1000, output_per_m: 5000, source_url: 'https://platform.claude.com/docs/en/about-claude/pricing', as_of: '2026-10-27' },
   'gemini:gemini-3.5-flash-lite': { input_per_m: 30, output_per_m: 250, source_url: GEMINI_PRICING , as_of: '2026-10-27' },
   'gemini:gemini-3.6-flash': { input_per_m: 75, output_per_m: 375, source_url: GEMINI_PRICING , as_of: '2026-10-27' },
   'groq:openai/gpt-oss-120b': { input_per_m: 15, output_per_m: 60, source_url: GROQ_GPT_OSS_120B_PRICING , as_of: '2026-10-27' },

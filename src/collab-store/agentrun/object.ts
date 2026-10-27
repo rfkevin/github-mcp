@@ -18,6 +18,7 @@ import { createZaiModel } from './zai-model';
 import { createXaiModel } from './xai-model';
 import { createAnthropicModel } from './anthropic-model';
 import { createProviderModel, createRoutedModel, hasParticipantModels, isL8ProviderRef } from './provider-models';
+import type { PolicyEnv } from './model-policy';
 import { createReadToolHost, type GitHubReads } from './read-tools';
 import { continuityEnabled } from './plan';
 import { DEFAULT_API_BASE_BRANCH, type GitHubWrites } from './github-tools';
@@ -140,7 +141,9 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     const db = stepDb ?? fallbackDb;
     // CC-7 L5b (S10) : store_verdict proposé aux kinds review/test dès que les lectures GitHub existent.
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
-      verdicts: github !== null, requiredChecks, contributions: true, continuity: continuityEnabled(env) });
+      verdicts: github !== null, requiredChecks, contributions: true, continuity: continuityEnabled(env),
+      // CC-7 L9b : l'agent choisit lui-même son modèle et sa réflexion quand l'aiguillage par participant est posé.
+      modelChoice: routed ? env as unknown as PolicyEnv : null });
     const schemas = (kind: string) => tools.schemas(kind);
     if (routed) {
       const model = createRoutedModel(env, { env, db, runId: _runId, envelope, schemas, system: AGENT_RUN_SYSTEM,

@@ -197,7 +197,7 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Erreurs** : `UNREGISTERED_CLIENT`, `STORE_UNAVAILABLE`.
 
 ### `collab_choose_model`
-- **CC-7 L9a** : pose (`ref`) ou retire (`ref: null`) la préférence de modèle d’un agent pour un `cycle` (et une `task?`). L’agent pour lui-même, ou un coordinateur actif pour n’importe quel agent (`participant?`). Le modèle doit être dans `AGENT_RUN_MODELS_<P>` (famille de l’agent) ; appliqué à chaque étape s’il est abordable, sinon option suivante de la liste (journalisée). Même porte que `collab_model_catalog`.
+- **CC-7 L9a** : pose (`ref`) ou retire (`ref: null`) la préférence de modèle d’un agent pour un `cycle` (et une `task?`). **CC-7 L9b** : `effort?` (`low`, `medium`, `high`, `xhigh` — faible, moyen, élevé, très élevé), niveau invalide = `MODEL_CHOICE_INVALID`. Les agents API ont l’équivalent pour eux-mêmes : outil `store_choose_model` (leur tâche, leur liste). L’agent pour lui-même, ou un coordinateur actif pour n’importe quel agent (`participant?`). Le modèle doit être dans `AGENT_RUN_MODELS_<P>` (famille de l’agent) ; appliqué à chaque étape s’il est abordable, sinon option suivante de la liste (journalisée). Même porte que `collab_model_catalog`.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `MODEL_CHOICE_FORBIDDEN`, `MODEL_CHOICE_INVALID`, `MODEL_NOT_ALLOWED`, `MODEL_FAMILY_UNKNOWN`, `STORE_UNAVAILABLE`.
 
 ### Identités logiques équivalentes (#126)

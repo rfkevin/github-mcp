@@ -42,7 +42,8 @@ paidAdapterContract(db, {
   worstCents: 5,
   actualCents: 2,
   month: '2032-06',
-  offRegistryRef: 'anthropic:claude-opus-5-5',
+  // CC-7 L9b : Opus 5.5 est désormais tarifé ; la référence hors registre devient un modèle retiré.
+  offRegistryRef: 'anthropic:claude-opus-4-1',
   toolDescription: 'Contexte du cycle pour ce participant.',
   makeResponse: anthropicReply,
   expectHeaders: headers => {
@@ -61,7 +62,7 @@ paidAdapterContract(db, {
 
 describe('CC-7 L2 PR 2.3 — adaptateur Anthropic : construction', () => {
   it('références refusées à la construction : hors registre, autre fournisseur, vide, maxOutputTokens', () => {
-    for (const bad of ['anthropic:claude-opus-5-5', 'anthropic:claude-3-5-sonnet', 'zai:glm-5.3', 'xai:grok-4.7',
+    for (const bad of ['anthropic:claude-opus-4-1', 'anthropic:claude-3-5-sonnet', 'zai:glm-5.3', 'xai:grok-4.7',
       'workers-ai:@cf/moonshotai/kimi-k2.6', 'anthropic:']) {
       expect(() => parseAnthropicRef(bad)).toThrow(/ANTHROPIC_MODEL_UNSUPPORTED/);
     }

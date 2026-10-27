@@ -33,6 +33,7 @@ import { createOpenAiPaidModel } from './openai-paid-model';
 import { createPaidWorkersAiModel, type ParticipantEnvelope } from './paid-model';
 import { createPaidProtocolModel } from './paid-protocol';
 import { createWorkersAiModel, type ToolSchema } from './workers-ai-model';
+import { effortMaxTokens, effortOptions, type Effort } from './effort';
 import { budgetState, chooseModel, modelPreference, participantEnvelope, participantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
@@ -77,6 +78,8 @@ export interface ProviderModelContext {
   /** Tests seulement : fetch injecté et horloge. */
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  /** CC-7 L9b : niveau de réflexion décidé par le serveur (absent = réglages historiques du fournisseur). */
+  effort?: Effort | null;
 }
 
 /** Fournisseurs ajoutés en L8 : passent par la fabrique même sans aiguillage par participant. */
@@ -148,8 +151,14 @@ export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderM
     throw new Error('MODEL_PROVIDER_UNSUPPORTED : ' + (match?.[1] ?? ref) + ' (fournisseurs : ' + API_PROVIDERS.join(', ') + ').');
   }
   const model = match[2];
+  // CC-7 L9b : la réflexion consomme des jetons de sortie — plafond de l'étape relevé (borné à 8192), même pire cas réservé.
+  const effort = ctx.effort ?? null;
+  const effortOpts = effort ? effortOptions(ref, effort) : null;
+  const maxOutputTokensFor = effortOpts
+    ? (kind: string) => effortMaxTokens(ctx.maxOutputTokensFor?.(kind) ?? ctx.maxOutputTokens, effort)
+    : ctx.maxOutputTokensFor;
   const core = { ref, db: ctx.db, runId: ctx.runId, envelope: ctx.envelope, schemas: ctx.schemas, system: ctx.system,
-    maxOutputTokens: ctx.maxOutputTokens, maxOutputTokensFor: ctx.maxOutputTokensFor, fetchImpl: ctx.fetchImpl, now: ctx.now };
+    maxOutputTokens: ctx.maxOutputTokens, maxOutputTokensFor, fetchImpl: ctx.fetchImpl, now: ctx.now };
 
   if (provider === 'workers-ai') {
     if (!ctx.ai) throw unsupported(provider, 'binding AI absent sur ce Worker.');
@@ -157,7 +166,7 @@ export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderM
     return free
       ? createWorkersAiModel({ ai: ctx.ai, ref, db: ctx.db, neuronBudget: ctx.neuronBudget ?? 0, schemas: ctx.schemas,
         system: ctx.system, maxOutputTokens: ctx.maxOutputTokens, maxOutputTokensFor: ctx.maxOutputTokensFor })
-      : createPaidWorkersAiModel({ ai: ctx.ai, ...core });
+      : createPaidWorkersAiModel({ ai: ctx.ai, ...core, maxOutputTokensFor: ctx.maxOutputTokensFor });
   }
 
   const free = tier !== 'paid' && isFreeApiModel(ref) && freeAllowed(provider, ctx.env);
@@ -170,14 +179,15 @@ export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderM
       ? model + ' est gratuit mais non permis ici (attestation owner du compte gratuit ou origine cc3-test absente) et sans tarif daté.'
       : model + ' hors du registre gratuit et du registre des tarifs daté (deny-by-default).');
   }
-  if (provider === 'anthropic') return createAnthropicModel({ ...core, env: ctx.env });
+  if (provider === 'anthropic') return createAnthropicModel({ ...core, env: ctx.env, requestOptions: effortOpts ?? undefined });
   if (provider === 'gemini') {
     return createPaidProtocolModel({ ...core, free, secret: ctx.env.LLM_KEY_GEMINI, url: geminiGenerateUrl(model),
-      provider, protocol: GEMINI_PROTOCOL });
+      provider, protocol: GEMINI_PROTOCOL, requestOptions: effortOpts ?? undefined });
   }
   const config = OPENAI_COMPATIBLE[provider];
+  const base = config.options?.(model);
   return createOpenAiPaidModel({ ...core, free, secret: config.secret(ctx.env), url: config.url(model), provider,
-    requestOptions: config.options?.(model) });
+    requestOptions: base || effortOpts ? { ...(base ?? {}), ...(effortOpts ?? {}) } : undefined });
 }
 
 /**
@@ -190,12 +200,12 @@ export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderM
 export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string; AGENT_RUN_PAID_MODEL?: string },
   ctx: ProviderModelContext): ModelClient {
   const models = new Map<string, ModelClient>();
-  const build = (ref: string, tier: ModelTier, envelope: ProviderModelContext['envelope']): ModelClient => {
-    const key = tier + '|' + ref;
+  const build = (ref: string, tier: ModelTier, envelope: ProviderModelContext['envelope'], effort: Effort | null = null): ModelClient => {
+    const key = tier + '|' + ref + '|' + (effort ?? '');
     let model = models.get(key);
     if (!model) {
       try {
-        model = createProviderModel(ref, tier, { ...ctx, envelope });
+        model = createProviderModel(ref, tier, { ...ctx, envelope, effort });
       } catch (error) {
         throw new ModelCallError('MODEL_ROUTE_REFUSED : ' + (error instanceof Error ? error.message : String(error)), null);
       }
@@ -229,7 +239,7 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         }
         await recordModelChoice(ctx.db, ctx.runId, run.steps_done, run.participant_id, choice, Math.floor(now.getTime() / 1000));
         ref = choice.ref;
-        model = build(ref, 'auto', policy.envelope);
+        model = build(ref, 'auto', policy.envelope, choice.effort);
       } else {
         const route = participantModelRoute(env, run.participant_id);
         if (!route) {
