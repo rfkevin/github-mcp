@@ -57,6 +57,8 @@ export interface PaidAdapterFixture {
   expectHeaders?: (headers: Headers) => void;
   /** Forme du corps pour ce protocole (PR 2.3) ; défaut : messages système + outils au format OpenAI. */
   expectRequestBody?: (body: Record<string, unknown>) => void;
+  /** CC-7 L8 : modèle et plafond de sortie dans le corps (Gemini : URL + generationConfig) ; défaut : body.model et body.max_tokens. */
+  expectModelAndMax?: (body: Record<string, unknown>, model: string, maxTokens: number) => void;
   /** Modèle de test de l’adaptateur (enveloppe financée, secret factice, fetch injecté, horloge fixée). */
   model: (call: PaidContractCall) => ModelClient;
 }
@@ -123,8 +125,11 @@ export function paidAdapterContract(db: D1Database, f: PaidAdapterFixture): void
       expect(stub.seen[0].url).toBe(f.url);
       checkHeaders(stub.seen[0].headers);
       const body = stub.seen[0].body;
-      expect(body.model).toBe(f.ref.slice(f.ref.indexOf(':') + 1));
-      expect(body.max_tokens).toBe(4_096);
+      const checkModelAndMax = f.expectModelAndMax ?? ((b: Record<string, unknown>, model: string, maxTokens: number) => {
+        expect(b.model).toBe(model);
+        expect(b.max_tokens).toBe(maxTokens);
+      });
+      checkModelAndMax(body, f.ref.slice(f.ref.indexOf(':') + 1), 4_096);
       f.expectBody?.(body);
       checkBody(body);
       // Pire cas réservé au tarif relevé, règlement au réel : trop-versé rendu.

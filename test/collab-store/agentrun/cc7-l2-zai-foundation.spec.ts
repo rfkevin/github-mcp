@@ -58,11 +58,14 @@ paidAdapterContract(db, {
 });
 
 describe('CC-7 L2 — registre des tarifs daté (deny-by-default)', () => {
-  it('exactement les 8 références relevées le 2026-10-25, source par entrée, grok-4.1-fast absent', () => {
+  it('exactement les 8 références relevées le 2026-10-25 plus les 3 du 2026-10-27 (CC-7 L8), source par entrée, grok-4.1-fast absent', () => {
     expect(API_RATE_SNAPSHOT_DATE).toBe('2026-10-25');
     expect(Object.keys(API_MODEL_RATES).sort()).toEqual([
       'anthropic:claude-haiku-5-5',
       'anthropic:claude-sonnet-5-5',
+      'gemini:gemini-3.5-flash-lite',
+      'gemini:gemini-3.6-flash',
+      'groq:openai/gpt-oss-120b',
       'xai:grok-4.20-0309-non-reasoning',
       'xai:grok-4.7',
       'xai:grok-build-0.1',
@@ -75,6 +78,9 @@ describe('CC-7 L2 — registre des tarifs daté (deny-by-default)', () => {
     expect(apiModelRate('zai:inconnu')).toBeNull();
     const glm = apiModelRate('zai:glm-5.3')!;
     expect([glm.input_per_m, glm.output_per_m]).toEqual([140, 440]);
+    expect(apiModelRate('deepseek:deepseek-flash')).toBeNull();
+    const flash = apiModelRate('gemini:gemini-3.6-flash')!;
+    expect([flash.input_per_m, flash.output_per_m]).toEqual([75, 375]);
   });
 
   it('centsOfApiTokens : tarif au million arrondi au cent supérieur, jamais sous-évalué', () => {
