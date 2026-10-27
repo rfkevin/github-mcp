@@ -65,7 +65,8 @@ describe('CC-7 L9a — choix sous budget', () => {
   });
 
   it('défaut : le plus fort abordable pour review, le moins cher pour design ; budget serré = descente ; rien d’abordable = refus', () => {
-    expect(chooseModel(CLAUDE, policy, 'review', budget(100), null)).toMatchObject({ ref: SONNET, chosen_by: 'serveur', tier: 'paid', est_step_cents: 6 });
+    // CC-7 L9b : réflexion « élevée » par défaut pour review, plafond de sortie relevé, donc pire cas estimé 8 c (6 sans réflexion).
+    expect(chooseModel(CLAUDE, policy, 'review', budget(100), null)).toMatchObject({ ref: SONNET, chosen_by: 'serveur', tier: 'paid', est_step_cents: 8, effort: 'high' });
     expect(chooseModel(CLAUDE, policy, 'design', budget(100), null).ref).toBe(HAIKU);
     expect(chooseModel(CLAUDE, policy, 'review', budget(3), null).ref).toBe(HAIKU);
     expect(chooseModel(CLAUDE, policy, 'review', budget(100, 1_000, 98), null).ref).toBe(HAIKU);
@@ -86,10 +87,10 @@ describe('CC-7 L9a — choix sous budget', () => {
     const at = 1_978_000_000;
     const base = { cycleId: 'l9a-cycle', participantId: 'claude', now: at };
     expect(await setModelPreference(db, CLAUDE, { ...base, actor: 'claude', actorIsCoordinator: false, ref: SONNET, reason: 'relecture sécurité' }))
-      .toEqual({ status: 'set', ref: SONNET, task_id: '' });
+      .toEqual({ status: 'set', ref: SONNET, task_id: '', effort: null });
     await expect(setModelPreference(db, CLAUDE, { ...base, actor: 'grok', actorIsCoordinator: false, ref: HAIKU })).rejects.toThrow(/MODEL_CHOICE_FORBIDDEN|Seul l’agent/);
     expect(await setModelPreference(db, CLAUDE, { ...base, actor: 'grok', actorIsCoordinator: true, taskId: 'L9', ref: HAIKU }))
-      .toEqual({ status: 'set', ref: HAIKU, task_id: 'L9' });
+      .toEqual({ status: 'set', ref: HAIKU, task_id: 'L9', effort: null });
     await expect(setModelPreference(db, CLAUDE, { ...base, actor: 'claude', actorIsCoordinator: false, ref: 'zai:glm-5.3' })).rejects.toThrow(/n’est pas dans les modèles autorisés/);
     expect(await setModelPreference(db, CLAUDE, { ...base, actor: 'claude', actorIsCoordinator: false, taskId: 'L9', ref: null }))
       .toEqual({ status: 'cleared', ref: null, task_id: 'L9' });

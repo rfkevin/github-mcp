@@ -113,7 +113,9 @@ export const GEMINI_PROTOCOL: PaidProtocol = {
       body: {
         systemInstruction: converted.systemInstruction, contents: converted.contents,
         ...(tools.length ? { tools } : {}),
-        generationConfig: { maxOutputTokens: input.maxOutputTokens, thinkingConfig: { thinkingLevel: 'minimal' } },
+        // CC-7 L9b : niveau de réflexion décidé par le serveur (effort.ts) ; minimal par défaut.
+        generationConfig: { maxOutputTokens: input.maxOutputTokens,
+          thinkingConfig: { thinkingLevel: typeof input.requestOptions?.thinkingLevel === 'string' ? input.requestOptions.thinkingLevel : 'minimal' } },
       },
       bound: bytes(JSON.stringify(converted.contents)) + bytes(input.system) + bytes(JSON.stringify(tools))
         + 16 * converted.contents.length,

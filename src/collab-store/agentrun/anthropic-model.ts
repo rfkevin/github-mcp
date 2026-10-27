@@ -23,6 +23,8 @@ export const ANTHROPIC_API_VERSION = '2023-06-01';
 export interface AnthropicModelOptions extends PaidModelCore {
   /** Environnement serveur : secret LLM_KEY_ANTHROPIC (posé par Kevin seul sur le Worker). */
   env: { LLM_KEY_ANTHROPIC?: string };
+  /** CC-7 L9b : réflexion adaptative et niveau (thinking, output_config.effort), décidés par le serveur. */
+  requestOptions?: Readonly<Record<string, unknown>>;
 }
 
 /** Référence Anthropic du registre daté : deny-by-default, aucun repli inter-familles. */
@@ -117,7 +119,7 @@ const ANTHROPIC_PROTOCOL: PaidProtocol = {
     return {
       body: {
         model: input.model, system: converted.system, messages: converted.messages,
-        max_tokens: input.maxOutputTokens, ...(tools.length ? { tools } : {}),
+        max_tokens: input.maxOutputTokens, ...(input.requestOptions ?? {}), ...(tools.length ? { tools } : {}),
       },
       bound: anthropicInputBound(converted, tools),
     };

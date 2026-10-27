@@ -41,12 +41,13 @@ export function registerModelTools(server: McpServer, context: CollabToolContext
 
   server.registerTool('collab_choose_model', {
     title: 'Choisir le modèle d’un agent API (CC-7 L9a)',
-    description: 'Pose (ref) ou retire (ref null) la préférence de modèle d’un agent pour un cycle, et pour une tâche si task est donné. L’agent choisit pour lui-même ; un coordinateur actif peut choisir pour n’importe quel agent. Le modèle doit figurer dans la liste de l’agent (sa famille) ; le serveur l’applique à chaque étape s’il est abordable, sinon prend l’option suivante de la liste et le journalise.',
+    description: 'Pose (ref, effort facultatif : low, medium, high, xhigh — CC-7 L9b) ou retire (ref null) la préférence de modèle d’un agent pour un cycle, et pour une tâche si task est donné. L’agent choisit pour lui-même ; un coordinateur actif peut choisir pour n’importe quel agent. Le modèle doit figurer dans la liste de l’agent (sa famille) ; le serveur l’applique à chaque étape s’il est abordable, sinon prend l’option suivante de la liste et le journalise.',
     inputSchema: {
       cycle: ID,
       participant: z.string().min(1).max(128).optional(),
       task: ID.optional(),
       ref: z.string().min(3).max(220).nullable(),
+      effort: z.enum(['low', 'medium', 'high', 'xhigh']).nullable().optional(),
       reason: z.string().max(500).optional(),
     },
     annotations: WRITE,
@@ -56,7 +57,7 @@ export function registerModelTools(server: McpServer, context: CollabToolContext
       const participantId = input.participant ?? actor;
       const result = await setModelPreference(context.db, context.models, {
         actor, actorIsCoordinator: participantId !== actor && await isCoordinator(context.db, actor),
-        cycleId: input.cycle, participantId, taskId: input.task, ref: input.ref, reason: input.reason,
+        cycleId: input.cycle, participantId, taskId: input.task, ref: input.ref, effort: input.effort, reason: input.reason,
         now: Math.floor(Date.now() / 1000),
       });
       return collabSuccess({ participant: participantId, ...result });

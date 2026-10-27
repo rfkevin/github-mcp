@@ -26,6 +26,7 @@ import { CollabStoreError } from '../store/collab-store';
 import { MAX_PAID_CENTS, parseParticipantEnvelope, participantCycleKey, participantDayKeys,
   type ParticipantEnvelope, type ParticipantEnvelopeEnv } from './paid-model';
 import { apiParticipants } from './plan';
+import { defaultEffort, effortMaxTokens, effortsDownFrom, effortSupported, isEffort, type Effort } from './effort';
 import { freeAllowed, isFreeApiModel, participantModelRoute, participantModelVar, type ApiProvider, type ProviderEnv } from './provider-models';
 
 export const MODEL_FAMILIES = ['anthropic', 'xai', 'zai', 'google', 'openai', 'deepseek', 'qwen', 'meta', 'mistral'] as const;
@@ -149,8 +150,8 @@ function credentialPresent(env: PolicyEnv, ref: string): boolean {
   return name === 'AI' ? value !== undefined && value !== null : typeof value === 'string' && value.trim() !== '';
 }
 
-/** Gratuit, payant ou indisponible pour CET environnement, et coût estimé d'une étape pour ce type de tâche. */
-export function modelOption(env: PolicyEnv, ref: string, kind: string): ModelOption {
+/** Gratuit, payant ou indisponible pour CET environnement, et coût estimé d'une étape pour ce type de tâche et ce niveau de réflexion. */
+export function modelOption(env: PolicyEnv, ref: string, kind: string, effort: Effort | null = null): ModelOption {
   const provider = ref.slice(0, ref.indexOf(':')) as ApiProvider;
   const credential = credentialPresent(env, ref);
   const model = ref.slice(ref.indexOf(':') + 1);
@@ -161,7 +162,9 @@ export function modelOption(env: PolicyEnv, ref: string, kind: string): ModelOpt
   }
   const rate = apiModelRate(ref);
   if (!rate) return { ref, tier: 'unavailable', credential_present: credential, est_step_cents: null, reason: 'ni gratuit permis ni tarif daté' };
-  const est = centsOfApiTokens(rate, ESTIMATE_INPUT_TOKENS, resolveEffectiveMaxTokens({ task_kind: kind }));
+  // CC-7 L9b : la réflexion relève le plafond de sortie de l'étape, donc le pire cas estimé.
+  const base = resolveEffectiveMaxTokens({ task_kind: kind });
+  const est = centsOfApiTokens(rate, ESTIMATE_INPUT_TOKENS, effort && effortSupported(ref) ? effortMaxTokens(base, effort) : base);
   return credential ? { ref, tier: 'paid', credential_present: true, est_step_cents: est }
     : { ref, tier: 'unavailable', credential_present: false, est_step_cents: est, reason: 'clé absente' };
 }
@@ -187,53 +190,93 @@ function affordable(option: ModelOption, budget: BudgetState): boolean {
   return option.est_step_cents <= budget.day_limit - budget.day_spent && option.est_step_cents <= budget.cycle_limit - budget.cycle_spent;
 }
 
-export interface ModelChoice { ref: string; chosen_by: string; reason: string; est_step_cents: number; tier: 'free' | 'paid' }
+export interface ModelChoice { ref: string; chosen_by: string; reason: string; est_step_cents: number; tier: 'free' | 'paid';
+  /** CC-7 L9b : niveau de réflexion retenu (null = le fournisseur n'a pas de réglage). */
+  effort: Effort | null }
+/** Préférence posée : modèle et, depuis L9b, niveau de réflexion facultatif. */
+export interface ModelPreference { ref: string; set_by: string; effort?: Effort | null }
 
-/** Choix d'une étape : préférence abordable, sinon descente dans la liste, sinon règle par défaut ; rien d'abordable = refus. */
+/**
+ * Choix d'une étape : préférence abordable, sinon descente dans la liste, sinon règle par défaut ; rien d'abordable = refus.
+ * CC-7 L9b : pour chaque modèle, le niveau de réflexion demandé (préférence, sinon défaut du type de tâche) puis les
+ * niveaux plus légers, avant de passer au modèle suivant ; une préférence hors liste est ignorée ET journalisée.
+ */
 export function chooseModel(env: PolicyEnv, policy: ParticipantPolicy, kind: string, budget: BudgetState,
-  preference: { ref: string; set_by: string } | null): ModelChoice {
-  const options = policy.models.map(ref => modelOption(env, ref, kind));
-  const pick = (option: ModelOption, chosenBy: string, reason: string): ModelChoice =>
-    ({ ref: option.ref, chosen_by: chosenBy, reason, est_step_cents: option.est_step_cents ?? 0, tier: option.tier === 'free' ? 'free' : 'paid' });
+  preference: ModelPreference | null): ModelChoice {
+  const wanted: Effort = preference?.effort ?? defaultEffort(kind);
+  const fit = (ref: string): { option: ModelOption; effort: Effort | null } | null => {
+    if (!effortSupported(ref)) {
+      const option = modelOption(env, ref, kind, null);
+      return affordable(option, budget) ? { option, effort: null } : null;
+    }
+    for (const effort of effortsDownFrom(wanted)) {
+      const option = modelOption(env, ref, kind, effort);
+      if (affordable(option, budget)) return { option, effort };
+    }
+    return null;
+  };
+  const pick = (found: { option: ModelOption; effort: Effort | null }, chosenBy: string, reason: string): ModelChoice => ({
+    ref: found.option.ref, chosen_by: chosenBy, est_step_cents: found.option.est_step_cents ?? 0,
+    tier: found.option.tier === 'free' ? 'free' : 'paid', effort: found.effort,
+    reason: reason + (found.effort && found.effort !== wanted ? ' ; réflexion ' + found.effort + ' au lieu de ' + wanted + ' (budget)' : ''),
+  });
+  let note = '';
   if (preference) {
-    const index = options.findIndex(option => option.ref === preference.ref);
-    if (index >= 0) {
-      if (affordable(options[index], budget)) return pick(options[index], preference.set_by, 'préférence');
-      const lower = options.slice(index + 1).find(option => affordable(option, budget));
-      if (lower) return pick(lower, 'serveur', 'préférence ' + preference.ref + ' non abordable (' + (options[index].reason ?? 'budget') + ') : option suivante');
+    const index = policy.models.indexOf(preference.ref);
+    if (index < 0) {
+      note = 'préférence ' + preference.ref + ' hors liste ignorée ; ';
+    } else {
+      const own = fit(preference.ref);
+      if (own) return pick(own, preference.set_by, 'préférence');
+      for (const ref of policy.models.slice(index + 1)) {
+        const lower = fit(ref);
+        if (lower) return pick(lower, 'serveur', 'préférence ' + preference.ref + ' non abordable (budget) : option suivante');
+      }
     }
   }
-  const usable = options.filter(option => affordable(option, budget));
-  if (!usable.length) {
+  const fits = policy.models.map(fit).filter((found): found is { option: ModelOption; effort: Effort | null } => found !== null);
+  if (!fits.length) {
+    const options = policy.models.map(ref => modelOption(env, ref, kind, 'low'));
     throw new CollabStoreError('MODEL_BUDGET_EXHAUSTED', 'Aucun modèle abordable pour ' + policy.participant_id + ' (' + kind + ') : '
       + options.map(option => option.ref + '=' + (option.tier === 'unavailable' ? option.reason : option.est_step_cents + 'c')).join(', ')
       + ' ; budget restant jour ' + (budget.day_limit - budget.day_spent) + 'c, cycle ' + (budget.cycle_limit - budget.cycle_spent) + 'c.');
   }
-  if (STRONG_KINDS.includes(kind)) return pick(usable[0], 'serveur', 'défaut : le plus fort abordable (' + kind + ')');
-  const cheapest = usable.reduce((best, option) => (option.est_step_cents ?? 0) < (best.est_step_cents ?? 0) ? option : best, usable[0]);
-  return pick(cheapest, 'serveur', 'défaut : le moins cher (' + kind + ')');
+  if (STRONG_KINDS.includes(kind)) return pick(fits[0], 'serveur', note + 'défaut : le plus fort abordable (' + kind + ')');
+  const cheapest = fits.reduce((best, found) => (found.option.est_step_cents ?? 0) < (best.option.est_step_cents ?? 0) ? found : best, fits[0]);
+  return pick(cheapest, 'serveur', note + 'défaut : le moins cher (' + kind + ')');
 }
 
 export const MODEL_POLICY_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS agent_model_prefs (cycle_id TEXT NOT NULL, participant_id TEXT NOT NULL, task_id TEXT NOT NULL,
-    ref TEXT NOT NULL, set_by TEXT NOT NULL, reason TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (cycle_id, participant_id, task_id))`,
+    ref TEXT NOT NULL, set_by TEXT NOT NULL, reason TEXT NOT NULL, at INTEGER NOT NULL, effort TEXT, PRIMARY KEY (cycle_id, participant_id, task_id))`,
   `CREATE TABLE IF NOT EXISTS agent_model_choices (run_id TEXT NOT NULL, n INTEGER NOT NULL, participant_id TEXT NOT NULL,
-    ref TEXT NOT NULL, chosen_by TEXT NOT NULL, reason TEXT NOT NULL, est_step_cents INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (run_id, n))`,
+    ref TEXT NOT NULL, chosen_by TEXT NOT NULL, reason TEXT NOT NULL, est_step_cents INTEGER NOT NULL, at INTEGER NOT NULL, effort TEXT, PRIMARY KEY (run_id, n))`,
   `CREATE TABLE IF NOT EXISTS agent_model_calls (ref TEXT PRIMARY KEY, ok INTEGER NOT NULL DEFAULT 0, err INTEGER NOT NULL DEFAULT 0,
     last_ok_at INTEGER, last_err_at INTEGER, last_error TEXT, last_latency_ms INTEGER)`,
 ] as const;
 
+/** CC-7 L9b : colonnes ajoutées aux tables L9a déjà créées (ALTER idempotent : colonne existante ignorée). */
+const MODEL_POLICY_COLUMNS = [['agent_model_prefs', 'effort'], ['agent_model_choices', 'effort']] as const;
+const migrated = new WeakSet<D1Database>();
+
 export async function ensureModelPolicySchema(db: D1Database): Promise<void> {
   await db.batch(MODEL_POLICY_SCHEMA.map(statement => db.prepare(statement)));
+  if (migrated.has(db)) return;
+  for (const [table, column] of MODEL_POLICY_COLUMNS) {
+    const columns = (await db.prepare('PRAGMA table_info(' + table + ')').all<{ name: string }>()).results;
+    if (!columns.some(row => row.name === column)) await db.prepare('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' TEXT').run();
+  }
+  migrated.add(db);
 }
 
 /** Préférence de la tâche, sinon de l'agent pour tout le cycle (task_id ''). */
-export async function modelPreference(db: D1Database, cycleId: string, participantId: string, taskId: string): Promise<{ ref: string; set_by: string } | null> {
+export async function modelPreference(db: D1Database, cycleId: string, participantId: string, taskId: string): Promise<ModelPreference | null> {
   await ensureModelPolicySchema(db);
-  return db.prepare([
-    'SELECT ref, set_by FROM agent_model_prefs WHERE cycle_id = ?1 AND participant_id = ?2 AND task_id IN (?3, \'\')',
+  const row = await db.prepare([
+    'SELECT ref, set_by, effort FROM agent_model_prefs WHERE cycle_id = ?1 AND participant_id = ?2 AND task_id IN (?3, \'\')',
     'ORDER BY CASE WHEN task_id = ?3 THEN 0 ELSE 1 END LIMIT 1',
-  ].join(' ')).bind(cycleId, participantId, taskId).first<{ ref: string; set_by: string }>();
+  ].join(' ')).bind(cycleId, participantId, taskId).first<{ ref: string; set_by: string; effort: string | null }>();
+  return row ? { ref: row.ref, set_by: row.set_by, effort: isEffort(row.effort) ? row.effort : null } : null;
 }
 
 /**
@@ -242,7 +285,9 @@ export async function modelPreference(db: D1Database, cycleId: string, participa
  */
 export async function setModelPreference(db: D1Database, env: PolicyEnv, input: {
   actor: string; actorIsCoordinator: boolean; cycleId: string; participantId: string; taskId?: string; ref: string | null; reason?: string; now: number;
-}): Promise<{ status: 'set' | 'cleared'; ref: string | null; task_id: string }> {
+  /** CC-7 L9b : niveau de réflexion facultatif (low, medium, high, xhigh). */
+  effort?: string | null;
+}): Promise<{ status: 'set' | 'cleared'; ref: string | null; task_id: string; effort?: Effort | null }> {
   if (input.actor !== input.participantId && !input.actorIsCoordinator) {
     throw new CollabStoreError('MODEL_CHOICE_FORBIDDEN', 'Seul l’agent lui-même ou un coordinateur actif choisit le modèle de ' + input.participantId + '.');
   }
@@ -261,19 +306,23 @@ export async function setModelPreference(db: D1Database, env: PolicyEnv, input: 
     throw new CollabStoreError('MODEL_NOT_ALLOWED', input.ref + ' n’est pas dans les modèles autorisés de ' + input.participantId
       + (policy ? ' (' + policy.models.join(', ') + ')' : ' (aucune liste AGENT_RUN_MODELS_' + suffix(input.participantId) + ')') + '.');
   }
+  if (input.effort !== undefined && input.effort !== null && !isEffort(input.effort)) {
+    throw new CollabStoreError('MODEL_CHOICE_INVALID', 'Niveau de réflexion invalide : ' + input.effort + ' (low, medium, high, xhigh).');
+  }
+  const effort = isEffort(input.effort) ? input.effort : null;
   const reason = (input.reason ?? '').slice(0, 500);
   await db.prepare([
-    'INSERT INTO agent_model_prefs (cycle_id, participant_id, task_id, ref, set_by, reason, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)',
-    'ON CONFLICT(cycle_id, participant_id, task_id) DO UPDATE SET ref = excluded.ref, set_by = excluded.set_by, reason = excluded.reason, at = excluded.at',
-  ].join(' ')).bind(input.cycleId, input.participantId, taskId, input.ref, input.actor, reason, input.now).run();
-  return { status: 'set', ref: input.ref, task_id: taskId };
+    'INSERT INTO agent_model_prefs (cycle_id, participant_id, task_id, ref, set_by, reason, at, effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
+    'ON CONFLICT(cycle_id, participant_id, task_id) DO UPDATE SET ref = excluded.ref, set_by = excluded.set_by, reason = excluded.reason, at = excluded.at, effort = excluded.effort',
+  ].join(' ')).bind(input.cycleId, input.participantId, taskId, input.ref, input.actor, reason, input.now, effort).run();
+  return { status: 'set', ref: input.ref, task_id: taskId, effort };
 }
 
 /** Journal du choix d'une étape (une ligne par étape, rejeu idempotent). */
 export async function recordModelChoice(db: D1Database, runId: string, n: number, participantId: string, choice: ModelChoice, at: number): Promise<void> {
   await ensureModelPolicySchema(db);
-  await db.prepare('INSERT OR IGNORE INTO agent_model_choices (run_id, n, participant_id, ref, chosen_by, reason, est_step_cents, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)')
-    .bind(runId, n, participantId, choice.ref, choice.chosen_by, choice.reason.slice(0, 500), choice.est_step_cents, at).run();
+  await db.prepare('INSERT OR IGNORE INTO agent_model_choices (run_id, n, participant_id, ref, chosen_by, reason, est_step_cents, at, effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)')
+    .bind(runId, n, participantId, choice.ref, choice.chosen_by, choice.reason.slice(0, 500), choice.est_step_cents, at, choice.effort).run();
 }
 
 /** Disponibilité mesurée d'un modèle : appels réussis / en échec, dernière erreur, latence. */
@@ -294,12 +343,13 @@ export interface CatalogueEntry {
   family: ModelFamily | null;
   default_ref: string | null;
   budget: BudgetState;
-  models: Array<ModelOption & { family: ModelFamily | null; rate: { input_per_m: number; output_per_m: number; as_of: string; stale: boolean } | null;
+  models: Array<ModelOption & { family: ModelFamily | null; effort_supported: boolean; rate: { input_per_m: number; output_per_m: number; as_of: string; stale: boolean } | null;
     calls: { ok: number; err: number; last_ok_at: number | null; last_err_at: number | null; last_error: string | null; last_latency_ms: number | null } | null }>;
   rejected: Array<{ ref: string; reason: string }>;
-  /** Option retenue par défaut pour chaque type de tâche (null = rien d'abordable). */
+  /** Option retenue par défaut pour chaque type de tâche (null = rien d'abordable) et, depuis L9b, son niveau de réflexion. */
   default_by_kind: Record<string, string | null>;
-  preferences: Array<{ task_id: string; ref: string; set_by: string; reason: string }>;
+  default_effort_by_kind: Record<string, Effort | null>;
+  preferences: Array<{ task_id: string; ref: string; set_by: string; reason: string; effort: string | null }>;
 }
 
 const CATALOGUE_KINDS = ['answer', 'design', 'implement', 'review', 'test'] as const;
@@ -328,21 +378,27 @@ export async function modelCatalog(db: D1Database, env: PolicyEnv, options: { cy
       const asOf = rate?.as_of ?? API_RATE_SNAPSHOT_DATE;
       const calls = await db.prepare('SELECT ok, err, last_ok_at, last_err_at, last_error, last_latency_ms FROM agent_model_calls WHERE ref = ?1').bind(ref)
         .first<NonNullable<CatalogueEntry['models'][number]['calls']>>();
-      models.push({ ...modelOption(env, ref, 'review'), family: familyOf(ref),
+      models.push({ ...modelOption(env, ref, 'review'), family: familyOf(ref), effort_supported: effortSupported(ref),
         rate: rate ? { input_per_m: rate.input_per_m, output_per_m: rate.output_per_m, as_of: asOf,
           stale: now.getTime() - Date.parse(asOf + 'T00:00:00Z') > RATE_STALE_DAYS * 86_400_000 } : null,
         calls: calls ?? null });
     }
     const defaults: Record<string, string | null> = {};
+    const efforts: Record<string, Effort | null> = {};
     for (const kind of CATALOGUE_KINDS) {
-      if (!policy) { defaults[kind] = route?.ref ?? null; continue; }
-      try { defaults[kind] = chooseModel(env, policy, kind, budget, null).ref; } catch { defaults[kind] = null; }
+      if (!policy) { defaults[kind] = route?.ref ?? null; efforts[kind] = null; continue; }
+      try {
+        const choice = chooseModel(env, policy, kind, budget, null);
+        defaults[kind] = choice.ref;
+        efforts[kind] = choice.effort;
+      } catch { defaults[kind] = null; efforts[kind] = null; }
     }
-    const preferences = cycleId ? (await db.prepare('SELECT task_id, ref, set_by, reason FROM agent_model_prefs WHERE cycle_id = ?1 AND participant_id = ?2 ORDER BY task_id')
-      .bind(cycleId, pid).all<{ task_id: string; ref: string; set_by: string; reason: string }>()).results : [];
+    const preferences = cycleId ? (await db.prepare('SELECT task_id, ref, set_by, reason, effort FROM agent_model_prefs WHERE cycle_id = ?1 AND participant_id = ?2 ORDER BY task_id')
+      .bind(cycleId, pid).all<{ task_id: string; ref: string; set_by: string; reason: string; effort: string | null }>()).results : [];
     out.push({ participant_id: pid, mode: policy ? 'policy' : route ? 'single' : 'none', family: policy?.family ?? (route ? familyOf(route.ref) : null),
       default_ref: route?.ref ?? null, budget, models,
-      rejected: policy?.rejected ?? (policyError ? [{ ref: '*', reason: policyError }] : []), default_by_kind: defaults, preferences });
+      rejected: policy?.rejected ?? (policyError ? [{ ref: '*', reason: policyError }] : []), default_by_kind: defaults,
+      default_effort_by_kind: efforts, preferences });
   }
   return out;
 }

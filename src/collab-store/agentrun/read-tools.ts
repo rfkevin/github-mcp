@@ -30,6 +30,8 @@ import { createGitHubWriteTools, GITHUB_WRITE_TOOL_SCHEMAS, type GitHubWrites, t
 import { sha256Hex } from '../store/hash';
 import { createVerdictTools, VERDICT_TOOL_SCHEMAS } from './verdict-tools';
 import { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_TOOL_SCHEMAS } from './contribution-tools';
+import { createModelChoiceTools, MODEL_CHOICE_TOOL_SCHEMAS } from './model-choice-tools';
+import type { PolicyEnv } from './model-policy';
 
 /** Lectures GitHub utilisées par l'hôte (sous-ensemble des clients existants, lecture seule). */
 export interface GitHubReads {
@@ -130,6 +132,8 @@ export interface ReadToolHostOptions {
   requiredChecks?: readonly string[];
   /** CC-7 L6b-2 : store_contribute (sorties de phase de conception, contrôlées serveur) pour le kind design ; absent = aucune. */
   contributions?: boolean;
+  /** CC-7 L9b : store_choose_model (l'agent choisit son modèle et sa réflexion, dans sa liste) ; absent = aucun. */
+  modelChoice?: PolicyEnv | null;
 }
 
 interface RunScope { cycle_id: string; participant_id: string }
@@ -159,13 +163,16 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     : null;
   // CC-7 L6b-2 : contributions de conception, seulement pour le kind design.
   const contributions = options.contributions ? createContributionTools(options.db) : null;
+  // CC-7 L9b : choix de modèle par l'agent lui-même, pour tout type de tâche connu.
+  const modelChoice = options.modelChoice ? createModelChoiceTools(options.db, options.modelChoice) : null;
   // CC-7 L3 (incrément 2) : proposition de mémoire, seulement avec écritures store ET continuité, types connus.
   const memoryWrite = (taskKind: string): readonly WriteToolName[] =>
     writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose'] : [];
-  const writeNames = (taskKind: string): readonly (WriteToolName | GitHubWriteToolName | 'store_verdict' | 'store_contribute')[] =>
+  const writeNames = (taskKind: string): readonly (WriteToolName | GitHubWriteToolName | 'store_verdict' | 'store_contribute' | 'store_choose_model')[] =>
     [...(writes ? writes.names(taskKind) : []), ...memoryWrite(taskKind), ...(gh ? gh.names(taskKind) : []),
       ...(verdicts && (taskKind === 'review' || taskKind === 'test') ? ['store_verdict' as const] : []),
-      ...(contributions && taskKind === CONTRIBUTION_TASK_KIND ? ['store_contribute' as const] : [])];
+      ...(contributions && taskKind === CONTRIBUTION_TASK_KIND ? ['store_contribute' as const] : []),
+      ...(modelChoice && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_choose_model' as const] : [])];
   const isGitHubWrite = (name: string) => GITHUB_WRITE_TOOL_SCHEMAS.some(schema => schema.name === name);
   const allowed = (taskKind: string): readonly ReadToolName[] => {
     const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
@@ -188,6 +195,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     if (verdicts && call.name === 'store_verdict') return verdicts.execute(call, ctx);
     // CC-7 L6b-2 : contribution de conception contrôlée serveur (phase courante, titulaire manquant).
     if (contributions && call.name === 'store_contribute') return contributions.execute(call, ctx);
+    if (modelChoice && call.name === 'store_choose_model') return modelChoice.execute(call, ctx);
     const { cycle_id, participant_id } = await scope(ctx.run_id);
     const args = call.args ?? {};
     const store = new CollabStore(options.db);
@@ -267,13 +275,14 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     },
     schemas(taskKind: string): ToolSchema[] {
       const names = new Set<string>([...readNames(taskKind), ...writeNames(taskKind)]);
-      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
+      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.
     async lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult> {
       if (verdicts && call.name === 'store_verdict') return verdicts.lookup(call, ctx);
       if (contributions && call.name === 'store_contribute') return contributions.lookup(call, ctx);
+      if (modelChoice && call.name === 'store_choose_model') return modelChoice.lookup(call, ctx);
       if (gh && isGitHubWrite(call.name)) return gh.lookup(call, ctx);
       return writes ? writes.lookup(call, ctx) : null;
     },
