@@ -170,7 +170,7 @@ export function htmlToText(html: string): { title: string; text: string } {
     .replace(/<[^>]*>/g, ' ');
   const text = decodeEntities(body)
     .split('\n')
-    .map(line => line.replace(/[ \t\f\v ]+/g, ' ').trim())
+    .map(line => line.replace(/[ \t\f\v\xa0]+/g, ' ').trim())
     .filter(line => line.length > 0)
     .join('\n');
   return { title, text };
