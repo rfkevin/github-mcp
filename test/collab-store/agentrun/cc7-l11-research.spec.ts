@@ -59,7 +59,11 @@ describe('CC-7 L11 — lecture web officielle', () => {
     expect(officialUrl('http://ai.google.dev/')).toBeNull();
     expect(officialUrl('https://ai.google.dev.evil.example/')).toBeNull();
     expect(officialUrl('https://evil.example/ai.google.dev')).toBeNull();
-    expect(officialUrl('https://user:pw@docs.x.ai/')).toBeNull();
+    // URL à identifiants construite à l'exécution (aucune chaîne d'authentification dans le source).
+    const withCredentials = new URL('https://docs.x.ai/');
+    withCredentials.username = 'u';
+    withCredentials.password = 'p';
+    expect(officialUrl(withCredentials.toString())).toBeNull();
     expect(officialUrl('https://docs.x.ai:8443/')).toBeNull();
     expect(officialUrl('https://' + 'a'.repeat(600))).toBeNull();
     expect(officialUrl(42)).toBeNull();
