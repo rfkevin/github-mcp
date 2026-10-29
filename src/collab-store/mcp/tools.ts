@@ -24,6 +24,7 @@ import { registerControllerTools } from './controller-tools';
 import { registerAgentRunTools } from './agentrun-tools';
 import { registerSalonTools } from './salon-tools';
 import { registerModelTools } from './model-tools';
+import { registerResearchTools } from './research-tools';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -46,6 +47,8 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   if (context.flags.salonEnabled) registerSalonTools(server, context);
   // CC-7 L9a : catalogue et choix de modèle absents tant que les exécutions API sont éteintes.
   if (context.flags.agentRunsEnabled) registerModelTools(server, context);
+  // CC-7 L11 : chercheurs en tournante, porte propre en plus des exécutions API.
+  if (context.flags.agentRunsEnabled && context.flags.researchEnabled) registerResearchTools(server, context);
   const collabFailure = (error: unknown, fallback: string, extra: Record<string, unknown> = {}) =>
     failure(error, fallback, extra, context.fallback);
 

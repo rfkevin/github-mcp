@@ -21,6 +21,7 @@ import { createProviderModel, createRoutedModel, hasParticipantModels, isL8Provi
 import type { PolicyEnv } from './model-policy';
 import { createReadToolHost, type GitHubReads } from './read-tools';
 import { continuityEnabled } from './plan';
+import { researchEnabled } from './research';
 import { DEFAULT_API_BASE_BRANCH, type GitHubWrites } from './github-tools';
 import type { WorkersAiBinding } from '../executors/adapter';
 import { parseNeuronBudget } from '../executors/run';
@@ -68,6 +69,10 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   GROQ_FREE_PROJECT_ATTESTED?: string;
   PUBLIC_ORIGIN?: string;
   AI?: WorkersAiBinding;
+  /** CC-7 L11 : porte des chercheurs en tournante (« true » exact) ; absente = aucun outil de recherche. */
+  AGENT_RUN_RESEARCH?: string;
+  /** CC-7 L4 : porte du salon (le chercheur API y publie son résultat). */
+  SALON_ENABLED?: string;
   WORKERS_AI_DAILY_NEURONS?: string;
   GITHUB_APP_ID?: string;
   GITHUB_INSTALLATION_ID?: string;
@@ -143,7 +148,9 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
       verdicts: github !== null, requiredChecks, contributions: true, continuity: continuityEnabled(env),
       // CC-7 L9b : l'agent choisit lui-même son modèle et sa réflexion quand l'aiguillage par participant est posé.
-      modelChoice: routed ? env as unknown as PolicyEnv : null });
+      modelChoice: routed ? env as unknown as PolicyEnv : null,
+      // CC-7 L11 : chercheurs en tournante (porte AGENT_RUN_RESEARCH, éteinte par défaut).
+      research: researchEnabled(env) ? { salonEnabled: env.SALON_ENABLED === 'true' } : null });
     const schemas = (kind: string) => tools.schemas(kind);
     if (routed) {
       const model = createRoutedModel(env, { env, db, runId: _runId, envelope, schemas, system: AGENT_RUN_SYSTEM,
