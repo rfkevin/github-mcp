@@ -32,6 +32,7 @@ import { createVerdictTools, VERDICT_TOOL_SCHEMAS } from './verdict-tools';
 import { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_TOOL_SCHEMAS } from './contribution-tools';
 import { createModelChoiceTools, MODEL_CHOICE_TOOL_SCHEMAS } from './model-choice-tools';
 import type { PolicyEnv } from './model-policy';
+import { createResearchTools, RESEARCH_TOOL_SCHEMAS, type ResearchToolsOptions } from './research';
 
 /** Lectures GitHub utilisées par l'hôte (sous-ensemble des clients existants, lecture seule). */
 export interface GitHubReads {
@@ -134,6 +135,8 @@ export interface ReadToolHostOptions {
   contributions?: boolean;
   /** CC-7 L9b : store_choose_model (l'agent choisit son modèle et sa réflexion, dans sa liste) ; absent = aucun. */
   modelChoice?: PolicyEnv | null;
+  /** CC-7 L11 : outils des chercheurs en tournante (web officiel, salon) pour le kind research ; absent = aucun. */
+  research?: ResearchToolsOptions | null;
 }
 
 interface RunScope { cycle_id: string; participant_id: string }
@@ -165,14 +168,17 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   const contributions = options.contributions ? createContributionTools(options.db) : null;
   // CC-7 L9b : choix de modèle par l'agent lui-même, pour tout type de tâche connu.
   const modelChoice = options.modelChoice ? createModelChoiceTools(options.db, options.modelChoice) : null;
+  // CC-7 L11 : lecture web officielle et salon (journal partagé), seulement pour le kind research.
+  const research = options.research ? createResearchTools(options.db, options.research) : null;
   // CC-7 L3 (incrément 2) : proposition de mémoire, seulement avec écritures store ET continuité, types connus.
   const memoryWrite = (taskKind: string): readonly WriteToolName[] =>
     writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose'] : [];
-  const writeNames = (taskKind: string): readonly (WriteToolName | GitHubWriteToolName | 'store_verdict' | 'store_contribute' | 'store_choose_model')[] =>
+  const writeNames = (taskKind: string): readonly string[] =>
     [...(writes ? writes.names(taskKind) : []), ...memoryWrite(taskKind), ...(gh ? gh.names(taskKind) : []),
       ...(verdicts && (taskKind === 'review' || taskKind === 'test') ? ['store_verdict' as const] : []),
       ...(contributions && taskKind === CONTRIBUTION_TASK_KIND ? ['store_contribute' as const] : []),
-      ...(modelChoice && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_choose_model' as const] : [])];
+      ...(modelChoice && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_choose_model' as const] : []),
+      ...(research ? research.writes(taskKind) : [])];
   const isGitHubWrite = (name: string) => GITHUB_WRITE_TOOL_SCHEMAS.some(schema => schema.name === name);
   const allowed = (taskKind: string): readonly ReadToolName[] => {
     const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
@@ -182,7 +188,8 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   // Un type inconnu n'a aucun outil, même en continuité (deny-by-default).
   const continuityNames = (taskKind: string): readonly ContinuityToolName[] =>
     options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? CONTINUITY_TOOLS : [];
-  const readNames = (taskKind: string): readonly string[] => [...allowed(taskKind), ...continuityNames(taskKind)];
+  const readNames = (taskKind: string): readonly string[] =>
+    [...allowed(taskKind), ...continuityNames(taskKind), ...(research ? research.reads(taskKind) : [])];
   async function scope(runId: string): Promise<RunScope> {
     const run = await options.db.prepare('SELECT cycle_id, participant_id FROM agent_runs WHERE run_id = ?1').bind(runId).first<RunScope>();
     if (!run) throw new ToolRefused('unknown_run');
@@ -196,6 +203,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     // CC-7 L6b-2 : contribution de conception contrôlée serveur (phase courante, titulaire manquant).
     if (contributions && call.name === 'store_contribute') return contributions.execute(call, ctx);
     if (modelChoice && call.name === 'store_choose_model') return modelChoice.execute(call, ctx);
+    if (research && RESEARCH_TOOL_SCHEMAS.some(schema => schema.name === call.name)) return research.execute(call, ctx);
     const { cycle_id, participant_id } = await scope(ctx.run_id);
     const args = call.args ?? {};
     const store = new CollabStore(options.db);
@@ -275,7 +283,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     },
     schemas(taskKind: string): ToolSchema[] {
       const names = new Set<string>([...readNames(taskKind), ...writeNames(taskKind)]);
-      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
+      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.
@@ -283,6 +291,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       if (verdicts && call.name === 'store_verdict') return verdicts.lookup(call, ctx);
       if (contributions && call.name === 'store_contribute') return contributions.lookup(call, ctx);
       if (modelChoice && call.name === 'store_choose_model') return modelChoice.lookup(call, ctx);
+      if (research && call.name === 'store_salon_post') return research.lookup(call, ctx);
       if (gh && isGitHubWrite(call.name)) return gh.lookup(call, ctx);
       return writes ? writes.lookup(call, ctx) : null;
     },

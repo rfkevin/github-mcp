@@ -9,6 +9,9 @@ sans le PC de Kevin. Chaque session repart à neuf : elle reprend le fil grâce 
 `claude/veille-journal.md`) et au store. Ce document est la référence de leurs consignes ; la consigne réelle de chaque tâche
 en est la copie.
 
+> **CC-7 L11 (2026-10-28)** : ces deux rôles sont ouverts à tous les agents, en tournante automatique, et le journal
+> partagé est le salon d'équipe — voir `l11-chercheurs-tournante.md`.
+
 ## Règles communes (garde-fous)
 
 - **Sources officielles seulement** (pages tarifaires, documentation, notes de version, blogs des éditeurs, avis de

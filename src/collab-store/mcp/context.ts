@@ -19,6 +19,8 @@ export interface CollabExecutionEnv extends CollabStoreEnv, ProviderAdapterEnv {
   SALON_ENABLED?: string;
   /** CC-7 L9a : porte des exécutions API (catalogue des modèles et choix de modèle). */
   AGENT_RUNS_ENABLED?: string;
+  /** CC-7 L11 : porte des chercheurs en tournante (collab_research_assign). */
+  AGENT_RUN_RESEARCH?: string;
 }
 
 /**
@@ -47,7 +49,7 @@ export interface CollabToolContext {
   db: D1Database;
   executor: { factory: AdapterFactory; dailyCap: number; neuronBudget: number; now: () => Date };
   /** CC-7 L4 : variables de porte lues à la construction (salon) ; CC-7 L9a : exécutions API. */
-  flags: { salonEnabled: boolean; agentRunsEnabled: boolean };
+  flags: { salonEnabled: boolean; agentRunsEnabled: boolean; researchEnabled: boolean };
   /** CC-7 L9a : vue réduite du Worker pour le catalogue des modèles (aucune valeur de secret). */
   models: PolicyEnv;
 }
@@ -76,7 +78,8 @@ export function createCollabToolContext(
       neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
       now,
     },
-    flags: { salonEnabled: env.SALON_ENABLED === 'true', agentRunsEnabled: env.AGENT_RUNS_ENABLED === 'true' },
+    flags: { salonEnabled: env.SALON_ENABLED === 'true', agentRunsEnabled: env.AGENT_RUNS_ENABLED === 'true',
+      researchEnabled: env.AGENT_RUN_RESEARCH === 'true' },
     models: modelEnvOf(env),
     // clientId vient du jeton validé (handler.ts) : seul chemin qui enregistre un client observé.
     identity: () => (resolved ??= resolveTokenParticipant(db, clientId)) };
