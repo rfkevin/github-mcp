@@ -1,5 +1,6 @@
 import { GitHubApiError, GitHubConflictError, GitHubRateLimitError, InputValidationError } from '../github/types';
 import { PolicyViolationError } from '../security/policy';
+import { StateContractError } from '../collab/contracts';
 
 // Classification publique des erreurs, partagée par les couches métier (writes,
 // merges…) et par la couche MCP. Ne dépend d'aucun module de src/mcp.
@@ -12,6 +13,7 @@ export function failureReason(error: unknown): string {
   }
   if (error instanceof PolicyViolationError) return `policy_${error.code.toLowerCase()}`;
   if (error instanceof GitHubConflictError) return 'conflict';
+  if (error instanceof StateContractError) return 'state_contract';
   if (error instanceof InputValidationError) {
     return 'invalid_request';
   }
@@ -20,8 +22,9 @@ export function failureReason(error: unknown): string {
 
 /**
  * Message public : les messages que ce projet écrit lui-même sont utiles
- * (validation, politique), mais ceux d'une réponse GitHub ou d'un échec `fetch`
- * ne sont jamais recopiés : ils peuvent contenir une URL ou un corps de réponse.
+ * (validation, politique, contrat d'état), mais ceux d'une réponse GitHub ou
+ * d'un échec `fetch` ne sont jamais recopiés : ils peuvent contenir une URL ou
+ * un corps de réponse.
  */
 export function failureMessage(error: unknown, fallback: string): string {
   if (error instanceof GitHubRateLimitError) return 'Limite de requêtes GitHub atteinte. Réessayez plus tard.';
@@ -43,7 +46,7 @@ export function failureMessage(error: unknown, fallback: string): string {
   // sont jamais recopiés — le texte de repli du point d'entrée prend le relais.
   if (
     error instanceof Error &&
-    (error instanceof InputValidationError || error instanceof PolicyViolationError)
+    (error instanceof InputValidationError || error instanceof PolicyViolationError || error instanceof StateContractError)
   ) {
     return error.message;
   }
@@ -55,7 +58,7 @@ export type PublicFailure = { code: string; message: string; retryable: boolean 
 
 export function publicFailure(error: unknown, fallback = 'Opération impossible.'): PublicFailure {
   let code = failureReason(error).toUpperCase();
-  if (error instanceof InputValidationError || error instanceof PolicyViolationError) code = error.code;
+  if (error instanceof InputValidationError || error instanceof PolicyViolationError || error instanceof StateContractError) code = error.code;
   if (error instanceof GitHubApiError && error.status === 422 && error.endpoint.includes('/access_tokens')) {
     code = 'APP_PERMISSIONS_REJECTED';
   }
