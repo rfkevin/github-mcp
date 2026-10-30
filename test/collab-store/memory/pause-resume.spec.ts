@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { MemoryStore } from '../../../src/collab-store/memory/memory-store';
+import { MemoryStore, growthMaxActive } from '../../../src/collab-store/memory/memory-store';
 import { MEMORY_ALARM_CYCLE, occurrenceKey, pauseKey, pauseRequestId } from '../../../src/collab-store/memory/pause-resume';
 import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
@@ -23,10 +23,16 @@ async function alarmRequests(scope: string) {
   ].join(' ')).bind(MEMORY_ALARM_CYCLE, scope).all<{ seq: number; expected_rev: number; request_id: string; occurrence: number; reason: string }>()).results;
 }
 
-/** Deux faits activés dans un scope neuf : la 2e activation pose la pause de croissance (occurrence 1). */
+/**
+ * Taille active à laquelle un scope neuf (base 1) est mis en pause. CC-7 M1a : avec la
+ * marge minimale, ce n'est plus la 2e activation mais la première au-delà de growthMaxActive(1).
+ */
+const PAUSE_SIZE = growthMaxActive(1) + 1;
+
+/** PAUSE_SIZE faits activés dans un scope neuf : la dernière activation pose la pause de croissance (occurrence 1). */
 async function pauseByGrowth(scope: string): Promise<void> {
   const mem = new MemoryStore(db);
-  for (const n of [1, 2]) {
+  for (let n = 1; n <= PAUSE_SIZE; n++) {
     const p = await mem.propose({ scope, kind: 'fact', text: `fait ${n} de ${scope}`, evidence_refs: [`ev:${n}`], confidence: 'observed', author_pid: 'agent:a' });
     await mem.activate(p.id, 1, 'agent:b');
   }
@@ -36,11 +42,14 @@ describe('CC-3 CR-F02 — demandes owner déposées par les alarmes', () => {
   it('croissance : une seule demande, exacte, dans la transaction qui pose la pause ; aucune sans alarme', async () => {
     const scope = 'role:crf2-growth';
     const mem = new MemoryStore(db);
-    const first = await mem.propose({ scope, kind: 'fact', text: 'premier fait', evidence_refs: ['ev:1'], confidence: 'observed', author_pid: 'agent:a' });
-    await mem.activate(first.id, 1, 'agent:b');
-    expect(await alarmRequests(scope)).toEqual([]);
-    const second = await mem.propose({ scope, kind: 'fact', text: 'second fait', evidence_refs: ['ev:2'], confidence: 'observed', author_pid: 'agent:a' });
-    await mem.activate(second.id, 1, 'agent:b');
+    // Jusqu'à la dernière taille tolérée, aucune alarme ni demande.
+    for (let n = 1; n < PAUSE_SIZE; n++) {
+      const p = await mem.propose({ scope, kind: 'fact', text: `fait ${n}`, evidence_refs: [`ev:${n}`], confidence: 'observed', author_pid: 'agent:a' });
+      await mem.activate(p.id, 1, 'agent:b');
+      expect(await alarmRequests(scope)).toEqual([]);
+    }
+    const last = await mem.propose({ scope, kind: 'fact', text: 'fait de trop', evidence_refs: ['ev:last'], confidence: 'observed', author_pid: 'agent:a' });
+    await mem.activate(last.id, 1, 'agent:b');
     const requests = await alarmRequests(scope);
     expect(requests).toEqual([expect.objectContaining({ occurrence: 1, reason: 'growth', request_id: await pauseRequestId(scope, 1) })]);
     // Le cycle memory-alarms suit la règle de révision du journal : une révision par événement.
@@ -70,7 +79,7 @@ describe('CC-3 CR-F02 — reprise par décision owner', () => {
     const result = await recordOwnerDecision(db, { request_id: request.request_id, request_seq: request.seq, decision: 'approve', proof });
     expect(result).toMatchObject({ status: 'applied', decision: 'approve', memory_resume: { scope, occurrence: 1 } });
     expect(await counter(pauseKey(scope))).toBe(0);
-    expect(await counter(`mem:base:${scope}`)).toBe(2);
+    expect(await counter(`mem:base:${scope}`)).toBe(PAUSE_SIZE);
     expect(await new MemoryStore(db).isActivationPaused(scope)).toBe(false);
   });
 

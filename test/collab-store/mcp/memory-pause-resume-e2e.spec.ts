@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { pauseRequestId } from '../../../src/collab-store/memory/memory-store';
+import { growthMaxActive, MAX_ACTIVATIONS_PER_CYCLE, pauseRequestId } from '../../../src/collab-store/memory/memory-store';
 import { e2eScenario, toolCode as code, type E2eClient } from './e2e-harness';
 
 // CC-3 CR-F02 (github-mcp#93, contre-revue Codex #79/6096598889) par le vrai chemin HTTP :
@@ -41,6 +41,11 @@ async function alarmRequests(scope: string) {
     request_id: string; occurrence: number; reason: string }>()).results;
 }
 
+// CC-7 M1a : tailles de pause sous la marge combinée. Scope neuf (base 1) : pause à FIRST_PAUSE ;
+// après la reprise (base = FIRST_PAUSE) : nouvelle pause à SECOND_PAUSE.
+const FIRST_PAUSE = growthMaxActive(1) + 1;
+const SECOND_PAUSE = growthMaxActive(FIRST_PAUSE) + 1;
+
 const fact = (id: string, scope: string, n: number) =>
   ({ memory: { id, scope, kind: 'fact', text: `fait partage numero ${n}`, evidence_refs: [`ev:crf2-${n}`], confidence: 'observed' } });
 
@@ -50,15 +55,23 @@ describe('CC-3 CR-F02 — pause mémoire reprenable par décision owner (HTTP)',
     const { owner, agent, uniq } = e2eScenario(db, 'crf2', 'owner-secret-CRF2-0123456789abcdefghijklm');
     const [alpha, beta] = [await agent('alpha'), await agent('beta')];
     const cycle = uniq('cycle');
+    // Les activations d'après la reprise passent par un second cycle : le plafond
+    // MAX_ACTIVATIONS_PER_CYCLE (par scope et par cycle) ne doit pas masquer la règle testée.
+    const later = uniq('cycle2');
+    expect(SECOND_PAUSE - FIRST_PAUSE).toBeLessThanOrEqual(MAX_ACTIVATIONS_PER_CYCLE);
     const scope = 'role:' + uniq('pause');
-    const ids = [0, 1, 2, 3].map(n => uniq('mem' + n));
+    const ids = Array.from({ length: SECOND_PAUSE + 1 }, (_, n) => uniq('mem' + n));
     for (const [n, id] of ids.entries()) {
       expect((await append(alpha, cycle, 'p' + n, 'memory.propose', fact(id, scope, n))).structuredContent.status).toBe('applied');
     }
-    const review = (n: number) => append(beta, cycle, 'r' + n, 'memory.review', { memory: { id: ids[n], version: 1 } });
-    expect((await review(0)).structuredContent.status).toBe('applied');
-    // 2e activation : +100 % > 25 % → pause posée dans le batch d'activation, occurrence 1.
-    expect((await review(1)).structuredContent.status).toBe('applied');
+    const review = (n: number) => append(beta, n < FIRST_PAUSE ? cycle : later, 'r' + n, 'memory.review', { memory: { id: ids[n], version: 1 } });
+    // Jusqu'à growthMaxActive(1) entrées actives : aucune pause.
+    for (let n = 0; n < FIRST_PAUSE - 1; n++) {
+      expect((await review(n)).structuredContent.status).toBe('applied');
+      expect(await pauseState(scope)).toMatchObject({ paused: 0, occurrence: 0, baseline: 1 });
+    }
+    // Première activation au-delà de la marge → pause posée dans le batch d'activation, occurrence 1.
+    expect((await review(FIRST_PAUSE - 1)).structuredContent.status).toBe('applied');
     expect(await pauseState(scope)).toMatchObject({ paused: 1, occurrence: 1, baseline: 1 });
 
     // L'alarme a déposé, dans la même transaction, la demande owner exacte de cette occurrence.
@@ -69,7 +82,7 @@ describe('CC-3 CR-F02 — pause mémoire reprenable par décision owner (HTTP)',
 
     // Sans décision : refus, rien d'écrit.
     const blocked = await pauseState(scope);
-    expect(code(await review(2))).toBe('ACTIVATION_PAUSED');
+    expect(code(await review(FIRST_PAUSE))).toBe('ACTIVATION_PAUSED');
     expect(await pauseState(scope)).toEqual(blocked);
 
     // Une demande visant un autre scope (ou une autre occurrence) ne peut pas lever cette pause :
@@ -83,22 +96,26 @@ describe('CC-3 CR-F02 — pause mémoire reprenable par décision owner (HTTP)',
     expect(await refused.text()).toContain('MEMORY_PAUSE_NOT_CURRENT');
     expect(await pauseState(scope)).toEqual(blocked);
 
-    // Approbation exacte via /owner : reprise atomique, nouvelle base = taille approuvée (2).
+    // Approbation exacte via /owner : reprise atomique, nouvelle base = taille approuvée (FIRST_PAUSE).
     const decide = { action: 'decide', request_id: request.request_id, decision: 'approve', request_seq: String(request.seq), cycle_id: ALARM_CYCLE };
     const approved = await owner(decide);
     expect(approved.status).toBe(200);
     expect(await approved.text()).toContain('reprises');
-    expect(await pauseState(scope)).toEqual({ paused: 0, occurrence: 1, baseline: 2, decisions: blocked.decisions + 1 });
+    expect(await pauseState(scope)).toEqual({ paused: 0, occurrence: 1, baseline: FIRST_PAUSE, decisions: blocked.decisions + 1 });
 
     // Rejeu du même formulaire : idempotent, aucun second effet.
     const replay = await owner(decide);
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain('Déjà enregistré');
-    expect(await pauseState(scope)).toEqual({ paused: 0, occurrence: 1, baseline: 2, decisions: blocked.decisions + 1 });
+    expect(await pauseState(scope)).toEqual({ paused: 0, occurrence: 1, baseline: FIRST_PAUSE, decisions: blocked.decisions + 1 });
 
-    // Reprise effective : la 3e activation est appliquée. Sa croissance (3 > 125 % de 2) pose
-    // une nouvelle occurrence (2) et dépose sa propre demande.
-    expect((await review(2)).structuredContent.status).toBe('applied');
+    // Reprise effective : les activations suivantes sont appliquées sans rechute jusqu'à
+    // growthMaxActive(FIRST_PAUSE) ; la suivante pose une nouvelle occurrence (2) et dépose sa propre demande.
+    for (let n = FIRST_PAUSE; n < SECOND_PAUSE - 1; n++) {
+      expect((await review(n)).structuredContent.status).toBe('applied');
+      expect(await pauseState(scope)).toMatchObject({ paused: 0, occurrence: 1 });
+    }
+    expect((await review(SECOND_PAUSE - 1)).structuredContent.status).toBe('applied');
     expect(await pauseState(scope)).toMatchObject({ paused: 1, occurrence: 2 });
     const requests = await alarmRequests(scope);
     expect(requests.map(item => item.occurrence)).toEqual([1, 2]);
@@ -116,13 +133,13 @@ describe('CC-3 CR-F02 — pause mémoire reprenable par décision owner (HTTP)',
     expect(await again.text()).toContain('ALREADY_DECIDED');
     const stillPaused = await pauseState(scope);
     expect(stillPaused).toMatchObject({ paused: 1, occurrence: 2 });
-    expect(code(await review(3))).toBe('ACTIVATION_PAUSED');
+    expect(code(await review(SECOND_PAUSE))).toBe('ACTIVATION_PAUSED');
 
     // Refus owner de l'occurrence 2 : enregistré, la pause reste, rien d'autre ne bouge.
     const denied = await owner({ action: 'decide', request_id: requests[1].request_id, decision: 'deny', request_seq: String(requests[1].seq), cycle_id: ALARM_CYCLE });
     expect(denied.status).toBe(200);
     expect(await pauseState(scope)).toEqual({ ...stillPaused, decisions: stillPaused.decisions + 1 });
-    expect(code(await review(3))).toBe('ACTIVATION_PAUSED');
+    expect(code(await review(SECOND_PAUSE))).toBe('ACTIVATION_PAUSED');
   }, 60_000);
 
   // Parcours concurrent HTTP : même contrainte de budget temps CI.
@@ -131,7 +148,7 @@ describe('CC-3 CR-F02 — pause mémoire reprenable par décision owner (HTTP)',
     const [alpha, beta] = [await agent('alpha'), await agent('beta')];
     const cycle = uniq('cycle');
     const scope = 'project:' + uniq('race');
-    const ids = [0, 1].map(n => uniq('mem' + n));
+    const ids = Array.from({ length: FIRST_PAUSE }, (_, n) => uniq('mem' + n));
     for (const [n, id] of ids.entries()) {
       await append(alpha, cycle, 'p' + n, 'memory.propose', fact(id, scope, n));
       expect((await append(beta, cycle, 'r' + n, 'memory.review', { memory: { id, version: 1 } })).structuredContent.status).toBe('applied');
@@ -142,7 +159,7 @@ describe('CC-3 CR-F02 — pause mémoire reprenable par décision owner (HTTP)',
     const form = { action: 'decide', request_id: request.request_id, decision: 'approve', request_seq: String(request.seq), cycle_id: ALARM_CYCLE };
     const responses = await Promise.all([owner(form), owner(form)]);
     expect(responses.map(response => response.status)).toEqual([200, 200]);
-    expect(await pauseState(scope)).toEqual({ paused: 0, occurrence: 1, baseline: 2, decisions: before.decisions + 1 });
+    expect(await pauseState(scope)).toEqual({ paused: 0, occurrence: 1, baseline: FIRST_PAUSE, decisions: before.decisions + 1 });
     const decisionEvents = await db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'owner.decision' AND json_extract(payload_json, '$.request_id') = ?1")
       .bind(request.request_id).first<{ n: number }>();
     expect(decisionEvents?.n).toBe(1);
