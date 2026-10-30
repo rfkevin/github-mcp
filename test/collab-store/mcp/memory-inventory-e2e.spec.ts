@@ -177,7 +177,8 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
       request_seq: String(pause1!.opened_seq), cycle_id: ALARM_CYCLE });
     expect(approved.status).toBe(200);
     // Rechute : la 3e activation rouvre l'occurrence 2 — sa fenêtre ne contient pas la
-    // consolidation d'avant son ouverture (fenêtre [opened_at, décision ou maintenant]).
+    // consolidation d'avant son ouverture (borne d'ouverture par seq : l'horloge
+    // à la seconde ne départage pas deux événements de la même seconde).
     expect((await review(2)).structuredContent.status).toBe('applied');
     const after = await inventory(alpha, { scopes: [scope] });
     expect(after.scopes[0]).toMatchObject({ scope, paused: true, occurrences: 2, baseline: 1 });

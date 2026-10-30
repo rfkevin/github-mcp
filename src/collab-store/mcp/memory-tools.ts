@@ -10,7 +10,8 @@
  *   MEMORY_TOKEN_BUDGETS, comptes par statut, tokens actifs, baseline /
  *   occurrences / pause de quota_counters) et pauses du cycle memory-alarms
  *   reliées aux événements correctifs memory.consolidate / memory.retire de
- *   leur fenêtre [ouverture, décision ou maintenant].
+ *   leur fenêtre [ouverture, décision ou maintenant] (ouverture départagée
+ *   par seq du journal).
  *   CR-C : un participant ne voit que les scopes partagés et SES scopes
  *   participant (familles logiques comprises, #126) ; un client non
  *   enregistré ne voit que les scopes partagés — jamais le contenu, ni même un
@@ -322,8 +323,11 @@ async function memoryInventory(context: CollabToolContext, input: InventoryInput
       const windowEnd = decidedAt ?? nowAt;
       const corrective: Array<{ seq: number; at: number; type: string; cycle_id: string; id: string }> = [];
       let truncated = false;
+      // Borne d'ouverture par seq : l'horloge à la seconde ne départage pas
+      // deux événements de la même seconde — une consolidation posée AVANT
+      // l'ouverture ne doit jamais tomber dans la fenêtre.
       for (const event of correctiveByScope.get(row.scope) ?? []) {
-        if (event.at < pause.at || event.at > windowEnd) continue;
+        if (event.seq <= pause.seq || event.at > windowEnd) continue;
         if (corrective.length >= MAX_CORRECTIVE) {
           truncated = true;
           break;
