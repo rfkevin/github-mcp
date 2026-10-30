@@ -152,8 +152,17 @@ export function simulateGrowthPauses(base: number, activations: number, k: numbe
 /**
  * Projection de remplissage de budget à coût moyen constant : activations
  * acceptées avant le premier refus (rang refusé compris) et total alors atteint.
- * Fail-closed : un coût moyen nul ne produit JAMAIS de refus — la boucle serait
- * infinie tant que tokensUsed <= budget. Refus typé, jamais un appel bloquant.
+ * Fail-closed : un coût moyen nul ne produit JAMAIS de refus — la projection
+ * serait constante. Refus typé, jamais un appel bloquant.
+ *
+ * Calcul fermé (P1, re-revue GPT-6 commentaire 6530061790) : aucune boucle sur
+ * le rang — un coût moyen positif minuscule avec un gros budget (ex. 0,000001
+ * sur 100 000 000, de l'ordre de 10^14 itérations avant refus) répond
+ * instantanément. Borne explicite : accepted = plancher de
+ * (budget − tokens_used) / avg_cost (réalignement flottant borné à deux rangs),
+ * total plafonné au budget. Valeurs non représentables refusées typées :
+ * quotient infini (coût dénormalisé pour ce budget) ou progression non
+ * mesurable en flottants.
  */
 export function simulateBudgetFill(tokensUsed: number, avgCost: number, budget: number): { accepted: number; refused: number; tokens_after: number } {
   if (!(avgCost > 0)) {
@@ -162,9 +171,32 @@ export function simulateBudgetFill(tokensUsed: number, avgCost: number, budget: 
       'collab_memory_growth_simulate: avg_cost doit être > 0 — un coût moyen nul ne produit jamais de refus de budget.',
     );
   }
-  let accepted = 0;
-  while (tokensUsed + (accepted + 1) * avgCost <= budget) accepted += 1;
-  return { accepted, refused: accepted + 1, tokens_after: tokensUsed + accepted * avgCost };
+  if (!Number.isFinite(tokensUsed) || !Number.isFinite(budget) || !Number.isFinite(avgCost)) {
+    throw new MemoryStoreError(
+      'MEMORY_SIMULATION_INVALID',
+      'collab_memory_growth_simulate: tokens_used, avg_cost et budget doivent être des nombres finis.',
+    );
+  }
+  const remaining = budget - tokensUsed;
+  const quotient = remaining / avgCost;
+  if (!Number.isFinite(quotient)) {
+    throw new MemoryStoreError(
+      'MEMORY_SIMULATION_INVALID',
+      'collab_memory_growth_simulate: projection non représentable — avg_cost est trop petit pour ce budget.',
+    );
+  }
+  let accepted = Math.max(0, Math.floor(quotient));
+  // Réalignement flottant borné : le plancher du quotient peut décaler d'un rang
+  // par arrondi — deux pas au plus, jamais une boucle ouverte sur le rang.
+  for (let guard = 0; guard < 2 && accepted > 0 && tokensUsed + accepted * avgCost > budget; guard += 1) accepted -= 1;
+  const total = accepted > 0 ? Math.min(tokensUsed + accepted * avgCost, budget) : tokensUsed;
+  if (accepted > 0 && !(total > tokensUsed)) {
+    throw new MemoryStoreError(
+      'MEMORY_SIMULATION_INVALID',
+      'collab_memory_growth_simulate: avg_cost non représentable — aucune progression mesurable depuis tokens_used.',
+    );
+  }
+  return { accepted, refused: accepted + 1, tokens_after: total };
 }
 
 async function memoryInventory(context: CollabToolContext, input: InventoryInput): Promise<Record<string, unknown>> {
@@ -400,7 +432,7 @@ export function registerMemoryTools(server: McpServer, context: CollabToolContex
 
   server.registerTool('collab_memory_growth_simulate', {
     title: 'Simulation des seuils de pause mémoire (CC-7 M1b)',
-    description: 'Calcul pur — zéro lecture, zéro écriture du store. Rend les simulations du rapport M1b ré-exécutables : pour chaque marge candidate k, positions de pause selon 100·(n−base) > max(GROWTH_ALARM_PERCENT·base, 100·k) avec reprise simulée immédiate (base ← n) ; projection de remplissage de budget à coût moyen constant (rang de la première activation refusée ; avg_cost > 0 exigé : un coût moyen nul ne produit jamais de refus — refus typé MEMORY_SIMULATION_INVALID). Défauts : base 2, activations 40, k 0/3/5/8/10, sans budget. La règle candidate k reste une proposition M1a : aucun seuil réel n\'est changé par cet outil.',
+    description: 'Calcul pur — zéro lecture, zéro écriture du store. Rend les simulations du rapport M1b ré-exécutables : pour chaque marge candidate k, positions de pause selon 100·(n−base) > max(GROWTH_ALARM_PERCENT·base, 100·k) avec reprise simulée immédiate (base ← n) ; projection de remplissage de budget à coût moyen constant (rang de la première activation refusée ; calcul fermé, aucune boucle sur le rang — accepted = plancher de (budget − tokens_used) / avg_cost, total plafonné au budget ; avg_cost > 0 exigé, valeurs non finies ou non représentables refusées — refus typé MEMORY_SIMULATION_INVALID). Défauts : base 2, activations 40, k 0/3/5/8/10, sans budget. La règle candidate k reste une proposition M1a : aucun seuil réel n\'est changé par cet outil.',
     inputSchema: {
       base: z.number().int().min(0).max(10_000).default(2),
       activations: z.number().int().min(1).max(10_000).default(40),

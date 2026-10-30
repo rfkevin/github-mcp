@@ -261,6 +261,15 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
       budget: { tokens_used: 152, avg_cost: 0, budget: 1500 } }))).toBe('MEMORY_SIMULATION_INVALID');
     expect(code(await alpha.call('collab_memory_growth_simulate', { base: 2, activations: 10, k_values: [0],
       budget: { tokens_used: 1501, avg_cost: 0, budget: 1500 } }))).toBe('MEMORY_SIMULATION_INVALID');
+    // Re-revue 2 (commentaire 6530061790) : coût positif minuscule + budget
+    // maximal — calcul fermé, réponse immédiate (l'ancienne boucle aurait exigé
+    // de l'ordre de 10^14 itérations). accepted = plancher du quotient.
+    const tiny = await simulate(alpha, { base: 2, activations: 10, k_values: [0],
+      budget: { tokens_used: 0, avg_cost: 0.000001, budget: 100_000_000 } });
+    expect(tiny.budget).toMatchObject({ accepted: 100_000_000_000_000, refused: 100_000_000_000_001, tokens_after: 100_000_000 });
+    // Coût dénormalisé : quotient infini, non représentable — refus typé.
+    expect(code(await alpha.call('collab_memory_growth_simulate', { base: 2, activations: 10, k_values: [0],
+      budget: { tokens_used: 0, avg_cost: 5e-324, budget: 100_000_000 } }))).toBe('MEMORY_SIMULATION_INVALID');
     // Défauts : base 2, activations 40, k 0/3/5/8/10, sans projection budget.
     const defaults = await simulate(alpha, {});
     expect(defaults.growth.map(item => item.k)).toEqual([0, 3, 5, 8, 10]);
