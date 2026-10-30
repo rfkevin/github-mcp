@@ -23,7 +23,7 @@ const ctx = (runId: string, fetchImpl: typeof fetch, now: Date): ProviderModelCo
 
 describe('CC-7 — familles imposées sur cc3-test (wrangler.jsonc)', () => {
   it('chaque agent a sa famille et ses modèles, aucun modèle écarté', () => {
-    const expected: Record<string, string> = { claude: 'anthropic', grok: 'xai', vibe: 'zai', gpt6: 'openai' };
+    const expected: Record<string, string> = { claude: 'anthropic', grok: 'xai', vibe: 'zai', gpt6: 'openai', gemini: 'google' };
     for (const [pid, family] of Object.entries(expected)) {
       const policy = participantPolicy(CC3_TEST, pid);
       expect(policy, pid).not.toBeNull();
@@ -58,6 +58,25 @@ describe('CC-7 — familles imposées sur cc3-test (wrangler.jsonc)', () => {
     expect(choice.ref).toBe('workers-ai:@cf/zai-org/glm-4.7-flash');
     expect(choice.tier).toBe('free');
     expect(familyOf(choice.ref)).toBe('zai');
+  });
+
+  it('gemini sans attestation owner : jamais le Gemini gratuit, reste dans SA famille (Gemma Workers AI gratuit)', () => {
+    const choice = chooseModel({ ...CC3_TEST, LLM_KEY_GEMINI: 'k' } as PolicyEnv, participantPolicy(CC3_TEST, 'gemini')!, 'answer', NO_BUDGET, null);
+    expect(choice.ref).toBe('workers-ai:@cf/google/gemma-4-26b-a4b-it');
+    expect(choice.tier).toBe('free');
+    expect(familyOf(choice.ref)).toBe('google');
+  });
+
+  it('gemini avec clé ET attestation owner (origine cc3-test) : Gemini 3.8 Flash gratuit en premier, coût 0', () => {
+    const attested = { ...CC3_TEST, LLM_KEY_GEMINI: 'k', GEMINI_FREE_PROJECT_ATTESTED: 'true' } as PolicyEnv;
+    const choice = chooseModel(attested, participantPolicy(attested, 'gemini')!, 'answer', NO_BUDGET, null);
+    expect(choice.ref).toBe('gemini:gemini-3.8-flash');
+    expect(choice.tier).toBe('free');
+    expect(choice.est_step_cents).toBe(0);
+  });
+
+  it('gemini : pas dans AGENT_RUN_PARTICIPANTS tant que Kevin ne l’enregistre pas', () => {
+    expect(vars.AGENT_RUN_PARTICIPANTS.split(',').map(p => p.trim())).not.toContain('gemini');
   });
 
   it('gpt6 : politique préparée mais pas de canal API tant que Kevin ne l’ajoute pas à AGENT_RUN_PARTICIPANTS', () => {
