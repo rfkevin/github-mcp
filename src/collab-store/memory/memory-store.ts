@@ -164,7 +164,42 @@ export const HYPOTHESIS_EXPIRE_CYCLES = 3;
 /** Plan: alarm if >5 refutes → trigger on the 6th. */
 export const REFUTE_ALARM_THRESHOLD = 6;
 export const GROWTH_ALARM_PERCENT = 25;
+/**
+ * CC-7 M1a : marge absolue minimale de l'alarme de croissance, en nombre
+ * d'entrées actives. Sans elle, une petite base (1 ou 2 entrées) mettait en
+ * pause dès l'activation suivante, et chaque reprise rechutait aussitôt.
+ * Valeur initiale provisoire (consultation mémoire cc7 #1053/#1057), à réévaluer
+ * après le rapport d'inventaire ; ce n'est pas un optimum démontré.
+ */
+export const GROWTH_ALARM_MIN_MARGIN = 5;
 export const MAX_ACTIVATIONS_PER_CYCLE = 10;
+
+/**
+ * Seuil de croissance, en centièmes d'entrée : la croissance nette tolérée vaut
+ * le plus grand de GROWTH_ALARM_PERCENT % de la base et GROWTH_ALARM_MIN_MARGIN.
+ */
+function growthAllowanceHundredths(base: number): number {
+  return Math.max(GROWTH_ALARM_PERCENT * base, 100 * GROWTH_ALARM_MIN_MARGIN);
+}
+
+/**
+ * Règle unique de l'alarme de croissance (CC-7 M1a) :
+ * pause si 100·(n − base) > max(GROWTH_ALARM_PERCENT·base, 100·GROWTH_ALARM_MIN_MARGIN).
+ * Dernière taille sans pause : base + floor(max(...)/100).
+ */
+export function growthExceeds(activeCount: number, base: number): boolean {
+  return 100 * (activeCount - base) > growthAllowanceHundredths(base);
+}
+
+/** Plus grande taille active tolérée sans pause pour une base donnée. */
+export function growthMaxActive(base: number): number {
+  return base + Math.floor(growthAllowanceHundredths(base) / 100);
+}
+
+/** Même règle que growthExceeds, en SQL entier (évaluée dans le lot d'activation). */
+export function growthExceededSql(countSql: string, baseSql: string): string {
+  return `100 * (${countSql} - ${baseSql}) > MAX(${GROWTH_ALARM_PERCENT} * ${baseSql}, ${100 * GROWTH_ALARM_MIN_MARGIN})`;
+}
 export const MAX_RETIREMENTS_PER_CYCLE = 10;
 
 /**
@@ -580,9 +615,12 @@ export class MemoryStore {
     );
     const activateIndex = statements.length - 1;
     // A03: growth baseline + alarm + pause occurrence in the same transaction
-    // (previously post-batch writes that a crash could skip). Integer form:
-    // growth % > GROWTH_ALARM_PERCENT  <=>  100 * n > (100 + limit) * baseline.
-    const growthExceeded = `100 * (SELECT COUNT(*) FROM memory_entries WHERE status = 'active' AND scope = ?2) > ${100 + GROWTH_ALARM_PERCENT} * (SELECT writes FROM quota_counters WHERE day = ?3)`;
+    // (previously post-batch writes that a crash could skip). CC-7 M1a : même
+    // règle que growthExceeds (marge combinée), forme entière.
+    const growthExceeded = growthExceededSql(
+      `(SELECT COUNT(*) FROM memory_entries WHERE status = 'active' AND scope = ?2)`,
+      `(SELECT writes FROM quota_counters WHERE day = ?3)`,
+    );
     const bumpOccurrence =
       'INSERT OR REPLACE INTO quota_counters (day, writes) SELECT ?1, COALESCE((SELECT writes FROM quota_counters WHERE day = ?1), 0) + 1';
     statements.push(
@@ -1259,11 +1297,11 @@ export class MemoryStore {
       .first<{ writes: number }>();
     if (!baseRow) return null;
     const n = countRow?.n ?? 0;
-    const growth = ((n - baseRow.writes) / baseRow.writes) * 100;
-    if (growth > GROWTH_ALARM_PERCENT) {
+    if (growthExceeds(n, baseRow.writes)) {
+      const growth = ((n - baseRow.writes) / baseRow.writes) * 100;
       return {
         code: 'GROWTH_THRESHOLD',
-        message: `Net growth ${growth.toFixed(0)}% > ${GROWTH_ALARM_PERCENT}% on ${scope}`,
+        message: `Net growth ${growth.toFixed(0)}% (+${n - baseRow.writes}) > max(${GROWTH_ALARM_PERCENT}%, +${GROWTH_ALARM_MIN_MARGIN}) on ${scope}`,
         scope,
         details: { baseline: baseRow.writes, current: n },
       };

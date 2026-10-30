@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { CollabStore, type AppendOutcome } from '../../../src/collab-store/store/collab-store';
 import { opIdClientFor, type StoreEventType } from '../../../src/collab-store/contracts';
-import { MemoryStore, proposeRequestId, retireRequestId } from '../../../src/collab-store/memory/memory-store';
+import { MemoryStore, growthMaxActive, proposeRequestId, retireRequestId } from '../../../src/collab-store/memory/memory-store';
 import { recordOwnerDecision } from '../../../src/collab-store/owner/decisions';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
@@ -201,32 +201,35 @@ describe('CC-3 CR-B (CR-02) — lifecycle memoire C4 dispatche par appendEvent (
     expect(cap?.writes).toBe(1);
   });
 
-  it('croissance : la 2e activation d un scope le met en pause, refus suivants sans ecriture', async () => {
+  it('croissance : la premiere activation au-dela de la marge met le scope en pause, refus suivants sans ecriture', async () => {
     const cycle = uniq('cyc');
     const scope = 'role:' + uniq('g');
-    const ids = [uniq('mem'), uniq('mem'), uniq('mem')];
+    // CC-7 M1a : base 1 posee a la 1re activation ; pause a la premiere taille au-dela de growthMaxActive(1).
+    const pauseSize = growthMaxActive(1) + 1;
+    const ids = Array.from({ length: pauseSize + 1 }, () => uniq('mem'));
     const x = 'agent:x';
     const y = 'agent:y';
 
-    await append({ cycle, type: 'memory.propose', participant: x, op: 'p0',
-      payload: { memory: { id: ids[0], scope, kind: 'fact', text: 'fait numero 0', evidence_refs: ['ev:0'] } } });
-    expect((await append({ cycle, type: 'memory.review', participant: y, op: 'r0',
-      payload: { memory: { id: ids[0], version: 1 } } })).status).toBe('applied'); // baseline = 1
-    await append({ cycle, type: 'memory.propose', participant: x, op: 'p1',
-      payload: { memory: { id: ids[1], scope, kind: 'fact', text: 'fait numero 1', evidence_refs: ['ev:1'] } } });
-    // 2 entrees actives = +100 % > 25 % : le scope passe en pause DANS le batch d'activation.
-    expect((await append({ cycle, type: 'memory.review', participant: y, op: 'r1',
-      payload: { memory: { id: ids[1], version: 1 } } })).status).toBe('applied');
-    expect(await new MemoryStore(db).isActivationPaused(scope)).toBe(true);
+    // Faits observes, pas des hypotheses : une hypothese expire apres HYPOTHESIS_EXPIRE_CYCLES revisions
+    // du cycle et quitterait le compte actif pendant la serie (autre regle, hors de ce test).
+    for (let n = 0; n < pauseSize; n++) {
+      await append({ cycle, type: 'memory.propose', participant: x, op: 'p' + n,
+        payload: { memory: { id: ids[n], scope, kind: 'fact', text: 'fait numero ' + n, evidence_refs: ['ev:' + n], confidence: 'observed' } } });
+      expect((await append({ cycle, type: 'memory.review', participant: y, op: 'r' + n,
+        payload: { memory: { id: ids[n], version: 1 } } })).status).toBe('applied');
+      // Jusqu'a growthMaxActive(1) entrees actives : pas de pause ; a pauseSize : pause DANS le batch d'activation.
+      expect(await new MemoryStore(db).isActivationPaused(scope)).toBe(n + 1 === pauseSize);
+    }
 
     // Les activations suivantes du scope sont refusees sans rien ecrire.
-    await append({ cycle, type: 'memory.propose', participant: x, op: 'p2',
-      payload: { memory: { id: ids[2], scope, kind: 'fact', text: 'fait numero 2', evidence_refs: ['ev:2'] } } });
+    const last = ids[pauseSize];
+    await append({ cycle, type: 'memory.propose', participant: x, op: 'p-last',
+      payload: { memory: { id: last, scope, kind: 'fact', text: 'fait de trop', evidence_refs: ['ev:last'], confidence: 'observed' } } });
     const before = await state(cycle);
-    expect(await refuse({ cycle, type: 'memory.review', participant: y, op: 'r2',
-      payload: { memory: { id: ids[2], version: 1 } } })).toBe('ACTIVATION_PAUSED');
+    expect(await refuse({ cycle, type: 'memory.review', participant: y, op: 'r-last',
+      payload: { memory: { id: last, version: 1 } } })).toBe('ACTIVATION_PAUSED');
     expect(await state(cycle)).toEqual(before);
-    expect((await row(ids[2], 1))?.status).toBe('candidate');
+    expect((await row(last, 1))?.status).toBe('candidate');
   });
 
   it('kinds proteges : decision owner exact-match requise pour propose et retire', async () => {
