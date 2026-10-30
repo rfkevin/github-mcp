@@ -28,7 +28,7 @@ async function append(agent: Agent, cycle: string, op: string, type: string, mem
 }
 
 const fact = (id: string, scope: string, text: string) =>
-  ({ id, scope, kind: 'fact', text, evidence_refs: ['ev:m1b-' + text.length], confidence: 'observed' });
+  ({ id, scope, kind: 'fact', text, evidence_refs: ['ev:m1b-' + id], confidence: 'observed' });
 
 interface InventoryEntry { id: string; version: number; scope: string; status: string; token_cost: number; supersedes: string | null }
 interface InventoryPause { occurrence: number; reason: string; request_id: string; opened_seq: number; opened_at: number;
@@ -85,17 +85,31 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
       const alarms = (await db.prepare(
         "SELECT COUNT(*) AS n FROM events WHERE cycle_id = 'memory-alarms' AND type = 'owner.request' AND json_extract(payload_json, '$.scope') = ?1",
       ).bind(scope).first<{ n: number }>())?.n ?? 0;
+      // Sondes exhaustives : la règle de croissance recalculée en SQL nu, tous
+      // les compteurs mem:% (valeurs, ordre lexical) et les statuts des entrées
+      // du scope — si la pause manque encore, l’annotation CI prouve si la
+      // divergence vient des données ou de l’évaluation au sein du batch.
+      const rule = (await db.prepare(
+        "SELECT (100 * (SELECT COUNT(*) FROM memory_entries WHERE status = 'active' AND scope = ?1) > 125 * (SELECT writes FROM quota_counters WHERE day = ?2)) AS ok",
+      ).bind(scope, 'mem:base:' + scope).first<{ ok: number }>())?.ok ?? 0;
+      const q = (await db.prepare("SELECT writes FROM quota_counters WHERE day LIKE 'mem:%' ORDER BY day LIMIT 40")
+        .all<{ writes: number }>()).results.map(row => String(row.writes)).join(',');
+      const e = (await db.prepare(
+        'SELECT id, version, status FROM memory_entries WHERE scope = ?1 ORDER BY id, version LIMIT 20',
+      ).bind(scope).all<{ id: string; version: number; status: string }>()).results
+        .map(row => row.version + ':' + row.status).join(',');
       return 'actives=' + await actives()
         + ' base=' + await counted('mem:base:' + scope)
         + ' occ=' + await counted('mem:occ:' + scope)
         + ' pause=' + await counted('mem:pause:' + scope)
         + ' cap=' + await counted('mem:act:' + cycle + ':' + scope)
-        + ' alarms=' + alarms;
+        + ' alarms=' + alarms
+        + ' rule=' + rule + ' q[' + q + '] e[' + e + ']';
     };
     const after1 = await snap();
     const r2 = code(await review(2));
     expect('r1=[' + after1 + '] r2=' + r2 + ' [' + await snap() + ']').toBe(
-      'r1=[actives=2 base=1 occ=1 pause=1 cap=2 alarms=1] r2=ACTIVATION_PAUSED [actives=2 base=1 occ=1 pause=1 cap=2 alarms=1]');
+      'r1=[actives=2 base=1 occ=1 pause=1 cap=2 alarms=1 rule=1 q[2,1,1,1] e[1:active,1:active,1:candidate,1:candidate]] r2=ACTIVATION_PAUSED [actives=2 base=1 occ=1 pause=1 cap=2 alarms=1 rule=1 q[2,1,1,1] e[1:active,1:active,1:candidate,1:candidate]]');
     // Pendant la pause : une consolidation corrective sur la première active.
     expect((await append(alpha, cycle, 'ccorr', 'memory.consolidate',
       { id: ids[0], text: 'consolidation corrective pendant la pause', evidence_refs: ['ev:m1bc-c'] })).structuredContent.status).toBe('applied');
