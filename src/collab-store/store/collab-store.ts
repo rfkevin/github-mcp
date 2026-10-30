@@ -21,6 +21,7 @@ import { redactEventsFor } from './visibility';
 import { revealProposalPayloads } from './sealed-reveal';
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 import { prepareDelegationApproval } from './delegation-approval';
+import { isPrVerdict, verdictClaimOf } from './verdict-guard';
 import { describeInvocation, type InvocationDescriptor, type InvocationIntent, type InvocationRecord } from '../invocations/contracts';
 import { invocationByWakeKey, invocationInsertStatement } from '../invocations/repository';
 import {
@@ -199,6 +200,9 @@ export class CollabStore {
       await this.validateClarifyAsk(event);
     } else if (event.type === 'clarify.answer') {
       await this.validateClarifyAnswer(event);
+    } else if (event.type === 'evidence.add') {
+      // CC-7 L14 : un verdict D12 est rattaché à une tâche, à un rôle et à un couple exact, sinon refusé.
+      await this.validateVerdict(event);
     }
 
     let sealedInsert: D1PreparedStatement | null = null;
@@ -460,6 +464,40 @@ export class CollabStore {
           'clarify.ask : tâche « ' + task + ' » inconnue dans le cycle « ' + event.cycle_id + ' » (adressage par rôle « ' + to + ' »).',
         );
       }
+    }
+  }
+
+  // CC-7 L14 (décision de Kevin du 2026-10-30) : un evidence.add qui est un VERDICT DE PR (état AGREE/PASS/
+  // CHANGES_REQUESTED/FAIL… ou rôle reviewer/tester, ET citation d'une PR) exige une tâche connue du cycle, un déposant
+  // relecteur ou testeur de CETTE tâche (identités équivalentes comprises ; jamais l'auteur) et un
+  // couple head/base structuré. Avant : ignoré en silence par le contrôleur ; maintenant refusé, rien écrit.
+  private async validateVerdict(event: StoreEvent): Promise<void> {
+    let payload: Record<string, unknown> | null = null;
+    try {
+      const parsed = JSON.parse(event.payload_json) as unknown;
+      payload = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    } catch {
+      payload = null;
+    }
+    if (!isPrVerdict(payload, event.role, event.evidence_ref)) return;
+    const claim = verdictClaimOf(payload);
+    if ('code' in claim) throw new CollabStoreError(claim.code, claim.message);
+    const task = await this.db.prepare('SELECT owner_pid, reviewer_pid, tester_pid FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
+      .bind(event.cycle_id, claim.task).first<{ owner_pid: string; reviewer_pid: string; tester_pid: string }>();
+    if (!task) {
+      throw new CollabStoreError('TASK_UNKNOWN',
+        'Verdict refusé : tâche « ' + claim.task + ' » inconnue dans le cycle « ' + event.cycle_id + ' ». L’auteur ouvre la tâche par task.claim (owner, reviewer, tester) avant toute revue.');
+    }
+    const isReviewer = await participantsEquivalent(this.db, task.reviewer_pid, event.participant_id);
+    const isTester = await participantsEquivalent(this.db, task.tester_pid, event.participant_id);
+    if (!isReviewer && !isTester) {
+      throw new CollabStoreError('VERDICT_ROLE_REQUIRED',
+        'Verdict refusé : ' + event.participant_id + ' n’est ni relecteur (' + task.reviewer_pid + ') ni testeur (' + task.tester_pid + ') de la tâche « ' + claim.task + ' ».');
+    }
+    const declaredRole = event.role ?? '';
+    if ((declaredRole === 'reviewer' && !isReviewer) || (declaredRole === 'tester' && !isTester)) {
+      throw new CollabStoreError('VERDICT_ROLE_REQUIRED',
+        'Verdict refusé : rôle déclaré « ' + declaredRole + ' » mais ' + event.participant_id + ' tient l’autre rôle sur la tâche « ' + claim.task + ' ».');
     }
   }
 
