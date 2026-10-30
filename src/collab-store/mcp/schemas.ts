@@ -171,4 +171,44 @@ export const outputSchemas = {
     memory: z.object({ entries: z.number(), scopes: z.array(z.string()) }).optional(),
     publish: z.string(),
   },
+  // CC-7 M1b : inventaire mémoire ré-exécutable (lecture seule, correctif revue GPT-6).
+  collab_memory_inventory: {
+    viewer: z.object({ participant_id: z.string(), status: z.enum(['registered', 'unregistered']) }),
+    entries: z.array(z.object({
+      id: z.string(), version: z.number(), scope: z.string(), kind: z.string(),
+      status: z.string(), confidence: z.string(), token_cost: z.number(),
+      author_pid: z.string(), reviewer_pid: z.string(),
+      supersedes: z.string().nullable(), expires_rev: z.number().nullable(),
+    })),
+    has_more: z.boolean(),
+    next_cursor: z.string().optional(),
+    scopes: z.array(z.object({
+      scope: z.string(), family: z.string(), budget: z.number(), tokens_active: z.number(),
+      counts: z.object({ candidate: z.number(), active: z.number(), superseded: z.number(), retired: z.number() }),
+      baseline: z.number(), occurrences: z.number(), paused: z.boolean(),
+      pauses: z.array(z.object({
+        occurrence: z.number(), reason: z.string(), request_id: z.string(),
+        opened_seq: z.number(), opened_at: z.number(),
+        decision: z.string().nullable(), decided_at: z.number().nullable(), open: z.boolean(),
+        corrective_events: z.array(z.object({
+          seq: z.number(), at: z.number(), type: z.string(), cycle_id: z.string(), id: z.string(),
+        })),
+        corrective_truncated: z.boolean(),
+      })),
+    })),
+    scopes_truncated: z.boolean(),
+  },
+  // CC-7 M1b : simulation pure des seuils de pause (aucune lecture du store).
+  collab_memory_growth_simulate: {
+    rule: z.object({
+      growth_alarm_percent: z.number(),
+      pause_condition: z.string(),
+      resume: z.string(),
+    }),
+    growth: z.array(z.object({ k: z.number(), pauses: z.array(z.number()) })),
+    budget: z.object({
+      tokens_used: z.number(), avg_cost: z.number(), budget: z.number(),
+      accepted: z.number(), refused: z.number(), tokens_after: z.number(),
+    }).optional(),
+  },
 };
