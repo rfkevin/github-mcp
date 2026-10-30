@@ -125,6 +125,13 @@ export const outputSchemas = {
       })),
       truncated: z.object({ api_runs: z.boolean(), handovers: z.boolean() }),
     }).optional(),
+    // CC-7 L12 : travail en cours du même agent (chat ou API), lecture seule et bornée.
+    active_work: z.object({
+      last_chat_write: z.object({ seq: z.number(), at: z.number(), type: z.string(), session_id: z.string(), task: z.string().nullable() }).nullable(),
+      open_api_runs: z.array(z.object({ run_id: z.string(), task_id: z.string(), task_kind: z.string(), status: z.string(), updated_at: z.number() })),
+      last_checkpoints: z.array(z.object({ task: z.string().nullable(), seq: z.number(), at: z.number(), channel: z.enum(['api', 'chat']), summary: z.string() })),
+      truncated: z.object({ open_api_runs: z.boolean(), last_checkpoints: z.boolean() }),
+    }).optional(),
     delta: z.object({
       events: z.array(z.object(storedEvent)),
       hasMore: z.boolean(),
@@ -146,6 +153,8 @@ export const outputSchemas = {
     event: z.object(storedEvent).optional(),
     // CR-B (CR-02) : effet memory_entries d'un événement memory.* applied.
     memory: z.object({ id: z.string(), version: z.number(), status: z.string() }).optional(),
+    // CC-7 L12 : autre session nommée du même agent sur la même tâche (< 30 min) — avertissement, rien de bloqué.
+    concurrent_session: z.object({ other_session_id: z.string(), seq: z.number(), at: z.number(), task: z.string() }).optional(),
   },
   // CC-3 C6 : instantané pour une PR GitHub (lecture seule).
   collab_export: {

@@ -19,9 +19,16 @@
  * objet) : un passage rejoué ne crée jamais une seconde exécution pour la même
  * décision (createRun idempotent), et createRun refuse toujours si HALT, si le
  * chat tient le bail ou si une exécution est déjà active pour le participant.
+ *
+ * CC-7 L12 : un seul travailleur actif par agent. Aucune exécution n'est créée tant que le chat
+ * de l'agent (identités équivalentes comprises) a écrit dans la fenêtre CHAT_ACTIVE_SECONDS :
+ * sur le cycle pour une réponse (une réponse n'a pas de tâche, le bail par tâche ne la couvrait
+ * pas), sur la tâche pour un réveil de tâche. Fenêtre glissante : sans écriture chat, l'API reprend
+ * au passage suivant ; la décision n'est pas consommée, seulement différée (compteur `deferred`).
  */
 import { previewNextActions } from '../controller/next-actions';
-import { logicalIdentityOf } from '../identity/families';
+import { equivalentParticipantIds, logicalIdentityOf } from '../identity/families';
+import { chatActiveWithin } from '../context/active-work';
 import { sha256Hex } from '../store/hash';
 import { createRun } from './engine';
 
@@ -215,26 +222,42 @@ async function plannedKindOf(db: D1Database, cycleId: string, participantId: str
   return null;
 }
 
-export interface PlanResult { considered: number; created: number }
+/** `deferred` n'apparaît que s'il est non nul (L12) : la forme historique { considered, created } reste inchangée. */
+export interface PlanResult { considered: number; created: number; deferred?: number }
+
+function planResult(considered: number, created: number, deferred: number): PlanResult {
+  return deferred > 0 ? { considered, created, deferred } : { considered, created };
+}
 
 export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: number; limit?: number }): Promise<PlanResult> {
   const participants = apiParticipants(env.AGENT_RUN_PARTICIPANTS);
-  if (!participants.length) return { considered: 0, created: 0 };
+  if (!participants.length) return planResult(0, 0, 0);
   const limit = Math.max(1, Math.min(input.limit ?? PLAN_LIMIT, 20));
   const { results: cycles } = await db.prepare("SELECT cycle_id FROM cycles WHERE status = 'open' ORDER BY cycle_id LIMIT ?1")
     .bind(PLAN_MAX_CYCLES).all<{ cycle_id: string }>();
   let considered = 0;
   let created = 0;
+  let deferred = 0;
   for (const { cycle_id: cycleId } of cycles) {
     for (const participantId of participants) {
       const view = await previewNextActions(db, cycleId, participantId);
       if (view.mode !== 'active') continue;
+      let identities: string[] | null = null;
+      const chatActive = async (taskId: string | null): Promise<boolean> => {
+        identities ??= await equivalentParticipantIds(db, participantId);
+        return chatActiveWithin(db, cycleId, identities, input.now, taskId);
+      };
       for (const decision of view.mine) {
         // 7c-2 : question adressée au participant (règle X13) → exécution answer, inchangée.
         if (decision.action === 'answer_question' && decision.task_id === null) {
           const match = ASK_SUBJECT_RE.exec(decision.subject);
           if (!match) continue;
-          if (created >= limit) return { considered, created };
+          // L12 : le chat de l'agent est actif sur ce cycle — il traite lui-même la question.
+          if (await chatActive(null)) {
+            deferred += 1;
+            continue;
+          }
+          if (created >= limit) return planResult(considered, created, deferred);
           considered += 1;
           const askSeq = Number(match[1]);
           const result = await createRun(db, {
@@ -248,7 +271,12 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         // L5a (S9) : réveil de tâche → exécution typée review / test / implement.
         const kind = await plannedKindOf(db, cycleId, participantId, decision);
         if (!kind) continue;
-        if (created >= limit) return { considered, created };
+        // L12 : le chat de l'agent travaille sur cette tâche — pas d'exécution API en parallèle.
+        if (decision.task_id && await chatActive(decision.task_id)) {
+          deferred += 1;
+          continue;
+        }
+        if (created >= limit) return planResult(considered, created, deferred);
         considered += 1;
         const taskId = decision.task_id ?? '';
         const result = await createRun(db, {
@@ -260,5 +288,5 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
       }
     }
   }
-  return { considered, created };
+  return planResult(considered, created, deferred);
 }

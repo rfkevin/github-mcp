@@ -13,7 +13,7 @@ import { MAX_OP_ID_LENGTH, type StoreEventType } from '../contracts';
 import { authorizeAppend, authorizePhaseAdvance } from '../identity';
 import { equivalentParticipantIds } from '../identity/families';
 import { exportCycleState, exportMemoryMarkdown } from '../export';
-import { resolveContextTarget, buildRolePacket, loadContinuity } from '../context';
+import { resolveContextTarget, buildRolePacket, loadContinuity, loadActiveWork, concurrentSession } from '../context';
 import { advanceGuarded } from '../phases/gate';
 import type { Phase } from '../../collab/contracts';
 import { dispatchCoordinatorTask } from '../coordinator/tasks';
@@ -151,9 +151,10 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       });
       // CC-7 L3 : « depuis ta dernière visite » — exécutions API et notes de passation du participant
       // (identités équivalentes), jamais celles d'un autre ; client non enregistré : rien.
-      const continuity = identity.status === 'registered'
-        ? await loadContinuity(context.db, resolved.cycle_id, await equivalentParticipantIds(context.db, participantId))
-        : null;
+      const ownIds = identity.status === 'registered' ? await equivalentParticipantIds(context.db, participantId) : null;
+      const continuity = ownIds ? await loadContinuity(context.db, resolved.cycle_id, ownIds) : null;
+      // CC-7 L12 : travail en cours du même agent (chat ou API) — reprendre plutôt que recommencer.
+      const activeWork = ownIds ? await loadActiveWork(context.db, resolved.cycle_id, ownIds) : null;
       let delta: Awaited<ReturnType<typeof context.store.getDelta>> | undefined;
       if (input.include_delta) {
         delta = await context.store.getDelta(
@@ -179,6 +180,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
           budget: packet.budget,
         },
         ...(continuity ? { since_last_visit: continuity } : {}),
+        ...(activeWork ? { active_work: activeWork } : {}),
         ...(delta ? { delta: { events: delta.events.map(toEventOutput), hasMore: delta.hasMore } } : {}),
       });
     } catch (error) {
@@ -269,12 +271,25 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       return collabFailure(error, 'Ajout impossible.');
     }
     if (outcome.status === 'applied') {
+      // CC-7 L12 : avertissement NON bloquant si une autre session nommée du même agent vient d'écrire
+      // sur la même tâche ; une erreur de lecture ne fait jamais échouer un append déjà appliqué.
+      const event = toEventOutput(outcome.event);
+      let concurrent: Awaited<ReturnType<typeof concurrentSession>> = null;
+      try {
+        concurrent = await concurrentSession(context.db, {
+          cycle_id: event.cycle_id, seq: event.seq, at: event.at, session_id: event.session_id ?? '',
+          role: event.role ?? '', payload_json: event.payload_json,
+        }, await equivalentParticipantIds(context.db, event.participant_id));
+      } catch {
+        concurrent = null;
+      }
       return collabSuccess({
         status: 'applied',
         revision: outcome.revision,
-        event: toEventOutput(outcome.event),
+        event,
         // CR-B (CR-02) : effet memory_entries d'un événement memory.* applied.
         ...(outcome.memory ? { memory: outcome.memory } : {}),
+        ...(concurrent ? { concurrent_session: concurrent } : {}),
       });
     }
     if (outcome.status === 'duplicate') {
