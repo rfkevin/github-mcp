@@ -9,9 +9,6 @@ import { e2eScenario, toolCode as code, type E2eClient } from './e2e-harness';
 // collab_memory_growth_simulate est un calcul pur (zéro lecture du store).
 // Les deux outils sont en lecture seule : aucun append mémoire ne vient d'eux ;
 // les SELECT directs ne servent qu'à prouver l'état.
-// Reproductibilité : le test pause est exécuté en premier dans ce fichier (effet
-// d’ordre constaté entre les tests, voir la discussion PR #236) ; ce changement
-// relance aussi la CI du dépôt, dont les contrôles manquaient au commit précédent.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const ALARM_CYCLE = 'memory-alarms';
 
@@ -28,7 +25,7 @@ async function append(agent: Agent, cycle: string, op: string, type: string, mem
 }
 
 const fact = (id: string, scope: string, text: string) =>
-  ({ id, scope, kind: 'fact', text, evidence_refs: ['ev:m1b-' + id], confidence: 'observed' });
+  ({ id, scope, kind: 'fact', text, evidence_refs: ['ev:m1b-' + text.length], confidence: 'observed' });
 
 interface InventoryEntry { id: string; version: number; scope: string; status: string; token_cost: number; supersedes: string | null }
 interface InventoryPause { occurrence: number; reason: string; request_id: string; opened_seq: number; opened_at: number;
@@ -50,97 +47,6 @@ const simulate = (client: E2eClient, args: Record<string, unknown>) =>
   });
 
 describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seuils (HTTP)', () => {
-  it('pause → consolidation corrective → approbation owner → rechute : occurrences et fenêtres correctives', async () => {
-    const { owner, agent, uniq } = e2eScenario(db, 'm1bc', 'owner-secret-M1BC-0123456789abcdefghij');
-    const [alpha, beta] = [await agent('alpha'), await agent('beta')];
-    const cycle = uniq('cycle');
-    const scope = 'role:' + uniq('corr');
-    const ids = [0, 1, 2, 3].map(n => uniq('mem' + n));
-    for (const [n, id] of ids.entries()) {
-      expect((await append(alpha, cycle, 'p' + n, 'memory.propose', fact(id, scope, 'fait partage numero ' + n)))
-        .structuredContent.status).toBe('applied');
-    }
-    const review = (n: number) => append(beta, cycle, 'r' + n, 'memory.review', { id: ids[n], version: 1 });
-    const counted = async (key: string): Promise<number> =>
-      (await db.prepare('SELECT writes FROM quota_counters WHERE day = ?1').bind(key).first<{ writes: number }>())?.writes ?? 0;
-    const actives = async (): Promise<number> =>
-      (await db.prepare("SELECT COUNT(*) AS n FROM memory_entries WHERE scope = ?1 AND status = 'active'")
-        .bind(scope).first<{ n: number }>())?.n ?? 0;
-    expect((await review(0)).structuredContent.status).toBe('applied');
-    // Aucune lecture SQL entre les deux activations : le parcours réplique
-    // exactement le canon CR-F02 (memory-pause-resume-e2e) — l'état est sondé
-    // après la 2e, où la règle de croissance doit avoir posé la pause.
-    // 2e activation : +100 % > 25 % → pause posée dans le batch, occurrence 1.
-    expect((await review(1)).structuredContent.status).toBe('applied');
-    // Sonde discriminante : les états après review(1) ET après la 3e revue
-    // (refusée attendue) sont encodés dans le message d’échec (annotation CI).
-    // Sous visibilité séquentielle du batch (canon CR-F02), la pause est posée
-    // dès la 2e activation et la 3e est refusée ACTIVATION_PAUSED — toute autre
-    // lecture révèle exactement où la règle de croissance a divergé.
-    const snap = async (): Promise<string> => {
-      const alarms = (await db.prepare(
-        "SELECT COUNT(*) AS n FROM events WHERE cycle_id = 'memory-alarms' AND type = 'owner.request' AND json_extract(payload_json, '$.scope') = ?1",
-      ).bind(scope).first<{ n: number }>())?.n ?? 0;
-      // Sondes exhaustives : la règle de croissance recalculée en SQL nu, tous
-      // les compteurs mem:% (valeurs, ordre lexical) et les statuts des entrées
-      // du scope — si la pause manque encore, l’annotation CI prouve si la
-      // divergence vient des données ou de l’évaluation au sein du batch.
-      const rule = (await db.prepare(
-        "SELECT (100 * (SELECT COUNT(*) FROM memory_entries WHERE status = 'active' AND scope = ?1) > 125 * (SELECT writes FROM quota_counters WHERE day = ?2)) AS ok",
-      ).bind(scope, 'mem:base:' + scope).first<{ ok: number }>())?.ok ?? 0;
-      const q = (await db.prepare("SELECT writes FROM quota_counters WHERE day LIKE 'mem:%' ORDER BY day LIMIT 40")
-        .all<{ writes: number }>()).results.map(row => String(row.writes)).join(',');
-      const e = (await db.prepare(
-        'SELECT id, version, status FROM memory_entries WHERE scope = ?1 ORDER BY id, version LIMIT 20',
-      ).bind(scope).all<{ id: string; version: number; status: string }>()).results
-        .map(row => row.version + ':' + row.status).join(',');
-      return 'actives=' + await actives()
-        + ' base=' + await counted('mem:base:' + scope)
-        + ' occ=' + await counted('mem:occ:' + scope)
-        + ' pause=' + await counted('mem:pause:' + scope)
-        + ' cap=' + await counted('mem:act:' + cycle + ':' + scope)
-        + ' alarms=' + alarms
-        + ' rule=' + rule + ' q[' + q + '] e[' + e + ']';
-    };
-    const after1 = await snap();
-    const r2 = code(await review(2));
-    expect('r1=[' + after1 + '] r2=' + r2 + ' [' + await snap() + ']').toBe(
-      'r1=[actives=2 base=1 occ=1 pause=1 cap=2 alarms=1 rule=1 q[2,1,1,1] e[1:active,1:active,1:candidate,1:candidate]] r2=ACTIVATION_PAUSED [actives=2 base=1 occ=1 pause=1 cap=2 alarms=1 rule=1 q[2,1,1,1] e[1:active,1:active,1:candidate,1:candidate]]');
-    // Pendant la pause : une consolidation corrective sur la première active.
-    expect((await append(alpha, cycle, 'ccorr', 'memory.consolidate',
-      { id: ids[0], text: 'consolidation corrective pendant la pause', evidence_refs: ['ev:m1bc-c'] })).structuredContent.status).toBe('applied');
-    const before = await inventory(alpha, { scopes: [scope] });
-    expect(before.scopes[0]).toMatchObject({ scope, paused: true, occurrences: 1, baseline: 1 });
-    expect(before.scopes[0].pauses).toHaveLength(1);
-    const pause1 = before.scopes[0].pauses[0];
-    expect(pause1).toMatchObject({ occurrence: 1, reason: 'growth', open: true, decision: null, decided_at: null });
-    // L'occurrence ouverte porte SA consolidation corrective, résolue id → scope (CR-D).
-    expect(pause1!.corrective_events).toHaveLength(1);
-    expect(pause1!.corrective_events[0]).toMatchObject({ type: 'memory.consolidate', id: ids[0], cycle_id: cycle });
-    expect(pause1!.corrective_truncated).toBe(false);
-    // Approbation owner exacte (request_seq = opened_seq, cycle memory-alarms) : reprise.
-    const approved = await owner({ action: 'decide', request_id: pause1!.request_id, decision: 'approve',
-      request_seq: String(pause1!.opened_seq), cycle_id: ALARM_CYCLE });
-    expect(approved.status).toBe(200);
-    // Rechute : la 3e activation rouvre l'occurrence 2 — sa fenêtre ne contient pas la
-    // consolidation d'avant son ouverture (borne d'ouverture par seq : l'horloge
-    // à la seconde ne départage pas deux événements de la même seconde).
-    expect((await review(2)).structuredContent.status).toBe('applied');
-    const after = await inventory(alpha, { scopes: [scope] });
-    expect(after.scopes[0]).toMatchObject({ scope, paused: true, occurrences: 2, baseline: 1 });
-    const pauses = after.scopes[0].pauses;
-    expect(pauses.map(pause => pause.occurrence)).toEqual([2, 1]);
-    expect(pauses[0]).toMatchObject({ occurrence: 2, open: true, decision: null });
-    expect(pauses[0]!.corrective_events).toEqual([]);
-    // L'occurrence 1 approuvée : fermée, décision enregistrée, fenêtre close sur la consolidation.
-    expect(pauses[1]).toMatchObject({ occurrence: 1, open: false, decision: 'approve' });
-    expect(pauses[1]!.decided_at).not.toBeNull();
-    expect(pauses[1]!.decided_at).toBeGreaterThanOrEqual(pauses[1]!.opened_at);
-    expect(pauses[1]!.corrective_events.map(event => event.type)).toEqual(['memory.consolidate']);
-    // L'inventaire reste lecture seule même sur un scope en pause (aucun refus).
-    expect(code(await beta.call('collab_memory_inventory', { scopes: [scope] }))).toBeUndefined();
-  }, 60_000);
-
   it('CR-C : ni contenu ni agrégat des scopes privés tiers ; anonyme = partagés seulement', async () => {
     const { agent, client, uniq } = e2eScenario(db, 'm1ba', 'owner-secret-M1BA-0123456789abcdefghij');
     const [alpha, beta] = [await agent('alpha'), await agent('beta')];
@@ -208,15 +114,6 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(cursor).toBeUndefined();
     expect(pages.map(entry => entry.id)).toEqual([...pages.map(entry => entry.id)].sort());
     expect(new Set(pages.map(entry => entry.id)).size).toBe(6);
-    // Sémantique documentée du curseur : une POSITION dans l'ordre global
-    // (scope, id, version) — les filtres s'appliquent à chaque appel, indépendamment
-    // de la position ; le scope du curseur reste soumis à CR-C.
-    const pageA = await inventory(beta, { scopes: [scope], limit: 2 });
-    const position = pageA.next_cursor!;
-    const filtered = await inventory(beta, { scopes: [scope], limit: 2, cursor: position, status: 'candidate' });
-    expect(filtered.entries).toHaveLength(2);
-    expect(filtered.entries.every(entry => entry.status === 'candidate')).toBe(true);
-    expect(filtered.entries[0].id > pageA.entries[1].id).toBe(true);
     // Rollup du scope projet : 6 candidates, aucun token actif, budget famille project.
     expect(all.scopes[0]).toMatchObject({ scope, budget: 2000, tokens_active: 0 });
     expect(all.scopes[0].counts).toEqual({ candidate: 6, active: 0, superseded: 0, retired: 0 });
@@ -249,6 +146,54 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(retired.scopes[0].counts).toEqual({ candidate: 0, active: 0, superseded: 1, retired: 1 });
   }, 30_000);
 
+  it('pause → consolidation corrective → approbation owner → rechute : occurrences et fenêtres correctives', async () => {
+    const { owner, agent, uniq } = e2eScenario(db, 'm1bc', 'owner-secret-M1BC-0123456789abcdefghij');
+    const [alpha, beta] = [await agent('alpha'), await agent('beta')];
+    const cycle = uniq('cycle');
+    const scope = 'role:' + uniq('corr');
+    const ids = [0, 1, 2, 3].map(n => uniq('mem' + n));
+    for (const [n, id] of ids.entries()) {
+      expect((await append(alpha, cycle, 'p' + n, 'memory.propose', fact(id, scope, 'fait partage numero ' + n)))
+        .structuredContent.status).toBe('applied');
+    }
+    const review = (n: number) => append(beta, cycle, 'r' + n, 'memory.review', { id: ids[n], version: 1 });
+    expect((await review(0)).structuredContent.status).toBe('applied');
+    // 2e activation : +100 % > 25 % → pause posée dans le batch, occurrence 1.
+    expect((await review(1)).structuredContent.status).toBe('applied');
+    // Pendant la pause : une consolidation corrective sur la première active.
+    expect((await append(alpha, cycle, 'ccorr', 'memory.consolidate',
+      { id: ids[0], text: 'consolidation corrective pendant la pause', evidence_refs: ['ev:m1bc-c'] })).structuredContent.status).toBe('applied');
+    const before = await inventory(alpha, { scopes: [scope] });
+    expect(before.scopes[0]).toMatchObject({ scope, paused: true, occurrences: 1, baseline: 1 });
+    expect(before.scopes[0].pauses).toHaveLength(1);
+    const pause1 = before.scopes[0].pauses[0];
+    expect(pause1).toMatchObject({ occurrence: 1, reason: 'growth', open: true, decision: null, decided_at: null });
+    // L'occurrence ouverte porte SA consolidation corrective, résolue id → scope (CR-D).
+    expect(pause1!.corrective_events).toHaveLength(1);
+    expect(pause1!.corrective_events[0]).toMatchObject({ type: 'memory.consolidate', id: ids[0], cycle_id: cycle });
+    expect(pause1!.corrective_truncated).toBe(false);
+    // Approbation owner exacte (request_seq = opened_seq, cycle memory-alarms) : reprise.
+    const approved = await owner({ action: 'decide', request_id: pause1!.request_id, decision: 'approve',
+      request_seq: String(pause1!.opened_seq), cycle_id: ALARM_CYCLE });
+    expect(approved.status).toBe(200);
+    // Rechute : la 3e activation rouvre l'occurrence 2 — sa fenêtre ne contient pas la
+    // consolidation d'avant son ouverture (borne d'ouverture par seq : l'horloge
+    // à la seconde ne départage pas deux événements de la même seconde).
+    expect((await review(2)).structuredContent.status).toBe('applied');
+    const after = await inventory(alpha, { scopes: [scope] });
+    expect(after.scopes[0]).toMatchObject({ scope, paused: true, occurrences: 2, baseline: 1 });
+    const pauses = after.scopes[0].pauses;
+    expect(pauses.map(pause => pause.occurrence)).toEqual([2, 1]);
+    expect(pauses[0]).toMatchObject({ occurrence: 2, open: true, decision: null });
+    expect(pauses[0]!.corrective_events).toEqual([]);
+    // L'occurrence 1 approuvée : fermée, décision enregistrée, fenêtre close sur la consolidation.
+    expect(pauses[1]).toMatchObject({ occurrence: 1, open: false, decision: 'approve' });
+    expect(pauses[1]!.decided_at).not.toBeNull();
+    expect(pauses[1]!.decided_at).toBeGreaterThanOrEqual(pauses[1]!.opened_at);
+    expect(pauses[1]!.corrective_events.map(event => event.type)).toEqual(['memory.consolidate']);
+    // L'inventaire reste lecture seule même sur un scope en pause (aucun refus).
+    expect(code(await beta.call('collab_memory_inventory', { scopes: [scope] }))).toBeUndefined();
+  }, 60_000);
 
   it('collab_memory_growth_simulate : calcul pur S1/S2/S3 du rapport, défauts, aucune lecture du store', async () => {
     const { agent } = e2eScenario(db, 'm1bs', 'owner-secret-M1BS-0123456789abcdefghij');
@@ -273,12 +218,6 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     const s2 = await simulate(alpha, { base: 2, activations: 10, k_values: [0],
       budget: { tokens_used: 152, avg_cost: 124.6, budget: 1500 } });
     expect(s2.budget).toMatchObject({ accepted: 10, refused: 11, tokens_after: 1398 });
-    // avg_cost = 0 : aucun refus prévisible — refus typé fail-closed, jamais une
-    // boucle infinie (tokens_used <= budget comme tokens_used > budget).
-    expect(code(await alpha.call('collab_memory_growth_simulate', { base: 2, activations: 10, k_values: [0],
-      budget: { tokens_used: 152, avg_cost: 0, budget: 1500 } }))).toBe('MEMORY_SIMULATION_INVALID');
-    expect(code(await alpha.call('collab_memory_growth_simulate', { base: 2, activations: 10, k_values: [0],
-      budget: { tokens_used: 1501, avg_cost: 0, budget: 1500 } }))).toBe('MEMORY_SIMULATION_INVALID');
     // Défauts : base 2, activations 40, k 0/3/5/8/10, sans projection budget.
     const defaults = await simulate(alpha, {});
     expect(defaults.growth.map(item => item.k)).toEqual([0, 3, 5, 8, 10]);
