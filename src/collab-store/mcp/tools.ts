@@ -25,6 +25,7 @@ import { registerAgentRunTools } from './agentrun-tools';
 import { registerSalonTools } from './salon-tools';
 import { registerModelTools } from './model-tools';
 import { registerResearchTools } from './research-tools';
+import { registerMemoryTools } from './memory-tools';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -43,6 +44,8 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   registerDelegationTools(server, context);
   registerControllerTools(server, context);
   registerAgentRunTools(server, context);
+  // CC-7 M1b : inventaire mémoire ré-exécutable — lecture seule, aucune porte.
+  registerMemoryTools(server, context);
   // CC-7 L4 : outils salon absents du catalogue tant que la porte est éteinte.
   if (context.flags.salonEnabled) registerSalonTools(server, context);
   // CC-7 L9a : catalogue et choix de modèle absents tant que les exécutions API sont éteintes.
