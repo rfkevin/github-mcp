@@ -9,6 +9,9 @@ import { e2eScenario, toolCode as code, type E2eClient } from './e2e-harness';
 // collab_memory_growth_simulate est un calcul pur (zéro lecture du store).
 // Les deux outils sont en lecture seule : aucun append mémoire ne vient d'eux ;
 // les SELECT directs ne servent qu'à prouver l'état.
+// Reproductibilité : le test pause est exécuté en premier dans ce fichier (effet
+// d’ordre constaté entre les tests, voir la discussion PR #236) ; ce changement
+// relance aussi la CI du dépôt, dont les contrôles manquaient au commit précédent.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const ALARM_CYCLE = 'memory-alarms';
 
