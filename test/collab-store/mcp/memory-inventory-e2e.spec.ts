@@ -181,14 +181,20 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(await counted('mem:pause:' + scope)).toBe(0);
     // 2e activation : +100 % > 25 % → pause posée dans le batch, occurrence 1.
     expect((await review(1)).structuredContent.status).toBe('applied');
-    // Preuve SQL (canon memory-pause-resume-e2e) : la pause, l’occurrence et la
-    // base de croissance sont posées par le batch d’activation lui-même. Cette
-    // preuve précède toute lecture par l’outil inventaire : elle isole « alarme
-    // posée par le store » de « rollup rendu par l’outil ».
-    expect(await actives()).toBe(2);
-    expect(await counted('mem:pause:' + scope)).toBe(1);
-    expect(await counted('mem:occ:' + scope)).toBe(1);
-    expect(await counted('mem:base:' + scope)).toBe(1);
+    // Sonde composite : tout l’état D1 après la 2e revue est encodé dans le
+    // message d’échec (annotation CI) — chaque statement du batch d’activation
+    // y laisse une trace : cap, baseline, pause, occurrence, dépôt owner.request.
+    const alarmEvents = (await db.prepare(
+      "SELECT COUNT(*) AS n FROM events WHERE cycle_id = 'memory-alarms' AND type = 'owner.request' AND json_extract(payload_json, '$.scope') = ?1",
+    ).bind(scope).first<{ n: number }>())?.n ?? 0;
+    expect(
+      'actives=' + await actives()
+        + ' base=' + await counted('mem:base:' + scope)
+        + ' occ=' + await counted('mem:occ:' + scope)
+        + ' pause=' + await counted('mem:pause:' + scope)
+        + ' cap=' + await counted('mem:act:' + cycle + ':' + scope)
+        + ' alarmEvents=' + alarmEvents,
+    ).toBe('actives=2 base=1 occ=1 pause=1 cap=2 alarmEvents=1');
     // Pendant la pause : une consolidation corrective sur la première active.
     expect((await append(alpha, cycle, 'ccorr', 'memory.consolidate',
       { id: ids[0], text: 'consolidation corrective pendant la pause', evidence_refs: ['ev:m1bc-c'] })).structuredContent.status).toBe('applied');
