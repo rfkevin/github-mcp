@@ -10,10 +10,5 @@ Limite ou attente : annoncer vérification incomplète (dépôt, PR, SHA, runIds
 Intégration : seulement avec autorisation propriétaire mcp:integration et politique du dépôt ; github_merge_integration après accord et CI ; jamais approuver au nom de l'humain, fusionner main/master, contourner une protection ni déployer ; puis attendre la CI du SHA résultant.
 Retour d'expérience facultatif : procédure dans docs/collaboration/modules/feedback.md. Pas de proposition transformée en autorisation. Sans accès ou écriture, remettre au propriétaire et signaler la non-publication.
 Ces consignes ne réveillent pas les autres clients ; une signature prouve un compte authentifié et un nom d'agent déclaré, pas des modèles distincts.`;
-
-export function verificationFollowUp(repository: string, sha: string, pullRequestNumber?: number) {
-  return { taskComplete: false, reason: 'Vérifications CI/build du dernier commit encore à attester.',
-    nextTool: 'github_ci_status', arguments: { repository, ref: sha },
-    pullRequestNumber, nextPollSeconds: 15,
-    instruction: 'Déclarer expectedChecks depuis les workflows et la mission, attendre leurs résultats, corriger les échecs autorisés. Relire le headSha de la PR avant le bilan final ; une PR créée ne clôt pas la tâche.' };
-}
+// Chemin public historique conservé ; la définition vit dans une couche neutre.
+export { verificationFollowUp } from '../workflow/follow-up';

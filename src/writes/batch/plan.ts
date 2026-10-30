@@ -1,5 +1,5 @@
 import { InputValidationError } from '../../github/types';
-import { publicFailure } from '../../mcp/tools/github/result';
+import { publicFailure } from '../../errors/public-failure';
 import { appendExact, replaceExactOnce } from '../text-transforms';
 import type { BatchSnapshot } from './snapshot';
 import type { BatchError, BatchOperation, BatchOperationState } from './schema';

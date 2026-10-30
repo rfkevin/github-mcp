@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { ToolContext } from '../mcp/context';
 import { collectCiStatus } from '../mcp/tools/github/ci';
 import { expectedCheckSchema } from '../mcp/verification';
-import { verificationFollowUp } from '../mcp/workflow-guidance';
+import { verificationFollowUp } from '../workflow/follow-up';
 import { agentLabelSchema, mutation } from '../writes/coordinator';
 import { assertSelectedRepository, assertWritablePath } from '../security/policy';
 import { GitHubApiError, InputValidationError, type GitHubPullRequest } from '../github/types';
