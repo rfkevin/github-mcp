@@ -114,6 +114,15 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(cursor).toBeUndefined();
     expect(pages.map(entry => entry.id)).toEqual([...pages.map(entry => entry.id)].sort());
     expect(new Set(pages.map(entry => entry.id)).size).toBe(6);
+    // Sémantique documentée du curseur : une POSITION dans l'ordre global
+    // (scope, id, version) — les filtres s'appliquent à chaque appel, indépendamment
+    // de la position ; le scope du curseur reste soumis à CR-C.
+    const pageA = await inventory(beta, { scopes: [scope], limit: 2 });
+    const position = pageA.next_cursor!;
+    const filtered = await inventory(beta, { scopes: [scope], limit: 2, cursor: position, status: 'candidate' });
+    expect(filtered.entries).toHaveLength(2);
+    expect(filtered.entries.every(entry => entry.status === 'candidate')).toBe(true);
+    expect(filtered.entries[0].id > pageA.entries[1].id).toBe(true);
     // Rollup du scope projet : 6 candidates, aucun token actif, budget famille project.
     expect(all.scopes[0]).toMatchObject({ scope, budget: 2000, tokens_active: 0 });
     expect(all.scopes[0].counts).toEqual({ candidate: 6, active: 0, superseded: 0, retired: 0 });
@@ -218,6 +227,12 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     const s2 = await simulate(alpha, { base: 2, activations: 10, k_values: [0],
       budget: { tokens_used: 152, avg_cost: 124.6, budget: 1500 } });
     expect(s2.budget).toMatchObject({ accepted: 10, refused: 11, tokens_after: 1398 });
+    // avg_cost = 0 : aucun refus prévisible — refus typé fail-closed, jamais une
+    // boucle infinie (tokens_used <= budget comme tokens_used > budget).
+    expect(code(await alpha.call('collab_memory_growth_simulate', { base: 2, activations: 10, k_values: [0],
+      budget: { tokens_used: 152, avg_cost: 0, budget: 1500 } }))).toBe('MEMORY_SIMULATION_INVALID');
+    expect(code(await alpha.call('collab_memory_growth_simulate', { base: 2, activations: 10, k_values: [0],
+      budget: { tokens_used: 1501, avg_cost: 0, budget: 1500 } }))).toBe('MEMORY_SIMULATION_INVALID');
     // Défauts : base 2, activations 40, k 0/3/5/8/10, sans projection budget.
     const defaults = await simulate(alpha, {});
     expect(defaults.growth.map(item => item.k)).toEqual([0, 3, 5, 8, 10]);
