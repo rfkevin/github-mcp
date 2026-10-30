@@ -117,7 +117,7 @@ describe('CC-7 L8 — aiguillage par participant', () => {
 
 describe('CC-7 L8 — chemin gratuit (aucune enveloppe, coût 0)', () => {
   it('registre gratuit daté : Gemini Flash-Lite, Groq gpt-oss-20b, Z.ai glm-4.7-flash, OpenRouter « :free » ; attestation owner + origine cc3-test pour Gemini et Groq', () => {
-    expect([...API_FREE_MODELS].sort()).toEqual(['gemini:gemini-3.5-flash-lite', 'groq:openai/gpt-oss-20b', 'zai:glm-4.7-flash']);
+    expect([...API_FREE_MODELS].sort()).toEqual(['gemini:gemini-3.5-flash-lite', 'gemini:gemini-3.6-flash', 'gemini:gemini-3.8-flash', 'groq:openai/gpt-oss-20b', 'zai:glm-4.7-flash']);
     expect(isFreeApiModel('openrouter:deepseek/deepseek-v4-flash-0731:free')).toBe(true);
     expect(isFreeApiModel('openrouter:deepseek/deepseek-v4-flash-0731')).toBe(false);
     expect(freeAllowed('gemini', GEMINI_FREE_ENV)).toBe(true);

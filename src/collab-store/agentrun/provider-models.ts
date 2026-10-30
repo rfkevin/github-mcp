@@ -37,10 +37,14 @@ import { effortMaxTokens, effortOptions, type Effort } from './effort';
 import { budgetState, chooseModel, modelPreference, participantEnvelope, participantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
-export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-27';
+export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-30';
 /** Modèles gratuits vérifiés hors Workers AI (repris du module CC-4 executors), deny-by-default. */
 export const API_FREE_MODELS: ReadonlySet<string> = new Set([
   'gemini:gemini-3.5-flash-lite',
+  // CC-7 (2026-10-30, page tarifaire officielle) : palier gratuit aussi sur 3.8 Flash et 3.6 Flash.
+  // 3.7 Flash est déprécié (redirigé vers 3.8 Flash) : jamais listé.
+  'gemini:gemini-3.6-flash',
+  'gemini:gemini-3.8-flash',
   'groq:openai/gpt-oss-20b',
   'zai:glm-4.7-flash',
 ]);

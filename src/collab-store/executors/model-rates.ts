@@ -57,6 +57,8 @@ export const API_MODEL_RATES: Readonly<Record<string, ApiModelRate>> = {
   'anthropic:claude-fable-5-1': { input_per_m: 1000, output_per_m: 5000, source_url: 'https://platform.claude.com/docs/en/about-claude/pricing', as_of: '2026-10-27' },
   'gemini:gemini-3.5-flash-lite': { input_per_m: 30, output_per_m: 250, source_url: GEMINI_PRICING , as_of: '2026-10-27' },
   'gemini:gemini-3.6-flash': { input_per_m: 75, output_per_m: 375, source_url: GEMINI_PRICING , as_of: '2026-10-27' },
+  // CC-7 (relevé du 2026-10-30) : même tarif que 3.6 Flash, 150 / 750 à partir du 2027-01-01 — à revalider.
+  'gemini:gemini-3.8-flash': { input_per_m: 75, output_per_m: 375, source_url: GEMINI_PRICING , as_of: '2026-10-30' },
   'groq:openai/gpt-oss-120b': { input_per_m: 15, output_per_m: 60, source_url: GROQ_GPT_OSS_120B_PRICING , as_of: '2026-10-27' },
 };
 
