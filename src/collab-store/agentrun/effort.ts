@@ -8,11 +8,13 @@
  * - Groq gpt-oss : reasoning_effort low | medium | high (xhigh → high) ;
  * - OpenRouter : reasoning.effort low | medium | high (xhigh → high) ;
  * - Z.ai : thinking enabled / disabled seulement ; glm-5.3* pense toujours (rien n'est envoyé) ;
- * - Gemini 3.x : thinkingLevel minimal | low | medium | high ;
+ * - Gemini 3.x : thinkingLevel minimal | low | medium | high ; 3.8 Flash et 4-argon sans minimal (CC-7 G0) ;
  * - Workers AI et DeepSeek : aucun réglage (options historiques inchangées).
  * La réflexion consomme des jetons de SORTIE : le plafond de sortie de l'étape est multiplié
  * (borné à 8192) et l'estimation de coût suit ce plafond — le budget de l'agent voit le vrai pire cas.
  */
+import { geminiThinkingLevel } from '../executors/gemini';
+
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
 export type Effort = typeof EFFORTS[number];
 export const EFFORT_LABELS: Readonly<Record<Effort, string>> = { low: 'faible', medium: 'moyen', high: 'élevé', xhigh: 'très élevé' };
@@ -64,7 +66,8 @@ export function effortOptions(ref: string, effort: Effort): Record<string, unkno
     case 'zai':
       return /^glm-5\.3/.test(model) ? null : { thinking: { type: effort === 'low' ? 'disabled' : 'enabled' } };
     case 'gemini':
-      return { thinkingLevel: effort === 'xhigh' ? 'high' : effort === 'low' ? 'minimal' : effort === 'medium' ? 'low' : 'medium' };
+      // CC-7 G0 : même échelle qu'avant, mais jamais « minimal » pour un modèle qui le refuse (3.8 Flash, 4-argon).
+      return { thinkingLevel: geminiThinkingLevel(model, effort) };
     default:
       return null;
   }

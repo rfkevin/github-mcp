@@ -13,7 +13,7 @@
  * tour model rejoué. Raisonnement au niveau `minimal` (désactivation complète non
  * prise en charge sur Flash / Flash-Lite, précédent CC-4 executors/gemini.ts).
  */
-import { GEMINI_API_BASE } from '../executors/gemini';
+import { GEMINI_API_BASE, geminiThinkingLevel } from '../executors/gemini';
 import type { AgentMessage, ModelOutput, ToolCall } from './engine';
 import type { PaidProtocol } from './paid-protocol';
 import { bytes, type ToolSchema } from './workers-ai-model';
@@ -113,9 +113,11 @@ export const GEMINI_PROTOCOL: PaidProtocol = {
       body: {
         systemInstruction: converted.systemInstruction, contents: converted.contents,
         ...(tools.length ? { tools } : {}),
-        // CC-7 L9b : niveau de réflexion décidé par le serveur (effort.ts) ; minimal par défaut.
+        // CC-7 L9b : niveau de réflexion décidé par le serveur (effort.ts). Par défaut, le plus léger
+        // que CE modèle accepte (CC-7 G0 : low pour 3.8 Flash, qui refuse minimal ; minimal sinon).
         generationConfig: { maxOutputTokens: input.maxOutputTokens,
-          thinkingConfig: { thinkingLevel: typeof input.requestOptions?.thinkingLevel === 'string' ? input.requestOptions.thinkingLevel : 'minimal' } },
+          thinkingConfig: { thinkingLevel: typeof input.requestOptions?.thinkingLevel === 'string'
+            ? input.requestOptions.thinkingLevel : geminiThinkingLevel(input.model, 'low') } },
       },
       bound: bytes(JSON.stringify(converted.contents)) + bytes(input.system) + bytes(JSON.stringify(tools))
         + 16 * converted.contents.length,
