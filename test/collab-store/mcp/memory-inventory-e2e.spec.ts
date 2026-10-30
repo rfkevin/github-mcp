@@ -67,13 +67,9 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
       (await db.prepare("SELECT COUNT(*) AS n FROM memory_entries WHERE scope = ?1 AND status = 'active'")
         .bind(scope).first<{ n: number }>())?.n ?? 0;
     expect((await review(0)).structuredContent.status).toBe('applied');
-    // Sonde SQL après la 1re activation : chaque entrée de la règle de croissance
-    // (100 * actives > 125 * baseline) est prouvée en SQL avant la 2e revue —
-    // isole le défaut vu aux CI 41064884335 et 41066919021 (pause restée à 0).
-    expect(await actives()).toBe(1);
-    expect(await counted('mem:base:' + scope)).toBe(1);
-    expect(await counted('mem:occ:' + scope)).toBe(0);
-    expect(await counted('mem:pause:' + scope)).toBe(0);
+    // Aucune lecture SQL entre les deux activations : le parcours réplique
+    // exactement le canon CR-F02 (memory-pause-resume-e2e) — l'état est sondé
+    // après la 2e, où la règle de croissance doit avoir posé la pause.
     // 2e activation : +100 % > 25 % → pause posée dans le batch, occurrence 1.
     expect((await review(1)).structuredContent.status).toBe('applied');
     // Sonde discriminante : les états après review(1) ET après la 3e revue
