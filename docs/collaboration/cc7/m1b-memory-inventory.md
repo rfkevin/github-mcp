@@ -1,9 +1,9 @@
-# M1b — Rapport d'inventaire mémoire et comparaison des seuils de pause (lecture seule)
+# M1b — Inventaire mémoire ré-exécutable et comparaison des seuils de pause (lecture seule)
 
 - **Lot** : CC-7 M1b — GO seq 1057 (feu vert Kevin relayé par GPT-6 ; attribution confirmée en conversation, ce n'est PAS une owner.decision /owner installée).
 - **Auteur** : Vibe — relecteur : GPT-6 ; testeur : Claude ; fusion : Kevin seul.
 - **Date** : 2026-10-30. Journaux : cc7-api-auto (consultation) + memory-alarms (alarme).
-- **Nature** : STRICTEMENT LECTURE SEULE — aucune activation, consolidation, retire ; aucun changement de seuil/baseline ; aucun code modifié (ce rapport est le seul fichier du lot).
+- **Nature** : lecture seule pour toute mémoire, tout seuil et toute baseline — aucune activation, consolidation ou retire, aucune décision owner prise en son nom. Correctif de la revue GPT-6 (CHANGES_REQUESTED, PR #236/6523145152) : le lot livre désormais le composant ré-exécutable demandé (2 outils MCP lecture seule / calcul pur + tests, §9) ; ce document reste le relevé initial et en devient la documentation.
 
 ## 1. Ancrage technique (SHA exact)
 
@@ -32,7 +32,7 @@ Scopes couverts : partagés (common, project:*, role:*, task:*) + participant:vi
 Limites consignées :
 - Journaux d'autres cycles non balayés intégralement : des candidates/tombstones d'autres cycles peuvent exister et restent invisibles de tout agent (inconnue déjà consignée P1/P2, n'empêche pas ce lot) ;
 - Le store D1 n'est pas requêtable en direct depuis l'environnement agent : lecture via les outils collab uniquement ;
-- Coûts des candidates = ESTIMÉS (formule canonique sur le texte de proposition) ; jamais persistés avant activation. Les coûts des actives sont ceux des textes proposés (= persistés à l'activation, la métrique ne dépend pas de l'état).
+- Coûts — CORRECTION (revue GPT-6) : `token_cost` est persisté dès la PROPOSITION (`insertCandidate`, migration 0003), pas seulement à l'activation ; les coûts du §3.2 sont donc les valeurs persistées du D1, recalculées à l'identique par la formule canonique pour vérification. L'absence des coûts dans l'export memory-md reste une limite de l'export, pas du store ; `collab_memory_inventory` (§9) lit les valeurs persistées et les tests e2e vérifient recalculé = persisté.
 
 ## 3. Inventaire (au 2026-10-30, avant toute décision mem-pause)
 
@@ -48,7 +48,7 @@ common : 2 actives, **152/1500 jetons** (10,2 % du budget). participant:vibe : 1
 
 ### 3.2 Candidates en attente (7 — toutes scope common, confiance observed, auteur vibe, bloquées par la pause)
 
-| seq (date UTC) | id | kind | coût estimé | preuves |
+| seq (date UTC) | id | kind | coût (recalculé = persisté) | preuves |
 |---|---|---|---|---|
 | 907 (2026-10-26 08:31) | cc7-fact-xai-adapter-request-body | fact | 117 | github-mcp#214 ; store seq 896 |
 | 908 (08:31) | cc7-lesson-second-adapter-shared-socle | lesson | 124 | github-mcp#214 |
@@ -58,7 +58,7 @@ common : 2 actives, **152/1500 jetons** (10,2 % du budget). participant:vibe : 1
 | 927 (10:12) | cc7-lesson-elision-scanner-assertion-thresholds | lesson | 128 | pull/215 (0fbd2112/b9022ad2/592406ae) |
 | 948 (14:01) | cc7-lesson-lookup-test-one-pr-per-branch | lesson | 128 | github-mcp#219 |
 
-Total estimé des 7 : **872 jetons**. Après activation des 7 : 152 + 872 = **1024 ≤ 1500 → AUCUN refus budget** (établi par calcul sur les textes exacts avec la formule canonique — conformément à la précision du GO : l'estimation seule ne préjugeait de rien, le calcul l'établit).
+Total des 7 : **872 jetons** (recalculés ; valeurs identiques aux `token_cost` persistés du D1, posés dès la proposition — migration 0003). Après activation des 7 : 152 + 872 = **1024 ≤ 1500 → AUCUN refus budget** (établi par calcul sur les textes exacts avec la formule canonique — conformément à la précision du GO : l'estimation seule ne préjugeait de rien, le calcul l'établit).
 
 ### 3.3 Tombstones, consolidations, refus de revue
 
@@ -72,7 +72,7 @@ Total estimé des 7 : **872 jetons**. Après activation des 7 : 152 + 872 = **10
 
 ## 4. Historique observable (données réelles, aucune simulation)
 
-Le scope common a connu exactement : 2 propositions (seq 902, 903), 2 activations (seq 919, 920, reviewer ≠ auteur), 1 pause (memory-alarms seq 921), 0 reprise, 0 retrait, 0 consolidation, 0 refus de revue.
+Le scope common a connu exactement : 9 propositions (seq 902, 903, 907, 908, 909, 925, 926, 927, 948 — correction revue GPT-6 : le « 2 » initial ne comptait que les propositions actives), 2 activations (seq 919, 920, reviewer ≠ auteur), 1 pause (memory-alarms seq 921), 0 reprise, 0 retrait, 0 consolidation, 0 refus de revue.
 
 Sous la règle actuelle (k=0), la pause s'est déclenchée à n=2 sur base 1 — le défaut de baseline de scope neuf déjà établi (P1/P2) : +100 % > +25 % dès la 2e activation. **Sous la formule candidate, aucun k testé (3, 5, 8, 10) n'aurait déclenché de pause à n=2** (100·(2−1) = 100 ≤ 300 = plus petite marge testée).
 
@@ -80,7 +80,7 @@ Sous la règle actuelle (k=0), la pause s'est déclenchée à n=2 sur base 1 —
 
 ## 5. Comparaison des marges (simulations — hypothèses explicites)
 
-Hypothèses communes : reprise simulée = recalage base ← n (**jamais une décision owner observée**) ; MAX_ACTIVATIONS_PER_CYCLE=10 non modélisé dans S1 (7 < 10) ; supposé s'étaler sur plusieurs cycles dans S2/S3 (hypothèse) ; algorithme : pour chaque activation n→n+1, si 100·(n+1−base) > max(25·base, 100·k) alors pause à n+1 et base ← n+1.
+Hypothèses communes : reprise simulée = recalage base ← n (**jamais une décision owner observée**) ; MAX_ACTIVATIONS_PER_CYCLE=10 non modélisé dans S1 (7 < 10) ; supposé s'étaler sur plusieurs cycles dans S2/S3 (hypothèse) ; algorithme : pour chaque activation n→n+1, si 100·(n+1−base) > max(25·base, 100·k) alors pause à n+1 et base ← n+1. L'algorithme est livré ré-exécutable par l'outil `collab_memory_growth_simulate` (§9, calcul pur : mêmes entrées, mêmes positions).
 
 ### S1 — Reprise actuelle approuvée (base=2), puis activation des 7 candidates dans l'ordre de proposition (n=2→9)
 
@@ -94,7 +94,7 @@ Hypothèses communes : reprise simulée = recalage base ← n (**jamais une déc
 
 Budget : aucun refus (1024 ≤ 1500, §3.2).
 
-### S2 — Après reprise, remplissage de common jusqu'au refus budget (base=2 ; coût moyen 124,6 jetons = moyenne des 7 candidates ; arrêt à 10 activations → n=12, ≈1398/1500 ; la 13e entrée serait refusée : ≈1523 > 1500 — refus ÉTABLI par calcul)
+### S2 — Projection : remplissage de common jusqu'au refus budget (base=2 ; coût moyen 124,6 jetons = HYPOTHÈSE, moyenne des 7 candidates connues ; arrêt à 10 activations → n=12, ≈1398/1500 ; la 13e entrée serait refusée : ≈1523 > 1500 — refus établi PAR CALCUL SOUS CETTE HYPOTHÈSE de coût moyen. Ré-exécution : `collab_memory_growth_simulate` {base:2, activations:10, k_values:[0], budget:{tokens_used:152, avg_cost:124.6, budget:1500}})
 
 | k | pauses (n) | rechutes |
 |---|---|---|
@@ -118,7 +118,7 @@ Variante d'ancrage (consignée pour la reproductibilité) : en rejouant depuis l
 
 ## 6. Lecture honnête des résultats
 
-- Sur l'historique réel accessible, AUCUNE marge candidate n'aurait interrompu le flux : la seule pause réelle est un faux positif du défaut de baseline de scope neuf.
+- Nuance (revue GPT-6) : la sensibilité de la règle actuelle sur petite base est DÉMONTRÉE (pause réelle dès n=2 sur base 1) ; l'utilité du contrôle humain qu'est une pause reste NON DÉTERMINÉE — sur l'historique accessible, aucune marge candidate n'aurait interrompu le flux et la seule pause réelle est un faux positif du défaut de baseline de scope neuf.
 - S1 (le scénario réaliste à court terme) sépare k=0 (4 rechutes) de k=3/k=5 (1 rechute chacun, à des positions différentes : 6 vs 8) et de k=8/k=10 (0 interruption — donc aucune porte humaine tant que le scope ne grossit pas à peu près ×4).
 - S2/S3 montrent des positions et fréquences distinctes par marge, mais **aucune donnée n'établit l'UTILITÉ d'une interruption** : pas un seul événement réel de correction/consolidation/retrait lié à une pause n'est observable (§4).
 - **Conclusion : NON DÉTERMINÉ.** Aucun classement optimal n'est annoncé ; la donnée manquante (interruptions suivies ou non d'interventions justifiées) ne peut s'accumuler qu'en production.
@@ -126,15 +126,24 @@ Variante d'ancrage (consignée pour la reproductibilité) : en rejouant depuis l
 ## 7. Recommandation (décision réservée à Kevin)
 
 - Conserver **k=5 comme valeur initiale provisoire** (plan M1a/M1b) : 1re porte humaine à n=8 dans S1, au plus 2 décisions owner par cycle de remplissage au rythme observé. k=8/k=10 éliminent toute interruption sur l'historique accessible — aucune donnée ne prouve que c'est meilleur ou pire.
-- Le réglage définitif devra venir des mesures du suivi M4 (2 cycles) : pauses réelles, refus budget, interventions post-pause, part du contexte servi.
+- Le réglage définitif devra venir des mesures du suivi M4 (2 cycles) : pauses réelles, refus budget, interventions post-pause, part du contexte servi. Nuance (revue GPT-6) : deux cycles de mesure = un premier bilan, pas la garantie d'un réglage définitif.
 - Décisions réservées : valeur de k ; mem-pause-92a5dc04bd6f9fb8f29f-1 (APRÈS M1a+M1b fusionnés et déployés sur cc3-test) ; CR-C sur les agrégats privés ; GO déploiement.
 
 ## 8. Reproductibilité
 
 - Métrique : estimateTokens(t) = ceil(len(t)/4) (contrat canonique, blob 252b356e au SHA de référence).
 - Entrées : textes exacts des propositions (journal cc7 seq 902, 903, 907-909, 925-927, 948), textes actifs (export memory-md sha 1a32f22b…a87), paramètres du code au SHA 367203bc (§1).
-- Algorithme des simulations : §5 (hypothèses communes). Toute divergence entre la règle déployée et ce document devra être relevée par la revue (GPT-6) ou le test (Claude) au couple SHA exact.
+- Algorithme des simulations : §5 (hypothèses communes), ré-exécutable par `collab_memory_growth_simulate` (S1 : base 2, activations 7 ; S2 : budget ci-dessus ; S3 : activations 38 — §9). Inventaire du §3 relisible et re-vérifiable par `collab_memory_inventory` (coûts persistés du D1). Toute divergence entre la règle déployée et ce document devra être relevée par la revue (GPT-6) ou le test (Claude) au couple SHA exact.
 
 ---
 
-Rapport en lecture seule — aucune mémoire modifiée, aucun seuil/baseline changé, aucune décision owner prise en son nom.
+## 9. Composant livré (correctif de la revue GPT-6, CHANGES_REQUESTED)
+
+La revue (PR #236, commentaire 6523145152) demandait le composant ré-exécutable ; il est livré au head de ce lot, toujours enregistrés (aucune porte) :
+
+- **`collab_memory_inventory`** (lecture seule du D1) : entrées versionnées de tous statuts, multi-scopes, avec leur coût PERSISTÉ `token_cost` (posé dès la proposition, migration 0003 — le rapport initial les disait « estimés » : corrigé §2) ; pagination keyset (`cursor` base64 [scope, id, version], ordre scope/id/version, `limit` 1-200, défaut 50, curseur illisible → `MEMORY_CURSOR_INVALID`) ; rollup par scope (budget `MEMORY_TOKEN_BUDGETS`, comptes par statut, tokens actifs, baseline/occurrences/pause) ; pauses du cycle memory-alarms avec décision owner et **corrective_events** (memory.consolidate/memory.retire de la fenêtre [ouverture, décision ou maintenant], résolus id → scope, CR-D). CR-C : scopes partagés + scopes participant de l'appelant (familles logiques) ; `participant:<autre>` → `MEMORY_SCOPE_FORBIDDEN` ; client non enregistré = partagés seulement — ni contenu ni agrégat d'un scope privé tiers (couvert par les tests e2e).
+- **`collab_memory_growth_simulate`** (calcul pur, zéro lecture du store) : positions de pause par marge k (règle `100·(n−base) > max(25·base, 100·k)`, reprise simulée immédiate base ← n) et projection de remplissage de budget à coût moyen — S1/S2/S3 ci-dessus re-exécutables à l'identique (§5, §8).
+- **Tests** : `test/collab-store/mcp/memory-inventory-e2e.spec.ts` — 5 parcours HTTP : CR-C (contenu, agrégat, refus nominal, anonyme) ; pagination (6 entrées, limit 2 → 3 pages, égalité recalculé = persisté, `MEMORY_CURSOR_INVALID`) ; statuts et versions (v1 superseded, v2 retirée, filtre status, `supersedes id@1`) ; pause → consolidation corrective → approbation owner (request_seq = opened_seq, cycle_id memory-alarms) → rechute avec fenêtres correctives ; simulations S1/S2/S3 + défauts. Catalogue renforcé : défaut 15→17, salon 19→21, agentruns 17→19 (`catalog.spec.ts`).
+- **Découpage explicite** : la règle candidate k (valeur, activation) reste M1a ; le suivi M4 (mesures des pauses réelles) n'est pas couvert par ce lot ; M1b n'est PAS terminé tant que la revue et le test au nouveau couple SHA ne passent pas.
+
+Rapport en lecture seule — aucune mémoire modifiée, aucun seuil/baseline changé, aucune décision owner prise en son nom ; les outils du §9 sont eux-mêmes lecture seule / calcul pur.
