@@ -177,6 +177,26 @@ describe('CC-7 L12 — avertissement de session concurrente (non bloquant)', () 
       .toEqual({ other_session_id: 'S1', seq: prev, at: T - 600, task: 'l7' });
   });
 
+  it('A, B, B (GPT-6, seq 1102) : la seconde écriture de B voit toujours A dans la fenêtre ; A hors fenêtre → rien', async () => {
+    const q = await seedQuestion('abb', 'p-l12-abb-' + n);
+    const a = await event(q.cycle, { type: 'checkpoint', participant: q.owner, session: 'A', at: T - 600, payload: { task: 'l7', state: 'A' } });
+    const b1 = await event(q.cycle, { type: 'checkpoint', participant: q.owner, session: 'B', at: T - 300, payload: { task: 'l7', state: 'B1' } });
+    const b2 = await event(q.cycle, { type: 'checkpoint', participant: q.owner, session: 'B', at: T, payload: { task: 'l7', state: 'B2' } });
+    expect(await concurrentSession(db, { ...base, cycle_id: q.cycle, seq: b1, at: T - 300, session_id: 'B' }, [q.owner]))
+      .toEqual({ other_session_id: 'A', seq: a, at: T - 600, task: 'l7' });
+    expect(await concurrentSession(db, { ...base, cycle_id: q.cycle, seq: b2, at: T, session_id: 'B' }, [q.owner]))
+      .toEqual({ other_session_id: 'A', seq: a, at: T - 600, task: 'l7' });
+    // Une écriture anonyme (sans session_id) de l'agent après A ne masque pas A et n'est pas signalée.
+    const anon = await event(q.cycle, { type: 'checkpoint', participant: q.owner, at: T + 1, payload: { task: 'l7', state: 'anonyme' } });
+    const b3 = await event(q.cycle, { type: 'checkpoint', participant: q.owner, session: 'B', at: T + 2, payload: { task: 'l7', state: 'B3' } });
+    expect(anon).toBeLessThan(b3);
+    expect((await concurrentSession(db, { ...base, cycle_id: q.cycle, seq: b3, at: T + 2, session_id: 'B' }, [q.owner]))?.other_session_id).toBe('A');
+    // A sort de la fenêtre de 30 min : plus d'avertissement pour B.
+    const late = T - 600 + CONCURRENT_SESSION_SECONDS + 1;
+    const b4 = await event(q.cycle, { type: 'checkpoint', participant: q.owner, session: 'B', at: late, payload: { task: 'l7', state: 'B4' } });
+    expect(await concurrentSession(db, { ...base, cycle_id: q.cycle, seq: b4, at: late, session_id: 'B' }, [q.owner])).toBeNull();
+  });
+
   it('aucun avertissement : même session, autre tâche, trop ancien, sans session_id, écriture API, autre agent', async () => {
     const q = await seedQuestion('cs2', 'p-l12-cs2-' + n);
     await event(q.cycle, { type: 'checkpoint', participant: q.owner, session: 'S1', at: T - CONCURRENT_SESSION_SECONDS - 5, payload: { task: 'l7' } });
@@ -193,7 +213,7 @@ describe('CC-7 L12 — avertissement de session concurrente (non bloquant)', () 
     expect(await concurrentSession(db, { ...ev, seq: own, at: T + 1, session_id: 'S1', payload_json: '{"task":"l9"}' }, [q.owner])).toBeNull();
   });
 
-  it('collab_append_event : appliqué ET concurrent_session dans la réponse ; sans concurrence, aucun champ', async () => {
+  it('collab_append_event : appliqué ET concurrent_session dans la réponse, aussi à la 2e écriture de B (A, B, B) ; autre tâche : aucun champ', async () => {
     const q = await seedQuestion('cstool', 'p-l12-cstool-' + n);
     const me = q.owner;
     const client = 'cc7l12-cs-client-' + n;
@@ -211,8 +231,16 @@ describe('CC-7 L12 — avertissement de session concurrente (non bloquant)', () 
     expect(body.status).toBe('applied');
     expect(body.concurrent_session).toMatchObject({ other_session_id: 'chat-A', task: 'l7' });
 
-    const quiet = await append({ cycle: q.cycle, expected_rev: body.revision, op_id: opClient + ':' + q.cycle + ':cs:2', type: 'checkpoint',
+    // A, B, B (GPT-6, seq 1102) : la seconde écriture de B sur l7 signale toujours A.
+    const again = await append({ cycle: q.cycle, expected_rev: body.revision, op_id: opClient + ':' + q.cycle + ':cs:2', type: 'checkpoint',
       participant_id: me, session_id: 'chat-B', payload_json: JSON.stringify({ task: 'l7', state: 'B continue' }) });
+    const againBody = z.object(outputSchemas.collab_append_event).parse(JSON.parse(again.content[0].text));
+    expect(againBody.status).toBe('applied');
+    expect(againBody.concurrent_session).toMatchObject({ other_session_id: 'chat-A', task: 'l7' });
+
+    // Autre tâche, que seule B touche : aucun champ.
+    const quiet = await append({ cycle: q.cycle, expected_rev: againBody.revision, op_id: opClient + ':' + q.cycle + ':cs:3', type: 'checkpoint',
+      participant_id: me, session_id: 'chat-B', payload_json: JSON.stringify({ task: 'l9', state: 'B ailleurs' }) });
     const quietBody = z.object(outputSchemas.collab_append_event).parse(JSON.parse(quiet.content[0].text));
     expect(quietBody.status).toBe('applied');
     expect(quietBody.concurrent_session).toBeUndefined();

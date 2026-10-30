@@ -64,10 +64,11 @@ export interface ChatWrite {
 
 /**
  * Dernière écriture du chat (rôle ≠ api-agent) des identités `ids` dans le cycle, éventuellement
- * restreinte à une tâche et à une borne de temps ; null = aucune.
+ * restreinte à une tâche, à une borne de temps et, avec `otherThanSession`, aux seules sessions NOMMÉES
+ * autres que celle-ci ; null = aucune.
  */
 export async function lastChatWrite(db: D1Database, cycleId: string, ids: readonly string[],
-  options: { taskId?: string | null; sinceAt?: number; beforeSeq?: number } = {}): Promise<ChatWrite | null> {
+  options: { taskId?: string | null; sinceAt?: number; beforeSeq?: number; otherThanSession?: string } = {}): Promise<ChatWrite | null> {
   const unique = [...new Set(ids)].filter(Boolean);
   if (unique.length === 0) return null;
   const binds: unknown[] = [cycleId, ...unique];
@@ -86,6 +87,11 @@ export async function lastChatWrite(db: D1Database, cycleId: string, ids: readon
   if (options.beforeSeq !== undefined) {
     binds.push(options.beforeSeq);
     clauses.push('seq < ?' + binds.length);
+  }
+  if (options.otherThanSession !== undefined) {
+    // GPT-6 (seq 1102) : filtrer EN SQL, sinon A, B, B masque A (la dernière écriture serait B).
+    binds.push(options.otherThanSession);
+    clauses.push("COALESCE(session_id, '') <> ''", 'session_id <> ?' + binds.length);
   }
   const row = await db.prepare('SELECT seq, at, type, session_id, payload_json FROM events WHERE '
     + clauses.join(' AND ') + ' ORDER BY seq DESC LIMIT 1').bind(...binds)
@@ -113,8 +119,10 @@ export interface ConcurrentSession {
 
 /**
  * Avertissement de session concurrente pour un événement qui vient d'être écrit : une AUTRE session
- * nommée du même agent a écrit sur la même tâche il y a moins de CONCURRENT_SESSION_SECONDS.
- * Sans session_id ou sans tâche : null (aucun faux positif). Non bloquant par construction.
+ * nommée du même agent a écrit sur la même tâche il y a moins de CONCURRENT_SESSION_SECONDS, même si
+ * la session courante a écrit entre-temps (A, B, B : la troisième écriture voit toujours A).
+ * Sans session_id ou sans tâche : null (aucun faux positif). Non bloquant par construction : un
+ * avertissement, pas une exclusivité.
  */
 export async function concurrentSession(db: D1Database, event: { cycle_id: string; seq: number; at: number;
   session_id: string; role: string; payload_json: string }, ids: readonly string[]): Promise<ConcurrentSession | null> {
@@ -123,7 +131,7 @@ export async function concurrentSession(db: D1Database, event: { cycle_id: strin
   const task = taskOfPayload(event.payload_json);
   if (!task) return null;
   const previous = await lastChatWrite(db, event.cycle_id, ids,
-    { taskId: task, sinceAt: event.at - CONCURRENT_SESSION_SECONDS, beforeSeq: event.seq });
+    { taskId: task, sinceAt: event.at - CONCURRENT_SESSION_SECONDS, beforeSeq: event.seq, otherThanSession: sessionId });
   if (!previous || !previous.session_id || previous.session_id === sessionId) return null;
   return { other_session_id: previous.session_id, seq: previous.seq, at: previous.at, task };
 }
