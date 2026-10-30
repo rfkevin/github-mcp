@@ -1,7 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { e2eScenario, toolCode as code, type E2eClient } from './e2e-harness';
-import { pauseRequestId } from '../../../src/collab-store/memory/memory-store';
 
 // CC-7 M1b (correctif revue GPT-6, PR #236) par le vrai chemin HTTP :
 // collab_memory_inventory lit le D1 — coûts PERSISTÉS dès la proposition
@@ -51,33 +50,6 @@ const simulate = (client: E2eClient, args: Record<string, unknown>) =>
   });
 
 describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seuils (HTTP)', () => {
-  // Réplique canon CR-F02 : parcours, secret et libellés repris tels quels
-  // du test vert memory-pause-resume-e2e. Si cette réplique passe ici
-  // alors que le test M1b échoue, l'écart est dans le corps du test M1b ;
-  // si elle échoue aussi, c'est le contexte de ce fichier qui est en cause.
-  it('canon CR-F02 répliqué : pause posée dès la 2e activation (repique de diagnostic)', async () => {
-    const { agent, uniq } = e2eScenario(db, 'm1bx', 'owner-secret-CRF2-0123456789abcdefghijklm');
-    const [alpha, beta] = [await agent('alpha'), await agent('beta')];
-    const cycle = uniq('cycle');
-    const scope = 'role:' + uniq('pause');
-    const ids = [0, 1, 2, 3].map(n => uniq('mem' + n));
-    for (const [n, id] of ids.entries()) {
-      expect((await append(alpha, cycle, 'p' + n, 'memory.propose', fact(id, scope, 'fait partage numero ' + n)))
-        .structuredContent.status).toBe('applied');
-    }
-    const review = (n: number) => append(beta, cycle, 'r' + n, 'memory.review', { id: ids[n], version: 1 });
-    const counted = async (key: string): Promise<number> =>
-      (await db.prepare('SELECT writes FROM quota_counters WHERE day = ?1').bind(key).first<{ writes: number }>())?.writes ?? 0;
-    expect((await review(0)).structuredContent.status).toBe('applied');
-    expect((await review(1)).structuredContent.status).toBe('applied');
-    expect(await counted('mem:pause:' + scope)).toBe(1);
-    expect(await counted('mem:occ:' + scope)).toBe(1);
-    expect(await counted('mem:base:' + scope)).toBe(1);
-    const request = (await db.prepare(
-      "SELECT json_extract(payload_json, '$.request_id') AS request_id FROM events WHERE cycle_id = 'memory-alarms' AND type = 'owner.request' AND json_extract(payload_json, '$.scope') = ?1 ORDER BY seq",
-    ).bind(scope).first<{ request_id: string }>())!;
-    expect(request.request_id).toBe(await pauseRequestId(scope, 1));
-  }, 60_000);
   it('pause → consolidation corrective → approbation owner → rechute : occurrences et fenêtres correctives', async () => {
     const { owner, agent, uniq } = e2eScenario(db, 'm1bc', 'owner-secret-M1BC-0123456789abcdefghij');
     const [alpha, beta] = [await agent('alpha'), await agent('beta')];
