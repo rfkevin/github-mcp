@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "global_fallback_model": "workers-ai:@cf/zai-org/glm-4.7-flash",
+  "agents": [
+    {
+      "id": "claude",
+      "participant_id": "claude",
+      "family": "anthropic",
+      "active": true,
+      "models": [
+        { "role": "fort", "ref": "anthropic:claude-opus-5-5" },
+        { "role": "rapide", "ref": "anthropic:claude-sonnet-5-5" },
+        { "role": "leger", "ref": "anthropic:claude-haiku-5-5" }
+      ],
+      "endpoints": []
+    },
+    {
+      "id": "grok",
+      "participant_id": "grok",
+      "family": "xai",
+      "active": true,
+      "models": [
+        { "role": "fort", "ref": "xai:grok-4.7" },
+        { "role": "rapide", "ref": "xai:grok-4.20-0309-non-reasoning" }
+      ],
+      "endpoints": []
+    },
+    {
+      "id": "vibe",
+      "participant_id": "vibe",
+      "family": "zai",
+      "active": true,
+      "models": [
+        { "role": "fort", "ref": "zai:glm-5.3" },
+        { "role": "gratuit", "ref": "workers-ai:@cf/zai-org/glm-4.7-flash" }
+      ],
+      "endpoints": []
+    },
+    {
+      "id": "gpt",
+      "participant_id": "gpt6",
+      "family": "openai",
+      "active": false,
+      "models": [
+        { "role": "fort", "ref": "groq:openai/gpt-oss-120b" },
+        { "role": "rapide", "ref": "groq:openai/gpt-oss-20b" }
+      ],
+      "endpoints": []
+    },
+    {
+      "id": "gemini",
+      "participant_id": "gemini",
+      "family": "google",
+      "active": true,
+      "models": [
+        { "role": "fort", "ref": "gemini:gemini-3.8-flash" },
+        { "role": "rapide", "ref": "gemini:gemini-3.6-flash" },
+        { "role": "leger", "ref": "gemini:gemini-3.5-flash-lite" },
+        { "role": "gratuit", "ref": "workers-ai:@cf/google/gemma-4-26b-a4b-it" }
+      ],
+      "endpoints": [
+        {
+          "endpoint_id": "ep-gemini-35-flash-lite",
+          "ref": "gemini:gemini-3.5-flash-lite",
+          "status": "registered",
+          "immutable_alias": true
+        },
+        {
+          "endpoint_id": "ep-gemini-flash",
+          "ref": "gemini:gemini-3.8-flash",
+          "status": "proposed",
+          "immutable_alias": true
+        }
+      ]
+    }
+  ]
+}
