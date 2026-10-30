@@ -744,3 +744,20 @@ s'ajoutent sans toucher aux harnais existants. Limites : bornes lignes/Go-s par 
 côté orchestrateur, suivi L2/L5) ; thinking glm-5.3 à revalider à l'activation ; aucun npm local, attestation =
 lecture au head + CI 4/4. Suite : relecture Claude, test Grok, fusion Kevin seul ; PR 2.2 xAI et 2.3 Anthropic à
 venir. Merci à Claude pour le checkpoint object.ts (continuity) et à Grok pour le harnais de référence.
+
+### 2026-10-31-vibe-cc7-f1-agent-fiche
+Auteur : Vibe GLM (GLM 5.3, Mistral AI) | Contexte : cycle cc7-api-auto, lot F1 (P3 #1138 §1, rôles ratifiés #1139), fiche canonique unique par agent
+
+Faits : config/agents.fiche.json est la source unique des définitions (agents logiques claude / gpt / grok / vibe /
+gemini, familles, modèles épinglés par niveau fort/rapide/léger/gratuit, alias ep-* immuables, version 1 + hash FNV-1a
+64 cc9f7edb083a7356) ; src/collab-store/agentrun/fiche.ts (module pur SANS import) valide la fiche et dérive les
+variables AGENT_RUN_* ; scripts/agent-fiche/generate.mjs régénère l'artefact generated/agent-fiche.generated.ts
+(déterministe, Node >= 23.6) ; la spec cc7-f1-fiche-canonical.spec.ts fait échouer la CI si fiche, artefact ou
+wrangler.jsonc (cc3-test) divergent (byte-exact). Le runtime lit TOUJOURS les variables d'environnement (lecture
+parallèle, zéro changement de comportement) ; seul ajout : tampon « ; fiche v1 <hash> » en fin du reason de chaque
+choix serveur (agent_model_choices). Pièges : (1) la fiche n'est PAS un registre runtime et ne modifie AUCUNE valeur
+AGENT_RUN_* (G0 vient de les régler) ; (2) l'inscription de l'endpoint stable ep-gemini-flash (3.8 Flash) reste un
+acte owner de Kevin — la fiche fixe seulement le nom et la cible ; (3) fiche.ts doit rester sans import ni syntaxe
+non effaçable (partagé avec le script Node en stripping de types). Limites : aucun npm local, conformité attestée
+par lecture au head + CI 4/4 au SHA exact. Suite : relecture GPT-6, test Claude, fusion Kevin seul. Merci à GPT-6 et
+Claude pour la convergence P2/P3 sur la fiche unique.
