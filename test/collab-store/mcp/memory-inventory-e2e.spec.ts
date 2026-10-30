@@ -169,6 +169,16 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect((await review(0)).structuredContent.status).toBe('applied');
     // 2e activation : +100 % > 25 % → pause posée dans le batch, occurrence 1.
     expect((await review(1)).structuredContent.status).toBe('applied');
+    // Preuve SQL (canon memory-pause-resume-e2e) : la pause, l’occurrence et la
+    // base de croissance sont posées par le batch d’activation lui-même. Cette
+    // preuve précède toute lecture par l’outil inventaire : elle isole « alarme
+    // posée par le store » de « rollup rendu par l’outil » (échec CI 41064884335
+    // au ceeaffde : l’alarme attendue n’était pas lisible au travers de l’outil).
+    const counted = async (key: string): Promise<number> =>
+      (await db.prepare('SELECT writes FROM quota_counters WHERE day = ?1').bind(key).first<{ writes: number }>())?.writes ?? 0;
+    expect(await counted('mem:pause:' + scope)).toBe(1);
+    expect(await counted('mem:occ:' + scope)).toBe(1);
+    expect(await counted('mem:base:' + scope)).toBe(1);
     // Pendant la pause : une consolidation corrective sur la première active.
     expect((await append(alpha, cycle, 'ccorr', 'memory.consolidate',
       { id: ids[0], text: 'consolidation corrective pendant la pause', evidence_refs: ['ev:m1bc-c'] })).structuredContent.status).toBe('applied');
