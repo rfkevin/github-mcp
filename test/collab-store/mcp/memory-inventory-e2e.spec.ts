@@ -165,9 +165,11 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     const [alpha, beta] = [await agent('alpha'), await agent('beta')];
     const cycle = uniq('cycle');
     // CC-7 M1a (fusionnée dans la base) : marge combinée — pause du scope neuf
-    // (base 1) à growthMaxActive(1) + 1 activations ; après reprise approuvée
-    // (base = FIRST_PAUSE), rechute à growthMaxActive(FIRST_PAUSE) + 1. Les
-    // activations d'après la reprise passent par un second cycle : le plafond
+    // (base 1) à growthMaxActive(1) + 1 activations ; la consolidation corrective
+    // pendant la pause rend ids[0] superseded, la reprise recale donc la base à
+    // FIRST_PAUSE - 1 actives et la rechute tombe à growthMaxActive(base) + 1 —
+    // le plancher de marge (100·5) la maintient à la SECOND_PAUSE-ième activation.
+    // Les activations d'après la reprise passent par un second cycle : le plafond
     // MAX_ACTIVATIONS_PER_CYCLE (par scope et par cycle) ne doit pas masquer la
     // règle (canon CR-F02, memory-pause-resume-e2e.spec.ts).
     const FIRST_PAUSE = growthMaxActive(1) + 1;
@@ -200,10 +202,13 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(pause1!.corrective_events[0]).toMatchObject({ type: 'memory.consolidate', id: ids[0], cycle_id: cycle });
     expect(pause1!.corrective_truncated).toBe(false);
     // Approbation owner exacte (request_seq = opened_seq, cycle memory-alarms) :
-    // reprise, nouvelle base = FIRST_PAUSE (taille approuvée).
+    // reprise — base recalée = COUNT(actives) = FIRST_PAUSE - 1 (la consolidation
+    // a passé ids[0] v1 en superseded : une active de moins).
     const approved = await owner({ action: 'decide', request_id: pause1!.request_id, decision: 'approve',
       request_seq: String(pause1!.opened_seq), cycle_id: ALARM_CYCLE });
     expect(approved.status).toBe(200);
+    const resumed = await inventory(alpha, { scopes: [scope] });
+    expect(resumed.scopes[0]).toMatchObject({ scope, paused: false, occurrences: 1, baseline: FIRST_PAUSE - 1 });
     // Rechute : jusqu'à growthMaxActive(FIRST_PAUSE) actives sans pause, la suivante
     // rouvre l'occurrence 2 — sa fenêtre ne contient pas la consolidation d'avant son
     // ouverture (borne d'ouverture par seq : l'horloge à la seconde ne départage pas
@@ -213,7 +218,7 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     }
     expect((await review(SECOND_PAUSE - 1)).structuredContent.status).toBe('applied');
     const after = await inventory(alpha, { scopes: [scope] });
-    expect(after.scopes[0]).toMatchObject({ scope, paused: true, occurrences: 2, baseline: FIRST_PAUSE });
+    expect(after.scopes[0]).toMatchObject({ scope, paused: true, occurrences: 2, baseline: FIRST_PAUSE - 1 });
     const pauses = after.scopes[0].pauses;
     expect(pauses.map(pause => pause.occurrence)).toEqual([2, 1]);
     expect(pauses[0]).toMatchObject({ occurrence: 2, open: true, decision: null });
