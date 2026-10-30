@@ -181,20 +181,26 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(await counted('mem:pause:' + scope)).toBe(0);
     // 2e activation : +100 % > 25 % → pause posée dans le batch, occurrence 1.
     expect((await review(1)).structuredContent.status).toBe('applied');
-    // Sonde composite : tout l’état D1 après la 2e revue est encodé dans le
-    // message d’échec (annotation CI) — chaque statement du batch d’activation
-    // y laisse une trace : cap, baseline, pause, occurrence, dépôt owner.request.
-    const alarmEvents = (await db.prepare(
-      "SELECT COUNT(*) AS n FROM events WHERE cycle_id = 'memory-alarms' AND type = 'owner.request' AND json_extract(payload_json, '$.scope') = ?1",
-    ).bind(scope).first<{ n: number }>())?.n ?? 0;
-    expect(
-      'actives=' + await actives()
+    // Sonde discriminante : les états après review(1) ET après la 3e revue
+    // (refusée attendue) sont encodés dans le message d’échec (annotation CI).
+    // Sous visibilité séquentielle du batch (canon CR-F02), la pause est posée
+    // dès la 2e activation et la 3e est refusée ACTIVATION_PAUSED — toute autre
+    // lecture révèle exactement où la règle de croissance a divergé.
+    const snap = async (): Promise<string> => {
+      const alarms = (await db.prepare(
+        "SELECT COUNT(*) AS n FROM events WHERE cycle_id = 'memory-alarms' AND type = 'owner.request' AND json_extract(payload_json, '$.scope') = ?1",
+      ).bind(scope).first<{ n: number }>())?.n ?? 0;
+      return 'actives=' + await actives()
         + ' base=' + await counted('mem:base:' + scope)
         + ' occ=' + await counted('mem:occ:' + scope)
         + ' pause=' + await counted('mem:pause:' + scope)
         + ' cap=' + await counted('mem:act:' + cycle + ':' + scope)
-        + ' alarmEvents=' + alarmEvents,
-    ).toBe('actives=2 base=1 occ=1 pause=1 cap=2 alarmEvents=1');
+        + ' alarms=' + alarms;
+    };
+    const after1 = await snap();
+    const r2 = code(await review(2));
+    expect('r1=[' + after1 + '] r2=' + r2 + ' [' + await snap() + ']').toBe(
+      'r1=[actives=2 base=1 occ=1 pause=1 cap=2 alarms=1] r2=ACTIVATION_PAUSED [actives=2 base=1 occ=1 pause=1 cap=2 alarms=1]');
     // Pendant la pause : une consolidation corrective sur la première active.
     expect((await append(alpha, cycle, 'ccorr', 'memory.consolidate',
       { id: ids[0], text: 'consolidation corrective pendant la pause', evidence_refs: ['ev:m1bc-c'] })).structuredContent.status).toBe('applied');
