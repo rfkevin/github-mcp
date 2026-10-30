@@ -61,7 +61,9 @@ describe('CC-7 — familles imposées sur cc3-test (wrangler.jsonc)', () => {
   });
 
   it('gemini sans attestation owner : jamais le Gemini gratuit, reste dans SA famille (Gemma Workers AI gratuit)', () => {
-    const choice = chooseModel({ ...CC3_TEST, LLM_KEY_GEMINI: 'k' } as PolicyEnv, participantPolicy(CC3_TEST, 'gemini')!, 'answer', NO_BUDGET, null);
+    // CC-7 G0 : l'attestation est désormais déclarée dans wrangler.jsonc ; ce cas la retire explicitement.
+    const unattested = { ...CC3_TEST, LLM_KEY_GEMINI: 'k', GEMINI_FREE_PROJECT_ATTESTED: undefined } as PolicyEnv;
+    const choice = chooseModel(unattested, participantPolicy(CC3_TEST, 'gemini')!, 'answer', NO_BUDGET, null);
     expect(choice.ref).toBe('workers-ai:@cf/google/gemma-4-26b-a4b-it');
     expect(choice.tier).toBe('free');
     expect(familyOf(choice.ref)).toBe('google');
@@ -75,13 +77,14 @@ describe('CC-7 — familles imposées sur cc3-test (wrangler.jsonc)', () => {
     expect(choice.est_step_cents).toBe(0);
   });
 
-  it('gemini : pas dans AGENT_RUN_PARTICIPANTS tant que Kevin ne l’enregistre pas', () => {
-    expect(vars.AGENT_RUN_PARTICIPANTS.split(',').map(p => p.trim())).not.toContain('gemini');
+  it('gemini : sur le canal API depuis CC-7 G0 (décision de Kevin du 2026-10-31), en gratuit seulement', () => {
+    expect(vars.AGENT_RUN_PARTICIPANTS.split(',').map(p => p.trim())).toContain('gemini');
+    expect(Object.keys(vars).filter(k => k.startsWith('AGENT_RUN_PAID_PARTICIPANT_') && k.includes('GEMINI'))).toEqual([]);
   });
 
   it('gpt6 : politique préparée mais pas de canal API tant que Kevin ne l’ajoute pas à AGENT_RUN_PARTICIPANTS', () => {
     const participants = vars.AGENT_RUN_PARTICIPANTS.split(',').map(p => p.trim());
-    expect(participants).toEqual(['claude', 'grok', 'vibe']);
+    expect(participants).toEqual(['claude', 'grok', 'vibe', 'gemini']);
     expect(participants).not.toContain('gpt6');
   });
 });

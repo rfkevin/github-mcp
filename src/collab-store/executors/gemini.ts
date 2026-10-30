@@ -37,7 +37,34 @@ export const GEMINI_CC3_TEST_PUBLIC_ORIGIN = 'https://github-mcp-cc3-test.rfahed
 
 const MODEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
-const FREE_MODELS: ReadonlySet<string> = new Set([GEMINI_FREE_MODEL]);
+/**
+ * CC-7 G0 (décision de Kevin du 2026-10-31) : Gemini 3.8 Flash, gratuit au palier gratuit de l'API
+ * Gemini (registre de la veille du 2026-10-28), accepté par l'adaptateur consultatif. 3.5 Flash-Lite
+ * reste autorisé (repli et endpoints existants).
+ */
+export const GEMINI_38_FLASH = 'gemini-3.8-flash';
+const FREE_MODELS: ReadonlySet<string> = new Set([GEMINI_FREE_MODEL, GEMINI_38_FLASH]);
+
+/**
+ * CC-7 G0 — modèles qui refusent thinkingLevel « minimal » (erreur, pas de conversion côté Google) :
+ * documentation « What's new in Gemini 3.8 Flash », lue le 2026-10-31 (niveaux low | medium | high,
+ * défaut medium) ; gemini-4-argon relevé par la veille du 2026-10-29. Les autres Gemini 3.x gardent
+ * minimal comme niveau le plus léger.
+ */
+export const GEMINI_NO_MINIMAL_MODELS: ReadonlySet<string> = new Set([GEMINI_38_FLASH, 'gemini-4-argon']);
+
+/** Effort serveur (faible, moyen, élevé, très élevé) → thinkingLevel Gemini 3.x. */
+export type GeminiEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
+/**
+ * thinkingLevel envoyé pour ce modèle et cet effort. Règle historique (L9b) conservée : un cran
+ * plus léger que l'effort demandé (faible → minimal, moyen → low, élevé → medium, très élevé → high).
+ * Pour un modèle sans « minimal », le plancher devient « low » : jamais de niveau refusé.
+ */
+export function geminiThinkingLevel(model: string, effort: GeminiEffort): 'minimal' | 'low' | 'medium' | 'high' {
+  const level = effort === 'xhigh' ? 'high' : effort === 'high' ? 'medium' : effort === 'medium' ? 'low' : 'minimal';
+  return level === 'minimal' && GEMINI_NO_MINIMAL_MODELS.has(model) ? 'low' : level;
+}
 const PAID_MODELS: ReadonlySet<string> = new Set([
   'gemini-2.5-pro', 'gemini-2.5-flash',
   'gemini-1.5-pro', 'gemini-1.5-flash',
@@ -156,12 +183,13 @@ export function createGeminiAdapter(
     const user = messages.find(m => m.role === 'user')?.content ?? input.data;
     // Gemini 3.x : thinkingLevel (doc 14/10/2026). OFF total non supporté sur
     // Flash-Lite → minimal. thinkingBudget (2.5) n'est pas le contrat 3.x.
+    // CC-7 G0 : niveau le plus léger accepté PAR CE MODÈLE (low pour 3.8 Flash, qui refuse minimal).
     const body = {
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: user }] }],
       generationConfig: {
         maxOutputTokens: input.max_tokens,
-        thinkingConfig: { thinkingLevel: 'minimal' },
+        thinkingConfig: { thinkingLevel: geminiThinkingLevel(parsed.model, 'low') },
       },
     };
     const response = await fetchWithTimeout(fetchImpl, url, {
