@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
+import { growthMaxActive, MAX_ACTIVATIONS_PER_CYCLE } from '../../../src/collab-store/memory/memory-store';
 import { e2eScenario, toolCode as code, type E2eClient } from './e2e-harness';
 
 // CC-7 M1b (correctif revue GPT-6, PR #236) par le vrai chemin HTTP :
@@ -9,6 +10,10 @@ import { e2eScenario, toolCode as code, type E2eClient } from './e2e-harness';
 // collab_memory_growth_simulate est un calcul pur (zéro lecture du store).
 // Les deux outils sont en lecture seule : aucun append mémoire ne vient d'eux ;
 // les SELECT directs ne servent qu'à prouver l'état.
+// CC-7 M1a (fusionnée dans la base) : le parcours pause suit la marge combinée
+// growthMaxActive — pause du scope neuf à growthMaxActive(1) + 1 activations,
+// rechute après reprise à growthMaxActive(FIRST_PAUSE) + 1, les activations
+// d'après la reprise passant par un second cycle (canon CR-F02).
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const ALARM_CYCLE = 'memory-alarms';
 
@@ -114,6 +119,15 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(cursor).toBeUndefined();
     expect(pages.map(entry => entry.id)).toEqual([...pages.map(entry => entry.id)].sort());
     expect(new Set(pages.map(entry => entry.id)).size).toBe(6);
+    // Sémantique documentée du curseur : une POSITION dans l'ordre global
+    // (scope, id, version) — les filtres s'appliquent à chaque appel, indépendamment
+    // de la position ; le scope du curseur reste soumis à CR-C.
+    const pageA = await inventory(beta, { scopes: [scope], limit: 2 });
+    const position = pageA.next_cursor!;
+    const filtered = await inventory(beta, { scopes: [scope], limit: 2, cursor: position, status: 'candidate' });
+    expect(filtered.entries).toHaveLength(2);
+    expect(filtered.entries.every(entry => entry.status === 'candidate')).toBe(true);
+    expect(filtered.entries[0].id > pageA.entries[1].id).toBe(true);
     // Rollup du scope projet : 6 candidates, aucun token actif, budget famille project.
     expect(all.scopes[0]).toMatchObject({ scope, budget: 2000, tokens_active: 0 });
     expect(all.scopes[0].counts).toEqual({ candidate: 6, active: 0, superseded: 0, retired: 0 });
@@ -150,16 +164,29 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     const { owner, agent, uniq } = e2eScenario(db, 'm1bc', 'owner-secret-M1BC-0123456789abcdefghij');
     const [alpha, beta] = [await agent('alpha'), await agent('beta')];
     const cycle = uniq('cycle');
+    // CC-7 M1a (fusionnée dans la base) : marge combinée — pause du scope neuf
+    // (base 1) à growthMaxActive(1) + 1 activations ; après reprise approuvée
+    // (base = FIRST_PAUSE), rechute à growthMaxActive(FIRST_PAUSE) + 1. Les
+    // activations d'après la reprise passent par un second cycle : le plafond
+    // MAX_ACTIVATIONS_PER_CYCLE (par scope et par cycle) ne doit pas masquer la
+    // règle (canon CR-F02, memory-pause-resume-e2e.spec.ts).
+    const FIRST_PAUSE = growthMaxActive(1) + 1;
+    const SECOND_PAUSE = growthMaxActive(FIRST_PAUSE) + 1;
+    const later = uniq('cycle2');
+    expect(SECOND_PAUSE - FIRST_PAUSE).toBeLessThanOrEqual(MAX_ACTIVATIONS_PER_CYCLE);
     const scope = 'role:' + uniq('corr');
-    const ids = [0, 1, 2, 3].map(n => uniq('mem' + n));
+    const ids = Array.from({ length: SECOND_PAUSE }, (_, n) => uniq('mem' + n));
     for (const [n, id] of ids.entries()) {
       expect((await append(alpha, cycle, 'p' + n, 'memory.propose', fact(id, scope, 'fait partage numero ' + n)))
         .structuredContent.status).toBe('applied');
     }
-    const review = (n: number) => append(beta, cycle, 'r' + n, 'memory.review', { id: ids[n], version: 1 });
-    expect((await review(0)).structuredContent.status).toBe('applied');
-    // 2e activation : +100 % > 25 % → pause posée dans le batch, occurrence 1.
-    expect((await review(1)).structuredContent.status).toBe('applied');
+    const review = (n: number) => append(beta, n < FIRST_PAUSE ? cycle : later, 'r' + n, 'memory.review', { id: ids[n], version: 1 });
+    // Jusqu'à growthMaxActive(1) actives : aucune pause ; la suivante la pose dans
+    // le batch d'activation, occurrence 1 (règle M1a).
+    for (let n = 0; n < FIRST_PAUSE - 1; n++) {
+      expect((await review(n)).structuredContent.status).toBe('applied');
+    }
+    expect((await review(FIRST_PAUSE - 1)).structuredContent.status).toBe('applied');
     // Pendant la pause : une consolidation corrective sur la première active.
     expect((await append(alpha, cycle, 'ccorr', 'memory.consolidate',
       { id: ids[0], text: 'consolidation corrective pendant la pause', evidence_refs: ['ev:m1bc-c'] })).structuredContent.status).toBe('applied');
@@ -172,16 +199,21 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(pause1!.corrective_events).toHaveLength(1);
     expect(pause1!.corrective_events[0]).toMatchObject({ type: 'memory.consolidate', id: ids[0], cycle_id: cycle });
     expect(pause1!.corrective_truncated).toBe(false);
-    // Approbation owner exacte (request_seq = opened_seq, cycle memory-alarms) : reprise.
+    // Approbation owner exacte (request_seq = opened_seq, cycle memory-alarms) :
+    // reprise, nouvelle base = FIRST_PAUSE (taille approuvée).
     const approved = await owner({ action: 'decide', request_id: pause1!.request_id, decision: 'approve',
       request_seq: String(pause1!.opened_seq), cycle_id: ALARM_CYCLE });
     expect(approved.status).toBe(200);
-    // Rechute : la 3e activation rouvre l'occurrence 2 — sa fenêtre ne contient pas la
-    // consolidation d'avant son ouverture (borne d'ouverture par seq : l'horloge
-    // à la seconde ne départage pas deux événements de la même seconde).
-    expect((await review(2)).structuredContent.status).toBe('applied');
+    // Rechute : jusqu'à growthMaxActive(FIRST_PAUSE) actives sans pause, la suivante
+    // rouvre l'occurrence 2 — sa fenêtre ne contient pas la consolidation d'avant son
+    // ouverture (borne d'ouverture par seq : l'horloge à la seconde ne départage pas
+    // deux événements de la même seconde).
+    for (let n = FIRST_PAUSE; n < SECOND_PAUSE - 1; n++) {
+      expect((await review(n)).structuredContent.status).toBe('applied');
+    }
+    expect((await review(SECOND_PAUSE - 1)).structuredContent.status).toBe('applied');
     const after = await inventory(alpha, { scopes: [scope] });
-    expect(after.scopes[0]).toMatchObject({ scope, paused: true, occurrences: 2, baseline: 1 });
+    expect(after.scopes[0]).toMatchObject({ scope, paused: true, occurrences: 2, baseline: FIRST_PAUSE });
     const pauses = after.scopes[0].pauses;
     expect(pauses.map(pause => pause.occurrence)).toEqual([2, 1]);
     expect(pauses[0]).toMatchObject({ occurrence: 2, open: true, decision: null });
@@ -193,7 +225,7 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(pauses[1]!.corrective_events.map(event => event.type)).toEqual(['memory.consolidate']);
     // L'inventaire reste lecture seule même sur un scope en pause (aucun refus).
     expect(code(await beta.call('collab_memory_inventory', { scopes: [scope] }))).toBeUndefined();
-  }, 60_000);
+  }, 90_000);
 
   it('collab_memory_growth_simulate : calcul pur S1/S2/S3 du rapport, défauts, aucune lecture du store', async () => {
     const { agent } = e2eScenario(db, 'm1bs', 'owner-secret-M1BS-0123456789abcdefghij');
@@ -218,6 +250,12 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     const s2 = await simulate(alpha, { base: 2, activations: 10, k_values: [0],
       budget: { tokens_used: 152, avg_cost: 124.6, budget: 1500 } });
     expect(s2.budget).toMatchObject({ accepted: 10, refused: 11, tokens_after: 1398 });
+    // avg_cost = 0 : aucun refus prévisible — refus typé fail-closed, jamais une
+    // boucle infinie (tokens_used <= budget comme tokens_used > budget).
+    expect(code(await alpha.call('collab_memory_growth_simulate', { base: 2, activations: 10, k_values: [0],
+      budget: { tokens_used: 152, avg_cost: 0, budget: 1500 } }))).toBe('MEMORY_SIMULATION_INVALID');
+    expect(code(await alpha.call('collab_memory_growth_simulate', { base: 2, activations: 10, k_values: [0],
+      budget: { tokens_used: 1501, avg_cost: 0, budget: 1500 } }))).toBe('MEMORY_SIMULATION_INVALID');
     // Défauts : base 2, activations 40, k 0/3/5/8/10, sans projection budget.
     const defaults = await simulate(alpha, {});
     expect(defaults.growth.map(item => item.k)).toEqual([0, 3, 5, 8, 10]);
