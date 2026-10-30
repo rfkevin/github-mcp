@@ -166,16 +166,26 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
         .structuredContent.status).toBe('applied');
     }
     const review = (n: number) => append(beta, cycle, 'r' + n, 'memory.review', { id: ids[n], version: 1 });
+    const counted = async (key: string): Promise<number> =>
+      (await db.prepare('SELECT writes FROM quota_counters WHERE day = ?1').bind(key).first<{ writes: number }>())?.writes ?? 0;
+    const actives = async (): Promise<number> =>
+      (await db.prepare("SELECT COUNT(*) AS n FROM memory_entries WHERE scope = ?1 AND status = 'active'")
+        .bind(scope).first<{ n: number }>())?.n ?? 0;
     expect((await review(0)).structuredContent.status).toBe('applied');
+    // Sonde SQL après la 1re activation : chaque entrée de la règle de croissance
+    // (100 * actives > 125 * baseline) est prouvée en SQL avant la 2e revue —
+    // isole le défaut vu aux CI 41064884335 et 41066919021 (pause restée à 0).
+    expect(await actives()).toBe(1);
+    expect(await counted('mem:base:' + scope)).toBe(1);
+    expect(await counted('mem:occ:' + scope)).toBe(0);
+    expect(await counted('mem:pause:' + scope)).toBe(0);
     // 2e activation : +100 % > 25 % → pause posée dans le batch, occurrence 1.
     expect((await review(1)).structuredContent.status).toBe('applied');
     // Preuve SQL (canon memory-pause-resume-e2e) : la pause, l’occurrence et la
     // base de croissance sont posées par le batch d’activation lui-même. Cette
     // preuve précède toute lecture par l’outil inventaire : elle isole « alarme
-    // posée par le store » de « rollup rendu par l’outil » (échec CI 41064884335
-    // au ceeaffde : l’alarme attendue n’était pas lisible au travers de l’outil).
-    const counted = async (key: string): Promise<number> =>
-      (await db.prepare('SELECT writes FROM quota_counters WHERE day = ?1').bind(key).first<{ writes: number }>())?.writes ?? 0;
+    // posée par le store » de « rollup rendu par l’outil ».
+    expect(await actives()).toBe(2);
     expect(await counted('mem:pause:' + scope)).toBe(1);
     expect(await counted('mem:occ:' + scope)).toBe(1);
     expect(await counted('mem:base:' + scope)).toBe(1);
