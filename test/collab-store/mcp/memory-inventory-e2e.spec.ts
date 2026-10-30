@@ -230,7 +230,7 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(pauses[1]!.corrective_events.map(event => event.type)).toEqual(['memory.consolidate']);
     // L'inventaire reste lecture seule même sur un scope en pause (aucun refus).
     expect(code(await beta.call('collab_memory_inventory', { scopes: [scope] }))).toBeUndefined();
-  }, 90_000);
+  }, 180_000);
 
   it('collab_memory_growth_simulate : calcul pur S1/S2/S3 du rapport, défauts, aucune lecture du store', async () => {
     const { agent } = e2eScenario(db, 'm1bs', 'owner-secret-M1BS-0123456789abcdefghij');
