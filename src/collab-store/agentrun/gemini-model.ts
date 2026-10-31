@@ -113,11 +113,10 @@ export const GEMINI_PROTOCOL: PaidProtocol = {
       body: {
         systemInstruction: converted.systemInstruction, contents: converted.contents,
         ...(tools.length ? { tools } : {}),
-        // CC-7 L9b : niveau de réflexion décidé par le serveur (effort.ts). Par défaut, le plus léger
-        // que CE modèle accepte (CC-7 G0 : low pour 3.8 Flash, qui refuse minimal ; minimal sinon).
+        // CC-7 L9b + F2 : niveau décidé par le serveur. Toute valeur fournie (y compris « minimal »)
+        // est ramenée au plancher accepté par CE modèle (G0 : 3.8 / 4-argon sans minimal).
         generationConfig: { maxOutputTokens: input.maxOutputTokens,
-          thinkingConfig: { thinkingLevel: typeof input.requestOptions?.thinkingLevel === 'string'
-            ? input.requestOptions.thinkingLevel : geminiThinkingLevel(input.model, 'low') } },
+          thinkingConfig: { thinkingLevel: normalizeGeminiThinkingLevel(input.model, input.requestOptions?.thinkingLevel) } },
       },
       bound: bytes(JSON.stringify(converted.contents)) + bytes(input.system) + bytes(JSON.stringify(tools))
         + 16 * converted.contents.length,
