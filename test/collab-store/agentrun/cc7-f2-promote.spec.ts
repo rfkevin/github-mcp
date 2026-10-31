@@ -74,9 +74,36 @@ describe('CC-7 F2 — prix et décision', () => {
     })).verdict).toBe('propose');
   });
 
-  it('efforts_ok vide → reject', () => {
+  it('efforts_ok vide ou invalide → reject', () => {
     expect(decidePromotion(base({
       probe: { ok: true, tools_ok: true, efforts_ok: [] },
+    })).verdict).toBe('reject');
+    expect(decidePromotion(base({
+      probe: { ok: true, tools_ok: true, efforts_ok: ['invalide'] },
+    })).verdict).toBe('reject');
+  });
+
+  it('alias latest flottant → reject', () => {
+    expect(decidePromotion(base({
+      candidate_ref: 'gemini:gemini-flash-latest',
+    })).verdict).toBe('reject');
+  });
+
+  it('tarif NaN ou négatif → reject', () => {
+    expect(decidePromotion(base({
+      candidate_rate: rate(Number.NaN, 375),
+    })).verdict).toBe('reject');
+    expect(decidePromotion(base({
+      candidate_rate: rate(-1, 375),
+    })).verdict).toBe('reject');
+  });
+
+  it('canary failures/cost_ratio NaN → reject', () => {
+    expect(decidePromotion(base({
+      canary: fullCanary({ failures: Number.NaN as unknown as number }),
+    })).verdict).toBe('reject');
+    expect(decidePromotion(base({
+      canary: fullCanary({ cost_ratio: Number.NaN }),
     })).verdict).toBe('reject');
   });
 

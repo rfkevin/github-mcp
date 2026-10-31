@@ -79,9 +79,47 @@ export interface PromoteDecision {
 }
 
 const REF_RE = /^[a-z][a-z-]{1,15}:\S{1,200}$/;
+/** Niveaux d'effort reconnus (sonde). */
+export const EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
+
+/** Ref épinglée : forme provider:model et pas d'alias flottant (*latest*). */
+export function isPinnedRef(ref: string): boolean {
+  if (!REF_RE.test(ref)) return false;
+  const model = ref.slice(ref.indexOf(':') + 1).toLowerCase();
+  if (!model || model === 'latest') return false;
+  if (model.endsWith('-latest') || model.endsWith('/latest') || model.includes(':latest')) return false;
+  if (/(^|[\/_-])latest([\/_-]|$)/.test(model)) return false;
+  return true;
+}
+
+function finiteNonNeg(n: number): boolean {
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0;
+}
+
+/** Tarif utilisable pour comparaison (nombres finis ≥ 0). */
+export function rateValid(rate: PromoteRate): boolean {
+  if (!finiteNonNeg(rate.input_per_m) || !finiteNonNeg(rate.output_per_m)) return false;
+  if (rate.other_per_m !== undefined && !finiteNonNeg(rate.other_per_m)) return false;
+  return true;
+}
+
+/** Compteurs canary cohérents avant ratio. */
+export function canaryStatsValid(canary: CanaryResult): boolean {
+  if (!Number.isSafeInteger(canary.calls) || canary.calls < 0) return false;
+  if (!Number.isSafeInteger(canary.failures) || canary.failures < 0 || canary.failures > canary.calls) return false;
+  if (!Number.isFinite(canary.cost_ratio) || canary.cost_ratio < 0) return false;
+  return true;
+}
+
+/** efforts_ok : non vide et chaque entrée dans EFFORT_LEVELS. */
+export function effortsValid(efforts: readonly string[]): boolean {
+  if (!efforts.length) return false;
+  return efforts.every((e) => EFFORT_LEVELS.has(e));
+}
 
 /** Prix non supérieur : entrée ≤ et sortie ≤ et other ≤ (si fourni des deux côtés). */
 export function priceNotHigher(current: PromoteRate, candidate: PromoteRate): boolean {
+  if (!rateValid(current) || !rateValid(candidate)) return false;
   if (candidate.input_per_m > current.input_per_m) return false;
   if (candidate.output_per_m > current.output_per_m) return false;
   const cOther = current.other_per_m ?? 0;
@@ -101,8 +139,8 @@ export function freeBecamePaid(input: PromoteInput): boolean {
  */
 export function decidePromotion(input: PromoteInput): PromoteDecision {
   const reasons: string[] = [];
-  if (!REF_RE.test(input.current_ref) || !REF_RE.test(input.candidate_ref)) {
-    return { verdict: 'reject', reasons: ['ref_invalide'] };
+  if (!isPinnedRef(input.current_ref) || !isPinnedRef(input.candidate_ref)) {
+    return { verdict: 'reject', reasons: ['ref_non_epinglee'] };
   }
   if (input.current_ref === input.candidate_ref) {
     return { verdict: 'reject', reasons: ['meme_modele'] };
@@ -110,11 +148,11 @@ export function decidePromotion(input: PromoteInput): PromoteDecision {
   if (!input.same_family) {
     return { verdict: 'reject', reasons: ['famille_differente'] };
   }
-  if (!input.candidate_rate) {
-    return { verdict: 'reject', reasons: ['tarif_candidat_inconnu'] };
+  if (!input.candidate_rate || !rateValid(input.candidate_rate)) {
+    return { verdict: 'reject', reasons: ['tarif_candidat_invalide'] };
   }
-  if (!input.current_rate) {
-    return { verdict: 'reject', reasons: ['tarif_actuel_inconnu'] };
+  if (!input.current_rate || !rateValid(input.current_rate)) {
+    return { verdict: 'reject', reasons: ['tarif_actuel_invalide'] };
   }
   if (freeBecamePaid(input)) {
     return { verdict: 'propose', reasons: ['gratuit_devenu_payant_gel_ou_repli'] };
@@ -128,8 +166,8 @@ export function decidePromotion(input: PromoteInput): PromoteDecision {
   if (!input.probe.tools_ok) {
     return { verdict: 'reject', reasons: ['sonde_outils'] };
   }
-  if (!input.probe.efforts_ok.length) {
-    return { verdict: 'reject', reasons: ['sonde_efforts_vides'] };
+  if (!effortsValid(input.probe.efforts_ok)) {
+    return { verdict: 'reject', reasons: ['sonde_efforts_invalides'] };
   }
   if (!input.candidate_still_free && !input.paid_ceiling_ok) {
     return { verdict: 'reject', reasons: ['plafond_payant_absent'] };
@@ -139,6 +177,9 @@ export function decidePromotion(input: PromoteInput): PromoteDecision {
   if (!canary) {
     reasons.push('canary_absent');
     return { verdict: 'propose', reasons: [...reasons, 'sonde_ok_prix_ok'] };
+  }
+  if (!canaryStatsValid(canary)) {
+    return { verdict: 'reject', reasons: ['canary_stats_invalides'] };
   }
   if (canary.critical_error || canary.identity_leak) {
     return { verdict: 'reject', reasons: ['canary_critique'] };
