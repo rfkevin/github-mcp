@@ -29,6 +29,16 @@ export function geminiGenerateUrl(model: string): string {
   return GEMINI_API_BASE + '/' + encodeURIComponent(model) + ':generateContent';
 }
 
+/**
+ * CC-7 F2 — ramène un thinkingLevel demandé au plancher accepté par le modèle.
+ * « minimal » imposé sur 3.8 / 4-argon devient « low » (via geminiThinkingLevel).
+ */
+export function normalizeGeminiThinkingLevel(model: string, requested: unknown): 'minimal' | 'low' | 'medium' | 'high' {
+  if (requested === 'high' || requested === 'medium' || requested === 'low') return requested;
+  // minimal ou valeur absente / inconnue → plus léger accepté par le modèle
+  return geminiThinkingLevel(model, 'low');
+}
+
 type GeminiPart = Record<string, unknown>;
 export interface GeminiContents { systemInstruction: { parts: GeminiPart[] }; contents: Array<{ role: 'user' | 'model'; parts: GeminiPart[] }> }
 
