@@ -47,3 +47,13 @@ Test : `test/collab-store/agentrun/cc7-l12-cc3-test-families.spec.ts` lit ces va
   Gemma 4 (Workers AI, gratuit, famille google) ; sans budget, jamais d'appel payant.
 - Pour que Gemini participe au canal API : Kevin enregistre le participant `gemini`, pose l'attestation et
   l'ajoute à `AGENT_RUN_PARTICIPANTS`.
+
+## F1 — source canonique des familles (ajout du 2026-10-31)
+
+Depuis le lot F1, les définitions de ce tableau vivent dans la fiche canonique
+`config/agents.fiche.json` (source unique, modifiée par PR) : les variables `AGENT_RUN_*` de
+l'environnement `cc3-test` ci-dessus en sont dérivées par un script déterministe
+(`node scripts/agent-fiche/generate.mjs`), et la CI échoue si `wrangler.jsonc` diverge de la
+fiche (`test/collab-store/agentrun/cc7-f1-fiche-canonical.spec.ts`). Ce document reste la
+description lisible ; le runtime lit toujours les variables d'environnement (lecture parallèle,
+aucune valeur modifiée). Détails : [f1-fiche-unique.md](f1-fiche-unique.md).

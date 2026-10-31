@@ -34,6 +34,9 @@ import { createPaidWorkersAiModel, type ParticipantEnvelope } from './paid-model
 import { createPaidProtocolModel } from './paid-protocol';
 import { createWorkersAiModel, type ToolSchema } from './workers-ai-model';
 import { effortMaxTokens, effortOptions, type Effort } from './effort';
+// CC-7 F1 : fiche canonique des agents — tampon version + hash (module pur fiche.ts, artefact généré).
+import { ficheStamp } from './fiche';
+import { FICHE_HASH, FICHE_VERSION } from './generated/agent-fiche.generated';
 import { budgetState, chooseModel, modelPreference, participantEnvelope, participantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
@@ -241,7 +244,9 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         } catch (error) {
           throw new ModelCallError(error instanceof Error ? (error as Error & { code?: string }).code + ' : ' + error.message : String(error), null);
         }
-        await recordModelChoice(ctx.db, ctx.runId, run.steps_done, run.participant_id, choice, Math.floor(now.getTime() / 1000));
+        // CC-7 F1 (P3 #1138 §1) : version et hash de la fiche canonique journalisés avec chaque choix serveur.
+        await recordModelChoice(ctx.db, ctx.runId, run.steps_done, run.participant_id,
+          { ...choice, reason: choice.reason + ficheStamp(FICHE_VERSION, FICHE_HASH) }, Math.floor(now.getTime() / 1000));
         ref = choice.ref;
         model = build(ref, 'auto', policy.envelope, choice.effort);
       } else {
