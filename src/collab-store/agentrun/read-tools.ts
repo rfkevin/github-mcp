@@ -22,7 +22,8 @@
  */
 import { CollabStore } from '../store/collab-store';
 import { equivalentParticipantIds } from '../identity/families';
-import { loadContinuity, loadVisibleActiveMemory } from '../context';
+import { loadContinuity, loadVisibleActiveMemory, memoryRolesOf } from '../context';
+
 import { ToolRefused, type LookupResult, type ToolCall, type ToolHost, type ToolSpec } from './engine';
 import type { ToolSchema } from './workers-ai-model';
 import { createStoreWriteTools, WRITE_TOOL_SCHEMAS, type WriteToolName } from './store-tools';
@@ -33,6 +34,18 @@ import { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_TOOL_SCHE
 import { createModelChoiceTools, MODEL_CHOICE_TOOL_SCHEMAS } from './model-choice-tools';
 import type { PolicyEnv } from './model-policy';
 import { createResearchTools, RESEARCH_TOOL_SCHEMAS, type ResearchToolsOptions } from './research';
+
+/**
+ * CC-7 M2 : rôle mémoire tenu par une exécution API selon son type (role:<rôle>, parité avec le
+ * rôle de tâche servi au chat). Les contributions de conception (design) n'en portent pas.
+ */
+export function runRoles(taskKind: string): string[] {
+  if (taskKind === 'review') return ['reviewer'];
+  if (taskKind === 'test') return ['tester'];
+  if (taskKind === 'implement') return ['owner'];
+  if (taskKind === 'research') return ['researcher'];
+  return [];
+}
 
 /** Lectures GitHub utilisées par l'hôte (sous-ensemble des clients existants, lecture seule). */
 export interface GitHubReads {
@@ -267,7 +280,14 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       const ids = await equivalentParticipantIds(options.db, participant_id);
       if (call.name === 'store_continuity') return loadContinuity(options.db, cycle_id, ids);
       const cycle = await options.db.prepare('SELECT project FROM cycles WHERE cycle_id = ?1').bind(cycle_id).first<{ project: string | null }>();
-      const memory = await loadVisibleActiveMemory(options.db, { participantId: participant_id, participantIds: new Set(ids), project: cycle?.project ?? null });
+      // CC-7 M2 : parité chat/API — l'exécution voit aussi la mémoire du rôle qu'elle tient (type d'exécution)
+      // et role:coordinator si l'agent détient le mandat de coordination du cycle.
+      const run = await options.db.prepare('SELECT task_id, task_kind FROM agent_runs WHERE run_id = ?1')
+        .bind(ctx.run_id).first<{ task_id: string; task_kind: string }>();
+      const identities = new Set(ids);
+      const roles = await memoryRolesOf(options.db, cycle_id, identities, runRoles(run?.task_kind ?? ''));
+      const memory = await loadVisibleActiveMemory(options.db, { participantId: participant_id, participantIds: identities, roles,
+        taskId: run?.task_id || null, project: cycle?.project ?? null });
       return { entries: memory.slice(0, CONTINUITY_MEMORY_LIMIT), truncated: memory.length > CONTINUITY_MEMORY_LIMIT };
     }
     throw new ToolRefused('tool_not_allowlisted');

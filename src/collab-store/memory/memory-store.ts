@@ -142,14 +142,32 @@ function scopeMismatch(id: string, type: string): MemoryStoreError {
   );
 }
 
-/** Token budgets per scope family (plan §4). */
+/**
+ * Token budgets per scope family (plan §4), révisés par CC-7 M2 (décisions de Kevin #1138 §4 / #1139) :
+ * enveloppe 5 800 jetons, hypothèse de départ à mesurer (collab_memory_inventory) avant toute hausse.
+ * - participant 1500 : mémoire de continuité d'un agent (chat ET API partagent participant:<agent>),
+ *   seule mémoire durable d'un agent sans chat ; PLANCHER de configuration (PARTICIPANT_BUDGET_FLOOR),
+ *   jamais réduit sans décision de Kevin notifiée au store ;
+ * - role 800 : pièges transverses par rôle (owner, reviewer, tester, coordinator, researcher) ;
+ * - task 0 : portée GELÉE (FROZEN_SCOPE_FAMILIES) — la reprise d'une tâche passe par active_work (L12) ;
+ *   les entrées existantes restent lisibles, rien de nouveau n'est proposé ni activé.
+ */
 export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
   common: 1500,
   project: 2000,
-  role: 1500,
-  participant: 500,
-  task: 300,
+  role: 800,
+  participant: 1500,
+  task: 0,
 };
+
+/** CC-7 M2 : plancher du budget participant (décision #1138 §4, demande de Gemini #1131). */
+export const PARTICIPANT_BUDGET_FLOOR = 1500;
+
+/** CC-7 M2 : familles de portée gelées — memory.propose y est refusé (MEMORY_SCOPE_FROZEN). */
+export const FROZEN_SCOPE_FAMILIES: ReadonlySet<string> = new Set(['task']);
+
+/** CC-7 M2 : rôles conseillés pour la portée role:<rôle> (consigne, pas une liste fermée). */
+export const MEMORY_ROLES = ['owner', 'reviewer', 'tester', 'coordinator', 'researcher'] as const;
 
 /** invariant + decision (authority/safety proxy until dedicated kinds exist). */
 export const PROTECTED_KINDS = new Set(['invariant', 'decision']);
@@ -383,6 +401,11 @@ export class MemoryStore {
       status: 'candidate',
       author_pid: input.author_pid,
     });
+    // CC-7 M2 : portée gelée — refus avant tout effet (ni événement, ni ligne, ni quota, ni révision).
+    if (FROZEN_SCOPE_FAMILIES.has(scopeFamily(entry.scope))) {
+      throw new MemoryStoreError('MEMORY_SCOPE_FROZEN',
+        `${entry.scope}: la portée ${scopeFamily(entry.scope)} est gelée (CC-7 M2) ; la reprise d'une tâche passe par active_work, une leçon durable va en participant, role, project ou common.`);
+    }
     const id = input.id ?? newId();
     // CR-D : le scope d'un id est immuable, retirées et superseded comprises —
     // refus avant tout effet (ni événement, ni ligne, ni quota, ni révision).
