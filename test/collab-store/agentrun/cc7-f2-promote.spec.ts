@@ -1,17 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CANARY_MIN_CALLS,
+  canaryReadyForAuto,
   decidePromotion,
   priceNotHigher,
   promoteAutoEnabled,
+  type CanaryResult,
   type PromoteInput,
   type PromoteRate,
 } from '../../../src/collab-store/agentrun/promote';
 import { GEMINI_PROTOCOL } from '../../../src/collab-store/agentrun/gemini-model';
 import { geminiThinkingLevel } from '../../../src/collab-store/executors/gemini';
 
-// CC-7 F2 — promotion épinglée, prix, sonde, canary ; garde thinkingLevel (réserve G0).
+// CC-7 F2 — promotion épinglée, prix, sonde, canary P3 C2 ; garde thinkingLevel (réserve G0).
 const rate = (input_per_m: number, output_per_m: number, other_per_m?: number): PromoteRate =>
   ({ input_per_m, output_per_m, ...(other_per_m !== undefined ? { other_per_m } : {}) });
+
+const fullCanary = (over: Partial<CanaryResult> = {}): CanaryResult => ({
+  calls: 20,
+  failures: 0,
+  cost_ratio: 0.95,
+  identity_leak: false,
+  critical_error: false,
+  calls_by_kind: { answer: 5, review: 5, test: 5, implement: 5 },
+  ...over,
+});
 
 function base(over: Partial<PromoteInput> = {}): PromoteInput {
   return {
@@ -23,7 +36,7 @@ function base(over: Partial<PromoteInput> = {}): PromoteInput {
     candidate_still_free: true,
     current_is_free: true,
     probe: { ok: true, tools_ok: true, efforts_ok: ['low', 'medium', 'high'] },
-    canary: { calls: 20, failures: 0, cost_ratio: 0.95, identity_leak: false, critical_error: false },
+    canary: fullCanary(),
     auto_policy_enabled: true,
     paid_ceiling_ok: true,
     ...over,
@@ -38,8 +51,10 @@ describe('CC-7 F2 — prix et décision', () => {
     expect(priceNotHigher(rate(10, 20, 0), rate(10, 20, 1))).toBe(false);
   });
 
-  it('auto_apply seulement si politique, sonde, canary et prix OK', () => {
+  it('auto_apply seulement si politique, sonde, canary P3 C2 et prix OK', () => {
     expect(decidePromotion(base()).verdict).toBe('auto_apply');
+    expect(canaryReadyForAuto(fullCanary())).toBe(true);
+    expect(CANARY_MIN_CALLS).toBe(20);
   });
 
   it('sans politique auto → propose', () => {
@@ -48,6 +63,21 @@ describe('CC-7 F2 — prix et décision', () => {
 
   it('canary absent → propose, jamais auto', () => {
     expect(decidePromotion(base({ canary: null })).verdict).toBe('propose');
+  });
+
+  it('canary 1 appel ou type manquant → propose (pas auto)', () => {
+    expect(decidePromotion(base({
+      canary: fullCanary({ calls: 1, calls_by_kind: { answer: 1 } }),
+    })).verdict).toBe('propose');
+    expect(decidePromotion(base({
+      canary: fullCanary({ calls: 20, calls_by_kind: { answer: 10, review: 10 } }),
+    })).verdict).toBe('propose');
+  });
+
+  it('efforts_ok vide → reject', () => {
+    expect(decidePromotion(base({
+      probe: { ok: true, tools_ok: true, efforts_ok: [] },
+    })).verdict).toBe('reject');
   });
 
   it('sonde en échec → reject', () => {
@@ -71,19 +101,21 @@ describe('CC-7 F2 — prix et décision', () => {
     expect(d.reasons).toContain('gratuit_devenu_payant_gel_ou_repli');
   });
 
-  it('prix supérieur → propose', () => {
+  it('prix supérieur (déjà payant) → propose', () => {
     expect(decidePromotion(base({
-      candidate_rate: rate(100, 375),
+      current_is_free: false,
       candidate_still_free: false,
+      candidate_rate: rate(100, 375),
+      current_rate: rate(75, 375),
     })).verdict).toBe('propose');
   });
 
   it('canary taux échec > 5 % ou critique → reject', () => {
     expect(decidePromotion(base({
-      canary: { calls: 20, failures: 2, cost_ratio: 1, identity_leak: false, critical_error: false },
+      canary: fullCanary({ failures: 2 }),
     })).verdict).toBe('reject');
     expect(decidePromotion(base({
-      canary: { calls: 20, failures: 0, cost_ratio: 1, identity_leak: true, critical_error: false },
+      canary: fullCanary({ identity_leak: true }),
     })).verdict).toBe('reject');
   });
 
