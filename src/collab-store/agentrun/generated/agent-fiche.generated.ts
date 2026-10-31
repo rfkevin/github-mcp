@@ -6,14 +6,14 @@
  */
 
 /** Version de la fiche canonique (journalisée avec chaque choix serveur). */
-export const FICHE_VERSION = 1;
+export const FICHE_VERSION = 2;
 
 /** Empreinte FNV-1a 64 du contenu exact de la fiche (identité de version, pas un secret). */
-export const FICHE_HASH = "cc9f7edb083a7356";
+export const FICHE_HASH = "55cc00d2c5f293dc";
 
 /** Contenu exact de la fiche canonique (audit : version et hash se recomptent depuis ici). */
 export const FICHE_RAW = `{
-  "version": 1,
+  "version": 2,
   "global_fallback_model": "workers-ai:@cf/zai-org/glm-4.7-flash",
   "agents": [
     {
@@ -26,7 +26,17 @@ export const FICHE_RAW = `{
         { "role": "rapide", "ref": "anthropic:claude-sonnet-5-5" },
         { "role": "leger", "ref": "anthropic:claude-haiku-5-5" }
       ],
-      "endpoints": []
+      "endpoints": [
+        {
+          "endpoint_id": "ep-claude-glm47",
+          "ref": "workers-ai:@cf/zai-org/glm-4.7-flash",
+          "status": "retired",
+          "principal_id": "claude",
+          "attestation_kind": "provider_adapter",
+          "attestation_ref": "workers-ai:@cf/zai-org/glm-4.7-flash",
+          "immutable_alias": true
+        }
+      ]
     },
     {
       "id": "grok",
@@ -48,7 +58,17 @@ export const FICHE_RAW = `{
         { "role": "fort", "ref": "zai:glm-5.3" },
         { "role": "gratuit", "ref": "workers-ai:@cf/zai-org/glm-4.7-flash" }
       ],
-      "endpoints": []
+      "endpoints": [
+        {
+          "endpoint_id": "ep-zai-glm47",
+          "ref": "zai:glm-4.7-flash",
+          "status": "active",
+          "principal_id": "zai-glm47",
+          "attestation_kind": "provider_adapter",
+          "attestation_ref": "zai:glm-4.7-flash",
+          "immutable_alias": true
+        }
+      ]
     },
     {
       "id": "gpt",
@@ -59,7 +79,17 @@ export const FICHE_RAW = `{
         { "role": "fort", "ref": "groq:openai/gpt-oss-120b" },
         { "role": "rapide", "ref": "groq:openai/gpt-oss-20b" }
       ],
-      "endpoints": []
+      "endpoints": [
+        {
+          "endpoint_id": "ep-groq-gptoss20b",
+          "ref": "groq:openai/gpt-oss-20b",
+          "status": "active",
+          "principal_id": "groq-gptoss20b",
+          "attestation_kind": "provider_adapter",
+          "attestation_ref": "groq:openai/gpt-oss-20b",
+          "immutable_alias": true
+        }
+      ]
     },
     {
       "id": "gemini",
@@ -76,7 +106,10 @@ export const FICHE_RAW = `{
         {
           "endpoint_id": "ep-gemini-35-flash-lite",
           "ref": "gemini:gemini-3.5-flash-lite",
-          "status": "registered",
+          "status": "active",
+          "principal_id": "gemini-35-flash-lite",
+          "attestation_kind": "provider_adapter",
+          "attestation_ref": "gemini:gemini-3.5-flash-lite",
           "immutable_alias": true
         },
         {
@@ -84,8 +117,38 @@ export const FICHE_RAW = `{
           "ref": "gemini:gemini-3.8-flash",
           "status": "proposed",
           "immutable_alias": true
+        },
+        {
+          "endpoint_id": "ep-cf-gemma4",
+          "ref": "workers-ai:@cf/google/gemma-4-26b-a4b-it",
+          "status": "retired",
+          "principal_id": "cf-gemma4",
+          "attestation_kind": "provider_adapter",
+          "attestation_ref": "workers-ai:@cf/google/gemma-4-26b-a4b-it",
+          "immutable_alias": true
+        },
+        {
+          "endpoint_id": "ep-openrouter-gemma",
+          "ref": "openrouter:google/gemma-4-26b-a4b-it:free",
+          "status": "retired",
+          "principal_id": "openrouter-gemma",
+          "attestation_kind": "provider_adapter",
+          "attestation_ref": "openrouter:google/gemma-4-26b-a4b-it:free",
+          "immutable_alias": true
         }
       ]
+    }
+  ],
+  "endpoints_hors_agent": [
+    {
+      "endpoint_id": "ep-openrouter-deepseek-v4",
+      "family": "deepseek",
+      "ref": "openrouter:deepseek/deepseek-v4-flash:free",
+      "status": "probe_required",
+      "principal_id": "openrouter-deepseek-v4",
+      "attestation_kind": "provider_adapter",
+      "attestation_ref": "openrouter:deepseek/deepseek-v4-flash:free",
+      "immutable_alias": true
     }
   ]
 }

@@ -9,8 +9,10 @@
  * test/collab-store/agentrun/cc7-f1-fiche-canonical.spec.ts.
  *
  * D1 = overrides opérationnels seulement (activation, budgets, références de clés) et audit :
- * jamais une seconde définition des modèles. Secrets, budgets et attestations HORS fiche
- * (environnement owner). Anciens ep-* = alias immuables : cibles épinglées, jamais réaffectées.
+ * jamais une seconde définition des modèles. Secrets, budgets et VALEURS d'attestation (env)
+ * hors fiche ; les lignes du registre /owner (attestation_kind, attestation_ref) sont reprises
+ * telles quelles (audit, cycle owner-registry). Anciens ep-* = alias immuables : cibles
+ * épinglées, jamais réaffectées ; statuts du registre : active, probe_required, retired, proposed.
  *
  * Migration en lecture parallèle (F1) : le runtime lit TOUJOURS les variables d'environnement ;
  * la fiche n'est pas encore la source d'exécution. Seul le journal des choix serveur gagne le
@@ -24,7 +26,7 @@
 export const FICHE_ROLES = ['fort', 'rapide', 'leger', 'gratuit'] as const;
 export type FicheRole = typeof FICHE_ROLES[number];
 
-export const ENDPOINT_STATUSES = ['registered', 'proposed'] as const;
+export const ENDPOINT_STATUSES = ['active', 'probe_required', 'retired', 'proposed'] as const;
 export type FicheEndpointStatus = typeof ENDPOINT_STATUSES[number];
 
 export interface FicheModel {
@@ -36,11 +38,22 @@ export interface FicheModel {
 export interface FicheEndpoint {
 	/** Identifiant historique ep-* : immuable, jamais réutilisé pour une autre cible. */
 	readonly endpoint_id: string;
-	/** Cible épinglée ; l'inscription / l'activation reste un acte owner (/owner), pas la fiche. */
+	/** Cible épinglée = attestation_ref du registre /owner ; l'inscription reste un acte owner. */
 	readonly ref: string;
 	readonly status: FicheEndpointStatus;
+	/** Principal du registre (owner-registry) — requis sauf statut proposed (pas encore inscrit). */
+	readonly principal_id?: string;
+	/** Kind d'attestation du registre (ex. provider_adapter) — requis sauf statut proposed. */
+	readonly attestation_kind?: string;
+	/** Attestation_ref exacte du registre — pour provider_adapter, identique à la cible. */
+	readonly attestation_ref?: string;
 	/** Exigé vrai par le parseur : tout alias ep-* est immuable (F1). */
 	readonly immutable_alias: boolean;
+}
+
+/** Endpoint du registre sans agent logique (famille future, ex. deepseek) : migrera sous son agent sans changer d'id ni de cible. */
+export interface FicheStandaloneEndpoint extends FicheEndpoint {
+	readonly family: string;
 }
 
 export interface FicheAgent {
@@ -61,11 +74,15 @@ export interface Fiche {
 	/** Repli global AGENT_RUN_MODEL (participants sans politique), épinglé lui aussi. */
 	readonly global_fallback_model: string;
 	readonly agents: readonly FicheAgent[];
+	/** Endpoints du registre sans agent logique (ex. famille deepseek future). */
+	readonly endpoints_hors_agent: readonly FicheStandaloneEndpoint[];
 }
 
 const REF_RE = /^[a-z][a-z-]{1,15}:\S{1,200}$/;
 const ID_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const EP_RE = /^ep-[a-z0-9][a-z0-9-]{0,39}$/;
+const PRINCIPAL_RE = /^[a-z][a-z0-9_-]{0,63}$/;
+const ATT_KIND_RE = /^[a-z][a-z_]{0,31}$/;
 
 function invalid(detail: string): Error {
 	return new Error('FICHE_INVALID : ' + detail);
@@ -88,6 +105,31 @@ export function parseFiche(raw: string): Fiche {
 	const ids = new Set<string>();
 	const participants = new Set<string>();
 	const endpointIds = new Set<string>();
+
+	/** Valide une ligne du registre des endpoints (agents et hors agent) : statuts, attestations, immutabilité. */
+	function readRegisteredEndpoint(entry: unknown): FicheEndpoint {
+		const endpoint = asObject(entry, 'endpoint malformé.');
+		const endpointId = endpoint.endpoint_id;
+		if (typeof endpointId !== 'string' || !EP_RE.test(endpointId)) throw invalid('endpoint_id invalide : ' + String(endpointId) + '.');
+		if (endpointIds.has(endpointId)) throw invalid('endpoint_id en double : ' + endpointId + '.');
+		const ref = endpoint.ref;
+		if (typeof ref !== 'string' || !REF_RE.test(ref)) throw invalid('cible invalide pour ' + endpointId + '.');
+		const status = endpoint.status;
+		if (typeof status !== 'string' || !(ENDPOINT_STATUSES as readonly string[]).includes(status)) throw invalid('statut d’endpoint inconnu : ' + String(status) + '.');
+		if (endpoint.immutable_alias !== true) throw invalid('tout alias ep-* est immuable (immutable_alias requis) : ' + endpointId + '.');
+		let attestation: Partial<Pick<FicheEndpoint, 'principal_id' | 'attestation_kind' | 'attestation_ref'>> = {};
+		if (status !== 'proposed') {
+			if (typeof endpoint.principal_id !== 'string' || !PRINCIPAL_RE.test(endpoint.principal_id)) throw invalid('principal_id requis (registre owner) pour ' + endpointId + '.');
+			if (typeof endpoint.attestation_kind !== 'string' || !ATT_KIND_RE.test(endpoint.attestation_kind)) throw invalid('attestation_kind requis (registre owner) pour ' + endpointId + '.');
+			if (typeof endpoint.attestation_ref !== 'string' || !REF_RE.test(endpoint.attestation_ref)) throw invalid('attestation_ref requise (registre owner) pour ' + endpointId + '.');
+			if (endpoint.attestation_kind === 'provider_adapter' && endpoint.attestation_ref !== ref) throw invalid('provider_adapter : attestation_ref = cible épinglée pour ' + endpointId + '.');
+			attestation = { principal_id: endpoint.principal_id, attestation_kind: endpoint.attestation_kind, attestation_ref: endpoint.attestation_ref };
+		} else if (endpoint.principal_id !== undefined || endpoint.attestation_kind !== undefined || endpoint.attestation_ref !== undefined) {
+			throw invalid('statut proposed : pas encore inscrit au registre, aucune attestation pour ' + endpointId + '.');
+		}
+		endpointIds.add(endpointId);
+		return { endpoint_id: endpointId, ref, status: status as FicheEndpointStatus, ...attestation, immutable_alias: true };
+	}
 	for (const entry of root.agents) {
 		const agent = asObject(entry, 'agent malformé.');
 		const id = agent.id;
@@ -116,24 +158,24 @@ export function parseFiche(raw: string): Fiche {
 		const endpoints: FicheEndpoint[] = [];
 		const endpointList = Array.isArray(agent.endpoints) ? agent.endpoints : [];
 		for (const endpointEntry of endpointList) {
-			const endpoint = asObject(endpointEntry, 'endpoint malformé pour ' + id + '.');
-			const endpointId = endpoint.endpoint_id;
-			if (typeof endpointId !== 'string' || !EP_RE.test(endpointId)) throw invalid('endpoint_id invalide pour ' + id + '.');
-			if (endpointIds.has(endpointId)) throw invalid('endpoint_id en double : ' + endpointId + '.');
-			const ref = endpoint.ref;
-			if (typeof ref !== 'string' || !REF_RE.test(ref) || !refs.has(ref)) throw invalid('endpoint ' + endpointId + ' : cible absente des modèles de ' + id + '.');
-			const status = endpoint.status;
-			if (typeof status !== 'string' || !(ENDPOINT_STATUSES as readonly string[]).includes(status)) throw invalid('statut d’endpoint inconnu : ' + String(status) + '.');
-			if (endpoint.immutable_alias !== true) throw invalid('tout alias ep-* est immuable (immutable_alias requis) : ' + endpointId + '.');
-			endpointIds.add(endpointId);
-			endpoints.push({ endpoint_id: endpointId, ref, status: status as FicheEndpointStatus, immutable_alias: true });
+			endpoints.push(readRegisteredEndpoint(endpointEntry));
 		}
 		ids.add(id);
 		participants.add(participantId);
 		agents.push({ id, participant_id: participantId, family, active, models, endpoints });
 	}
+	if (!Array.isArray(root.endpoints_hors_agent)) throw invalid('endpoints_hors_agent requis (liste des endpoints du registre sans agent, éventuellement vide).');
+	const endpointsHorsAgent: FicheStandaloneEndpoint[] = [];
+	for (const entry of root.endpoints_hors_agent) {
+		const endpoint = readRegisteredEndpoint(entry);
+		const entryObject = asObject(entry, 'endpoint malformé.');
+		const family = entryObject.family;
+		if (typeof family !== 'string' || !/^[a-z]+$/.test(family)) throw invalid('famille requise pour l’endpoint hors agent ' + endpoint.endpoint_id + '.');
+		if (endpoint.status === 'proposed') throw invalid('un endpoint hors agent ne peut pas être proposed (aucun nom à réserver sans agent) : ' + endpoint.endpoint_id + '.');
+		endpointsHorsAgent.push({ ...endpoint, family });
+	}
 	if (!agents.some(agent => agent.active)) throw invalid('aucun agent actif (AGENT_RUN_PARTICIPANTS vide).');
-	return { version, global_fallback_model: globalFallback, agents };
+	return { version, global_fallback_model: globalFallback, agents, endpoints_hors_agent: endpointsHorsAgent };
 }
 
 /** Suffixe de variable d'un participant — miroir de participantModelVar (provider-models.ts), sans import. */
@@ -154,10 +196,10 @@ export function deriveAgentRunVars(fiche: Fiche): Record<string, string> {
 	return vars;
 }
 
-/** Alias ep-* de la fiche : endpoint → agent logique et cible épinglée (immuable). */
+/** Alias ep-* de la fiche : endpoint → agent logique (null = sans agent) et cible épinglée (immuable). */
 export interface FicheAlias {
 	readonly endpoint_id: string;
-	readonly agent_id: string;
+	readonly agent_id: string | null;
 	readonly ref: string;
 	readonly status: FicheEndpointStatus;
 }
@@ -168,6 +210,9 @@ export function ficheAliases(fiche: Fiche): readonly FicheAlias[] {
 		for (const endpoint of agent.endpoints) {
 			aliases.push({ endpoint_id: endpoint.endpoint_id, agent_id: agent.id, ref: endpoint.ref, status: endpoint.status });
 		}
+	}
+	for (const endpoint of fiche.endpoints_hors_agent) {
+		aliases.push({ endpoint_id: endpoint.endpoint_id, agent_id: null, ref: endpoint.ref, status: endpoint.status });
 	}
 	return aliases;
 }
