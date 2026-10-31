@@ -87,11 +87,14 @@ describe('CC-7 F2 — prix et décision', () => {
     })).verdict).toBe('reject');
   });
 
-  it('payant sans plafond → reject', () => {
+  it('payant sans plafond → reject (modèle déjà payant)', () => {
+    // current déjà payant : pas la branche gratuit→payant (celle-là propose gel/repli).
     expect(decidePromotion(base({
+      current_is_free: false,
       candidate_still_free: false,
       paid_ceiling_ok: false,
       candidate_rate: rate(50, 100),
+      current_rate: rate(75, 375),
     })).verdict).toBe('reject');
   });
 
