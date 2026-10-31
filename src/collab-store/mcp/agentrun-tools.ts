@@ -67,7 +67,7 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
 
   server.registerTool('collab_preempt_agent_run', {
     title: 'Préempter le bail API (chat prioritaire, CC-5 l7e / CC-7 L1)',
-    description: 'Le chat prend le bail (fencing 7a) pour VOTRE identité serveur (cycle/task). CC-7 L1 : aucune exécution préalable requise — ouverture de session chat. hold_seconds défaut 900. Une étape API en vol perd ses écritures LIVE.',
+    description: 'Le chat prend le bail (fencing 7a) pour VOTRE identité serveur (cycle/task). CC-7 L1 : aucune exécution préalable requise — ouverture de session chat. hold_seconds défaut 900. Une étape API en vol perd ses écritures LIVE. CC-7 L15 : collab_append_event prend déjà ce bail automatiquement (1 h, renouvelée) à chaque écriture sur une tâche ; cet outil sert à le prendre plus longtemps (jusqu’à 24 h) avant un long travail sans écriture.',
     inputSchema: {
       cycle_id: z.string().min(1).max(64),
       task_id: z.string().max(64).optional(),

@@ -14,6 +14,7 @@ import { authorizeAppend, authorizePhaseAdvance } from '../identity';
 import { equivalentParticipantIds } from '../identity/families';
 import { exportCycleState, exportMemoryMarkdown } from '../export';
 import { resolveContextTarget, buildRolePacket, loadContinuity, loadActiveWork, concurrentSession } from '../context';
+import { applyChatAutoLease, type ChatLeaseEffect } from '../agentrun/chat-auto-lease';
 import { advanceGuarded } from '../phases/gate';
 import type { Phase } from '../../collab/contracts';
 import { dispatchCoordinatorTask } from '../coordinator/tasks';
@@ -275,13 +276,24 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       // sur la même tâche ; une erreur de lecture ne fait jamais échouer un append déjà appliqué.
       const event = toEventOutput(outcome.event);
       let concurrent: Awaited<ReturnType<typeof concurrentSession>> = null;
+      let chatLease: ChatLeaseEffect | null = null;
+      let identities: string[] = [event.participant_id];
       try {
+        identities = await equivalentParticipantIds(context.db, event.participant_id);
         concurrent = await concurrentSession(context.db, {
           cycle_id: event.cycle_id, seq: event.seq, at: event.at, session_id: event.session_id ?? '',
           role: event.role ?? '', payload_json: event.payload_json,
-        }, await equivalentParticipantIds(context.db, event.participant_id));
+        }, identities);
       } catch {
         concurrent = null;
+      }
+      try {
+        // CC-7 L15 : ce canal est celui du chat — une écriture sur une tâche prend ou renouvelle
+        // le bail du chat ; l'API du même agent ne démarre plus et une exécution en vol est préemptée.
+        // Meilleur effort : l'append est déjà appliqué, une erreur de bail ne le fait jamais échouer.
+        chatLease = await applyChatAutoLease(context.db, event, identities);
+      } catch {
+        chatLease = null;
       }
       return collabSuccess({
         status: 'applied',
@@ -290,6 +302,7 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
         // CR-B (CR-02) : effet memory_entries d'un événement memory.* applied.
         ...(outcome.memory ? { memory: outcome.memory } : {}),
         ...(concurrent ? { concurrent_session: concurrent } : {}),
+        ...(chatLease ? { chat_lease: chatLease } : {}),
       });
     }
     if (outcome.status === 'duplicate') {

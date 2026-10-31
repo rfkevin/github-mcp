@@ -62,6 +62,8 @@ export interface AgentRunEnv {
   AGENT_RUN_PARTICIPANTS?: string;
   /** CC-7 L3 : « true » pour les lectures de continuité et la consigne de lecture élargie ; absent = inchangé. */
   AGENT_RUN_CONTINUITY?: string;
+  /** CC-7 L15 : outils d'écriture GitHub du canal API ; sans « true », aucun réveil « implémenter » n'est confié à l'API. */
+  AGENT_RUN_GITHUB_WRITES?: string;
 }
 
 export type QuotaKind = 'do_requests' | 'rows_written' | 'do_gb_s';
