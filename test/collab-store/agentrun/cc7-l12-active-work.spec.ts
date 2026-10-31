@@ -91,7 +91,7 @@ describe('CC-7 L12 — le planificateur attend que le chat de l’agent ait fini
 
     const other = await seedQuestion('task2', 'p-l12-elsewhere2-' + n);
     await event(other.cycle, { type: 'checkpoint', participant: other.owner, at: T - 120, payload: { task: 'autre', state: 'ailleurs' } });
-    const out = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: other.owner }, { now: T });
+    const out = await planAgentRuns(db, { AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: other.owner }, { now: T });
     expect(out.created).toBe(1);
     const run = await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1')
       .bind(await taskRunId('implement', other.cycle, other.owner, 'l7', 'none')).first<{ task_kind: string }>();

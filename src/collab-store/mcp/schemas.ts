@@ -155,6 +155,8 @@ export const outputSchemas = {
     memory: z.object({ id: z.string(), version: z.number(), status: z.string() }).optional(),
     // CC-7 L12 : autre session nommée du même agent sur la même tâche (< 30 min) — avertissement, rien de bloqué.
     concurrent_session: z.object({ other_session_id: z.string(), seq: z.number(), at: z.number(), task: z.string() }).optional(),
+    // CC-7 L15 : bail du chat pris (held, jusqu'à held_until) ou rendu (released) par cette écriture sur une tâche.
+    chat_lease: z.object({ task: z.string(), action: z.enum(['held', 'released']), held_until: z.number().optional() }).optional(),
   },
   // CC-3 C6 : instantané pour une PR GitHub (lecture seule).
   collab_export: {

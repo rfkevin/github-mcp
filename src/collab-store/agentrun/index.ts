@@ -27,7 +27,7 @@ export { createVerdictTools, verdictOpId, VERDICT_TOOL_SCHEMAS, VERDICT_STATES, 
   type VerdictTaskKind, type VerdictTools } from './verdict-tools';
 export { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_STATES, CONTRIBUTION_TOOL_SCHEMAS, type ContributionTools } from './contribution-tools';
 export { createStoreWriteTools, effectOpId, WRITE_TOOL_SCHEMAS, WRITE_TOOLS_BY_KIND, type WriteToolName, type StoreWriteTools } from './store-tools';
-export { planAgentRuns, apiParticipants, answerRunId, answerPrompt, taskRunId, taskPrompt, continuityEnabled, ANSWER_READ_WINDOW, PLAN_LIMIT, PLAN_MAX_STEPS, PLAN_MAX_TOKENS, PLAN_DEADLINE_S, TASK_KIND_COST_CENTS, RUN_COST_CENTS_CEILING, taskKindCostCents, type PlanEnv, type PlanResult, type PlannedTaskKind, type TaskWakeKind } from './plan';
+export { planAgentRuns, apiParticipants, apiCanImplement, answerRunId, answerPrompt, taskRunId, taskPrompt, continuityEnabled, ANSWER_READ_WINDOW, PLAN_LIMIT, PLAN_MAX_STEPS, PLAN_MAX_TOKENS, PLAN_DEADLINE_S, TASK_KIND_COST_CENTS, RUN_COST_CENTS_CEILING, taskKindCostCents, type PlanEnv, type PlanResult, type PlannedTaskKind, type TaskWakeKind } from './plan';
 export {
   createGitHubWriteTools, apiBranch, effectTrailer, GitHubWriteRefused, GITHUB_WRITE_TOOL_SCHEMAS, GITHUB_WRITE_TOOLS_BY_KIND,
   API_BRANCH_NAMESPACE, DEFAULT_API_BASE_BRANCH, type GitHubWrites, type GitHubWriteToolName, type GitHubWriteTools,
@@ -36,3 +36,4 @@ export {
   listRunsForParticipant, runSummaryForParticipant, preemptOwnRun, releaseOwnRun, listRunsForOwner,
   CHAT_HOLD_SECONDS_DEFAULT, LIST_RUNS_LIMIT, type AgentRunListItem,
 } from './chat-continuity';
+export { applyChatAutoLease, CHAT_AUTO_HOLD_SECONDS, CHAT_AUTO_LEASE_TYPES, type ChatLeaseEffect } from './chat-auto-lease';

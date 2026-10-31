@@ -126,7 +126,7 @@ describe('CC-7 L5a — planification des réveils de tâche', () => {
 
   it('implement sans soumission : une exécution pour l’auteur, rien pour le relecteur sans décision', async () => {
     const q = await seedTask('implement', () => []);
-    const out = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: q.owner + ',' + q.reviewer }, { now: T });
+    const out = await planAgentRuns(db, { AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: q.owner + ',' + q.reviewer }, { now: T });
     expect(out.created).toBe(1);
     const runId = await taskRunId('implement', q.cycle, q.owner, 'l5', 'none');
     const run = (await db.prepare('SELECT task_kind, prompt FROM agent_runs WHERE run_id = ?1').bind(runId)

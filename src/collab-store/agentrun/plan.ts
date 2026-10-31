@@ -89,6 +89,17 @@ export interface PlanEnv {
   AGENT_RUN_COST_CENTS_IMPLEMENT?: string;
   /** CC-7 L6b-2 : contributions de conception (réveils `contribute`). */
   AGENT_RUN_COST_CENTS_DESIGN?: string;
+  /**
+   * CC-7 L15 : porte des écritures GitHub du canal API (object.ts). Sans « true », l'API n'a aucun
+   * outil pour modifier le code : un réveil « implémenter / corriger » n'est pas confié à l'API
+   * (elle ne pourrait qu'annoncer un travail qu'elle ne fait pas — seq 1157 et 1160 de cc7-api-auto).
+   */
+  AGENT_RUN_GITHUB_WRITES?: string;
+}
+
+/** CC-7 L15 : l'API a-t-elle les outils d'écriture GitHub nécessaires à un réveil `implement` ? */
+export function apiCanImplement(env: { AGENT_RUN_GITHUB_WRITES?: string }): boolean {
+  return env.AGENT_RUN_GITHUB_WRITES === 'true';
 }
 
 /** CC-7 L3 : porte des lectures de continuité, éteinte par défaut (« true » exact seulement). */
@@ -222,11 +233,16 @@ async function plannedKindOf(db: D1Database, cycleId: string, participantId: str
   return null;
 }
 
-/** `deferred` n'apparaît que s'il est non nul (L12) : la forme historique { considered, created } reste inchangée. */
-export interface PlanResult { considered: number; created: number; deferred?: number }
+/**
+ * `deferred` n'apparaît que s'il est non nul (L12) ; `unequipped` (L15) compte les réveils « implémenter »
+ * non confiés faute d'outils d'écriture GitHub. La forme historique { considered, created } reste inchangée.
+ */
+export interface PlanResult { considered: number; created: number; deferred?: number; unequipped?: number }
 
-function planResult(considered: number, created: number, deferred: number): PlanResult {
-  return deferred > 0 ? { considered, created, deferred } : { considered, created };
+function planResult(considered: number, created: number, deferred: number, unequipped = 0): PlanResult {
+  const out: PlanResult = deferred > 0 ? { considered, created, deferred } : { considered, created };
+  if (unequipped > 0) out.unequipped = unequipped;
+  return out;
 }
 
 export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: number; limit?: number }): Promise<PlanResult> {
@@ -238,6 +254,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
   let considered = 0;
   let created = 0;
   let deferred = 0;
+  let unequipped = 0;
   for (const { cycle_id: cycleId } of cycles) {
     for (const participantId of participants) {
       const view = await previewNextActions(db, cycleId, participantId);
@@ -257,7 +274,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
             deferred += 1;
             continue;
           }
-          if (created >= limit) return planResult(considered, created, deferred);
+          if (created >= limit) return planResult(considered, created, deferred, unequipped);
           considered += 1;
           const askSeq = Number(match[1]);
           const result = await createRun(db, {
@@ -276,7 +293,12 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           deferred += 1;
           continue;
         }
-        if (created >= limit) return planResult(considered, created, deferred);
+        // L15 : sans outils d'écriture GitHub, l'API ne peut pas implémenter — on ne la réveille pas pour ça.
+        if (kind === 'implement' && !apiCanImplement(env)) {
+          unequipped += 1;
+          continue;
+        }
+        if (created >= limit) return planResult(considered, created, deferred, unequipped);
         considered += 1;
         const taskId = decision.task_id ?? '';
         const result = await createRun(db, {
@@ -288,5 +310,5 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
       }
     }
   }
-  return planResult(considered, created, deferred);
+  return planResult(considered, created, deferred, unequipped);
 }
