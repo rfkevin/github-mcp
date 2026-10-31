@@ -145,20 +145,21 @@ describe('CC-7 M1a — frontières dans le lot d’activation réel', () => {
   });
 
   it('le budget de jetons reste la limite de taille : refus typé avant la règle de croissance, sans pause', async () => {
-    const scope = 'task:' + uniq('budget');
-    const budget = MEMORY_TOKEN_BUDGETS.task;
+    // CC-7 M2 : la portée task est gelée (budget 0) ; le même scénario se joue sur role (800 jetons).
+    const scope = 'role:' + uniq('budget');
+    const budget = MEMORY_TOKEN_BUDGETS.role;
     const mem = new MemoryStore(db);
-    // Deux entrées de 140 jetons (texte borné à 600 caractères) : 280 jetons, sous le budget
-    // et loin de la frontière de croissance (2 entrées actives, base 1).
-    for (const letter of ['x', 'z']) {
+    // Cinq entrées de 140 jetons (texte borné à 600 caractères) : 700 jetons, sous le budget
+    // et sous la frontière de croissance (5 entrées actives, base 1 : pause au-delà de 6).
+    for (const letter of ['x', 'z', 'w', 'v', 'u']) {
       await activateOne(mem, scope, letter.repeat(4 * 140));
     }
-    expect(budget - 280).toBeLessThan(30);
-    const extra = await mem.propose({ scope, kind: 'fact', text: 'y'.repeat(4 * 30), evidence_refs: ['ev:extra'], confidence: 'observed', author_pid: 'agent:a' });
+    expect(budget - 700).toBeLessThan(120);
+    const extra = await mem.propose({ scope, kind: 'fact', text: 'y'.repeat(4 * 120), evidence_refs: ['ev:extra'], confidence: 'observed', author_pid: 'agent:a' });
     const error = await mem.activate(extra.id, 1, 'agent:b', uniq('cycle')).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(MemoryStoreError);
     expect(error).toMatchObject({ code: 'MEMORY_BUDGET_EXCEEDED' });
-    expect(await activeCount(scope)).toBe(2);
+    expect(await activeCount(scope)).toBe(5);
     expect(await mem.isActivationPaused(scope)).toBe(false);
     expect((await mem.get(extra.id, 1))?.status).toBe('candidate');
   });

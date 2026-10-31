@@ -229,7 +229,8 @@ describe('CC-3 X5 — indépendance P1 des cycles de travail (github-mcp#107)', 
     const a = uniq('cycle-a');
     await seedP1WorkCycle(a, 'proj-a', 'x2x5-task');
     const before = await journalState(b);
-    const blockedScopes = ['common', 'project:proj-a', 'task:x2x5-task', 'role:owner'];
+    // CC-7 M2 : la portée task est gelée — refusée avant toute garde P1 (vérifié plus bas).
+    const blockedScopes = ['common', 'project:proj-a', 'role:owner'];
     for (const [index, scope] of blockedScopes.entries()) {
       expect(await refuse({ cycle: b, type: 'memory.propose', participant: alpha, op: 'blk-' + index,
         payload: { memory: { id: uniq('blk'), scope, kind: 'fact', text: 'bloqué ' + scope,
@@ -240,8 +241,11 @@ describe('CC-3 X5 — indépendance P1 des cycles de travail (github-mcp#107)', 
       payload: { memory: { id: c2, version: 1 } } })).toBe('MEMORY_P1_SHARED_MUTATION');
     expect(await refuse({ cycle: b, type: 'memory.consolidate', participant: alpha, op: 'sup-c1',
       payload: { memory: { id: c1, text: 'c1 v2', evidence_refs: ['ev:c1b'] } } })).toBe('MEMORY_P1_SHARED_MUTATION');
+    expect(await refuse({ cycle: b, type: 'memory.propose', participant: alpha, op: 'blk-task',
+      payload: { memory: { id: uniq('blk'), scope: 'task:x2x5-task', kind: 'fact', text: 'gelé',
+        evidence_refs: ['ev:x5-blk'], confidence: 'observed' } } })).toBe('MEMORY_SCOPE_FROZEN');
     expect(await journalState(b)).toEqual(before);
-    const acceptedScopes = ['project:x2x5-other', 'task:absente', 'role:xyz'];
+    const acceptedScopes = ['project:x2x5-other', 'project:x2x5-absent', 'role:xyz'];
     for (const [index, scope] of acceptedScopes.entries()) {
       expect((await append({ cycle: b, type: 'memory.propose', participant: alpha, op: 'ok-' + index,
         payload: { memory: { id: uniq('ok'), scope, kind: 'fact', text: 'accepté ' + scope,
