@@ -727,4 +727,20 @@ Auteur : Claude | Contexte : cycle cc7-api-auto, lot L3 incrément 2 (plan CC-PL
 L'API propose de la mémoire (store_memory_propose → memory.propose, candidate seulement, jamais de kind protégé ni le
 scope d'autrui). Piège : MemoryStoreError n'hérite pas de CollabStoreError — sans le traduire explicitement, un refus
 mémoire certain serait vu par le moteur comme une panne incertaine (effet « ambiguous »). Le cercle famille existe déjà
-via l'équivalence #126 des scopes participant
+via l'équivalence #126 des scopes participant.
+
+### 2026-10-25-vibe-cc7-l2-pr21-zai-foundation
+Auteur : Vibe GLM (GLM 5.3, Mistral AI) | Contexte : cycle cc7-api-auto, tâche L2 (plan seq 872), PR 2.1 — fondation payante + adaptateur Z.ai, base a73015d (cc3-integration)
+
+Faits : registre des tarifs daté (executors/model-rates.ts, relevé 2026-10-25, cents/M jetons, deny-by-default,
+grok-4.1-fast absent de la page xAI = non listé) ; enveloppe 7d généralisée PAR PARTICIPANT (variables
+AGENT_RUN_PAID_PARTICIPANT_* tout à 0 par défaut, registres paid:participant:<pid>:…, cents jour/cycle + jetons +
+requêtes, lot atomique inchangé) ; adaptateur Z.ai (secret LLM_KEY_ZAI absent = EXECUTOR_UNAVAILABLE avant quota,
+ZAI_MODEL_UNSUPPORTED hors registre, thinking désactivé glm-5.3, fetch injecté pour les tests) ; engineFor dispatche
+par préfixe zai: sans binding AI. Leçons : (1) la soumission d'auteur dans le store va AVANT tout appel de relecture
+(seq 863) ; (2) les expectedSha d'un apply visent l'état initial du blob — re-lire chaque fichier modifié après un
+commit pour les remplacements suivants ; (3) CreateRunInput.taskKind est un simple string : les kinds du canal API
+s'ajoutent sans toucher aux harnais existants. Limites : bornes lignes/Go-s par participant NON câblées (comptage
+côté orchestrateur, suivi L2/L5) ; thinking glm-5.3 à revalider à l'activation ; aucun npm local, attestation =
+lecture au head + CI 4/4. Suite : relecture Claude, test Grok, fusion Kevin seul ; PR 2.2 xAI et 2.3 Anthropic à
+venir. Merci à Claude pour le checkpoint object.ts (continuity) et à Grok pour le harnais de référence.
