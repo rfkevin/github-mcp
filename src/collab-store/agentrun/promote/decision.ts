@@ -31,6 +31,13 @@ export interface ProbeResult {
   readonly error?: string;
 }
 
+/** Types de tâche exigés par le canary F2 (P3 C2). */
+export const CANARY_TASK_KINDS = ['answer', 'review', 'test', 'implement'] as const;
+export type CanaryTaskKind = typeof CANARY_TASK_KINDS[number];
+
+/** Minimum d'appels canary avant auto_apply (P3 C2). */
+export const CANARY_MIN_CALLS = 20;
+
 export interface CanaryResult {
   readonly calls: number;
   readonly failures: number;
@@ -38,6 +45,11 @@ export interface CanaryResult {
   readonly cost_ratio: number;
   readonly identity_leak: boolean;
   readonly critical_error: boolean;
+  /**
+   * Répartition par type. auto_apply : chaque CANARY_TASK_KINDS avec calls >= 1
+   * et somme des calls_by_kind === calls.
+   */
+  readonly calls_by_kind: Readonly<Partial<Record<CanaryTaskKind, number>>>;
 }
 
 export interface PromoteInput {
@@ -116,6 +128,9 @@ export function decidePromotion(input: PromoteInput): PromoteDecision {
   if (!input.probe.tools_ok) {
     return { verdict: 'reject', reasons: ['sonde_outils'] };
   }
+  if (!input.probe.efforts_ok.length) {
+    return { verdict: 'reject', reasons: ['sonde_efforts_vides'] };
+  }
   if (!input.candidate_still_free && !input.paid_ceiling_ok) {
     return { verdict: 'reject', reasons: ['plafond_payant_absent'] };
   }
@@ -139,10 +154,27 @@ export function decidePromotion(input: PromoteInput): PromoteDecision {
     return { verdict: 'propose', reasons: ['canary_cout_superieur'] };
   }
 
+  // auto_apply exige canary P3 C2 complet ; sinon propose même si le reste est vert.
+  if (!canaryReadyForAuto(canary)) {
+    return { verdict: 'propose', reasons: ['canary_incomplet', 'sonde_ok', 'prix_ok'] };
+  }
+
   if (input.auto_policy_enabled) {
     return { verdict: 'auto_apply', reasons: ['politique_auto', 'sonde_ok', 'canary_ok', 'prix_ok'] };
   }
   return { verdict: 'propose', reasons: ['auto_desactivee', 'sonde_ok', 'canary_ok', 'prix_ok'] };
+}
+
+/** Canary complet pour auto_apply : >= 20, 4 types, somme cohérente. */
+export function canaryReadyForAuto(canary: CanaryResult): boolean {
+  if (canary.calls < CANARY_MIN_CALLS) return false;
+  let sum = 0;
+  for (const kind of CANARY_TASK_KINDS) {
+    const n = canary.calls_by_kind[kind];
+    if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1) return false;
+    sum += n;
+  }
+  return sum === canary.calls;
 }
 
 /** Env : promotion auto uniquement si chaîne exacte « true ». */
