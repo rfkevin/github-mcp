@@ -6,7 +6,7 @@
  * Une demande exécutable est un owner.request dont le payload porte :
  *   request_id, summary, action (install_phases, import_state, register_endpoint,
  *   grant_coordinator, set_identity_family, reassign_task, classify_request,
- *   close_cycle, appoint_cycle_coordinator), params,
+ *   close_cycle, appoint_cycle_coordinator, set_agent_models), params,
  *   payload_sha256 = sha256(JSON canonique {action, params}),
  *   preconditions.previous_seq (dernier acte du même type sur le cycle cible
  *   au dépôt, null s'il n'y en a pas), reason, risk, rollback, et en option
