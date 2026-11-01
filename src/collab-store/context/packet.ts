@@ -70,17 +70,28 @@ function effectiveBudget(options: PacketOptions): number {
   return Math.min(DEFAULT_PACKET_BUDGET, quarter, options.approvedBudgetTokens ?? Number.MAX_SAFE_INTEGER);
 }
 
+/** Contexte de visibilité de la mémoire (I6) ; `roles` (CC-7 M2) s'ajoute au rôle de tâche historique. */
+export interface MemoryVisibilityContext {
+  participantId: string;
+  participantIds?: ReadonlySet<string>;
+  role?: string | null;
+  /** CC-7 M2 : rôles supplémentaires (coordinator, researcher, rôle déduit du type d'exécution API). */
+  roles?: ReadonlySet<string>;
+  taskId?: string | null;
+  project?: string | null;
+}
+
 /** I6 — common, participant:<caller>, role:<role>, task:<task>, project:<id C4>. */
-export function memoryVisible(
-  scope: string,
-  ctx: { participantId: string; participantIds?: ReadonlySet<string>; role?: string | null; taskId?: string | null; project?: string | null },
-): boolean {
+export function memoryVisible(scope: string, ctx: MemoryVisibilityContext): boolean {
   if (scope === 'common') return true;
   if (scope.startsWith('participant:')) {
     const owner = scope.slice('participant:'.length);
     return ctx.participantIds?.has(owner) ?? owner === ctx.participantId;
   }
-  if (scope.startsWith('role:')) return ctx.role != null && ctx.role.length > 0 && scope === 'role:' + ctx.role;
+  if (scope.startsWith('role:')) {
+    const role = scope.slice('role:'.length);
+    return role.length > 0 && (ctx.role === role || (ctx.roles?.has(role) ?? false));
+  }
   if (scope.startsWith('task:')) return ctx.taskId != null && ctx.taskId.length > 0 && scope === 'task:' + ctx.taskId;
   if (scope.startsWith('project:')) {
     const key = toProjectScopeKey(ctx.project);
@@ -89,10 +100,28 @@ export function memoryVisible(
   return false;
 }
 
+/**
+ * CC-7 M2 (amendement de Kevin #1139) : la portée role couvre aussi le coordinateur du cycle.
+ * Renvoie les rôles de base complétés de « coordinator » si l'une des identités équivalentes de
+ * l'appelant détient le mandat de coordination du cycle (table delegated_mandates ; absente = aucun).
+ */
+export async function memoryRolesOf(db: D1Database, cycleId: string, participantIds: ReadonlySet<string>,
+  base: readonly string[] = []): Promise<Set<string>> {
+  const roles = new Set(base.filter(role => role.length > 0));
+  try {
+    const row = await db.prepare('SELECT participant_id FROM delegated_mandates WHERE cycle_id = ?1')
+      .bind(cycleId).first<{ participant_id: string | null }>();
+    if (row?.participant_id && participantIds.has(row.participant_id)) roles.add('coordinator');
+  } catch {
+    // Table absente : aucun mandat (vacance, L3c D1).
+  }
+  return roles;
+}
+
 /** Mémoire C4 active visible (I6) ; exportée pour les exécutions API (CC-7 L3, parité S4). */
 export async function loadVisibleActiveMemory(
   db: D1Database,
-  ctx: { participantId: string; participantIds?: ReadonlySet<string>; role?: string | null; taskId?: string | null; project?: string | null },
+  ctx: MemoryVisibilityContext,
 ): Promise<PacketMemory[]> {
   await ensureSchema(db);
   const { results } = await db.prepare([
@@ -213,10 +242,12 @@ export async function buildRolePacket(
   while (estimateTokens(openQuestions) > OPEN_QUESTIONS_BUDGET && openQuestions.length) openQuestions.pop();
   const priorityQuestionCount = Math.min(journalQuestions.length, openQuestions.length);
 
-  const visibilityCtx = {
+  const visibilityCtx: MemoryVisibilityContext = {
     participantId: input.participant_id,
     participantIds: new Set(equivalents),
     role: resolved.task?.participation ?? null,
+    // CC-7 M2 : le coordinateur du cycle voit aussi role:coordinator.
+    roles: await memoryRolesOf(db, resolved.cycle_id, new Set(equivalents)),
     taskId: resolved.task?.task_id ?? null,
     project: cycle.project ?? null,
   };

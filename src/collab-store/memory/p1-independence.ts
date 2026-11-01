@@ -39,6 +39,14 @@ import { REGISTRY_CYCLE } from '../owner/decisions';
 /** Rôles projetables : role:<r> n'est visible qu'à un cycle de travail ayant au moins une tâche. */
 export const PROJECTABLE_ROLES = new Set(['owner', 'reviewer', 'tester']);
 
+/**
+ * CC-7 M2 (revue GPT-6 R1, #245) : rôles servis sans tâche — coordinator (détenteur du mandat
+ * du cycle, paquet chat) et researcher (exécutions API research). Fail-closed : tout cycle de
+ * travail P1 ouvert les bloque, mandat présent ou non — aucune dépendance aux mandats, donc
+ * l'empreinte P1 existante suffit comme garde transactionnelle.
+ */
+export const CYCLE_WIDE_ROLES = new Set(['coordinator', 'researcher']);
+
 /** Scope partagé (famille common/project/role/task) : soumis à la garde X5. */
 export function isSharedMemoryScope(scope: string): boolean {
   const family = scopeFamily(scope);
@@ -95,7 +103,7 @@ function scopeVisibleTo(scope: string, context: P1Context): boolean {
   const value = i === -1 ? '' : scope.slice(i + 1);
   if (family === 'project') return toProjectScopeKey(context.project) === value;
   if (family === 'task') return context.taskIds.includes(value);
-  if (family === 'role') return PROJECTABLE_ROLES.has(value) && context.taskIds.length > 0;
+  if (family === 'role') return CYCLE_WIDE_ROLES.has(value) || (PROJECTABLE_ROLES.has(value) && context.taskIds.length > 0);
   return false;
 }
 
