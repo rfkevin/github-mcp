@@ -352,9 +352,10 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       await db.batch([
         db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1')
           .bind(runId, Math.max(0, usage?.tokens ?? 0), Math.max(0, usage?.cost_cents ?? 0), now),
-        // Réclamation rendue périmée : la prochaine réveil réessaie, dans la limite de MAX_STEP_ATTEMPTS.
-        db.prepare('UPDATE agent_run_steps SET claimed_at = 0 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4')
-          .bind(runId, n, deps.workerId, claimed.attempts),
+        // Les erreurs permanentes restent attachées à la réclamation exacte ; seul un transient libère l'étape.
+        db.prepare('UPDATE agent_run_steps SET claimed_at = ?5 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4')
+          .bind(runId, n, deps.workerId, claimed.attempts,
+            modelFailureKind(error) === 'transient' ? now : claimed.claimed_at),
       ]);
       if (modelFailureKind(error) === 'permanent') {
         await stopAs(db, runId, 'failed', 'model_permanent: ' + errorText(error), now, claim);

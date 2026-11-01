@@ -327,6 +327,18 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
     }
     return value.capable;
   };
+  // S1b : une seule relance après un passage cron (>= 15 min), trois runs au maximum.
+  // Le run précédent doit être un échec explicitement transitoire, jamais un refus permanent.
+  const retryAttempt = async (prefix: string): Promise<number | null> => {
+    const rows = (await db.prepare(
+      "SELECT run_id, status, stop_reason, updated_at FROM agent_runs WHERE run_id LIKE ?1 ORDER BY created_at DESC LIMIT 3",
+    ).bind(prefix + '%').all<{ run_id: string; status: string; stop_reason: string; updated_at: number }>()).results;
+    if (!rows.length) return 1;
+    const latest = rows[0];
+    if (latest.status !== 'failed' || !latest.stop_reason.startsWith('model_transient:')) return null;
+    if (input.now - latest.updated_at < 900 || rows.length >= 3) return null;
+    return rows.length + 1;
+  };
   let order = 0;
   const queues = new Map<string, PlanIntent[]>(participants.map(pid => [pid, []]));
   for (const { cycle_id: cycleId } of cycles) {
