@@ -9,7 +9,7 @@
 export const FICHE_VERSION = 2;
 
 /** Empreinte FNV-1a 64 du contenu exact de la fiche (identité de version, pas un secret). */
-export const FICHE_HASH = "55cc00d2c5f293dc";
+export const FICHE_HASH = "bbef522ee88101e8";
 
 /** Contenu exact de la fiche canonique (audit : version et hash se recomptent depuis ici). */
 export const FICHE_RAW = `{
@@ -56,7 +56,7 @@ export const FICHE_RAW = `{
       "active": true,
       "models": [
         { "role": "fort", "ref": "zai:glm-5.3" },
-        { "role": "gratuit", "ref": "workers-ai:@cf/zai-org/glm-4.7-flash" }
+        { "role": "gratuit", "ref": "zai:glm-4.7-flash" }
       ],
       "endpoints": [
         {
@@ -163,7 +163,7 @@ export const AGENT_RUN_VARS: Readonly<Record<string, string>> = Object.freeze({
 	AGENT_RUN_FAMILY_GROK: "xai",
 	AGENT_RUN_MODELS_GROK: "xai:grok-4.7,xai:grok-4.20-0309-non-reasoning",
 	AGENT_RUN_FAMILY_VIBE: "zai",
-	AGENT_RUN_MODELS_VIBE: "zai:glm-5.3,workers-ai:@cf/zai-org/glm-4.7-flash",
+	AGENT_RUN_MODELS_VIBE: "zai:glm-5.3,zai:glm-4.7-flash",
 	AGENT_RUN_FAMILY_GPT6: "openai",
 	AGENT_RUN_MODELS_GPT6: "groq:openai/gpt-oss-120b,groq:openai/gpt-oss-20b",
 	AGENT_RUN_FAMILY_GEMINI: "google",

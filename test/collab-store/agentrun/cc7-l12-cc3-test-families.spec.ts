@@ -53,11 +53,20 @@ describe('CC-7 — familles imposées sur cc3-test (wrangler.jsonc)', () => {
     expect(stub.seen).toEqual([]);
   });
 
-  it('vibe : reste sur un modèle de SA famille (GLM) — le gratuit Workers AI glm-4.7-flash, pas le payant zai sans clé', () => {
-    const choice = chooseModel(CC3_TEST, participantPolicy(CC3_TEST, 'vibe')!, 'answer', NO_BUDGET, null);
-    expect(choice.ref).toBe('workers-ai:@cf/zai-org/glm-4.7-flash');
+  it('vibe : tout passe par Z.ai (décision de Kevin du 2026-11-01) — avec la clé, le gratuit zai:glm-4.7-flash, pas le payant sans budget', () => {
+    // Avant : le gratuit de Vibe passait par Workers AI. La clé LLM_KEY_ZAI est posée sur cc3-test
+    // (même secret que l'endpoint actif ep-zai-glm47).
+    const withKey = { ...CC3_TEST, LLM_KEY_ZAI: 'k' } as PolicyEnv;
+    const choice = chooseModel(withKey, participantPolicy(withKey, 'vibe')!, 'answer', NO_BUDGET, null);
+    expect(choice.ref).toBe('zai:glm-4.7-flash');
     expect(choice.tier).toBe('free');
     expect(familyOf(choice.ref)).toBe('zai');
+    expect(participantPolicy(CC3_TEST, 'vibe')!.models.every(ref => ref.startsWith('zai:'))).toBe(true);
+  });
+
+  it('vibe sans clé Z.ai : aucun modèle de sa chaîne, jamais de bascule silencieuse vers Workers AI', () => {
+    expect(() => chooseModel(CC3_TEST, participantPolicy(CC3_TEST, 'vibe')!, 'answer', NO_BUDGET, null))
+      .toThrow(/MODEL_BUDGET_EXHAUSTED|Aucun modèle abordable/);
   });
 
   it('gemini sans attestation owner : jamais le Gemini gratuit, reste dans SA famille (Gemma Workers AI gratuit)', () => {
