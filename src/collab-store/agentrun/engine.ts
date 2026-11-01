@@ -426,7 +426,13 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // CC-8 S1b-2 : garde avant chaque effet — un effet qui ne peut pas finir avant le
     // plafond d'étape (marge < 30 s) n'est JAMAIS lancé : arrêt propre transient, aucun
     // effet ambiguous, la relance d'exécution S1b reprend (v2 point 4).
+    // Un ancien worker dont la réclamation a été reprise entre-temps ne décide de rien :
+    // réclamation fraîche relue, il rend 'busy' — jamais un faux 'failed' au nom d'un autre.
     if (claimed.claimed_at + STEP_TIMEOUT_S - deps.now() < STEP_MODEL_BUDGET_FLOOR_MS / 1000) {
+      const fresh = await db.prepare('SELECT claimed_by, claimed_at, attempts FROM agent_run_steps WHERE run_id = ?1 AND n = ?2')
+        .bind(runId, n).first<{ claimed_by: string; claimed_at: number; attempts: number }>();
+      if (!fresh || fresh.claimed_by !== deps.workerId || fresh.claimed_at !== claimed.claimed_at
+        || fresh.attempts !== claim.attempts) return { outcome: 'busy' };
       await stopAs(db, runId, 'failed', 'model_transient: temps d’étape insuffisant avant l’effet ' + call.name
         + ' (marge < 30 s, plan S1b-2 v2 point 4) ; relance d’exécution S1b.', deps.now(), claim);
       return { outcome: 'failed' };

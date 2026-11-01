@@ -25,11 +25,11 @@ const TRANSIENT = 'Fournisseur sans réponse après 60000 ms.';
 const GEMINI_OK = { candidates: [{ content: { role: 'model', parts: [{ text: 'repli réussi' }] } }],
   usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 4 } };
 
-function client(runId: string, fetchImpl: typeof fetch, nowMs = AT * 1000) {
+function client(runId: string, fetchImpl: typeof fetch, nowFn: () => number = () => AT * 1000) {
   const ctx: ProviderModelContext = {
     env: routes, db, runId, envelope: { dayCents: 0, cycleCents: 0, dayTokens: 0, dayRequests: 0 },
     schemas: () => [], system: 'test', maxOutputTokens: 4096,
-    now: () => new Date(nowMs), fetchImpl,
+    now: () => new Date(nowFn()), fetchImpl,
   };
   return createRoutedModel(routes, ctx);
 }
@@ -154,7 +154,7 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
     }) as typeof fetch;
     let thrown: unknown;
     try {
-      await client(run.runId, fetchImpl, clockMs).complete({ ...message, budget_left_ms: 120_000 });
+      await client(run.runId, fetchImpl, () => clockMs).complete({ ...message, budget_left_ms: 120_000 });
     } catch (error) { thrown = error; }
     expect(seen).toHaveLength(1); // primaire seul : 120 s − 100 s consommés < plancher 30 s
     expect((thrown as Error).message).toContain('STEP_MODEL_BUDGET_EXHAUSTED');

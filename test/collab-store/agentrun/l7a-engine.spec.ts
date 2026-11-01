@@ -279,8 +279,10 @@ describe('CC-5 l7a — réclamation liée à la tentative (revue D12 #188)', () 
     let resumed: string | null = null;
     const model = {
       state: { calls: 0 },
-      // Appel modèle long : l'effet sera lancé à T0+590, peu avant l'expiration de la réclamation.
-      async complete() { this.state.calls += 1; clock = T0 + 590; return { output: READ_THEN_COMMIT[1], usage: { tokens: 10, cost_cents: 0 } }; },
+      // Appel modèle long : l'effet est lancé à T0+500 — la garde S1b-2 (marge ≥ 30 s avant le
+      // plafond d'étape T0+601) l'autorise, et il reste en vol (fenêtre 120 s) quand la
+      // réclamation expire : C doit le trouver et rendre 'busy'.
+      async complete() { this.state.calls += 1; clock = T0 + 500; return { output: READ_THEN_COMMIT[1], usage: { tokens: 10, cost_cents: 0 } }; },
     };
     const h = host({
       lookup: async () => ({ found: false }),

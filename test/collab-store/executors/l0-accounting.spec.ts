@@ -52,7 +52,7 @@ async function queuedInvocation(endpointId: string, principal = 'p-' + endpointI
 describe('CC-5 L0 — délai par fournisseur (X14)', () => {
   it('défauts et bornes par fournisseur ; fournisseur inconnu : 30 s', () => {
     expect(providerTimeoutMs('groq')).toBe(30_000);
-    expect(providerTimeoutMs('gemini')).toBe(60_000);
+    expect(providerTimeoutMs('gemini')).toBe(120_000); // CC-8 S1b-2 : défaut gemini durci à 120 s
     expect(providerTimeoutMs('zai')).toBe(90_000);
     expect(providerTimeoutMs('workers-ai')).toBe(60_000);
     expect(providerTimeoutMs('deepseek')).toBe(60_000);
