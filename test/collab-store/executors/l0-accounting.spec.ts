@@ -54,8 +54,8 @@ describe('CC-5 L0 — délai par fournisseur (X14)', () => {
     expect(providerTimeoutMs('groq')).toBe(30_000);
     expect(providerTimeoutMs('gemini')).toBe(120_000); // CC-8 S1b-2 : défaut gemini durci à 120 s
     expect(providerTimeoutMs('zai')).toBe(90_000);
-    expect(providerTimeoutMs('workers-ai')).toBe(60_000);
-    expect(providerTimeoutMs('deepseek')).toBe(60_000);
+    expect(providerTimeoutMs('workers-ai')).toBe(120_000); // CC-8 S1b-2 : uniformé à 120 s
+    expect(providerTimeoutMs('deepseek')).toBe(120_000); // CC-8 S1b-2 : uniformé à 120 s
     expect(providerTimeoutMs('inconnu')).toBe(30_000);
     expect(providerTimeoutMs('groq', 20)).toBe(20);
     expect(providerTimeoutMs('groq', 999_999)).toBe(PROVIDER_TIMEOUT_MS.groq.max_ms);
