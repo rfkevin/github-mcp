@@ -250,7 +250,8 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
       const now = ctx.now?.() ?? new Date();
       let policy;
       try {
-        policy = participantPolicy(env as PolicyEnv, run.participant_id);
+        // CC-8 S3 : résolution store d'abord puis wrangler (défauts) — même source que la capacité et les vues.
+        policy = (await resolveParticipantPolicy(ctx.db, env as PolicyEnv, run.participant_id)).policy;
       } catch (error) {
         throw new ModelCallError('MODEL_ROUTE_REFUSED : ' + (error instanceof Error ? error.message : String(error)), null);
       }
