@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createRoutedModel, type ProviderModelContext } from '../../../src/collab-store/agentrun';
 import { GEMINI_CC3_TEST_PUBLIC_ORIGIN } from '../../../src/collab-store/executors/gemini';
 import { freshRun } from './cc7-l2-paid-harness';
+import { ensureModelPolicySchema } from '../../../src/collab-store/agentrun/model-policy';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const PRIMARY = 'gemini:gemini-3.8-flash';
@@ -39,6 +40,7 @@ describe('CC8 S1b — incident Gemini 503, repli pendant le même appel', () => 
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       throw new Error('Modèle inattendu : ' + url);
     }) as typeof fetch;
+    await ensureModelPolicySchema(db);
     const before = await Promise.all([PRIMARY, BACKUP].map(async ref =>
       (await db.prepare('SELECT ok, err FROM agent_model_calls WHERE ref = ?1').bind(ref).first<{ok:number;err:number}>()) ?? {ok:0,err:0}));
     const result = await client(run.runId, fetchImpl).complete(message);
