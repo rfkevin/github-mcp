@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import wranglerRaw from '../../../wrangler.jsonc?raw';
 import { runCapacity } from '../../../src/collab-store/agentrun/capacity';
 import {
-  loadChainSnapshot, loadModelChain, modelCatalog, participantPolicy, resolveParticipantPolicy,
+  ensureModelChainSchema, loadChainSnapshot, loadModelChain, modelCatalog, participantPolicy, resolveParticipantPolicy,
 } from '../../../src/collab-store/agentrun/model-policy';
 import { latestModelChainActSeq, setAgentModels } from '../../../src/collab-store/owner/model-chains';
 import { decideOwnerRequest, executablePayloadSha256, parseOwnerRequest } from '../../../src/collab-store/owner/executable';
