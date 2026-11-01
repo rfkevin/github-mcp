@@ -1,3 +1,4 @@
+import { PLAN_MODEL } from './plan-model';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -54,11 +55,11 @@ describe('CC-7 L12 — le planificateur attend que le chat de l’agent ait fini
     const to = 'p-l12-ans-' + n;
     const q = await seedQuestion('ans', to);
     await event(q.cycle, { type: 'checkpoint', participant: to, at: T - 300, payload: { state: 'je lis la question' } });
-    const busy = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: to }, { now: T });
+    const busy = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: to }, { now: T });
     expect(busy).toEqual({ considered: 0, created: 0, deferred: 1 });
     expect(await runsOf(q.cycle)).toBe(0);
     // Fenêtre glissante : sans nouvelle écriture du chat, l'API reprend ; la décision n'a pas été consommée.
-    const later = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: to }, { now: T - 300 + CHAT_ACTIVE_SECONDS + 60 });
+    const later = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: to }, { now: T - 300 + CHAT_ACTIVE_SECONDS + 60 });
     expect(later.created).toBe(1);
     expect(later.deferred).toBeUndefined();
     const run = await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1').bind(await answerRunId(q.cycle, to, q.askSeq))
@@ -72,14 +73,14 @@ describe('CC-7 L12 — le planificateur attend que le chat de l’agent ait fini
     await event(q.cycle, { type: 'checkpoint', participant: to, role: 'api-agent', at: T - 60, payload: { state: 'API' } });
     await event(q.cycle, { type: 'owner.decision', participant: to, at: T - 60, payload: { decision: 'x' } });
     expect(await chatActiveWithin(db, q.cycle, [to], T)).toBe(false);
-    expect((await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: to }, { now: T })).created).toBe(1);
+    expect((await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: to }, { now: T })).created).toBe(1);
   });
 
   it('le chat d’un AUTRE participant ne bloque rien', async () => {
     const to = 'p-l12-oth-' + n;
     const q = await seedQuestion('oth', to);
     await event(q.cycle, { type: 'checkpoint', participant: 'p-someone-else', at: T - 10, payload: { state: 'actif' } });
-    expect((await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: to }, { now: T })).created).toBe(1);
+    expect((await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: to }, { now: T })).created).toBe(1);
   });
 
   it('réveil de tâche : chat actif sur CETTE tâche → différé ; chat actif sur une autre tâche → exécution implement', async () => {
@@ -91,7 +92,7 @@ describe('CC-7 L12 — le planificateur attend que le chat de l’agent ait fini
 
     const other = await seedQuestion('task2', 'p-l12-elsewhere2-' + n);
     await event(other.cycle, { type: 'checkpoint', participant: other.owner, at: T - 120, payload: { task: 'autre', state: 'ailleurs' } });
-    const out = await planAgentRuns(db, { AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: other.owner }, { now: T });
+    const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: other.owner }, { now: T });
     expect(out.created).toBe(1);
     const run = await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1')
       .bind(await taskRunId('implement', other.cycle, other.owner, 'l7', 'none')).first<{ task_kind: string }>();

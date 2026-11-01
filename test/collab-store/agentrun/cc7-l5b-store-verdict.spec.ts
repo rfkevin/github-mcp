@@ -1,3 +1,4 @@
+import { PLAN_MODEL } from './plan-model';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
@@ -304,7 +305,7 @@ describe('CC-7 L5b — N2 : plafond de coût par type de tâche', () => {
     expect(Object.isFrozen(TASK_KIND_COST_CENTS)).toBe(true);
     expect(TASK_KIND_COST_CENTS).toEqual({ answer: 0, review: 0, test: 0, implement: 0, design: 0 });
     const q = await seedTask('n2');
-    const out = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: q.reviewer + ',' + q.tester }, { now: T });
+    const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.reviewer + ',' + q.tester }, { now: T });
     expect(out.created).toBe(2);
     const rows = (await db.prepare('SELECT task_kind, max_cost_cents FROM agent_runs WHERE cycle_id = ?1')
       .bind(q.cycle).all<{ task_kind: string; max_cost_cents: number }>()).results;

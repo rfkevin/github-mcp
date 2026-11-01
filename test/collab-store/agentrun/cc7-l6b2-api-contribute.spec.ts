@@ -1,3 +1,4 @@
+import { PLAN_MODEL } from './plan-model';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
@@ -127,7 +128,7 @@ describe('CC-7 L6b-2 — store_contribute', () => {
 describe('CC-7 L6b-2 — planification des réveils contribute', () => {
   it('P1 d’un produit : une exécution design par auteur (plus d’implement), consigne de proposition', async () => {
     const q = await product();
-    const out = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: q.pids.join(',') }, { now: T });
+    const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.pids.join(',') }, { now: T });
     expect(out.created).toBe(3);
     const rows = (await db.prepare('SELECT participant_id, task_id, task_kind, max_cost_cents FROM agent_runs WHERE cycle_id = ?1 ORDER BY participant_id')
       .bind(q.cycle).all<{ participant_id: string; task_id: string; task_kind: string; max_cost_cents: number }>()).results;
