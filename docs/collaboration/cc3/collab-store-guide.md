@@ -744,7 +744,7 @@ L'acte owner `set_agent_models` (jamais déléguable, CAS `expected_version`, in
 | --- | --- | --- | --- |
 | `CHAIN_VERSION_STALE` | CC-8 S3 | La chaîne du participant est à une autre version que celle attendue (relue avant l'acte ou revérifiée dans le lot) : rien n'est écrit | Relire la version sur `/owner` et redéposer |
 | `CHAIN_VERSION_INVALID` | CC-8 S3 | `expected_version` n'est pas un entier ≥ 0 | Corriger le payload |
-| `CHAIN_NOTHING_TO_RESTORE` | CC-8 S3 | Rollback demandé alors qu'aucune chaîne n'est posée | Poser d'abord une chaîne |
+| `CHAIN_NOTHING_TO_RESTORE` | CC-8 S3 | Rollback demandé alors qu'aucun acte n'a jamais été posé (version 0) | Poser d'abord une chaîne |
 | `CHAIN_SNAPSHOT_MISSING` | CC-8 S3 | Instantané de la version à restaurer introuvable : restauration refusée | Signaler (incident) |
 | `CHAIN_FICHE_UNKNOWN` | CC-8 S3 | Participant absent de la fiche canonique : aucune définition à référencer | Corriger l'identifiant du participant |
 | `CHAIN_FICHE_DIFF` | CC-8 S3 | Maillon non défini par la fiche de l'agent (F1 : la chaîne référence des définitions, elle n'en crée jamais) | Référencer un modèle ou une cible d'alias ep-* de la fiche |
