@@ -289,15 +289,13 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         model = build(ref, route.tier, participantEnvelope(env as PolicyEnv, run.participant_id));
       }
       let lastError: unknown;
-      const candidates: Array<{ ref: string; model: ModelClient }> = [{ ref, model }];
-      for (const item of fallback) {
-        // Le constructeur peut refuser un modèle : ne pas contourner un refus permanent.
-        candidates.push({ ref: item.ref, model: build(item.ref, 'auto', item.envelope, item.effort) });
-      }
+      const candidates = [{ ref, model: () => model }, ...fallback.map(item => ({
+        ref: item.ref, model: () => build(item.ref, 'auto', item.envelope, item.effort),
+      }))];
       for (const candidate of candidates) {
         const started = Date.now();
         try {
-          const result = await candidate.model.complete(input);
+          const result = await candidate.model().complete(input);
           await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
           return result;
         } catch (error) {
