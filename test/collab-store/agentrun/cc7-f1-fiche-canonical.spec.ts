@@ -65,11 +65,11 @@ describe('CC-7 F1 — fiche canonique et artefact généré', () => {
     }
   });
 
-  it('gpt (logique) : variables préparées par la fiche, hors AGENT_RUN_PARTICIPANTS tant que actif = false', () => {
+  it('gpt (logique) : actif depuis CC-8 S1a (décision Kevin seq 1280) — gpt6 dérivé dans AGENT_RUN_PARTICIPANTS', () => {
     const gpt = fiche.agents.find(agent => agent.id === 'gpt')!;
     expect(gpt.participant_id).toBe('gpt6');
-    expect(gpt.active).toBe(false);
-    expect(derived['AGENT_RUN_PARTICIPANTS'].split(',')).toEqual(['claude', 'grok', 'vibe', 'gemini']);
+    expect(gpt.active).toBe(true);
+    expect(derived['AGENT_RUN_PARTICIPANTS'].split(',')).toEqual(['claude', 'grok', 'vibe', 'gpt6', 'gemini']);
   });
 
   it('registre ep-* : liste historique figée en ajout seul (ni disparition, ni changement de cible, statut ou rattachement)', () => {

@@ -4,6 +4,7 @@ import wranglerRaw from '../../../wrangler.jsonc?raw';
 import { ModelCallError, createRoutedModel, participantModelRoute, type ProviderModelContext } from '../../../src/collab-store/agentrun';
 import { chooseModel, familyOf, participantPolicy, type BudgetState, type PolicyEnv } from '../../../src/collab-store/agentrun/model-policy';
 import { fetchStub, freshRun } from './cc7-l2-paid-harness';
+import { AUTO_MERGE_DEFAULT_CHECKS, autoMergeConfig } from '../../../src/collab-store/gates/auto-merge';
 
 // CC-7 — famille imposée par agent sur cc3-test (décision de Kevin du 2026-10-30) : chaque agent reste
 // sur SA famille, jamais sur le modèle gratuit global. Avant ce lot, aucune politique n'était posée sur
@@ -82,9 +83,20 @@ describe('CC-7 — familles imposées sur cc3-test (wrangler.jsonc)', () => {
     expect(Object.keys(vars).filter(k => k.startsWith('AGENT_RUN_PAID_PARTICIPANT_') && k.includes('GEMINI'))).toEqual([]);
   });
 
-  it('gpt6 : politique préparée mais pas de canal API tant que Kevin ne l’ajoute pas à AGENT_RUN_PARTICIPANTS', () => {
+  it('gpt6 : canal API ouvert (CC-8 S1a, décision Kevin seq 1280) — les cinq agents dans AGENT_RUN_PARTICIPANTS', () => {
     const participants = vars.AGENT_RUN_PARTICIPANTS.split(',').map(p => p.trim());
-    expect(participants).toEqual(['claude', 'grok', 'vibe', 'gemini']);
-    expect(participants).not.toContain('gpt6');
+    expect(participants).toEqual(['claude', 'grok', 'vibe', 'gpt6', 'gemini']);
+  });
+
+  it('fusion auto L6b3 (décision Kevin seq 1280) : allumée vers la branche d’intégration seulement, quatre contrôles par défaut', () => {
+    expect(autoMergeConfig(vars)).toEqual({ repository: 'rfkevin/github-mcp', branch: 'mcp/105856986/cc3-integration',
+      checks: [...AUTO_MERGE_DEFAULT_CHECKS] });
+    // Garde-fou en code : jamais main ni master, même mal configuré.
+    expect(autoMergeConfig({ ...vars, AUTO_MERGE_BRANCH: 'master' })).toBeNull();
+    expect(autoMergeConfig({ ...vars, AUTO_MERGE_BRANCH: 'main' })).toBeNull();
+  });
+
+  it('AGENT_RUN_REPOSITORY versionnée : un déploiement sans keep_vars ne l’efface plus (posée au tableau de bord le 2026-11-01)', () => {
+    expect(vars.AGENT_RUN_REPOSITORY).toBe('rfkevin/github-mcp');
   });
 });

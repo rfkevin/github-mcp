@@ -111,7 +111,11 @@ describe('CC-5 l7b — configuration', () => {
     // UNIQUEMENT, avec un modèle gratuit Workers AI, sans aucune variable payante ni fusion automatique.
     expect(cc3.vars.AGENT_RUNS_ENABLED).toBe('true');
     expect(cc3.vars.AGENT_RUN_MODEL).toMatch(/^workers-ai:/);
-    expect(Object.keys(cc3.vars).filter(key => /PAID|COST_CENTS|^LLM_KEY_|^AUTO_MERGE_/.test(key))).toEqual([]);
+    expect(Object.keys(cc3.vars).filter(key => /PAID|COST_CENTS|^LLM_KEY_/.test(key))).toEqual([]);
+    // CC-8 (décision Kevin seq 1280) : fusion automatique allumée sur cc3-test, vers l'INTÉGRATION seulement.
+    expect(Object.keys(cc3.vars).filter(key => /^AUTO_MERGE_/.test(key)).sort())
+      .toEqual(['AUTO_MERGE_BRANCH', 'AUTO_MERGE_INTEGRATION', 'AUTO_MERGE_REPOSITORY']);
+    expect(cc3.vars.AUTO_MERGE_BRANCH).toBe('mcp/105856986/cc3-integration');
     expect((config as { vars?: Record<string, string> }).vars?.AGENT_RUNS_ENABLED).not.toBe('true');
     for (const [name, value] of Object.entries(config.env)) {
       if (name === 'cc3-test') continue;
