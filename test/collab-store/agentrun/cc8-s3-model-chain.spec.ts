@@ -122,7 +122,12 @@ describe('CC-8 S3 — acte owner : refus non-owner, CAS, restauration (AC2, AC3)
     const removed = await setChain({ participant_id: 'gemini', expected_version: 1, rollback: true });
     expect(removed.action).toBe('rollback');
     expect(removed.chain).toBeNull();
-    expect(await loadModelChain(db, 'gemini')).toBeNull();
+    expect(removed.version).toBe(2);
+    // Sentinelle versionnée : la ligne N'est PAS supprimée (compteur monotone), inactive, chaîne vide — routage = défauts wrangler.
+    expect(await loadModelChain(db, 'gemini')).toMatchObject({ version: 2, active: false });
+    expect((await loadModelChain(db, 'gemini'))?.chain).toEqual([]);
+    expect((await resolveParticipantPolicy(db, CC3_TEST, 'gemini')).source).toBe('env');
+    expect(await loadChainSnapshot(db, 'gemini', 2)).toEqual({ version: 2, chain: null });
     expect(await runCapacity(db, { ...CC3_TEST, LLM_KEY_GEMINI: 'k' }, 'gemini', null, 'review', NOW)).toEqual(before);
   });
 });
