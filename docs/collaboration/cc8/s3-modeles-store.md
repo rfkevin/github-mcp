@@ -11,7 +11,7 @@ AC du plan, tous couverts par `test/collab-store/agentrun/cc8-s3-model-chain.spe
 
 1. **Changement de chaîne sans PR** — `set_agent_models` (acte owner) pose la chaîne dans le store ; la résolution et la capacité suivent immédiatement, aucune variable wrangler ni fiche touchée. Preuve rejouée sur la configuration réelle : `zai:glm-4.7-flash` (absent de `AGENT_RUN_MODELS_VIBE` versionnée) devient routable dès la chaîne posée.
 2. **Refus non-owner** — l'acte n'est exécutable que par l'approbation de Kevin sur /owner (demande exécutable `set_agent_models`) ; preuve déléguée refusée (`DELEGATED_FORBIDDEN`), agent jamais exécuteur.
-3. **Restauration testée** — `rollback` restaure la version précédente depuis son instantané immuable ; restaurer la version 0 retire la chaîne (retour aux défauts wrangler, routage identique à l'existant).
+3. **Restauration testée** — `rollback` restaure la version précédente depuis son instantané immuable ; restaurer la version 0 retire la chaîne **du routage, sans jamais supprimer la ligne** (sentinelle versionnée : compteur monotone, retour aux défauts wrangler, routage identique à l'existant).
 4. **Routage identique** — sans chaîne dans le store, la résolution rend la politique wrangler **telle quelle** (spéc : égalité profonde par agent + baseline S1a inchangée).
 
 ## Statuts des maillons (§1.6)
