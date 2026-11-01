@@ -38,7 +38,7 @@ import { modelFailureKind } from './model-failure';
 // CC-7 F1 : fiche canonique des agents — tampon version + hash (module pur fiche.ts, artefact généré).
 import { ficheStamp } from './fiche';
 import { FICHE_HASH, FICHE_VERSION } from './generated/agent-fiche.generated';
-import { budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, participantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
+import { budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, resolveParticipantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
 export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-30';
@@ -251,7 +251,7 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
       const now = ctx.now?.() ?? new Date();
       let policy;
       try {
-        policy = participantPolicy(env as PolicyEnv, run.participant_id);
+        policy = (await resolveParticipantPolicy(ctx.db, env as PolicyEnv, run.participant_id)).policy;
       } catch (error) {
         throw new ModelCallError('MODEL_ROUTE_REFUSED : ' + (error instanceof Error ? error.message : String(error)), null);
       }
