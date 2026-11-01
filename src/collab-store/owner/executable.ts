@@ -47,7 +47,7 @@ import { latestModelChainActSeq, setAgentModels } from './model-chains';
 import { CHAIN_STATUSES, POLICY_MAX_MODELS } from '../agentrun/model-policy';
 
 export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator', 'set_identity_family', 'reassign_task',
-  'classify_request', 'close_cycle', 'appoint_cycle_coordinator'] as const;
+  'classify_request', 'close_cycle', 'appoint_cycle_coordinator', 'set_agent_models'] as const;
 export type ExecutableAction = (typeof EXECUTABLE_ACTIONS)[number];
 const SHA_RE = /^[0-9a-f]{64}$/;
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
