@@ -738,7 +738,7 @@ Le gate L4 est désactivé par défaut. Codes : `L4_INVALID_TARGET`, `L4_TARGET_
 
 ### CC-8 S3 — chaînes de modèles dans le store (complément à la section 7)
 
-L'acte owner `set_agent_models` (jamais déléguable, CAS `expected_version`, instantanés immuables par version) pose la chaîne de modèles d'un agent : résolution store d'abord puis défauts wrangler, la fiche canonique reste la seule source des définitions (F1, fail-on-diff).
+L'acte owner `set_agent_models` (jamais déléguable, CAS `expected_version`, instantanés immuables par version) pose la chaîne de modèles d'un agent : résolution store d'abord puis défauts wrangler, la fiche canonique reste la seule source des définitions (F1, fail-on-diff). Le compteur de version est monotone : restaurer la version 0 retire la chaîne du routage (sentinelle `'null'`) sans jamais supprimer la ligne ni réinitialiser le compteur, aucune PK (participant, version) n'est réutilisée.
 
 | Code | Lot | Signification | Que faire |
 | --- | --- | --- | --- |
