@@ -110,9 +110,9 @@ describe('CC-8 S3 — acte owner : refus non-owner, CAS, restauration (AC2, AC3)
     expect(rolled.chain).toEqual(VIBE_CHAIN);
     expect((await loadModelChain(db, 'vibe'))?.chain).toEqual(VIBE_CHAIN);
     // Instantanés immuables : chaque version posée reste lisible, jamais réécrite.
-    expect(await loadChainSnapshot(db, 'vibe', 1)).toEqual(VIBE_CHAIN);
-    expect(await loadChainSnapshot(db, 'vibe', 2)).toEqual(second);
-    expect(await loadChainSnapshot(db, 'vibe', 3)).toEqual(VIBE_CHAIN);
+    expect(await loadChainSnapshot(db, 'vibe', 1)).toEqual({ version: 1, chain: VIBE_CHAIN });
+    expect(await loadChainSnapshot(db, 'vibe', 2)).toEqual({ version: 2, chain: second });
+    expect(await loadChainSnapshot(db, 'vibe', 3)).toEqual({ version: 3, chain: VIBE_CHAIN });
     // Restaurer la version 0 retire la chaîne : retour aux défauts wrangler, routage identique à l’existant (AC3 + AC4).
     const before = await runCapacity(db, { ...CC3_TEST, LLM_KEY_GEMINI: 'k' }, 'gemini', null, 'review', NOW);
     const geminiChain = [{ ref: 'gemini:gemini-3.6-flash', status: 'primary' }];
