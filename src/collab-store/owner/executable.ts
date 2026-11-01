@@ -189,6 +189,39 @@ function validateParams(action: ExecutableAction, params: Record<string, unknown
     }
     return cycleId;
   }
+  if (action === 'set_agent_models') {
+    // CC-8 S3 : structure seulement ici ; la conformité F1 (fiche, famille, primary) et le CAS de version se vérifient à l'exécution de l'acte (owner/model-chains.ts).
+    const extra = Object.keys(params).filter(key => !['participant_id', 'expected_version', 'chain', 'rollback'].includes(key));
+    if (extra.length) throw new Error('params : champs inconnus ' + extra.join(', ') + '.');
+    const participantId = params.participant_id;
+    if (typeof participantId !== 'string' || !/^[a-z0-9][a-z0-9:_-]{0,127}$/i.test(participantId)) {
+      throw new Error('params.participant_id invalide.');
+    }
+    const expectedVersion = params.expected_version;
+    if (!Number.isSafeInteger(expectedVersion) || (expectedVersion as number) < 0) {
+      throw new Error('params.expected_version : entier >= 0 (version courante de la chaîne, affichée sur /owner).');
+    }
+    const rollback = params.rollback;
+    if (rollback !== undefined && typeof rollback !== 'boolean') {
+      throw new Error('params.rollback : booléen (restaurer la version précédente), ou absent.');
+    }
+    if (rollback !== true) {
+      if (!Array.isArray(params.chain) || params.chain.length === 0 || params.chain.length > POLICY_MAX_MODELS) {
+        throw new Error('params.chain : 1 à ' + POLICY_MAX_MODELS + ' maillons {ref, status} requis (ou params.rollback = true).');
+      }
+      for (const item of params.chain as unknown[]) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('params.chain : maillon {ref, status} requis.');
+        const link = item as Record<string, unknown>;
+        if (typeof link.ref !== 'string' || !/^[a-z][a-z-]{1,15}:\S{1,200}$/.test(link.ref)) {
+          throw new Error('params.chain[].ref : référence <fournisseur>:<modèle> invalide.');
+        }
+        if (typeof link.status !== 'string' || !(CHAIN_STATUSES as readonly string[]).includes(link.status)) {
+          throw new Error('params.chain[].status : ' + CHAIN_STATUSES.join(', ') + '.');
+        }
+      }
+    }
+    return participantId;
+  }
   if (action === 'reassign_task') {
     // CC-5 l3d 2b-2c : cible = « cycle/tâche » (précondition par tâche).
     const parsed = parseReassignParams(params);
