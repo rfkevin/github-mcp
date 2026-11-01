@@ -124,9 +124,14 @@ function latestFrom(verdicts: VerdictFact[], participant: string): VerdictFact |
   return latest;
 }
 
-/** D12 : un verdict ne vaut que pour le head ET la base exacts de la soumission courante. */
+/**
+ * D12 (S2 / ex-L14) : un verdict ne vaut que pour le head ET la base exacts de la
+ * soumission courante. L'ordre temporel (verdict avant ou après la soumission) ne
+ * compte pas — seul le couple SHA lie le verdict (défaut M2 : AGREE puis submit
+ * au même couple était marqué périmé à tort).
+ */
 function bindsTo(fact: VerdictFact | null, submission: Submission): boolean {
-  return !!fact && fact.seq > submission.seq && fact.head === submission.head && fact.base === submission.base;
+  return !!fact && fact.head === submission.head && fact.base === submission.base;
 }
 
 /** Épisode d'une tâche : sa révision, la soumission courante et le dernier verdict de chaque vérificateur. */
@@ -146,13 +151,13 @@ function verifierDecision(task: TaskFacts, submission: Submission, who: string, 
   const fact = latestFrom(task.verdicts, who);
   const subject = submission.head + '..' + submission.base;
   if (bindsTo(fact, submission)) return null;
-  if (fact && fact.seq > submission.seq && fact.head === null) {
+  if (fact && fact.head === null) {
     return wake(task, who, 'renew_verdict', 'verdict-without-sha', subject,
       'Verdict sans head/base exacts : à redéposer avec les SHA de la soumission.');
   }
-  if (fact && fact.seq < submission.seq) {
+  if (fact && (fact.head !== submission.head || fact.base !== submission.base)) {
     return wake(task, who, 'renew_verdict', 'verdict-stale', subject,
-      'Nouvelle soumission après ton verdict : renouveler au head/base actuels.');
+      'Head/base ont changé depuis ton verdict : renouveler au couple actuel.');
   }
   return wake(task, who, label, label === 'review' ? 'awaiting-review' : 'awaiting-test', subject,
     'Soumission en attente de ' + (label === 'review' ? 'relecture' : 'test') + ' au head/base exacts.');
