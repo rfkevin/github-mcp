@@ -304,7 +304,8 @@ export async function setModelPreference(db: D1Database, env: PolicyEnv, input: 
       .bind(input.cycleId, input.participantId, taskId).run();
     return { status: 'cleared', ref: null, task_id: taskId };
   }
-  const policy = participantPolicy(env, input.participantId);
+  // CC-8 S3 : la préférence se valide contre la liste effective — chaîne du store d'abord, sinon défauts wrangler.
+  const policy = (await resolveParticipantPolicy(db, env, input.participantId)).policy;
   if (!policy || !policy.models.includes(input.ref)) {
     throw new CollabStoreError('MODEL_NOT_ALLOWED', input.ref + ' n’est pas dans les modèles autorisés de ' + input.participantId
       + (policy ? ' (' + policy.models.join(', ') + ')' : ' (aucune liste AGENT_RUN_MODELS_' + suffix(input.participantId) + ')') + '.');
