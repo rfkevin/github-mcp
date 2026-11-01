@@ -41,6 +41,25 @@ describe('CC-5 L3 — nextActors', () => {
     expect(decisions.some(d => d.kind === 'merge_ready')).toBe(false);
   });
 
+  // S2 / ex-L14 : défaut M2 — AGREE au couple exact puis soumission auteur au même couple ne doit pas périmer.
+  it('verdict AVANT soumission au même head/base → compte (pas de verdict-stale)', () => {
+    const { decisions } = nextActors(snapshot([task({ submission: { head: HEAD, base: BASE, seq: 20 }, verdicts: [
+      { participant: 'grok', verdict: 'positive', head: HEAD, base: BASE, seq: 11 },
+      { participant: 'claude', verdict: 'positive', head: HEAD, base: BASE, seq: 12 },
+    ] })]));
+    expect(decisions).toMatchObject([{ kind: 'merge_ready', actor: 'owner', subject: HEAD + '..' + BASE }]);
+    expect(decisions.some(d => d.rule === 'verdict-stale')).toBe(false);
+  });
+
+  it('verdict avant soumission puis head change → stale, pas merge_ready', () => {
+    const { decisions } = nextActors(snapshot([task({ submission: { head: HEAD2, base: BASE, seq: 20 }, verdicts: [
+      { participant: 'grok', verdict: 'positive', head: HEAD, base: BASE, seq: 11 },
+      { participant: 'claude', verdict: 'positive', head: HEAD, base: BASE, seq: 12 },
+    ] })]));
+    expect(decisions.every(d => d.action === 'renew_verdict' && d.rule === 'verdict-stale')).toBe(true);
+    expect(decisions.some(d => d.kind === 'merge_ready')).toBe(false);
+  });
+
   it('verdict sans SHA → jamais compté, redépôt demandé', () => {
     const { decisions } = nextActors(snapshot([task({ submission: submitted, verdicts: [
       { participant: 'grok', verdict: 'positive', head: null, base: null, seq: 11 },
