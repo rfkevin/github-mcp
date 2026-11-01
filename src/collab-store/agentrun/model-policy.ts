@@ -553,21 +553,37 @@ export function validateModelChain(participantId: string, input: unknown): { fam
   return { family: agent.family as ModelFamily, entries };
 }
 
-/** Chaîne courante d'un agent, ou null (défauts wrangler). */
+/**
+ * Chaîne courante d'un agent, ou null si aucune ligne. Une ligne RETIRÉE
+ * (sentinelle 'null', posée par un rollback vers la version 0) est rendue
+ * avec active = false : le compteur de version reste MONOTONE (CAS), le
+ * routage retombe sur les défauts wrangler.
+ */
 export async function loadModelChain(db: D1Database, participantId: string): Promise<StoredChain | null> {
   await ensureModelChainSchema(db);
   const row = await db.prepare('SELECT participant_id, version, chain_json, updated_at FROM agent_model_chains WHERE participant_id = ?1')
     .bind(participantId).first<{ participant_id: string; version: number; chain_json: string; updated_at: number }>();
   if (!row) return null;
-  return { participant_id: row.participant_id, version: row.version, chain: parseChainEntries(row.chain_json), updated_at: row.updated_at };
+  return {
+    participant_id: row.participant_id, version: row.version, active: !chainIsRetired(row.chain_json),
+    chain: parseChainEntries(row.chain_json), updated_at: row.updated_at,
+  };
 }
 
-/** Instantané immuable d'une version posée (null : introuvable). */
-export async function loadChainSnapshot(db: D1Database, participantId: string, version: number): Promise<ChainEntry[] | null> {
+/** Instantané immuable d'une version posée (null : introuvable ; chain null : version RETIRÉE, défauts wrangler). */
+export interface ChainSnapshot { version: number; chain: ChainEntry[] | null }
+
+export async function loadChainSnapshot(db: D1Database, participantId: string, version: number): Promise<ChainSnapshot | null> {
   await ensureModelChainSchema(db);
   const row = await db.prepare('SELECT chain_json FROM agent_model_chain_versions WHERE participant_id = ?1 AND version = ?2')
     .bind(participantId, version).first<{ chain_json: string }>();
-  return row ? parseChainEntries(row.chain_json) : null;
+  if (!row) return null;
+  return { version, chain: chainIsRetired(row.chain_json) ? null : parseChainEntries(row.chain_json) };
+}
+
+/** Sentinelle de retrait : 'null' = chaîne retirée (défauts wrangler) — la ligne et le compteur de version restent. */
+function chainIsRetired(raw: string): boolean {
+  return raw === 'null';
 }
 
 /** Maillons lisibles d'un JSON stocké (fail-fermé : illisible = aucun maillon). */
