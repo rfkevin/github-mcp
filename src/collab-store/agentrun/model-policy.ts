@@ -373,7 +373,16 @@ export async function modelCatalog(db: D1Database, env: PolicyEnv, options: { cy
   for (const pid of apiParticipants(env.AGENT_RUN_PARTICIPANTS)) {
     let policy: ParticipantPolicy | null = null;
     let policyError: string | null = null;
-    try { policy = participantPolicy(env, pid); } catch (error) { policyError = error instanceof Error ? error.message : String(error); }
+    let chain: CatalogueEntry['chain'] = null;
+    try {
+      // CC-8 S3 : résolution store d'abord puis wrangler (défauts) — la vue suit la même source que le routage.
+      const resolved = await resolveParticipantPolicy(db, env, pid);
+      policy = resolved.policy;
+      chain = resolved.chain
+        ? { source: 'store', version: resolved.chain_version,
+            entries: resolved.chain.map(entry => ({ ref: entry.ref, status: entry.status, endpoint_id: chainEndpointAlias(pid, entry.ref) })) }
+        : policy ? { source: 'env', version: null, entries: null } : null;
+    } catch (error) { policyError = error instanceof Error ? error.message : String(error); }
     const route = participantModelRoute(env, pid);
     const refs = policy ? policy.models : route ? [route.ref] : [];
     const envelope = policy?.envelope ?? participantEnvelope(env, pid);
