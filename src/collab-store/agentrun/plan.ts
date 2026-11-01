@@ -174,7 +174,7 @@ export async function attemptRunId(kind: TaskWakeKind, cycleId: string, particip
     throw new Error('INVALID_RUN_ATTEMPT : phase, ronde ou tentative invalide');
   }
   return 'api-' + kind + '-' + (await sha256Hex(
-    [kind, cycleId, participantId, taskId, subject, phase, String(round), String(attempt)].join('\\u001f'),
+    [kind, cycleId, participantId, taskId, subject, phase, String(round), String(attempt)].join('\u001f'),
   )).slice(0, 32);
 }
 
