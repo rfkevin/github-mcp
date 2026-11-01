@@ -1,0 +1,22 @@
+/** CC-7 F2 — promotion de modèle (décision pure). */
+export {
+  CANARY_MIN_CALLS,
+  CANARY_TASK_KINDS,
+  EFFORT_LEVELS,
+  canaryReadyForAuto,
+  canaryStatsValid,
+  decidePromotion,
+  effortsValid,
+  freeBecamePaid,
+  isPinnedRef,
+  priceNotHigher,
+  promoteAutoEnabled,
+  rateValid,
+  type CanaryResult,
+  type CanaryTaskKind,
+  type ProbeResult,
+  type PromoteDecision,
+  type PromoteInput,
+  type PromoteRate,
+  type PromoteVerdict,
+} from './decision';

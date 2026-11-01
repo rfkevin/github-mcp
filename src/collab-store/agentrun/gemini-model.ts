@@ -29,6 +29,16 @@ export function geminiGenerateUrl(model: string): string {
   return GEMINI_API_BASE + '/' + encodeURIComponent(model) + ':generateContent';
 }
 
+/**
+ * CC-7 F2 — ramène un thinkingLevel demandé au plancher accepté par le modèle.
+ * « minimal » imposé sur 3.8 / 4-argon devient « low » (via geminiThinkingLevel).
+ */
+export function normalizeGeminiThinkingLevel(model: string, requested: unknown): 'minimal' | 'low' | 'medium' | 'high' {
+  if (requested === 'high' || requested === 'medium' || requested === 'low') return requested;
+  // minimal ou valeur absente / inconnue → plus léger accepté par le modèle
+  return geminiThinkingLevel(model, 'low');
+}
+
 type GeminiPart = Record<string, unknown>;
 export interface GeminiContents { systemInstruction: { parts: GeminiPart[] }; contents: Array<{ role: 'user' | 'model'; parts: GeminiPart[] }> }
 
@@ -113,11 +123,10 @@ export const GEMINI_PROTOCOL: PaidProtocol = {
       body: {
         systemInstruction: converted.systemInstruction, contents: converted.contents,
         ...(tools.length ? { tools } : {}),
-        // CC-7 L9b : niveau de réflexion décidé par le serveur (effort.ts). Par défaut, le plus léger
-        // que CE modèle accepte (CC-7 G0 : low pour 3.8 Flash, qui refuse minimal ; minimal sinon).
+        // CC-7 L9b + F2 : niveau décidé par le serveur. Toute valeur fournie (y compris « minimal »)
+        // est ramenée au plancher accepté par CE modèle (G0 : 3.8 / 4-argon sans minimal).
         generationConfig: { maxOutputTokens: input.maxOutputTokens,
-          thinkingConfig: { thinkingLevel: typeof input.requestOptions?.thinkingLevel === 'string'
-            ? input.requestOptions.thinkingLevel : geminiThinkingLevel(input.model, 'low') } },
+          thinkingConfig: { thinkingLevel: normalizeGeminiThinkingLevel(input.model, input.requestOptions?.thinkingLevel) } },
       },
       bound: bytes(JSON.stringify(converted.contents)) + bytes(input.system) + bytes(JSON.stringify(tools))
         + 16 * converted.contents.length,
