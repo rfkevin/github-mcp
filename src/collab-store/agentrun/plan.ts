@@ -40,6 +40,9 @@ export const PLAN_MAX_CYCLES = 20;
 export const PLAN_LIMIT = 5;
 export const PLAN_MAX_STEPS = 6;
 export const PLAN_MAX_TOKENS = 24_000;
+/** S1b : enveloppe totale de jetons par type d'exécution (jamais supérieure au plafond historique). */
+export const TASK_KIND_MAX_TOKENS = Object.freeze({ answer: 8_000, review: 16_000, test: 16_000, implement: 24_000, design: 12_000, research: 12_000 });
+export function taskKindMaxTokens(kind: keyof typeof TASK_KIND_MAX_TOKENS): number { return TASK_KIND_MAX_TOKENS[kind]; }
 export const PLAN_DEADLINE_S = 900;
 
 /**
@@ -342,7 +345,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => (await createRun(db, {
             runId: await answerRunId(cycleId, participantId, askSeq), cycleId, participantId, taskId: '', taskKind: 'answer',
             prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env)),
-            maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+            maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens('answer'), maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
           })).created });
           continue;
         }
@@ -368,7 +371,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => (await createRun(db, {
           runId: await taskRunId(kind, cycleId, participantId, taskId, decision.subject), cycleId, participantId,
           taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
-          maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: taskKindCostCents(env, kind), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+          maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens(kind), maxCostCents: taskKindCostCents(env, kind), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
         })).created });
       }
     }

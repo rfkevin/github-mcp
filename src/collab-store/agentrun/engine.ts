@@ -39,6 +39,7 @@
 import { sha256Hex } from '../store/hash';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
+import { modelFailureKind } from './model-failure';
 
 export const STEP_TIMEOUT_S = 600;
 export const MAX_STEP_ATTEMPTS = 2;
@@ -354,8 +355,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         db.prepare('UPDATE agent_run_steps SET claimed_at = 0 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4')
           .bind(runId, n, deps.workerId, claimed.attempts),
       ]);
+      if (modelFailureKind(error) === 'permanent') {
+        await stopAs(db, runId, 'failed', 'model_permanent: ' + errorText(error), now, claim);
+        return { outcome: 'failed' };
+      }
       if (claimed.attempts >= MAX_STEP_ATTEMPTS) {
-        await stopAs(db, runId, 'failed', 'model_error: ' + errorText(error), now, claim);
+        await stopAs(db, runId, 'failed', 'model_transient: ' + errorText(error), now, claim);
         return { outcome: 'failed' };
       }
       return { outcome: 'retry' };
