@@ -1,3 +1,4 @@
+import { PLAN_MODEL } from './plan-model';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
@@ -104,7 +105,7 @@ describe('CC-7 L5a — planification des réveils de tâche', () => {
     const q = await seedTask('review-test', pids => [
       { type: 'evidence.add', participant: pids.owner, role: 'owner', payload: submission },
     ]);
-    const out = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: q.reviewer + ',' + q.tester }, { now: T });
+    const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.reviewer + ',' + q.tester }, { now: T });
     expect(out.created).toBe(2);
     const rows = (await db.prepare('SELECT run_id, task_id, task_kind, status, prompt, max_cost_cents FROM agent_runs WHERE cycle_id = ?1')
       .bind(q.cycle).all<{ run_id: string; task_id: string; task_kind: string; status: string; prompt: string; max_cost_cents: number }>()).results;
@@ -119,14 +120,14 @@ describe('CC-7 L5a — planification des réveils de tâche', () => {
       expect(run.prompt).toContain('base ' + BASE);
       expect(run.prompt).toContain('github_diff');
     }
-    const again = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: q.reviewer + ',' + q.tester }, { now: T + 10 });
+    const again = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.reviewer + ',' + q.tester }, { now: T + 10 });
     expect(again.created).toBe(0);
     expect((await db.prepare('SELECT COUNT(*) AS c FROM agent_runs WHERE cycle_id = ?1').bind(q.cycle).first<{ c: number }>())!.c).toBe(2);
   });
 
   it('implement sans soumission : une exécution pour l’auteur, rien pour le relecteur sans décision', async () => {
     const q = await seedTask('implement', () => []);
-    const out = await planAgentRuns(db, { AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: q.owner + ',' + q.reviewer }, { now: T });
+    const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: q.owner + ',' + q.reviewer }, { now: T });
     expect(out.created).toBe(1);
     const runId = await taskRunId('implement', q.cycle, q.owner, 'l5', 'none');
     const run = (await db.prepare('SELECT task_kind, prompt FROM agent_runs WHERE run_id = ?1').bind(runId)
@@ -144,7 +145,7 @@ describe('CC-7 L5a — planification des réveils de tâche', () => {
         payload: { task: 'l5', pr: 299, state: 'AGREE', head: 'c'.repeat(40), base: 'd'.repeat(40) } },
       { type: 'evidence.add', participant: pids.owner, role: 'owner', payload: submission },
     ]);
-    const out = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: q.reviewer }, { now: T });
+    const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.reviewer }, { now: T });
     expect(out.created).toBe(1);
     const runId = await taskRunId('review', q.cycle, q.reviewer, 'l5', HEAD + '..' + BASE);
     expect((await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1').bind(runId)

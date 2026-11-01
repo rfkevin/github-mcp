@@ -1,3 +1,4 @@
+import { PLAN_MODEL } from './plan-model';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -127,9 +128,9 @@ describe('CC-7 L15 — réveil « implémenter » confié à l’API seulement s
     expect(apiCanImplement({ AGENT_RUN_GITHUB_WRITES: 'true' })).toBe(true);
     const s = await seed('impl');
     const now = Math.floor(Date.now() / 1000) + 10 * 3600;
-    const off = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: s.owner }, { now });
+    const off = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: s.owner }, { now });
     expect(off).toEqual({ considered: 0, created: 0, unequipped: 1 });
-    const on = await planAgentRuns(db, { AGENT_RUN_PARTICIPANTS: s.owner, AGENT_RUN_GITHUB_WRITES: 'true' }, { now });
+    const on = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: s.owner, AGENT_RUN_GITHUB_WRITES: 'true' }, { now });
     expect(on.created).toBe(1);
     const run = await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1')
       .bind(await taskRunId('implement', s.cycle, s.owner, 'l7', 'none')).first<{ task_kind: string }>();

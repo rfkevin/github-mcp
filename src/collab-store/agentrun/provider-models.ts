@@ -19,7 +19,7 @@
  * - sinon refus à la construction (<FOURNISSEUR>_MODEL_UNSUPPORTED), aucun appel.
  * Secrets LLM_KEY_* posés par Kevin seul ; absent = EXECUTOR_UNAVAILABLE avant tout appel.
  */
-import { FREE_MODEL_RATES, type WorkersAiBinding } from '../executors/adapter';
+import { FREE_MODEL_RATES, parseWorkersAiRef, type WorkersAiBinding } from '../executors/adapter';
 import { apiModelRate } from '../executors/model-rates';
 import { geminiFreeAttestedFromEnv, type GeminiEnv } from '../executors/gemini';
 import {
@@ -30,7 +30,7 @@ import { ModelCallError, type ModelClient } from './engine';
 import { createAnthropicModel } from './anthropic-model';
 import { GEMINI_PROTOCOL, geminiGenerateUrl } from './gemini-model';
 import { createOpenAiPaidModel } from './openai-paid-model';
-import { createPaidWorkersAiModel, type ParticipantEnvelope } from './paid-model';
+import { createPaidWorkersAiModel, parsePaidWorkersAiRef, type ParticipantEnvelope } from './paid-model';
 import { createPaidProtocolModel } from './paid-protocol';
 import { createWorkersAiModel, type ToolSchema } from './workers-ai-model';
 import { effortMaxTokens, effortOptions, type Effort } from './effort';
@@ -147,17 +147,50 @@ function unsupported(provider: string, detail: string): Error {
   return new Error(provider.toUpperCase().replace(/-/g, '_') + '_MODEL_UNSUPPORTED : ' + detail);
 }
 
+/** Résultat de la résolution pure d'une référence à un palier : canal gratuit ou payant, rien n'est construit. */
+export interface ProviderRoute { provider: ApiProvider; model: string; free: boolean }
+
 /**
- * Fabrique unique : la référence <fournisseur>:<modèle> décide, aucun repli inter-familles.
- * Lève une erreur typée à la construction (rien n'est appelé) si la référence n'est ni gratuite permise, ni tarifée.
+ * CC-8 S1a — résolution PURE d'une référence à un palier (auto / free / paid) : exactement les règles de la
+ * fabrique createProviderModel, qui l'appelle elle-même, avec les mêmes erreurs typées. Sert aussi au
+ * planificateur (runCapacity) pour ne jamais créer une exécution que la fabrique refuserait.
+ * Workers AI : gratuit si palier free, ou auto et modèle de la liste gratuite ; sinon chemin payant
+ * (liste payante vérifiée, deny-by-default). API : gratuit si palier non « paid », modèle du registre
+ * gratuit et gratuit permis (attestation) ; « free » refuse tout payant ; payant exige un tarif daté.
  */
-export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderModelContext): ModelClient {
+export function resolveProviderRoute(ref: string, tier: ModelTier, env: ProviderEnv, hasAi: boolean): ProviderRoute {
   const match = REF_RE.exec(ref);
   const provider = match?.[1] as ApiProvider | undefined;
   if (!match || !provider || !API_PROVIDERS.includes(provider)) {
     throw new Error('MODEL_PROVIDER_UNSUPPORTED : ' + (match?.[1] ?? ref) + ' (fournisseurs : ' + API_PROVIDERS.join(', ') + ').');
   }
   const model = match[2];
+  if (provider === 'workers-ai') {
+    if (!hasAi) throw unsupported(provider, 'binding AI absent sur ce Worker.');
+    const free = tier === 'free' || (tier === 'auto' && FREE_MODEL_RATES[model] !== undefined);
+    if (free) parseWorkersAiRef(ref);
+    else parsePaidWorkersAiRef(ref);
+    return { provider, model, free };
+  }
+  const free = tier !== 'paid' && isFreeApiModel(ref) && freeAllowed(provider, env);
+  // AGENT_RUN_MODEL (palier « free ») ne bascule jamais vers un chemin payant.
+  if (tier === 'free' && !free) {
+    throw unsupported(provider, model + ' : AGENT_RUN_MODEL n’accepte qu’un modèle gratuit permis (registre gratuit + attestation owner si exigée).');
+  }
+  if (!free && apiModelRate(ref) === null) {
+    throw unsupported(provider, isFreeApiModel(ref)
+      ? model + ' est gratuit mais non permis ici (attestation owner du compte gratuit ou origine cc3-test absente) et sans tarif daté.'
+      : model + ' hors du registre gratuit et du registre des tarifs daté (deny-by-default).');
+  }
+  return { provider, model, free };
+}
+
+/**
+ * Fabrique unique : la référence <fournisseur>:<modèle> décide, aucun repli inter-familles.
+ * Lève une erreur typée à la construction (rien n'est appelé) si la référence n'est ni gratuite permise, ni tarifée.
+ */
+export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderModelContext): ModelClient {
+  const { provider, model, free } = resolveProviderRoute(ref, tier, ctx.env, !!ctx.ai);
   // CC-7 L9b : la réflexion consomme des jetons de sortie — plafond de l'étape relevé (borné à 8192), même pire cas réservé.
   const effort = ctx.effort ?? null;
   const effortOpts = effort ? effortOptions(ref, effort) : null;
@@ -169,23 +202,12 @@ export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderM
 
   if (provider === 'workers-ai') {
     if (!ctx.ai) throw unsupported(provider, 'binding AI absent sur ce Worker.');
-    const free = tier === 'free' || (tier === 'auto' && FREE_MODEL_RATES[model] !== undefined);
     return free
       ? createWorkersAiModel({ ai: ctx.ai, ref, db: ctx.db, neuronBudget: ctx.neuronBudget ?? 0, schemas: ctx.schemas,
         system: ctx.system, maxOutputTokens: ctx.maxOutputTokens, maxOutputTokensFor: ctx.maxOutputTokensFor })
       : createPaidWorkersAiModel({ ai: ctx.ai, ...core, maxOutputTokensFor: ctx.maxOutputTokensFor });
   }
 
-  const free = tier !== 'paid' && isFreeApiModel(ref) && freeAllowed(provider, ctx.env);
-  // AGENT_RUN_MODEL (palier « free ») ne bascule jamais vers un chemin payant.
-  if (tier === 'free' && !free) {
-    throw unsupported(provider, model + ' : AGENT_RUN_MODEL n’accepte qu’un modèle gratuit permis (registre gratuit + attestation owner si exigée).');
-  }
-  if (!free && apiModelRate(ref) === null) {
-    throw unsupported(provider, isFreeApiModel(ref)
-      ? model + ' est gratuit mais non permis ici (attestation owner du compte gratuit ou origine cc3-test absente) et sans tarif daté.'
-      : model + ' hors du registre gratuit et du registre des tarifs daté (deny-by-default).');
-  }
   if (provider === 'anthropic') return createAnthropicModel({ ...core, env: ctx.env, requestOptions: effortOpts ?? undefined });
   if (provider === 'gemini') {
     return createPaidProtocolModel({ ...core, free, secret: ctx.env.LLM_KEY_GEMINI, url: geminiGenerateUrl(model),

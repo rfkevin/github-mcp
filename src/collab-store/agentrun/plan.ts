@@ -31,6 +31,9 @@ import { equivalentParticipantIds, logicalIdentityOf } from '../identity/familie
 import { chatActiveWithin } from '../context/active-work';
 import { sha256Hex } from '../store/hash';
 import { createRun } from './engine';
+import { runCapacity, type RunCapacity } from './capacity';
+import { decisionKey } from '../controller/journal';
+import type { Decision } from '../controller/rules';
 
 export const PLAN_MAX_PARTICIPANTS = 8;
 export const PLAN_MAX_CYCLES = 20;
@@ -235,30 +238,87 @@ async function plannedKindOf(db: D1Database, cycleId: string, participantId: str
 
 /**
  * `deferred` n'apparaît que s'il est non nul (L12) ; `unequipped` (L15) compte les réveils « implémenter »
- * non confiés faute d'outils d'écriture GitHub. La forme historique { considered, created } reste inchangée.
+ * non confiés faute d'outils d'écriture GitHub ; `incapable` (CC-8 S1a) compte les réveils non confiés parce
+ * que l'agent n'a, maintenant, aucun modèle abordable pour ce type d'exécution. La forme historique
+ * { considered, created } reste inchangée.
  */
-export interface PlanResult { considered: number; created: number; deferred?: number; unequipped?: number }
+export interface PlanResult { considered: number; created: number; deferred?: number; unequipped?: number; incapable?: number;
+  /** CC-8 S1a : motif typé de chaque refus de capacité du passage (un par agent, cycle et type), jamais de contenu privé. */
+  incapable_detail?: IncapableDetail[] }
 
-function planResult(considered: number, created: number, deferred: number, unequipped = 0): PlanResult {
+export interface IncapableDetail { participant_id: string; cycle_id: string; kind: string; reason: string }
+
+function planResult(considered: number, created: number, deferred: number, unequipped = 0, incapable = 0,
+  detail: IncapableDetail[] = []): PlanResult {
   const out: PlanResult = deferred > 0 ? { considered, created, deferred } : { considered, created };
   if (unequipped > 0) out.unequipped = unequipped;
+  if (incapable > 0) out.incapable = incapable;
+  if (detail.length > 0) out.incapable_detail = detail;
   return out;
 }
 
+/**
+ * Une exécution prête à être créée (toutes les gardes du passage déjà franchies). `waitingSince` = première
+ * écriture du réveil au journal du contrôleur (ancienneté réelle) ; `order` départage de façon déterministe.
+ */
+interface PlanIntent { waitingSince: number; order: number; create: () => Promise<boolean> }
+
+/**
+ * Ancienneté d'un réveil : date de sa première ligne au journal du contrôleur (même clé que le passage
+ * programmé, donc stable d'un passage à l'autre). Pas encore journalisé ou journal absent : `now` (le plus récent).
+ */
+async function waitingSince(db: D1Database, cycleId: string, decision: Decision, now: number): Promise<number> {
+  try {
+    const row = await db.prepare('SELECT MIN(created_at) AS at FROM controller_decisions WHERE decision_key = ?1')
+      .bind(await decisionKey(cycleId, decision)).first<{ at: number | null }>();
+    return typeof row?.at === 'number' ? Math.min(row.at, now) : now;
+  } catch {
+    return now;
+  }
+}
+
+/**
+ * CC-8 S1a — capacité et équité.
+ * 1. Capacité : aucune exécution n'est créée pour un agent sans modèle abordable pour ce type
+ *    (runCapacity, même calcul que le choix réel d'une étape) ; le réveil reste en attente et repart
+ *    dès que la capacité revient (clé, budget, modèle). Sans AUCUNE configuration de modèle (ni
+ *    politique par agent ni modèle global) : refus NO_MODEL — la capacité n'est jamais supposée.
+ * 2. Équité par ancienneté : chaque agent présente son réveil en attente le plus ancien (journal du
+ *    contrôleur) ; à chaque tour, les agents passent du plus ancien réveil au plus récent (départage :
+ *    ordre de la liste, puis ordre de découverte), une exécution par agent et par tour, jusqu'à la limite.
+ *    Un agent placé en tête de liste, ou riche en réveils récents, ne peut plus prendre la place d'un
+ *    réveil plus ancien d'un autre agent.
+ * Les motifs typés des refus sont rendus (`incapable_detail`) pour la vue du coordinateur.
+ */
 export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: number; limit?: number }): Promise<PlanResult> {
   const participants = apiParticipants(env.AGENT_RUN_PARTICIPANTS);
   if (!participants.length) return planResult(0, 0, 0);
   const limit = Math.max(1, Math.min(input.limit ?? PLAN_LIMIT, 20));
   const { results: cycles } = await db.prepare("SELECT cycle_id FROM cycles WHERE status = 'open' ORDER BY cycle_id LIMIT ?1")
     .bind(PLAN_MAX_CYCLES).all<{ cycle_id: string }>();
-  let considered = 0;
-  let created = 0;
   let deferred = 0;
   let unequipped = 0;
+  let incapable = 0;
+  const nowDate = new Date(input.now * 1000);
+  const capacityCache = new Map<string, RunCapacity>();
+  const detail: IncapableDetail[] = [];
+  const capable = async (participantId: string, cycleId: string, kind: string): Promise<boolean> => {
+    const key = participantId + '\u001f' + cycleId + '\u001f' + kind;
+    let value = capacityCache.get(key);
+    if (value === undefined) {
+      value = await runCapacity(db, env, participantId, cycleId, kind, nowDate);
+      capacityCache.set(key, value);
+      if (!value.capable) detail.push({ participant_id: participantId, cycle_id: cycleId, kind, reason: value.reason });
+    }
+    return value.capable;
+  };
+  let order = 0;
+  const queues = new Map<string, PlanIntent[]>(participants.map(pid => [pid, []]));
   for (const { cycle_id: cycleId } of cycles) {
     for (const participantId of participants) {
       const view = await previewNextActions(db, cycleId, participantId);
       if (view.mode !== 'active') continue;
+      const queue = queues.get(participantId)!;
       let identities: string[] | null = null;
       const chatActive = async (taskId: string | null): Promise<boolean> => {
         identities ??= await equivalentParticipantIds(db, participantId);
@@ -274,15 +334,16 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
             deferred += 1;
             continue;
           }
-          if (created >= limit) return planResult(considered, created, deferred, unequipped);
-          considered += 1;
+          if (!(await capable(participantId, cycleId, 'answer'))) {
+            incapable += 1;
+            continue;
+          }
           const askSeq = Number(match[1]);
-          const result = await createRun(db, {
+          queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => (await createRun(db, {
             runId: await answerRunId(cycleId, participantId, askSeq), cycleId, participantId, taskId: '', taskKind: 'answer',
             prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env)),
             maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
-          });
-          if (result.created) created += 1;
+          })).created });
           continue;
         }
         // L5a (S9) : réveil de tâche → exécution typée review / test / implement.
@@ -298,17 +359,36 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           unequipped += 1;
           continue;
         }
-        if (created >= limit) return planResult(considered, created, deferred, unequipped);
-        considered += 1;
+        // CC-8 S1a : aucun modèle abordable maintenant — on ne crée pas une exécution vouée à l'échec.
+        if (!(await capable(participantId, cycleId, kind))) {
+          incapable += 1;
+          continue;
+        }
         const taskId = decision.task_id ?? '';
-        const result = await createRun(db, {
+        queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => (await createRun(db, {
           runId: await taskRunId(kind, cycleId, participantId, taskId, decision.subject), cycleId, participantId,
           taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
           maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: taskKindCostCents(env, kind), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
-        });
-        if (result.created) created += 1;
+        })).created });
       }
     }
   }
-  return planResult(considered, created, deferred, unequipped);
+  // CC-8 S1a : service par ancienneté, à tour de rôle — une exécution par agent et par tour, jusqu'à la limite.
+  const byAge = (a: PlanIntent, b: PlanIntent) => a.waitingSince - b.waitingSince || a.order - b.order;
+  for (const queue of queues.values()) queue.sort(byAge);
+  const rank = new Map(participants.map((pid, index) => [pid, index]));
+  let considered = 0;
+  let created = 0;
+  while (created < limit) {
+    const round = participants.filter(pid => queues.get(pid)!.length > 0)
+      .sort((a, b) => queues.get(a)![0].waitingSince - queues.get(b)![0].waitingSince || rank.get(a)! - rank.get(b)!);
+    if (!round.length) break;
+    for (const participantId of round) {
+      if (created >= limit) break;
+      const intent = queues.get(participantId)!.shift()!;
+      considered += 1;
+      if (await intent.create()) created += 1;
+    }
+  }
+  return planResult(considered, created, deferred, unequipped, incapable, detail);
 }
