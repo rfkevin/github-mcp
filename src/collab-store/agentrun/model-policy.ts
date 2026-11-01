@@ -354,6 +354,8 @@ export interface CatalogueEntry {
   default_by_kind: Record<string, string | null>;
   default_effort_by_kind: Record<string, Effort | null>;
   preferences: Array<{ task_id: string; ref: string; set_by: string; reason: string; effort: string | null }>;
+  /** CC-8 S3 : chaîne effective — source store (version, maillons, alias ep-*) ou défauts wrangler ; null = aucun modèle. */
+  chain?: { source: 'store' | 'env'; version: number | null; entries: Array<{ ref: string; status: string; endpoint_id: string | null }> | null };
 }
 
 const CATALOGUE_KINDS = ['answer', 'design', 'implement', 'review', 'test'] as const;
