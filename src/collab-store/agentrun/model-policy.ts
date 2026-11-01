@@ -28,6 +28,9 @@ import { MAX_PAID_CENTS, parseParticipantEnvelope, participantCycleKey, particip
 import { apiParticipants } from './plan';
 import { defaultEffort, effortMaxTokens, effortsDownFrom, effortSupported, isEffort, type Effort } from './effort';
 import { freeAllowed, isFreeApiModel, participantModelRoute, participantModelVar, type ApiProvider, type ProviderEnv } from './provider-models';
+// CC-8 S3 (CC-PLAN-8 §1.6) — fiche canonique : la chaîne du store ne fait que référencer ses définitions (F1, fail-on-diff).
+import { parseFiche, type Fiche } from './fiche';
+import { FICHE_RAW } from './generated/agent-fiche.generated';
 
 export const MODEL_FAMILIES = ['anthropic', 'xai', 'zai', 'google', 'openai', 'deepseek', 'qwen', 'meta', 'mistral'] as const;
 export type ModelFamily = typeof MODEL_FAMILIES[number];
