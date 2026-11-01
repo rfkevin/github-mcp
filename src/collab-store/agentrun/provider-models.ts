@@ -34,10 +34,11 @@ import { createPaidWorkersAiModel, parsePaidWorkersAiRef, type ParticipantEnvelo
 import { createPaidProtocolModel } from './paid-protocol';
 import { createWorkersAiModel, type ToolSchema } from './workers-ai-model';
 import { effortMaxTokens, effortOptions, type Effort } from './effort';
+import { modelFailureKind } from './model-failure';
 // CC-7 F1 : fiche canonique des agents — tampon version + hash (module pur fiche.ts, artefact généré).
 import { ficheStamp } from './fiche';
 import { FICHE_HASH, FICHE_VERSION } from './generated/agent-fiche.generated';
-import { budgetState, chooseModel, modelPreference, participantEnvelope, participantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
+import { budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, participantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
 export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-30';
@@ -256,6 +257,7 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
       }
       let ref: string;
       let model: ModelClient;
+      let fallback: Array<{ ref: string; effort: Effort | null; envelope: ProviderModelContext['envelope'] }> = [];
       if (policy) {
         const kind = input.task_kind || run.task_kind;
         const budget = await budgetState(ctx.db, policy.envelope, run.participant_id, run.cycle_id, now);
@@ -271,6 +273,12 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           { ...choice, reason: choice.reason + ficheStamp(FICHE_VERSION, FICHE_HASH) }, Math.floor(now.getTime() / 1000));
         ref = choice.ref;
         model = build(ref, 'auto', policy.envelope, choice.effort);
+        fallback = policy.models.slice(policy.models.indexOf(ref) + 1).filter(candidate => {
+          const option = modelOption(env as PolicyEnv, candidate, kind, choice.effort);
+          return option.tier === 'free' || (option.tier === 'paid' && option.est_step_cents !== null
+            && option.est_step_cents <= budget.day_limit - budget.day_spent
+            && option.est_step_cents <= budget.cycle_limit - budget.cycle_spent);
+        }).map(candidate => ({ ref: candidate, effort: choice.effort, envelope: policy.envelope }));
       } else {
         const route = participantModelRoute(env, run.participant_id);
         if (!route) {
@@ -280,16 +288,26 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         ref = route.ref;
         model = build(ref, route.tier, participantEnvelope(env as PolicyEnv, run.participant_id));
       }
-      const started = Date.now();
-      try {
-        const result = await model.complete(input);
-        await recordModelCall(ctx.db, ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
-        return result;
-      } catch (error) {
-        await recordModelCall(ctx.db, ref, { ok: false, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started,
-          error: error instanceof Error ? error.message : String(error) });
-        throw error;
+      let lastError: unknown;
+      const candidates: Array<{ ref: string; model: ModelClient }> = [{ ref, model }];
+      for (const item of fallback) {
+        // Le constructeur peut refuser un modèle : ne pas contourner un refus permanent.
+        candidates.push({ ref: item.ref, model: build(item.ref, 'auto', item.envelope, item.effort) });
       }
+      for (const candidate of candidates) {
+        const started = Date.now();
+        try {
+          const result = await candidate.model.complete(input);
+          await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
+          return result;
+        } catch (error) {
+          lastError = error;
+          await recordModelCall(ctx.db, candidate.ref, { ok: false, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started,
+            error: error instanceof Error ? error.message : String(error) });
+          if (modelFailureKind(error) !== 'transient') throw error;
+        }
+      }
+      throw lastError;
     },
   };
 }
