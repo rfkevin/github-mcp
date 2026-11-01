@@ -22,8 +22,11 @@ notifiée au store. Un test fige le plancher.
 
 ## Portée `task` gelée
 
-`memory.propose` en `task:<id>` est refusé (`MEMORY_SCOPE_FROZEN`, rien n'est écrit). Les entrées
-existantes restent lisibles pour leur tâche (gel, pas suppression). Une reprise de tâche passe par
+`memory.propose`, `memory.consolidate` et `memory.review` (activation d'une candidate antérieure) en
+`task:<id>` sont refusés (`MEMORY_SCOPE_FROZEN`, rien n'est écrit : ni événement, ni version, ni quota,
+ni révision). Les entrées actives existantes restent lisibles pour leur tâche et retirables
+(`memory.retire`) : gel, pas suppression. Sans le refus de `consolidate`, l'ancienne active serait
+supersédée par une candidate jamais activable (budget 0) — elle disparaîtrait (revue GPT-6 R2, #245). Une reprise de tâche passe par
 `active_work` (points d'étape) ; une leçon durable va en `participant`, `role`, `project` ou `common`.
 
 ## Portée `role` : qui voit quoi
@@ -37,6 +40,13 @@ existantes restent lisibles pour leur tâche (gel, pas suppression). Une reprise
 | `researcher` | — | exécutions `research` (tournante des chercheurs L11) |
 
 Avant M2, le canal API ne recevait aucune mémoire de rôle : la parité chat/API est rétablie.
+
+**Indépendance P1 (garde X5).** `coordinator` et `researcher` sont servis sans tâche : pendant qu'un
+cycle de travail P1 est ouvert, toute écriture partagée (`propose`, `review` activant, `consolidate`) en
+`role:coordinator` ou `role:researcher` est refusée (`MEMORY_P1_SHARED_MUTATION`), mandat présent ou non
+(fail-closed, sans dépendance aux mandats ; l'empreinte P1 existante sert de garde transactionnelle).
+`owner`, `reviewer` et `tester` restent bloqués seulement si un cycle P1 a au moins une tâche (inchangé).
+Revue GPT-6 R1, #245.
 
 ## Consigne d'usage de `role`
 

@@ -15,6 +15,9 @@ import { createRun } from '../../../src/collab-store/agentrun/engine';
 import { ensureAgentRunSchema } from '../../../src/collab-store/agentrun/schema';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { insertCycleRow } from '../a0-helpers';
+import { assessSharedP1Write } from '../../../src/collab-store/memory/p1-independence';
+import { CollabStore } from '../../../src/collab-store/store/collab-store';
+import { opIdClientFor, type StoreEventType } from '../../../src/collab-store/contracts';
 
 // CC-7 M2 (décisions de Kevin #1138 §4 et #1139, GO du 2026-10-31) — budgets et portées de la mémoire :
 // common 1500, project 2000, role 800, participant 1500 (plancher), task 0 gelée ; role:<rôle> servi aussi
@@ -36,6 +39,48 @@ async function seedActive(scope: string, text: string): Promise<string> {
     "VALUES (?1, 1, ?2, 'lesson', ?3, '[]', 'observed', 'active', 'agent:seed', 'agent:seed2')",
   ].join(' ')).bind(id, scope, text).run();
   return id;
+}
+
+/** Entrée écrite en SQL avec un statut donné (données antérieures au gel). */
+async function seedRow(scope: string, text: string, status: 'active' | 'candidate', author = 'agent:seed'): Promise<string> {
+  await ensureSchema(db);
+  const id = uniq('row');
+  await db.prepare([
+    "INSERT INTO memory_entries (id, version, scope, kind, text, evidence_refs, confidence, status, author_pid, reviewer_pid)",
+    "VALUES (?1, 1, ?2, 'fact', ?3, '[\"ev:seed\"]', 'observed', ?4, ?5, '')",
+  ].join(' ')).bind(id, scope, text, status, author).run();
+  return id;
+}
+
+const collab = () => new CollabStore(db, { now: () => new Date('2026-11-01T10:00:00.000Z'), dailyWriteLimit: 100_000 });
+
+/** Append par le canal store (même chemin que collab_append_event) ; renvoie le statut ou le code d'erreur. */
+async function append(cycle: string, type: StoreEventType, participant: string, op: string, memory: Record<string, unknown>): Promise<string> {
+  const cs = collab();
+  try {
+    const out = await cs.appendEvent({ cycle_id: cycle, type, participant_id: participant, expected_rev: await cs.currentRevision(cycle),
+      payload_json: JSON.stringify({ memory }), op_id: opIdClientFor(participant) + ':' + cycle + ':' + op + ':1' });
+    return out.status;
+  } catch (error) {
+    return (error as { code?: string }).code ?? (error as Error).message;
+  }
+}
+
+async function journalState(cycle: string): Promise<{ revision: number; events: number }> {
+  const c = await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(cycle).first<{ revision: number }>();
+  const e = await db.prepare('SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1').bind(cycle).first<{ n: number }>();
+  return { revision: c?.revision ?? 0, events: e?.n ?? 0 };
+}
+
+async function versions(id: string): Promise<Array<{ version: number; status: string }>> {
+  const r = await db.prepare('SELECT version, status FROM memory_entries WHERE id = ?1 ORDER BY version').bind(id).all<{ version: number; status: string }>();
+  return r.results ?? [];
+}
+
+/** Cycle P2 (non gardé) pour porter les appends ; cycle de travail P1 sans tâche (coordinateur hors tâche). */
+async function seedCycle(cycle: string, phase: 'P1' | 'P2'): Promise<void> {
+  await db.prepare('INSERT INTO cycles (cycle_id, project, phase, revision) VALUES (?1, \'\', ?2, ?3)').bind(cycle, phase, phase === 'P1' ? 1 : 0).run();
+  if (phase === 'P1') await db.prepare("INSERT INTO phase_definitions (cycle_id, phase) VALUES (?1, 'P1')").bind(cycle).run();
 }
 
 /** Propose puis active (relecteur distinct), chaque activation dans son propre cycle. */
@@ -82,6 +127,32 @@ describe('CC-7 M2 — portée task gelée', () => {
     expect(error).toBeInstanceOf(MemoryStoreError);
     expect(error).toMatchObject({ code: 'MEMORY_SCOPE_FROZEN' });
     expect(await rows(scope)).toBe(0);
+  });
+
+  it('revue GPT-6 R2 : consolider une entrée task active → MEMORY_SCOPE_FROZEN, ancienne active intacte, rien d’écrit', async () => {
+    await ensureSchema(db);
+    const cycle = uniq('r2');
+    await seedCycle(cycle, 'P2');
+    const id = await seedRow('task:' + uniq('t'), 'note de tâche active', 'active', 'agent:m2-alpha');
+    const before = await journalState(cycle);
+    expect(await append(cycle, 'memory.consolidate', 'agent:m2-alpha', 'sup', { id, text: 'v2', evidence_refs: ['ev:v2'] }))
+      .toBe('MEMORY_SCOPE_FROZEN');
+    expect(await versions(id)).toEqual([{ version: 1, status: 'active' }]);
+    expect(await journalState(cycle)).toEqual(before);
+    // Chemin direct du MemoryStore : même refus.
+    const error = await new MemoryStore(db).supersede(id, 'agent:m2-alpha', 'v2', ['ev:v2']).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 'MEMORY_SCOPE_FROZEN' });
+    expect(await versions(id)).toEqual([{ version: 1, status: 'active' }]);
+  });
+
+  it('une candidate task antérieure au gel n’est jamais activée (MEMORY_SCOPE_FROZEN, reste candidate)', async () => {
+    const cycle = uniq('r2b');
+    await seedCycle(cycle, 'P2');
+    const id = await seedRow('task:' + uniq('t'), 'candidate de tâche', 'candidate', 'agent:m2-alpha');
+    const before = await journalState(cycle);
+    expect(await append(cycle, 'memory.review', 'agent:m2-beta', 'rev', { id, version: 1 })).toBe('MEMORY_SCOPE_FROZEN');
+    expect(await versions(id)).toEqual([{ version: 1, status: 'candidate' }]);
+    expect(await journalState(cycle)).toEqual(before);
   });
 
   it('une entrée task existante reste lisible pour la tâche (gel, pas suppression)', async () => {
@@ -153,5 +224,54 @@ describe('CC-7 M2 — portée role servie à qui tient le rôle', () => {
     expect(runRoles('research')).toEqual(['researcher']);
     expect(runRoles('answer')).toEqual([]);
     expect(runRoles('design')).toEqual([]);
+  });
+});
+
+describe('CC-7 M2 — garde P1 (X5) alignée sur la visibilité role (revue GPT-6 R1)', () => {
+  it('cycle de travail P1 sans tâche : role:coordinator et role:researcher bloqués ; owner/reviewer/tester et rôle inconnu non', async () => {
+    await ensureSchema(db);
+    const p1 = uniq('p1-unit');
+    await seedCycle(p1, 'P1');
+    try {
+      for (const scope of ['role:coordinator', 'role:researcher']) expect((await assessSharedP1Write(db, scope, null)).blocked, scope).toBe(true);
+      for (const scope of ['role:owner', 'role:reviewer', 'role:tester', 'role:xyz']) expect((await assessSharedP1Write(db, scope, null)).blocked, scope).toBe(false);
+    } finally {
+      await db.prepare("UPDATE cycles SET phase = 'P2' WHERE cycle_id = ?1").bind(p1).run();
+    }
+  });
+
+  it('pendant P1 : propose, review et consolidate en role:coordinator / role:researcher refusés, rien d’écrit ; acceptés hors P1', async () => {
+    await ensureSchema(db);
+    const alpha = 'agent:m2-alpha';
+    const beta = 'agent:m2-beta';
+    const b = uniq('p2');
+    await seedCycle(b, 'P2');
+    // Avant P1 : une active role:coordinator et une candidate role:researcher (chemins acceptés).
+    const coord = uniq('coord');
+    expect(await append(b, 'memory.propose', alpha, 'p-coord', { id: coord, scope: 'role:coordinator', kind: 'fact',
+      text: 'piège coordinateur', evidence_refs: ['ev:coord'], confidence: 'observed' })).toBe('applied');
+    expect(await append(b, 'memory.review', beta, 'r-coord', { id: coord, version: 1 })).toBe('applied');
+    const res = uniq('res');
+    expect(await append(b, 'memory.propose', alpha, 'p-res', { id: res, scope: 'role:researcher', kind: 'fact',
+      text: 'piège chercheur', evidence_refs: ['ev:res'], confidence: 'observed' })).toBe('applied');
+    const p1 = uniq('p1');
+    await seedCycle(p1, 'P1');
+    try {
+      const before = await journalState(b);
+      for (const scope of ['role:coordinator', 'role:researcher']) {
+        expect(await append(b, 'memory.propose', alpha, 'blk-' + scope.slice(5), { id: uniq('blk'), scope, kind: 'fact',
+          text: 'bloqué ' + scope, evidence_refs: ['ev:blk'], confidence: 'observed' }), scope).toBe('MEMORY_P1_SHARED_MUTATION');
+      }
+      expect(await append(b, 'memory.review', beta, 'r-res', { id: res, version: 1 })).toBe('MEMORY_P1_SHARED_MUTATION');
+      expect(await append(b, 'memory.consolidate', alpha, 'sup-coord', { id: coord, text: 'piège coordinateur v2', evidence_refs: ['ev:coord2'] }))
+        .toBe('MEMORY_P1_SHARED_MUTATION');
+      expect(await journalState(b)).toEqual(before);
+      expect(await versions(coord)).toEqual([{ version: 1, status: 'active' }]);
+      expect(await versions(res)).toEqual([{ version: 1, status: 'candidate' }]);
+    } finally {
+      await db.prepare("UPDATE cycles SET phase = 'P2' WHERE cycle_id = ?1").bind(p1).run();
+    }
+    // Hors P1, la candidate chercheur s'active normalement.
+    expect(await append(b, 'memory.review', beta, 'r-res-after', { id: res, version: 1 })).toBe('applied');
   });
 });
