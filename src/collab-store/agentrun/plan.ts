@@ -31,6 +31,7 @@ import { equivalentParticipantIds, logicalIdentityOf } from '../identity/familie
 import { chatActiveWithin } from '../context/active-work';
 import { sha256Hex } from '../store/hash';
 import { createRun } from './engine';
+import { ensureAgentRunSchema } from './schema';
 import { runCapacity, type RunCapacity } from './capacity';
 import { decisionKey } from '../controller/journal';
 import type { Decision } from '../controller/rules';
@@ -318,6 +319,7 @@ async function waitingSince(db: D1Database, cycleId: string, decision: Decision,
 export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: number; limit?: number }): Promise<PlanResult> {
   const participants = apiParticipants(env.AGENT_RUN_PARTICIPANTS);
   if (!participants.length) return planResult(0, 0, 0);
+  await ensureAgentRunSchema(db);
   const limit = Math.max(1, Math.min(input.limit ?? PLAN_LIMIT, 20));
   const { results: cycles } = await db.prepare("SELECT cycle_id FROM cycles WHERE status = 'open' ORDER BY cycle_id LIMIT ?1")
     .bind(PLAN_MAX_CYCLES).all<{ cycle_id: string }>();
