@@ -40,7 +40,8 @@ export async function runCapacity(db: D1Database, env: object, participantId: st
   const policyEnv = env as PolicyEnv;
   let policy;
   try {
-    policy = participantPolicy(policyEnv, participantId);
+    // CC-8 S3 : chaîne du store d'abord, sinon défauts wrangler — même résolution que le choix réel d'une étape.
+    policy = (await resolveParticipantPolicy(db, policyEnv, participantId)).policy;
   } catch (error) {
     return { capable: false, reason: 'MODEL_POLICY_INVALID : ' + errorText(error) };
   }
