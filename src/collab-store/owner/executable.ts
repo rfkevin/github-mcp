@@ -355,7 +355,7 @@ export async function describePending(page: PendingPage, now: () => Date = () =>
     const body = req.action === 'install_phases' ? String(req.params.definitions)
       : req.action === 'register_endpoint' || req.action === 'grant_coordinator' || req.action === 'set_identity_family'
         || req.action === 'reassign_task' || req.action === 'classify_request' || req.action === 'close_cycle'
-        || req.action === 'appoint_cycle_coordinator'
+        || req.action === 'appoint_cycle_coordinator' || req.action === 'set_agent_models'
         ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
     // L3e 2b : la même classification que la délégation, affichée ; une panne n'empêche jamais la page.
     const state_diff = db && req.action === 'import_state'
