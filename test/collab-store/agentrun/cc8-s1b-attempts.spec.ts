@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attemptRunId, taskKindMaxTokens } from '../../../src/collab-store/agentrun/plan';
+import { attemptRunId, answerAttemptRunId, taskKindMaxTokens } from '../../../src/collab-store/agentrun/plan';
 
 describe('CC8 S1b — identifiants de tentatives et plafonds', () => {
   it('stable au rejeu, différent selon phase, ronde et tentative', async () => {
@@ -9,6 +9,12 @@ describe('CC8 S1b — identifiants de tentatives et plafonds', () => {
     expect(await attemptRunId(...args, 'P6', 1, 2)).not.toBe(one);
     expect(await attemptRunId(...args, 'P6', 2, 1)).not.toBe(one);
     expect(await attemptRunId(...args, 'P7', 1, 1)).not.toBe(one);
+  });
+  it('answer : nouvelle ronde et nouvelle tentative donnent un autre ID', async () => {
+    const first = await answerAttemptRunId('cc8', 'gemini', 19, 'P6', 1, 1);
+    expect(await answerAttemptRunId('cc8', 'gemini', 19, 'P6', 1, 1)).toBe(first);
+    expect(await answerAttemptRunId('cc8', 'gemini', 19, 'P6', 2, 1)).not.toBe(first);
+    expect(await answerAttemptRunId('cc8', 'gemini', 19, 'P6', 1, 2)).not.toBe(first);
   });
   it('refuse toute tentative au-delà de trois', async () => {
     await expect(attemptRunId('review', 'cc8', 'gemini', 'S3', 'sha', 'P6', 1, 4)).rejects.toThrow('INVALID_RUN_ATTEMPT');
