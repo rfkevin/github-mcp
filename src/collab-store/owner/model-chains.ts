@@ -127,14 +127,13 @@ export async function setAgentModels(db: D1Database, input: {
       },
       sideEffects: eventKey => [
         ...(input.binding ? bindingStatements(db, input.binding, input.proof, eventKey, input.now) : []),
-        ...(chain === null
-          ? [db.prepare('DELETE FROM agent_model_chains WHERE participant_id = ?1').bind(input.participant_id)]
-          : [db.prepare([
-              'INSERT INTO agent_model_chains (participant_id, version, chain_json, updated_at, event_seq)',
-              'VALUES (?1, ?2, ?3, ?4, (SELECT seq FROM events WHERE idempotency_key = ?5))',
-              'ON CONFLICT(participant_id) DO UPDATE SET version = excluded.version, chain_json = excluded.chain_json,',
-              '  updated_at = excluded.updated_at, event_seq = excluded.event_seq',
-            ].join(' ')).bind(input.participant_id, newVersion, chainJson, at, eventKey)]),
+        // La ligne n'est JAMAIS supprimée : un retour aux défauts pose la sentinelle 'null' (compteur de version monotone, aucune PK réutilisée).
+        db.prepare([
+          'INSERT INTO agent_model_chains (participant_id, version, chain_json, updated_at, event_seq)',
+          'VALUES (?1, ?2, ?3, ?4, (SELECT seq FROM events WHERE idempotency_key = ?5))',
+          'ON CONFLICT(participant_id) DO UPDATE SET version = excluded.version, chain_json = excluded.chain_json,',
+          '  updated_at = excluded.updated_at, event_seq = excluded.event_seq',
+        ].join(' ')).bind(input.participant_id, newVersion, chainJson, at, eventKey),
         db.prepare([
           'INSERT INTO agent_model_chain_versions (participant_id, version, chain_json, set_by, action, reason, event_seq, at)',
           'VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT seq FROM events WHERE idempotency_key = ?7), ?8)',
