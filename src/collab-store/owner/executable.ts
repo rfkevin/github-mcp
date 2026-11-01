@@ -519,6 +519,21 @@ export async function decideOwnerRequest(db: D1Database, input: {
       cycle_id: String(req.params.cycle_id), detail: 'mandat epoch ' + ((req.params.expected_epoch as number) + 1)
         + ', participant ' + (typeof req.params.participant_id === 'string' ? req.params.participant_id : 'aucun (révocation)') } };
   }
+  if (req.action === 'set_agent_models') {
+    // CC-8 S3 : chaîne de modèles d'un participant — jamais déléguable, CAS
+    // expected_version revérifié dans le lot, instantané immuable par version ;
+    // rollback = restauration de v-1, v0 retire la chaîne (défauts wrangler).
+    const result = await setAgentModels(db, {
+      participant_id: String(req.params.participant_id),
+      expected_version: req.params.expected_version as number,
+      chain: req.params.chain,
+      ...(req.params.rollback === true ? { rollback: true } : {}),
+      reason: req.reason, proof: input.proof, binding, now: input.now,
+    });
+    return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action, cycle_id: REGISTRY_CYCLE,
+      detail: 'chaîne ' + result.participant_id + ' v' + result.version + ' : '
+        + (result.chain ? result.chain.map(link => link.ref + ' (' + link.status + ')').join(', ') : 'retirée (défauts wrangler)') } };
+  }
   const target = req.params.target as { repository: string; path: string; ref: string } | undefined | null;
   const result = await importStateSnapshot(db, {
     cycle_id: req.cycle_id, markdown: String(req.params.markdown),
