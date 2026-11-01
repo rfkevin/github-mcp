@@ -37,7 +37,7 @@ import { effortMaxTokens, effortOptions, type Effort } from './effort';
 // CC-7 F1 : fiche canonique des agents — tampon version + hash (module pur fiche.ts, artefact généré).
 import { ficheStamp } from './fiche';
 import { FICHE_HASH, FICHE_VERSION } from './generated/agent-fiche.generated';
-import { budgetState, chooseModel, modelPreference, participantEnvelope, participantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
+import { budgetState, chooseModel, modelPreference, participantEnvelope, recordModelCall, recordModelChoice, resolveParticipantPolicy, type PolicyEnv } from './model-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
 export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-30';
