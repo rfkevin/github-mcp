@@ -2,9 +2,10 @@ import { PLAN_MODEL } from './plan-model';
 import { env } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  runStep, createReadToolHost, createStoreWriteTools, effectOpId, WRITE_TOOLS_BY_KIND, planAgentRuns, apiParticipants, answerRunId, answerAttemptRunId, attemptRunId,
+  runStep, createReadToolHost, createStoreWriteTools, effectOpId, WRITE_TOOLS_BY_KIND, planAgentRuns, apiParticipants, answerRunId,
   taskRunId, ToolRefused, type ModelClient, type ModelOutput,
 } from '../../../src/collab-store/agentrun';
+import { answerAttemptRunId, attemptRunId } from '../../../src/collab-store/agentrun/plan';
 import { agentRunPass } from '../../../src/collab-store/agentrun/orchestrator';
 import { engineFor, AGENT_RUN_SYSTEM } from '../../../src/collab-store/agentrun/object';
 import { previewNextActions } from '../../../src/collab-store/controller';
