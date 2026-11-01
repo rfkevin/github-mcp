@@ -42,7 +42,8 @@ import { ensureAgentRunSchema } from './schema';
 import { modelFailureKind } from './model-failure';
 
 export const STEP_TIMEOUT_S = 600;
-export const MAX_STEP_ATTEMPTS = 2;
+/** S1b : trois réclamations au maximum par étape, bornées par deadline_at (15 min). */
+export const MAX_STEP_ATTEMPTS = 3;
 /** Durée maximale d'une exécution d'outil ; un effet pending plus récent est considéré en vol. */
 export const EFFECT_TIMEOUT_S = 120;
 export const MAX_TOOL_CALLS_PER_STEP = 8;

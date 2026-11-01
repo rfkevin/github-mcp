@@ -41,8 +41,8 @@ export const PLAN_LIMIT = 5;
 export const PLAN_MAX_STEPS = 6;
 export const PLAN_MAX_TOKENS = 24_000;
 /** S1b : enveloppe totale de jetons par type d'exécution (jamais supérieure au plafond historique). */
-export const TASK_KIND_MAX_TOKENS = Object.freeze({ answer: 8_000, review: 16_000, test: 16_000, implement: 24_000, design: 12_000, research: 12_000 });
-export function taskKindMaxTokens(kind: keyof typeof TASK_KIND_MAX_TOKENS): number { return TASK_KIND_MAX_TOKENS[kind]; }
+export const TASK_KIND_MAX_TOKENS = Object.freeze({ answer: 8_000, review: 16_000, test: 16_000, implement: 24_000, design: 12_000 });
+export function taskKindMaxTokens(kind: PlannedTaskKind): number { return TASK_KIND_MAX_TOKENS[kind]; }
 export const PLAN_DEADLINE_S = 900;
 
 /**
@@ -164,6 +164,18 @@ export async function answerRunId(cycleId: string, participantId: string, askSeq
  */
 export async function taskRunId(kind: TaskWakeKind, cycleId: string, participantId: string, taskId: string, subject: string): Promise<string> {
   return 'api-' + kind + '-' + (await sha256Hex([kind, cycleId, participantId, taskId, subject].join('\u001f'))).slice(0, 32);
+}
+
+/** Identité stable d'une tentative S1b : le même triplet phase/ronde/tentative ne crée jamais deux runs. */
+export async function attemptRunId(kind: TaskWakeKind, cycleId: string, participantId: string, taskId: string,
+  subject: string, phase: string, round: number, attempt: number): Promise<string> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(phase) || !Number.isSafeInteger(round) || round < 0
+    || !Number.isSafeInteger(attempt) || attempt < 1 || attempt > 3) {
+    throw new Error('INVALID_RUN_ATTEMPT : phase, ronde ou tentative invalide');
+  }
+  return 'api-' + kind + '-' + (await sha256Hex(
+    [kind, cycleId, participantId, taskId, subject, phase, String(round), String(attempt)].join('\\u001f'),
+  )).slice(0, 32);
 }
 
 /**

@@ -275,7 +275,7 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         model = build(ref, 'auto', policy.envelope, choice.effort);
         fallback = policy.models.slice(policy.models.indexOf(ref) + 1).filter(candidate => {
           const option = modelOption(env as PolicyEnv, candidate, kind, choice.effort);
-          return option.tier === 'free' || (option.tier === 'paid' && option.est_step_cents !== null
+          return (option.tier === 'free' && option.credential_present) || (option.tier === 'paid' && option.credential_present && option.est_step_cents !== null
             && option.est_step_cents <= budget.day_limit - budget.day_spent
             && option.est_step_cents <= budget.cycle_limit - budget.cycle_spent);
         }).map(candidate => ({ ref: candidate, effort: choice.effort, envelope: policy.envelope }));
