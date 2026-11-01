@@ -735,3 +735,20 @@ Le gate L4 est désactivé par défaut. Codes : `L4_INVALID_TARGET`, `L4_TARGET_
 | Code | Lot | Signification | Que faire |
 | --- | --- | --- | --- |
 | `INVALID_PROBLEM_SIGNATURE` | CC-5 L6 | Signature d'échec vide ou trop longue pour produire le `problem_id` SHA-256 stable | Fournir une signature canonique non vide, de 4096 caractères au plus |
+
+### CC-8 S3 — chaînes de modèles dans le store (complément à la section 7)
+
+L'acte owner `set_agent_models` (jamais déléguable, CAS `expected_version`, instantanés immuables par version) pose la chaîne de modèles d'un agent : résolution store d'abord puis défauts wrangler, la fiche canonique reste la seule source des définitions (F1, fail-on-diff).
+
+| Code | Lot | Signification | Que faire |
+| --- | --- | --- | --- |
+| `CHAIN_VERSION_STALE` | CC-8 S3 | La chaîne du participant est à une autre version que celle attendue (relue avant l'acte ou revérifiée dans le lot) : rien n'est écrit | Relire la version sur `/owner` et redéposer |
+| `CHAIN_VERSION_INVALID` | CC-8 S3 | `expected_version` n'est pas un entier ≥ 0 | Corriger le payload |
+| `CHAIN_NOTHING_TO_RESTORE` | CC-8 S3 | Rollback demandé alors qu'aucune chaîne n'est posée | Poser d'abord une chaîne |
+| `CHAIN_SNAPSHOT_MISSING` | CC-8 S3 | Instantané de la version à restaurer introuvable : restauration refusée | Signaler (incident) |
+| `CHAIN_FICHE_UNKNOWN` | CC-8 S3 | Participant absent de la fiche canonique : aucune définition à référencer | Corriger l'identifiant du participant |
+| `CHAIN_FICHE_DIFF` | CC-8 S3 | Maillon non défini par la fiche de l'agent (F1 : la chaîne référence des définitions, elle n'en crée jamais) | Référencer un modèle ou une cible d'alias ep-* de la fiche |
+| `CHAIN_FAMILY_DIFF` | CC-8 S3 | Maillon d'une autre famille que celle de l'agent | Choisir un modèle de la famille de l'agent |
+| `CHAIN_STATUS_UNKNOWN` | CC-8 S3 | Statut de maillon hors inactive, candidate, beta, primary, rollback | Corriger le statut |
+| `CHAIN_NO_PRIMARY` | CC-8 S3 | Aucun maillon primary : la chaîne ne routerait rien | Désigner un maillon primary |
+| `CHAIN_INVALID` | CC-8 S3 | Chaîne absente, vide, de plus de 12 maillons, maillon mal formé, référence invalide ou en double | Fournir 1 à 12 maillons {ref, status}, ou rollback = true |
