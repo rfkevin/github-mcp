@@ -413,7 +413,7 @@ export async function modelCatalog(db: D1Database, env: PolicyEnv, options: { cy
     out.push({ participant_id: pid, mode: policy ? 'policy' : route ? 'single' : 'none', family: policy?.family ?? (route ? familyOf(route.ref) : null),
       default_ref: route?.ref ?? null, budget, models,
       rejected: policy?.rejected ?? (policyError ? [{ ref: '*', reason: policyError }] : []), default_by_kind: defaults,
-      default_effort_by_kind: efforts, preferences });
+      default_effort_by_kind: efforts, preferences, ...(chain ? { chain } : {}) });
   }
   return out;
 }
