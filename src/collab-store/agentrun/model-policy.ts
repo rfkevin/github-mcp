@@ -31,6 +31,8 @@ import { freeAllowed, isFreeApiModel, participantModelRoute, participantModelVar
 // CC-8 S3 (CC-PLAN-8 §1.6) — fiche canonique : la chaîne du store ne fait que référencer ses définitions (F1, fail-on-diff).
 import { parseFiche, type Fiche } from './fiche';
 import { FICHE_RAW } from './generated/agent-fiche.generated';
+// CC-8 S1b-2 : règles pures du coupe-circuit (option B) — l’application SQL vit ici.
+import { breakerAfterFailure, breakerAfterSuccess, type BreakerRow } from './run-policy';
 
 export const MODEL_FAMILIES = ['anthropic', 'xai', 'zai', 'google', 'openai', 'deepseek', 'qwen', 'meta', 'mistral'] as const;
 export type ModelFamily = typeof MODEL_FAMILIES[number];
@@ -256,6 +258,10 @@ export const MODEL_POLICY_SCHEMA = [
     ref TEXT NOT NULL, chosen_by TEXT NOT NULL, reason TEXT NOT NULL, est_step_cents INTEGER NOT NULL, at INTEGER NOT NULL, effort TEXT, PRIMARY KEY (run_id, n))`,
   `CREATE TABLE IF NOT EXISTS agent_model_calls (ref TEXT PRIMARY KEY, ok INTEGER NOT NULL DEFAULT 0, err INTEGER NOT NULL DEFAULT 0,
     last_ok_at INTEGER, last_err_at INTEGER, last_error TEXT, last_latency_ms INTEGER)`,
+  // CC-8 S1b-2 (v2 point 7, option B) : coupe-circuit PAR PARTICIPANT × MODÈLE — une ligne par maillon.
+  `CREATE TABLE IF NOT EXISTS agent_model_breaker (participant_id TEXT NOT NULL, ref TEXT NOT NULL,
+    consecutive_transient_failures INTEGER NOT NULL DEFAULT 0, last_failure_at INTEGER, circuit_open_until INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (participant_id, ref))`,
 ] as const;
 
 /** CC-7 L9b : colonnes ajoutées aux tables L9a déjà créées (ALTER idempotent : colonne existante ignorée). */
@@ -339,6 +345,56 @@ export async function recordModelCall(db: D1Database, ref: string, outcome: { ok
     '  last_ok_at = COALESCE(excluded.last_ok_at, last_ok_at), last_err_at = COALESCE(excluded.last_err_at, last_err_at),',
     '  last_error = COALESCE(excluded.last_error, last_error), last_latency_ms = excluded.last_latency_ms',
   ].join(' ')).bind(ref, outcome.ok ? 1 : 0, outcome.ok ? 0 : 1, outcome.ok ? outcome.at : null, outcome.ok ? null : outcome.at, error, outcome.latencyMs).run();
+}
+
+/**
+ * CC-8 S1b-2 (v2 point 7) : cumul global (agent_model_calls, sémantique inchangée)
+ * + coupe-circuit PAR PARTICIPANT × MODÈLE, écrits dans la MÊME transaction D1
+ * (db.batch). L’upsert breaker porte un CAS anti-rétrogradation : un appel
+ * concurrent plus frais n’est jamais écrasé (pause conservée). Une course
+ * simultanée peut au pire sous-compter la série d’une unité — jamais
+ * sur-compter ni rouvrir une pause ; le registre comptable reste agent_model_calls.
+ */
+export async function recordModelCallWithBreaker(db: D1Database, participantId: string, ref: string,
+  outcome: { ok: boolean; at: number; latencyMs: number; error?: string }): Promise<void> {
+  await ensureModelPolicySchema(db);
+  const error = outcome.error ? outcome.error.slice(0, 200) : null;
+  const cumulative = db.prepare([
+    'INSERT INTO agent_model_calls (ref, ok, err, last_ok_at, last_err_at, last_error, last_latency_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)',
+    'ON CONFLICT(ref) DO UPDATE SET ok = ok + excluded.ok, err = err + excluded.err,',
+    '  last_ok_at = COALESCE(excluded.last_ok_at, last_ok_at), last_err_at = COALESCE(excluded.last_err_at, last_err_at),',
+    '  last_error = COALESCE(excluded.last_error, last_error), last_latency_ms = excluded.last_latency_ms',
+  ].join(' ')).bind(ref, outcome.ok ? 1 : 0, outcome.ok ? 0 : 1, outcome.ok ? outcome.at : null, outcome.ok ? null : outcome.at, error, outcome.latencyMs);
+  const row = await db.prepare([
+    'SELECT consecutive_transient_failures, last_failure_at, circuit_open_until FROM agent_model_breaker',
+    'WHERE participant_id = ?1 AND ref = ?2',
+  ].join(' ')).bind(participantId, ref).first<BreakerRow>();
+  const next = outcome.ok ? breakerAfterSuccess() : breakerAfterFailure(row ?? null, outcome.at);
+  const breaker = db.prepare([
+    'INSERT INTO agent_model_breaker (participant_id, ref, consecutive_transient_failures, last_failure_at, circuit_open_until)',
+    'VALUES (?1, ?2, ?3, ?4, ?5)',
+    'ON CONFLICT(participant_id, ref) DO UPDATE SET consecutive_transient_failures = excluded.consecutive_transient_failures,',
+    '  last_failure_at = excluded.last_failure_at, circuit_open_until = excluded.circuit_open_until',
+    // CAS anti-rétrogradation : n’écraser que l’état que l’on vient de lire.
+    'WHERE agent_model_breaker.consecutive_transient_failures IS ?6 AND agent_model_breaker.last_failure_at IS ?7',
+    '  AND agent_model_breaker.circuit_open_until IS ?8',
+  ].join(' ')).bind(participantId, ref, next.consecutive,
+    outcome.ok ? (row?.last_failure_at ?? null) : outcome.at,
+    next.open_until,
+    row?.consecutive_transient_failures ?? null, row?.last_failure_at ?? null, row?.circuit_open_until ?? 0);
+  await db.batch([cumulative, breaker]);
+}
+
+/** CC-8 S1b-2 : fins de pause des maillons d’un participant (lecture seule, au plus POLICY_MAX_MODELS refs). */
+export async function breakerOpenUntil(db: D1Database, participantId: string, refs: readonly string[]): Promise<Map<string, number>> {
+  await ensureModelPolicySchema(db);
+  const out = new Map<string, number>();
+  if (!refs.length) return out;
+  const placeholders = refs.map((_, index) => '?' + (index + 2)).join(', ');
+  const rows = await db.prepare('SELECT ref, circuit_open_until FROM agent_model_breaker WHERE participant_id = ?1 AND ref IN (' + placeholders + ')')
+    .bind(participantId, ...refs).all<{ ref: string; circuit_open_until: number }>();
+  for (const row of rows.results) out.set(row.ref, row.circuit_open_until);
+  return out;
 }
 
 export interface CatalogueEntry {

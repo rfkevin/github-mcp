@@ -38,7 +38,9 @@ import { modelFailureKind } from './model-failure';
 // CC-7 F1 : fiche canonique des agents — tampon version + hash (module pur fiche.ts, artefact généré).
 import { ficheStamp } from './fiche';
 import { FICHE_HASH, FICHE_VERSION } from './generated/agent-fiche.generated';
-import { budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, resolveParticipantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
+import { breakerOpenUntil, budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, recordModelCall, recordModelCallWithBreaker, recordModelChoice, resolveParticipantPolicy, type PolicyEnv } from './model-policy';
+// CC-8 S1b-2 : prédicat pur du coupe-circuit (option B).
+import { breakerSkipping } from './run-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
 export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-30';
@@ -289,20 +291,50 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         model = build(ref, route.tier, participantEnvelope(env as PolicyEnv, run.participant_id));
       }
       let lastError: unknown;
-      const candidates = [{ ref, model: () => model }, ...fallback.map(item => ({
+      let candidates = [{ ref, model: () => model }, ...fallback.map(item => ({
         ref: item.ref, model: () => build(item.ref, 'auto', item.envelope, item.effort),
       }))];
+      // CC-8 S1b-2 : coupe-circuit option B (participant × modèle). Les sondes (task_kind
+      // probe) sont exemptées : elles re-testent un maillon en pause — c’est le signal S6,
+      // jamais une mutation de chaîne. Les refus de budget local ne passent pas ici : ils
+      // sont levés avant tout appel, donc jamais comptés par le coupe-circuit.
+      const taskKind = input.task_kind || run.task_kind;
+      const isProbe = taskKind === 'probe';
+      if (!isProbe) {
+        const openUntil = await breakerOpenUntil(ctx.db, run.participant_id, candidates.map(candidate => candidate.ref));
+        const nowSec = Math.floor(now.getTime() / 1000);
+        const available = candidates.filter(candidate => !breakerSkipping({ circuit_open_until: openUntil.get(candidate.ref) ?? 0 }, nowSec));
+        if (!available.length) {
+          const resume = Math.max(...candidates.map(candidate => openUntil.get(candidate.ref) ?? 0));
+          throw new ModelCallError('CIRCUIT_OPEN : tous les maillons de ' + run.participant_id + ' sont en pause coupe-circuit ('
+            + candidates.map(candidate => candidate.ref + ' jusqu’à ' + (openUntil.get(candidate.ref) ?? 0)).join(', ')
+            + ') ; reprise au plus tôt à ' + resume + ' (UTC, secondes).', null);
+        }
+        candidates = available;
+      }
       for (const candidate of candidates) {
         const started = Date.now();
         try {
           const result = await candidate.model().complete(input);
-          await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
+          if (isProbe) {
+            await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
+          } else {
+            await recordModelCallWithBreaker(ctx.db, run.participant_id, candidate.ref,
+              { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
+          }
           return result;
         } catch (error) {
           lastError = error;
-          await recordModelCall(ctx.db, candidate.ref, { ok: false, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started,
-            error: error instanceof Error ? error.message : String(error) });
-          if (modelFailureKind(error) !== 'transient') throw error;
+          const transient = modelFailureKind(error) === 'transient';
+          const outcome = { ok: false, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started,
+            error: error instanceof Error ? error.message : String(error) };
+          // Échec PERMANENT : cumul seul — le coupe-circuit ne compte que le transitoire.
+          if (!transient || isProbe) {
+            await recordModelCall(ctx.db, candidate.ref, outcome);
+          } else {
+            await recordModelCallWithBreaker(ctx.db, run.participant_id, candidate.ref, outcome);
+          }
+          if (!transient) throw error;
         }
       }
       throw lastError;
