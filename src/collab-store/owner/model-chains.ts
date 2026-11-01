@@ -90,10 +90,12 @@ export async function setAgentModels(db: D1Database, input: {
       throw new CollabStoreError('CHAIN_NOTHING_TO_RESTORE', 'Aucune chaîne à restaurer pour ' + input.participant_id + '.');
     }
     restoredVersion = currentVersion - 1;
-    chain = restoredVersion === 0 ? null : await loadChainSnapshot(db, input.participant_id, restoredVersion);
-    if (restoredVersion !== 0 && !chain) {
+    const snapshot = restoredVersion === 0 ? null : await loadChainSnapshot(db, input.participant_id, restoredVersion);
+    if (restoredVersion !== 0 && !snapshot) {
       throw new CollabStoreError('CHAIN_SNAPSHOT_MISSING', 'Instantané v' + restoredVersion + ' de ' + input.participant_id + ' introuvable : restauration refusée.');
     }
+    // v0 = défauts wrangler ; un instantané RETIRÉ ('null') restaure l'état retiré : chaîne null, défauts wrangler.
+    chain = snapshot ? snapshot.chain : null;
   } else {
     if (input.chain === undefined || input.chain === null) {
       throw new CollabStoreError('CHAIN_INVALID', 'chain requis (1 à ' + POLICY_MAX_MODELS + ' maillons {ref, status}), ou rollback = true.');
