@@ -16,6 +16,8 @@ import { planAgentRuns } from './plan';
 import { runStep, type EngineDeps, type ModelClient, type ToolHost } from './engine';
 import { meteredDb } from './metered-db';
 import { ensureAgentRunSchema } from './schema';
+// CC-8 S1b-2 : réservation Go-s dérivée de la borne effective d'étape (v2 point 6).
+import { worstCaseStepGbS } from './run-policy';
 
 /** Recul d'une alarme après `busy` : 5 s, 10 s, 20 s… plafonné à 300 s. */
 export const BUSY_BACKOFF_BASE_S = 5;
@@ -45,10 +47,12 @@ export const ROWS_PER_STEP = 64;
 export const DO_ROWS_PER_ALARM = 3;
 /**
  * Troisième quota Durable Objects Free : durée facturée en Go-s (objet de 128 Mo).
- * Réservation avant l'étape au pire cas d'une étape longue (125 s, modèle et outils
- * bornés), puis ramenée à la durée mesurée de l'alarme, arrondie au Go-s supérieur.
+ * CC-8 S1b-2 (v2 point 6) : réservation avant l'étape au pire cas de l'étape ENTIÈRE
+ * (appels + effets, 600 s — ceil(0,128 × 600) = 77 Go-s), dérivée de la politique
+ * unique au lieu du 16 statique calibré sur 125 s ; puis ramenée à la durée mesurée
+ * de l'alarme, arrondie au Go-s supérieur.
  */
-export const GB_S_PER_STEP = 16;
+export const GB_S_PER_STEP = worstCaseStepGbS();
 export const DO_MEMORY_GB = 0.128;
 export const DEFAULT_DAILY_GB_S = 10_000;
 export const FREE_DAILY_GB_S = 13_000;
