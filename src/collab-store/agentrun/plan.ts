@@ -166,6 +166,16 @@ export async function taskRunId(kind: TaskWakeKind, cycleId: string, participant
   return 'api-' + kind + '-' + (await sha256Hex([kind, cycleId, participantId, taskId, subject].join('\u001f'))).slice(0, 32);
 }
 
+/** Variante answer : l'identité de la question, phase, ronde et tentative est stable au rejeu. */
+export async function answerAttemptRunId(cycleId: string, participantId: string, askSeq: number,
+  phase: string, round: number, attempt: number): Promise<string> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(phase) || !Number.isSafeInteger(round) || round < 0
+    || !Number.isSafeInteger(attempt) || attempt < 1 || attempt > 3) throw new Error('INVALID_RUN_ATTEMPT');
+  return 'api-answer-' + (await sha256Hex(
+    ['answer', cycleId, participantId, String(askSeq), phase, String(round), String(attempt)].join('\\u001f'),
+  )).slice(0, 32);
+}
+
 /** Identité stable d'une tentative S1b : le même triplet phase/ronde/tentative ne crée jamais deux runs. */
 export async function attemptRunId(kind: TaskWakeKind, cycleId: string, participantId: string, taskId: string,
   subject: string, phase: string, round: number, attempt: number): Promise<string> {
@@ -346,6 +356,10 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
   for (const { cycle_id: cycleId } of cycles) {
     const phaseRow = await db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1').bind(cycleId).first<{ phase: string }>();
     const phase = phaseRow?.phase || 'P0';
+    // Chaque événement round.add ouvre une nouvelle identité de réveil, même si le sujet reste identique.
+    const roundRow = await db.prepare("SELECT COUNT(*) AS count FROM events WHERE cycle_id = ?1 AND type = 'round.add'")
+      .bind(cycleId).first<{ count: number }>();
+    const round = roundRow?.count ?? 0;
     for (const participantId of participants) {
       const view = await previewNextActions(db, cycleId, participantId);
       if (view.mode !== 'active') continue;
@@ -371,9 +385,12 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           }
           const askSeq = Number(match[1]);
           queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => {
-            const runId = await answerRunId(cycleId, participantId, askSeq);
+            const ids = await Promise.all([1, 2, 3].map(attempt =>
+              answerAttemptRunId(cycleId, participantId, askSeq, phase, round, attempt)));
+            const attempt = await retryAttempt(ids);
+            if (attempt === null) return false;
             return (await createRun(db, {
-            runId, cycleId, participantId, taskId: '', taskKind: 'answer',
+              runId: ids[attempt - 1], cycleId, participantId, taskId: '', taskKind: 'answer',
             prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env)),
             maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens('answer'), maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
             })).created;
@@ -402,7 +419,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => {
           // La ronde est liée au sujet de la décision (incluant le couple head/base pour review/test).
           const ids = await Promise.all([1, 2, 3].map(attempt =>
-            attemptRunId(kind, cycleId, participantId, taskId, decision.subject, phase, 0, attempt)));
+            attemptRunId(kind, cycleId, participantId, taskId, decision.subject, phase, round, attempt)));
           const attempt = await retryAttempt(ids);
           if (attempt === null) return false;
           return (await createRun(db, {
