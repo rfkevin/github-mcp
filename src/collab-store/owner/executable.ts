@@ -42,6 +42,9 @@ import { latestReassignActSeq, parseReassignParams, reassignTarget, reassignTask
 import { CLASSIFICATION_VERDICTS, classifyRequest, type ClassificationVerdict } from './classify';
 import { closeCycle } from './close';
 import { appointCycleCoordinator, latestMandateActSeq, MANDATE_FAMILY_RE, MANDATE_PARTICIPANT_RE } from './delegation-execution';
+// CC-8 S3 : chaîne de modèles dans le store — acte owner, validation structurelle ici, conformité F1 à l'exécution.
+import { latestModelChainActSeq, setAgentModels } from './model-chains';
+import { CHAIN_STATUSES, POLICY_MAX_MODELS } from '../agentrun/model-policy';
 
 export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator', 'set_identity_family', 'reassign_task',
   'classify_request', 'close_cycle', 'appoint_cycle_coordinator'] as const;
