@@ -143,7 +143,7 @@ export interface ModelOption {
   reason?: string;
 }
 
-function credentialPresent(env: PolicyEnv, ref: string): boolean {
+export function credentialPresent(env: PolicyEnv, ref: string): boolean {
   const name = credentialOf(ref);
   if (!name) return false;
   const value = (env as Record<string, unknown>)[name];

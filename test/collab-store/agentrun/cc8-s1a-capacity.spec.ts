@@ -88,12 +88,12 @@ describe('CC-8 S1a — capacité réelle (runCapacity)', () => {
     expect(await solo({})).toEqual({ capable: false, reason: 'NO_MODEL : aucune politique ni modèle global' });
     // Référence inconnue (relecture GPT-6, seq 1289) : refusée, plus de faux positif.
     expect(await solo({ AGENT_RUN_MODEL_SOLO: 'anthropic:modele-inconnu', LLM_KEY_ANTHROPIC: 'k' }))
-      .toMatchObject({ capable: false, reason: expect.stringMatching(/^MODEL_ROUTE_REFUSED : anthropic:modele-inconnu — /) });
+      .toMatchObject({ capable: false, reason: expect.stringMatching(/^MODEL_ROUTE_REFUSED : anthropic:modele-inconnu \(palier auto\) — /) });
     // Fournisseur inconnu.
     expect((await solo({ AGENT_RUN_MODEL_SOLO: 'inconnu:x' })).capable).toBe(false);
     // Référence tarifée connue, clé absente.
     expect(await solo({ AGENT_RUN_MODEL_SOLO: 'anthropic:claude-haiku-5-5' }))
-      .toMatchObject({ capable: false, reason: expect.stringMatching(/clé absente/) });
+      .toMatchObject({ capable: false, reason: expect.stringMatching(/clé ou binding absent/) });
     // Clé présente, budget nul (enveloppe non financée).
     expect(await solo({ AGENT_RUN_MODEL_SOLO: 'anthropic:claude-haiku-5-5', LLM_KEY_ANTHROPIC: 'k' }))
       .toMatchObject({ capable: false, reason: expect.stringMatching(/^MODEL_BUDGET_EXHAUSTED : anthropic:claude-haiku-5-5/) });
@@ -109,6 +109,26 @@ describe('CC-8 S1a — capacité réelle (runCapacity)', () => {
     expect((await solo({ AGENT_RUN_MODEL: 'workers-ai:@cf/zai-org/glm-4.7-flash' })).capable).toBe(false);
     expect(await solo({ AGENT_RUN_MODEL: 'workers-ai:@cf/zai-org/glm-4.7-flash', AI: {} }))
       .toEqual({ capable: true, reason: 'workers-ai:@cf/zai-org/glm-4.7-flash' });
+  });
+
+  it('palier forcé « paid » (AGENT_RUN_PAID_MODEL) respecté comme par la fabrique (relecture GPT-6, seq 1293)', async () => {
+    await ensureSchema(db);
+    const solo = (extra: Record<string, unknown>) => runCapacity(db, extra, 'solo', null, 'implement', NOW);
+    const funded = { AGENT_RUN_PAID_DAY_CENTS_SOLO: '500', AGENT_RUN_PAID_CYCLE_CENTS_SOLO: '500' };
+    // Contre-exemple 1 : modèle Workers AI gratuit forcé payant → chemin payant, hors liste payante : refusé même financé.
+    const paidFree = await solo({ AGENT_RUN_PAID_MODEL: 'workers-ai:@cf/zai-org/glm-4.7-flash', AI: {}, ...funded });
+    expect(paidFree).toMatchObject({ capable: false, reason: expect.stringMatching(/\(palier paid\) — PAID_MODEL_UNSUPPORTED/) });
+    // Le même modèle au palier auto reste gratuit et capable.
+    expect((await solo({ AGENT_RUN_MODEL_SOLO: 'workers-ai:@cf/zai-org/glm-4.7-flash', AI: {} })).capable).toBe(true);
+    // Contre-exemple 2 : modèle API gratuit (attesté) forcé payant → tarif daté, enveloppe exigée.
+    const gemini = { LLM_KEY_GEMINI: 'k', GEMINI_FREE_PROJECT_ATTESTED: 'true', PUBLIC_ORIGIN: CC3_VARS.PUBLIC_ORIGIN };
+    expect(await solo({ ...gemini, AGENT_RUN_PAID_MODEL: 'gemini:gemini-3.8-flash' }))
+      .toMatchObject({ capable: false, reason: expect.stringMatching(/^MODEL_BUDGET_EXHAUSTED : gemini:gemini-3.8-flash \(palier paid, \d+c par étape\)/) });
+    expect(await solo({ ...gemini, AGENT_RUN_PAID_MODEL: 'gemini:gemini-3.8-flash', ...funded }))
+      .toEqual({ capable: true, reason: 'gemini:gemini-3.8-flash' });
+    // Au palier auto, le même modèle attesté reste gratuit : capable sans enveloppe.
+    expect(await solo({ ...gemini, AGENT_RUN_MODEL_SOLO: 'gemini:gemini-3.8-flash' }))
+      .toEqual({ capable: true, reason: 'gemini:gemini-3.8-flash' });
   });
 });
 
