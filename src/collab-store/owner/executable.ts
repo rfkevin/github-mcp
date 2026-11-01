@@ -313,6 +313,8 @@ export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction
   if (action === 'grant_coordinator') return latestCoordinatorActSeq(db, cycleId);
   if (action === 'set_identity_family') return latestIdentityFamilyActSeq(db, cycleId);
   if (action === 'reassign_task') return latestReassignActSeq(db, cycleId);
+  // CC-8 S3 : la cible d'une chaîne est le participant ; son dernier acte de chaîne borne la précondition.
+  if (action === 'set_agent_models') return latestModelChainActSeq(db, cycleId);
   await ensureSchema(db);
   const prefix = (action === 'install_phases' ? PHASE_INSTALL_KEY_PREFIX : STATE_IMPORT_KEY_PREFIX) + cycleId + ':';
   const row = await db.prepare("SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?2)) = ?2")
