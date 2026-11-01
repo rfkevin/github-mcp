@@ -130,6 +130,44 @@ describe('CC-8 S3 — acte owner : refus non-owner, CAS, restauration (AC2, AC3)
     expect(await loadChainSnapshot(db, 'gemini', 2)).toEqual({ version: 2, chain: null });
     expect(await runCapacity(db, { ...CC3_TEST, LLM_KEY_GEMINI: 'k' }, 'gemini', null, 'review', NOW)).toEqual(before);
   });
+
+  it('compteur monotone : set → rollback vers défauts → set → rollbacks ultérieurs (review GPT-6 seq 1322)', async () => {
+    await cleanChain();
+    const chainB = [
+      { ref: 'zai:glm-4.7-flash', status: 'primary' },
+      { ref: 'workers-ai:@cf/zai-org/glm-4.7-flash', status: 'rollback' },
+    ];
+    // v1 : première chaîne.
+    expect((await setChain({ participant_id: 'vibe', expected_version: 0, chain: VIBE_CHAIN })).version).toBe(1);
+    // v2 : rollback v1 → version 0 = chaîne RETIRÉE (défauts wrangler), la ligne n'est pas supprimée.
+    const retired = await setChain({ participant_id: 'vibe', expected_version: 1, rollback: true });
+    expect(retired.version).toBe(2);
+    expect(retired.chain).toBeNull();
+    expect(await loadModelChain(db, 'vibe')).toMatchObject({ version: 2, active: false });
+    expect((await resolveParticipantPolicy(db, CC3_TEST, 'vibe')).source).toBe('env');
+    // v3 : le compteur monotone évite de réécrire l'instantané v1 (UNIQUE jamais violée — le bug corrigé).
+    const third = await setChain({ participant_id: 'vibe', expected_version: 2, chain: chainB });
+    expect(third.version).toBe(3);
+    expect(await loadModelChain(db, 'vibe')).toMatchObject({ version: 3, active: true });
+    expect((await loadModelChain(db, 'vibe'))?.chain).toEqual(chainB);
+    // v4 : rollback restaure l'instantané v2 = état RETIRÉ (défauts), pas une chaîne vide.
+    const fourth = await setChain({ participant_id: 'vibe', expected_version: 3, rollback: true });
+    expect(fourth.version).toBe(4);
+    expect(fourth.chain).toBeNull();
+    expect(await loadModelChain(db, 'vibe')).toMatchObject({ version: 4, active: false });
+    expect((await resolveParticipantPolicy(db, CC3_TEST, 'vibe')).source).toBe('env');
+    // v5 : rollback ultérieur restaure l'instantané v3 = chaîne B, active à nouveau.
+    const fifth = await setChain({ participant_id: 'vibe', expected_version: 4, rollback: true });
+    expect(fifth.version).toBe(5);
+    expect(fifth.chain).toEqual(chainB);
+    expect(await loadModelChain(db, 'vibe')).toMatchObject({ version: 5, active: true });
+    // Instantanés 1..5 : chacun écrit UNE fois, les versions retirées se lisent chain = null.
+    expect(await loadChainSnapshot(db, 'vibe', 1)).toEqual({ version: 1, chain: VIBE_CHAIN });
+    expect(await loadChainSnapshot(db, 'vibe', 2)).toEqual({ version: 2, chain: null });
+    expect(await loadChainSnapshot(db, 'vibe', 3)).toEqual({ version: 3, chain: chainB });
+    expect(await loadChainSnapshot(db, 'vibe', 4)).toEqual({ version: 4, chain: null });
+    expect(await loadChainSnapshot(db, 'vibe', 5)).toEqual({ version: 5, chain: chainB });
+  });
 });
 
 describe('CC-8 S3 — F1 fail-on-diff : la chaîne ne crée jamais de définition', () => {
