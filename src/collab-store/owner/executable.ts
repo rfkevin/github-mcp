@@ -273,6 +273,7 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('params : objet requis.');
     const target = validateParams(action as ExecutableAction, params as Record<string, unknown>);
     const cycleId = action === 'register_endpoint' || action === 'grant_coordinator' || action === 'set_identity_family'
+      || action === 'set_agent_models'
       ? REGISTRY_CYCLE : action === 'reassign_task' ? String((params as Record<string, unknown>).cycle_id) : target;
     // L6 : pour classify_request, target (request:<seq>) n’est pas un cycle — le
     // cycle réel (celui de la demande classée) est résolu à l’approbation.
