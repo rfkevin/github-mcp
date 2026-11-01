@@ -32,7 +32,7 @@ Première valeur prévue par le plan (chaîne de Vibe, convenue seq 1212) :
 - **Acte owner** `setAgentModels` (`owner/model-chains.ts`, `owner/model-chains.ts` branche `set_agent_models` de `executable.ts`) : CAS `expected_version` (JS + garde SQL dans le lot), validation F1 (`validateModelChain` : chaque maillon existe dans la fiche de l'agent — modèles ou cibles d'alias ep-* — dans SA famille), audit complet (événement `owner.decision` + instantané), jamais déléguable.
 - **Résolution store d'abord** `resolveParticipantPolicy` (`model-policy.ts`), branchée aux trois consommateurs de la liste : choix par étape (`createRoutedModel`), capacité du planificateur (`runCapacity`), préférence de modèle (`setModelPreference`). Mêmes règles de choix (`chooseModel`), même enveloppe (wrangler : la chaîne ne finance rien).
 - **Vues endpoint / F1 dérivée** : le catalogue (`modelCatalog`, exposé par `collab_model_catalog`) rend la chaîne effective — source `store` (version, maillons avec statut et alias ep-* lié) ou `env` (défauts) — la même source que le routage, divergence historique dashboard/fichier (S0 §1.5, §9.1) close côté lecture.
-- **Spec** : `cc8-s3-model-chain.spec.ts` (AC 1 à 4, CAS, F1 fail-on-diff, chemin complet demande → approbation → chaîne, rejeu idempotent, vues).
+- **Spec** : `cc8-s3-model-chain.spec.ts` (AC 1 à 4, CAS, F1 fail-on-diff, compteur monotone `set → rollback vers défauts → set → rollbacks ultérieurs`, chemin complet demande → approbation → chaîne, rejeu idempotent, vues).
 
 ## Limites et notes
 
