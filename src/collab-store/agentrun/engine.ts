@@ -40,12 +40,15 @@ import { sha256Hex } from '../store/hash';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
 import { modelFailureKind } from './model-failure';
+// CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
+import { EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
 
-export const STEP_TIMEOUT_S = 600;
+// CC-8 S1b-2 : dérivée de la politique unique (run-policy.ts), API en secondes conservée.
+export const STEP_TIMEOUT_S = STEP_TIMEOUT_MS / 1000;
 /** S1b : trois réclamations au maximum par étape, bornées par deadline_at (15 min). */
 export const MAX_STEP_ATTEMPTS = 3;
 /** Durée maximale d'une exécution d'outil ; un effet pending plus récent est considéré en vol. */
-export const EFFECT_TIMEOUT_S = 120;
+export const EFFECT_TIMEOUT_S = EFFECT_TIMEOUT_MS / 1000;
 export const MAX_TOOL_CALLS_PER_STEP = 8;
 export const RESULT_MAX_CHARS = 16 * 1024;
 
@@ -60,7 +63,9 @@ export interface AgentMessage {
 }
 
 export interface ModelClient {
-  complete(input: { messages: AgentMessage[]; tools: string[]; task_kind: string }): Promise<{ output: ModelOutput; usage: ModelUsage }>;
+  complete(input: { messages: AgentMessage[]; tools: string[]; task_kind: string;
+    /** CC-8 S1b-2 : budget de temps restant pour les appels modèle de l'étape (ms, optionnel). */
+    budget_left_ms?: number }): Promise<{ output: ModelOutput; usage: ModelUsage }>;
 }
 
 /** Erreur d'appel modèle qui porte l'usage déjà consommé (comptabilisé quand même). */
@@ -103,6 +108,8 @@ export interface StepResult { outcome: RunStatus | 'stepped' | 'busy' | 'retry' 
 interface RunRow {
   run_id: string; lease_key: string; generation: number; task_kind: string; status: RunStatus;
   steps_done: number; prompt: string;
+  /** CC-8 S1b-2 : deadline d'exécution (secondes) — borne le budget d'appels modèle de l'étape. */
+  deadline_at: number;
 }
 interface StepRow { state: string; claimed_by: string; claimed_at: number; attempts: number; model_output: string | null }
 interface EffectRow { status: string; result: string | null; updated_at: number }
@@ -235,7 +242,7 @@ export async function createRun(db: D1Database, input: CreateRunInput): Promise<
 // ---------------------------------------------------------------- étape
 
 async function getRun(db: D1Database, runId: string): Promise<RunRow | null> {
-  return db.prepare('SELECT run_id, lease_key, generation, task_kind, status, steps_done, prompt FROM agent_runs WHERE run_id = ?1')
+  return db.prepare('SELECT run_id, lease_key, generation, task_kind, status, steps_done, prompt, deadline_at FROM agent_runs WHERE run_id = ?1')
     .bind(runId).first<RunRow>();
 }
 
@@ -339,6 +346,17 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const n = run.steps_done;
   const claim: Claim = { n, worker: deps.workerId, attempts: claimed.attempts };
 
+  // CC-8 S1b-2 : budget TOTAL des appels modèle de l'étape — min(480 s, deadline restante
+  // − 30 s, marge avant plafond d'étape) ; chaque appel reçoit ce qui reste (la chaîne de
+  // repli décompte elle-même entre maillons), arrêt propre transient sous le plancher de
+  // 30 s (v2 point 4) : jamais de coupure au milieu d'un appel ni d'un effet.
+  const budgetLeftMs = stepModelBudgetMs(run.deadline_at * 1000, now * 1000);
+  if (budgetLeftMs < STEP_MODEL_BUDGET_FLOOR_MS) {
+    await stopAs(db, runId, 'failed', 'model_transient: budget d’appels modèle de l’étape épuisé ('
+      + Math.max(0, Math.trunc(budgetLeftMs)) + ' ms restants, plan S1b-2 v2 point 4) ; relance d’exécution S1b.', now, claim);
+    return { outcome: 'failed' };
+  }
+
   // 1. Modèle (sortie persistée avant tout effet : une reprise rejoue la même décision).
   let output: ModelOutput;
   if (claimed.model_output) {
@@ -346,7 +364,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   } else {
     let response: { output: ModelOutput; usage: ModelUsage };
     try {
-      response = await deps.model.complete({ messages: await buildMessages(db, run), tools: deps.tools.list(run.task_kind), task_kind: run.task_kind });
+      response = await deps.model.complete({ messages: await buildMessages(db, run), tools: deps.tools.list(run.task_kind), task_kind: run.task_kind,
+        budget_left_ms: budgetLeftMs });
     } catch (error) {
       const usage = error instanceof ModelCallError ? error.usage : null;
       await db.batch([
@@ -403,6 +422,14 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         refused('d12_verdict_forbidden_on_api_channel');
         continue;
       }
+    }
+    // CC-8 S1b-2 : garde avant chaque effet — un effet qui ne peut pas finir avant le
+    // plafond d'étape (marge < 30 s) n'est JAMAIS lancé : arrêt propre transient, aucun
+    // effet ambiguous, la relance d'exécution S1b reprend (v2 point 4).
+    if (claimed.claimed_at + STEP_TIMEOUT_S - deps.now() < STEP_MODEL_BUDGET_FLOOR_MS / 1000) {
+      await stopAs(db, runId, 'failed', 'model_transient: temps d’étape insuffisant avant l’effet ' + call.name
+        + ' (marge < 30 s, plan S1b-2 v2 point 4) ; relance d’exécution S1b.', deps.now(), claim);
+      return { outcome: 'failed' };
     }
     const effect = await runEffect(db, runId, claim, idx, call, deps);
     if ('outcome' in effect) return effect;

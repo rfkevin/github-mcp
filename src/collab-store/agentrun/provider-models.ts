@@ -40,7 +40,7 @@ import { ficheStamp } from './fiche';
 import { FICHE_HASH, FICHE_VERSION } from './generated/agent-fiche.generated';
 import { breakerOpenUntil, budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, recordModelCall, recordModelCallWithBreaker, recordModelChoice, resolveParticipantPolicy, type PolicyEnv } from './model-policy';
 // CC-8 S1b-2 : prédicat pur du coupe-circuit (option B).
-import { breakerSkipping } from './run-policy';
+import { breakerSkipping, STEP_MODEL_BUDGET_FLOOR_MS } from './run-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
 export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-30';
@@ -312,10 +312,21 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         }
         candidates = available;
       }
+      // CC-8 S1b-2 : chaque appel reçoit le budget RESTANT de l'étape, décompté du temps
+      // consommé par les maillons précédents ; sous le plancher de 30 s : arrêt propre
+      // transient, AUCUN appel supplémentaire (v2 point 4).
+      const completeStartedMs = (ctx.now?.() ?? new Date()).getTime();
       for (const candidate of candidates) {
+        const budgetLeftMs = typeof input.budget_left_ms === 'number'
+          ? input.budget_left_ms - ((ctx.now?.() ?? new Date()).getTime() - completeStartedMs)
+          : undefined;
+        if (typeof budgetLeftMs === 'number' && budgetLeftMs < STEP_MODEL_BUDGET_FLOOR_MS) {
+          throw new ModelCallError('STEP_MODEL_BUDGET_EXHAUSTED : budget d’appels modèle de l’étape épuisé ('
+            + Math.max(0, Math.trunc(budgetLeftMs)) + ' ms restants, plan S1b-2 v2 point 4) ; relance d’exécution S1b.', null);
+        }
         const started = Date.now();
         try {
-          const result = await candidate.model().complete(input);
+          const result = await candidate.model().complete(budgetLeftMs === undefined ? input : { ...input, budget_left_ms: budgetLeftMs });
           if (isProbe) {
             await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
           } else {
