@@ -5,6 +5,7 @@ import {
   runStep, createReadToolHost, createStoreWriteTools, effectOpId, WRITE_TOOLS_BY_KIND, planAgentRuns, apiParticipants, answerRunId,
   taskRunId, ToolRefused, type ModelClient, type ModelOutput,
 } from '../../../src/collab-store/agentrun';
+import { answerAttemptRunId, attemptRunId } from '../../../src/collab-store/agentrun/plan';
 import { agentRunPass } from '../../../src/collab-store/agentrun/orchestrator';
 import { engineFor, AGENT_RUN_SYSTEM } from '../../../src/collab-store/agentrun/object';
 import { previewNextActions } from '../../../src/collab-store/controller';
@@ -230,7 +231,7 @@ describe('CC-5 l7c-2 — création depuis les décisions du contrôleur', () => 
     const q = await seedQuestion('plan-on', 'p-plan-on');
     const first = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: 'p-plan-on' }, { now: T });
     expect(first.created).toBe(1);
-    const runId = await answerRunId(q.cycle, 'p-plan-on', q.askSeq);
+    const runId = await answerAttemptRunId(q.cycle, 'p-plan-on', q.askSeq, 'P6', 0, 1);
     const run = (await db.prepare('SELECT participant_id, task_id, task_kind, status, max_cost_cents, prompt FROM agent_runs WHERE run_id = ?1').bind(runId)
       .first<{ participant_id: string; task_id: string; task_kind: string; status: string; max_cost_cents: number; prompt: string }>())!;
     expect(run).toMatchObject({ participant_id: 'p-plan-on', task_id: '', task_kind: 'answer', status: 'running', max_cost_cents: 0 });
@@ -247,7 +248,7 @@ describe('CC-5 l7c-2 — création depuis les décisions du contrôleur', () => 
     expect(view.mine.map(d => d.action)).toContain('implement');
     const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: q.owner + ',' + q.reviewer }, { now: T });
     expect(out.created).toBe(1);
-    const runId = await taskRunId('implement', q.cycle, q.owner, 'l7', 'none');
+    const runId = await attemptRunId('implement', q.cycle, q.owner, 'l7', 'none', 'P6', 0, 1);
     const run = (await db.prepare('SELECT participant_id, task_id, task_kind, status FROM agent_runs WHERE run_id = ?1').bind(runId)
       .first<{ participant_id: string; task_id: string; task_kind: string; status: string }>())!;
     expect(run).toMatchObject({ participant_id: q.owner, task_id: 'l7', task_kind: 'implement', status: 'running' });
@@ -263,6 +264,6 @@ describe('CC-5 l7c-2 — création depuis les décisions du contrôleur', () => 
     const pass = await agentRunPass(db, { ...PLAN_MODEL, AGENT_RUNS_ENABLED: 'true', AGENT_RUN_PARTICIPANTS: 'p-plan-pass' },
       { now: T, deliverer: 'd-' + n, wake: async (_lease, runId) => { woken.push(runId); return { accepted: true }; } });
     expect(pass.planned).toBe(1);
-    expect(woken).toContain(await answerRunId(q.cycle, 'p-plan-pass', q.askSeq));
+    expect(woken).toContain(await answerAttemptRunId(q.cycle, 'p-plan-pass', q.askSeq, 'P6', 0, 1));
   });
 });

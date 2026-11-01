@@ -752,3 +752,10 @@ L'acte owner `set_agent_models` (jamais déléguable, CAS `expected_version`, in
 | `CHAIN_STATUS_UNKNOWN` | CC-8 S3 | Statut de maillon hors inactive, candidate, beta, primary, rollback | Corriger le statut |
 | `CHAIN_NO_PRIMARY` | CC-8 S3 | Aucun maillon primary : la chaîne ne routerait rien | Désigner un maillon primary |
 | `CHAIN_INVALID` | CC-8 S3 | Chaîne absente, vide, de plus de 12 maillons, maillon mal formé, référence invalide ou en double | Fournir 1 à 12 maillons {ref, status}, ou rollback = true |
+
+
+### CC-8 S1b — validation des tentatives API
+
+| Code | Lot | Signification | Que faire |
+| --- | --- | --- | --- |
+| `INVALID_RUN_ATTEMPT` | CC-8 S1b | Numéro de tentative hors de la plage autorisée (1 à 3) | Fournir une tentative entière comprise entre 1 et 3 |

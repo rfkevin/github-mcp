@@ -31,6 +31,7 @@ import { equivalentParticipantIds, logicalIdentityOf } from '../identity/familie
 import { chatActiveWithin } from '../context/active-work';
 import { sha256Hex } from '../store/hash';
 import { createRun } from './engine';
+import { ensureAgentRunSchema } from './schema';
 import { runCapacity, type RunCapacity } from './capacity';
 import { decisionKey } from '../controller/journal';
 import type { Decision } from '../controller/rules';
@@ -40,6 +41,9 @@ export const PLAN_MAX_CYCLES = 20;
 export const PLAN_LIMIT = 5;
 export const PLAN_MAX_STEPS = 6;
 export const PLAN_MAX_TOKENS = 24_000;
+/** S1b : enveloppe totale de jetons par type d'exécution (jamais supérieure au plafond historique). */
+export const TASK_KIND_MAX_TOKENS = Object.freeze({ answer: 8_000, review: 16_000, test: 16_000, implement: 24_000, design: 12_000 });
+export function taskKindMaxTokens(kind: PlannedTaskKind): number { return TASK_KIND_MAX_TOKENS[kind]; }
 export const PLAN_DEADLINE_S = 900;
 
 /**
@@ -161,6 +165,28 @@ export async function answerRunId(cycleId: string, participantId: string, askSeq
  */
 export async function taskRunId(kind: TaskWakeKind, cycleId: string, participantId: string, taskId: string, subject: string): Promise<string> {
   return 'api-' + kind + '-' + (await sha256Hex([kind, cycleId, participantId, taskId, subject].join('\u001f'))).slice(0, 32);
+}
+
+/** Variante answer : l'identité de la question, phase, ronde et tentative est stable au rejeu. */
+export async function answerAttemptRunId(cycleId: string, participantId: string, askSeq: number,
+  phase: string, round: number, attempt: number): Promise<string> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(phase) || !Number.isSafeInteger(round) || round < 0
+    || !Number.isSafeInteger(attempt) || attempt < 1 || attempt > 3) throw new Error('INVALID_RUN_ATTEMPT');
+  return 'api-answer-' + (await sha256Hex(
+    ['answer', cycleId, participantId, String(askSeq), phase, String(round), String(attempt)].join('\u001f'),
+  )).slice(0, 32);
+}
+
+/** Identité stable d'une tentative S1b : le même triplet phase/ronde/tentative ne crée jamais deux runs. */
+export async function attemptRunId(kind: TaskWakeKind, cycleId: string, participantId: string, taskId: string,
+  subject: string, phase: string, round: number, attempt: number): Promise<string> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(phase) || !Number.isSafeInteger(round) || round < 0
+    || !Number.isSafeInteger(attempt) || attempt < 1 || attempt > 3) {
+    throw new Error('INVALID_RUN_ATTEMPT : phase, ronde ou tentative invalide');
+  }
+  return 'api-' + kind + '-' + (await sha256Hex(
+    [kind, cycleId, participantId, taskId, subject, phase, String(round), String(attempt)].join('\u001f'),
+  )).slice(0, 32);
 }
 
 /**
@@ -293,6 +319,7 @@ async function waitingSince(db: D1Database, cycleId: string, decision: Decision,
 export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: number; limit?: number }): Promise<PlanResult> {
   const participants = apiParticipants(env.AGENT_RUN_PARTICIPANTS);
   if (!participants.length) return planResult(0, 0, 0);
+  await ensureAgentRunSchema(db);
   const limit = Math.max(1, Math.min(input.limit ?? PLAN_LIMIT, 20));
   const { results: cycles } = await db.prepare("SELECT cycle_id FROM cycles WHERE status = 'open' ORDER BY cycle_id LIMIT ?1")
     .bind(PLAN_MAX_CYCLES).all<{ cycle_id: string }>();
@@ -312,9 +339,29 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
     }
     return value.capable;
   };
+  // S1b : une seule relance après un passage cron (>= 15 min), trois runs au maximum.
+  // Le run précédent doit être un échec explicitement transitoire, jamais un refus permanent.
+  const retryAttempt = async (ids: string[]): Promise<number | null> => {
+    const rows = await Promise.all(ids.map(runId => db.prepare(
+      'SELECT status, stop_reason, updated_at FROM agent_runs WHERE run_id = ?1',
+    ).bind(runId).first<{ status: string; stop_reason: string; updated_at: number }>()));
+    const firstMissing = rows.findIndex(row => !row);
+    if (firstMissing === 0) return 1;
+    if (firstMissing < 0) return null;
+    if (rows.slice(firstMissing + 1).some(Boolean)) return null; // fail-closed : trou dans l'historique
+    const last = rows[firstMissing - 1]!;
+    if (last.status !== 'failed' || !last.stop_reason.startsWith('model_transient:')) return null;
+    return input.now - last.updated_at >= 900 ? firstMissing + 1 : null;
+  };
   let order = 0;
   const queues = new Map<string, PlanIntent[]>(participants.map(pid => [pid, []]));
   for (const { cycle_id: cycleId } of cycles) {
+    const phaseRow = await db.prepare('SELECT phase FROM cycles WHERE cycle_id = ?1').bind(cycleId).first<{ phase: string }>();
+    const phase = phaseRow?.phase || 'P0';
+    // Chaque événement round.add ouvre une nouvelle identité de réveil, même si le sujet reste identique.
+    const roundRow = await db.prepare("SELECT COUNT(*) AS count FROM events WHERE cycle_id = ?1 AND type = 'round.add'")
+      .bind(cycleId).first<{ count: number }>();
+    const round = roundRow?.count ?? 0;
     for (const participantId of participants) {
       const view = await previewNextActions(db, cycleId, participantId);
       if (view.mode !== 'active') continue;
@@ -339,11 +386,17 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
             continue;
           }
           const askSeq = Number(match[1]);
-          queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => (await createRun(db, {
-            runId: await answerRunId(cycleId, participantId, askSeq), cycleId, participantId, taskId: '', taskKind: 'answer',
+          queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => {
+            const ids = await Promise.all([1, 2, 3].map(attempt =>
+              answerAttemptRunId(cycleId, participantId, askSeq, phase, round, attempt)));
+            const attempt = await retryAttempt(ids);
+            if (attempt === null) return false;
+            return (await createRun(db, {
+              runId: ids[attempt - 1], cycleId, participantId, taskId: '', taskKind: 'answer',
             prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env)),
-            maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
-          })).created });
+            maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens('answer'), maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+            })).created;
+          } });
           continue;
         }
         // L5a (S9) : réveil de tâche → exécution typée review / test / implement.
@@ -365,11 +418,19 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           continue;
         }
         const taskId = decision.task_id ?? '';
-        queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => (await createRun(db, {
-          runId: await taskRunId(kind, cycleId, participantId, taskId, decision.subject), cycleId, participantId,
-          taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
-          maxSteps: PLAN_MAX_STEPS, maxTokens: PLAN_MAX_TOKENS, maxCostCents: taskKindCostCents(env, kind), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
-        })).created });
+        queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => {
+          // La ronde est liée au sujet de la décision (incluant le couple head/base pour review/test).
+          const ids = await Promise.all([1, 2, 3].map(attempt =>
+            attemptRunId(kind, cycleId, participantId, taskId, decision.subject, phase, round, attempt)));
+          const attempt = await retryAttempt(ids);
+          if (attempt === null) return false;
+          return (await createRun(db, {
+            runId: ids[attempt - 1], cycleId, participantId,
+            taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
+            maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens(kind), maxCostCents: taskKindCostCents(env, kind),
+            deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+          })).created;
+        } });
       }
     }
   }

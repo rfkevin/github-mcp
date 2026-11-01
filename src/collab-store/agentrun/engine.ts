@@ -39,9 +39,11 @@
 import { sha256Hex } from '../store/hash';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
+import { modelFailureKind } from './model-failure';
 
 export const STEP_TIMEOUT_S = 600;
-export const MAX_STEP_ATTEMPTS = 2;
+/** S1b : trois réclamations au maximum par étape, bornées par deadline_at (15 min). */
+export const MAX_STEP_ATTEMPTS = 3;
 /** Durée maximale d'une exécution d'outil ; un effet pending plus récent est considéré en vol. */
 export const EFFECT_TIMEOUT_S = 120;
 export const MAX_TOOL_CALLS_PER_STEP = 8;
@@ -350,15 +352,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       await db.batch([
         db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1')
           .bind(runId, Math.max(0, usage?.tokens ?? 0), Math.max(0, usage?.cost_cents ?? 0), now),
-        // Réclamation rendue périmée : la prochaine réveil réessaie, dans la limite de MAX_STEP_ATTEMPTS.
-        db.prepare('UPDATE agent_run_steps SET claimed_at = 0 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4')
-          .bind(runId, n, deps.workerId, claimed.attempts),
       ]);
-      if (claimed.attempts >= MAX_STEP_ATTEMPTS) {
-        await stopAs(db, runId, 'failed', 'model_error: ' + errorText(error), now, claim);
-        return { outcome: 'failed' };
-      }
-      return { outcome: 'retry' };
+      // Le repli intra-famille est déjà épuisé. Terminer cette tentative avec
+      // son motif typé ; seul le planificateur peut en créer une autre après 900 s.
+      // Ne pas modifier la réclamation : stopAs vérifie encore son identité exacte.
+      await stopAs(db, runId, 'failed', 'model_' + modelFailureKind(error) + ': ' + errorText(error), now, claim);
+      return { outcome: 'failed' };
     }
     output = normalizeOutput(response.output);
     const tokens = Math.max(0, Math.floor(response.usage?.tokens ?? 0));

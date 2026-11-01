@@ -1,4 +1,5 @@
 import { PLAN_MODEL } from './plan-model';
+import { attemptRunId, answerAttemptRunId } from '../../../src/collab-store/agentrun/plan';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -133,7 +134,7 @@ describe('CC-7 L15 — réveil « implémenter » confié à l’API seulement s
     const on = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: s.owner, AGENT_RUN_GITHUB_WRITES: 'true' }, { now });
     expect(on.created).toBe(1);
     const run = await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1')
-      .bind(await taskRunId('implement', s.cycle, s.owner, 'l7', 'none')).first<{ task_kind: string }>();
+      .bind(await attemptRunId('implement', s.cycle, s.owner, 'l7', 'none', 'P6', 0, 1)).first<{ task_kind: string }>();
     expect(run?.task_kind).toBe('implement');
   });
 });

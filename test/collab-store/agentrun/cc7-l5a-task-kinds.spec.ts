@@ -1,4 +1,5 @@
 import { PLAN_MODEL } from './plan-model';
+import { attemptRunId, answerAttemptRunId } from '../../../src/collab-store/agentrun/plan';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
@@ -110,8 +111,8 @@ describe('CC-7 L5a — planification des réveils de tâche', () => {
     const rows = (await db.prepare('SELECT run_id, task_id, task_kind, status, prompt, max_cost_cents FROM agent_runs WHERE cycle_id = ?1')
       .bind(q.cycle).all<{ run_id: string; task_id: string; task_kind: string; status: string; prompt: string; max_cost_cents: number }>()).results;
     expect(rows.map(row => row.run_id).sort()).toEqual([
-      await taskRunId('review', q.cycle, q.reviewer, 'l5', HEAD + '..' + BASE),
-      await taskRunId('test', q.cycle, q.tester, 'l5', HEAD + '..' + BASE),
+      await attemptRunId('review', q.cycle, q.reviewer, 'l5', HEAD + '..' + BASE, 'P6', 0, 1),
+      await attemptRunId('test', q.cycle, q.tester, 'l5', HEAD + '..' + BASE, 'P6', 0, 1),
     ].sort());
     for (const kind of ['review', 'test'] as const) {
       const run = rows.find(row => row.task_kind === kind)!;
@@ -129,7 +130,7 @@ describe('CC-7 L5a — planification des réveils de tâche', () => {
     const q = await seedTask('implement', () => []);
     const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: q.owner + ',' + q.reviewer }, { now: T });
     expect(out.created).toBe(1);
-    const runId = await taskRunId('implement', q.cycle, q.owner, 'l5', 'none');
+    const runId = await attemptRunId('implement', q.cycle, q.owner, 'l5', 'none', 'P6', 0, 1);
     const run = (await db.prepare('SELECT task_kind, prompt FROM agent_runs WHERE run_id = ?1').bind(runId)
       .first<{ task_kind: string; prompt: string }>())!;
     expect(run.task_kind).toBe('implement');
@@ -147,7 +148,7 @@ describe('CC-7 L5a — planification des réveils de tâche', () => {
     ]);
     const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.reviewer }, { now: T });
     expect(out.created).toBe(1);
-    const runId = await taskRunId('review', q.cycle, q.reviewer, 'l5', HEAD + '..' + BASE);
+    const runId = await attemptRunId('review', q.cycle, q.reviewer, 'l5', HEAD + '..' + BASE, 'P6', 0, 1);
     expect((await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1').bind(runId)
       .first<{ task_kind: string }>())!.task_kind).toBe('review');
   });
