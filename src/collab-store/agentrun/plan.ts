@@ -172,7 +172,7 @@ export async function answerAttemptRunId(cycleId: string, participantId: string,
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(phase) || !Number.isSafeInteger(round) || round < 0
     || !Number.isSafeInteger(attempt) || attempt < 1 || attempt > 3) throw new Error('INVALID_RUN_ATTEMPT');
   return 'api-answer-' + (await sha256Hex(
-    ['answer', cycleId, participantId, String(askSeq), phase, String(round), String(attempt)].join('\\u001f'),
+    ['answer', cycleId, participantId, String(askSeq), phase, String(round), String(attempt)].join('\u001f'),
   )).slice(0, 32);
 }
 
