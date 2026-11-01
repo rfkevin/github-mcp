@@ -1,4 +1,5 @@
 import { PLAN_MODEL } from './plan-model';
+import { attemptRunId, answerAttemptRunId } from '../../../src/collab-store/agentrun/plan';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -62,7 +63,7 @@ describe('CC-7 L12 — le planificateur attend que le chat de l’agent ait fini
     const later = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: to }, { now: T - 300 + CHAT_ACTIVE_SECONDS + 60 });
     expect(later.created).toBe(1);
     expect(later.deferred).toBeUndefined();
-    const run = await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1').bind(await answerRunId(q.cycle, to, q.askSeq))
+    const run = await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1').bind(await answerAttemptRunId(q.cycle, to, q.askSeq, 'P6', 0, 1))
       .first<{ task_kind: string }>();
     expect(run?.task_kind).toBe('answer');
   });
@@ -95,7 +96,7 @@ describe('CC-7 L12 — le planificateur attend que le chat de l’agent ait fini
     const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: other.owner }, { now: T });
     expect(out.created).toBe(1);
     const run = await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id = ?1')
-      .bind(await taskRunId('implement', other.cycle, other.owner, 'l7', 'none')).first<{ task_kind: string }>();
+      .bind(await attemptRunId('implement', other.cycle, other.owner, 'l7', 'none', 'P6', 0, 1)).first<{ task_kind: string }>();
     expect(run?.task_kind).toBe('implement');
   });
 

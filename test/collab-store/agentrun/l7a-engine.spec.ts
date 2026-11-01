@@ -190,16 +190,16 @@ describe('CC-5 l7a — coupures et reprise', () => {
     expect(h.commits).toHaveLength(1);
   });
 
-  it('erreurs modèle 503 : deux réessais, puis échec terminal ; l’usage des échecs est compté', async () => {
+  it('503 : tentative échouée typée, usage compté, aucun nouvel appel sur le même run', async () => {
     const { input } = await newRun();
     const model = scripted(READ_THEN_COMMIT, { fail: 5 });
     const h = host();
-    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 1))).outcome).toBe('retry');
-    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 2))).outcome).toBe('retry');
-    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 3))).outcome).toBe('failed');
-    expect(await status(input.runId)).toMatchObject({ status: 'failed', tokens_used: 21 });
-    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 4))).outcome).toBe('failed');
-    expect(model.state.calls).toBe(3);
+    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 1))).outcome).toBe('failed');
+    expect(await status(input.runId)).toMatchObject({
+      status: 'failed', tokens_used: 7, stop_reason: 'model_transient: HTTP 503 fournisseur indisponible',
+    });
+    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 2))).outcome).toBe('failed');
+    expect(model.state.calls).toBe(1);
   });
 });
 
