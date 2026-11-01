@@ -135,7 +135,8 @@ describe('CC-8 S1a — planificateur : aucune exécution vouée à l’échec', 
     expect(before).toMatchObject({ created: 0, incapable: 1 });
     expect(before.incapable_detail?.[0].reason).toMatch(/^MODEL_BUDGET_EXHAUSTED : /);
     expect(await runsOf(cycle)).toEqual([]);
-    const after = await planAgentRuns(db, { ...offline, LLM_KEY_GEMINI: 'k' }, { now: 1_984_000_900 });
+    const online = { ...offline, LLM_KEY_GEMINI: 'k' };
+    const after = await planAgentRuns(db, online, { now: 1_984_000_900 });
     expect(after.created).toBe(1);
     expect(after.incapable).toBeUndefined();
     expect(await runsOf(cycle)).toEqual(['gemini']);
