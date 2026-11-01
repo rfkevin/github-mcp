@@ -14,7 +14,10 @@
  * - instantané immuable de chaque version (agent_model_chain_versions,
  *   append-only, jamais réécrit ni supprimé) ;
  * - rollback = restauration de la version précédente ; restaurer la version 0
- *   retire la chaîne : l'agent revient aux défauts wrangler.
+ *   retire la chaîne du ROUTAGE sans jamais supprimer la ligne (sentinelle
+ *   versionnée 'null') : le compteur de version reste MONOTONE, l'agent
+ *   revient aux défauts wrangler et aucune PK (participant_id, version)
+ *   n'est jamais réutilisée (correction review GPT-6, store seq 1322).
  */
 import { CollabStoreError } from '../store/collab-store';
 import { ensureModelChainSchema, loadChainSnapshot, loadModelChain, POLICY_MAX_MODELS, validateModelChain, type ChainEntry } from '../agentrun/model-policy';
