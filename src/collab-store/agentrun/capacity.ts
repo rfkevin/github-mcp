@@ -18,7 +18,7 @@
  */
 import { apiModelRate, centsOfApiTokens } from '../executors/model-rates';
 import { resolveEffectiveMaxTokens } from '../executors/task-profiles';
-import { budgetState, chooseModel, credentialPresent, ESTIMATE_INPUT_TOKENS, participantEnvelope, participantPolicy,
+import { budgetState, chooseModel, credentialPresent, ESTIMATE_INPUT_TOKENS, participantEnvelope, resolveParticipantPolicy,
   type PolicyEnv } from './model-policy';
 import { centsOfNeurons, envelopeFunded, PAID_MODEL_RATES } from './paid-model';
 import { participantModelRoute, resolveProviderRoute, type ProviderRoute } from './provider-models';
@@ -40,7 +40,8 @@ export async function runCapacity(db: D1Database, env: object, participantId: st
   const policyEnv = env as PolicyEnv;
   let policy;
   try {
-    policy = participantPolicy(policyEnv, participantId);
+    // CC-8 S3 : chaîne du store d'abord, sinon défauts wrangler — même résolution que le choix réel d'une étape.
+    policy = (await resolveParticipantPolicy(db, policyEnv, participantId)).policy;
   } catch (error) {
     return { capable: false, reason: 'MODEL_POLICY_INVALID : ' + errorText(error) };
   }
