@@ -65,10 +65,8 @@ describe('CC8 S1b-2 — politique unique de temps (run-policy, plan seq 1376)', 
 
   it('messages : timeout 120000 ms, CIRCUIT_OPEN et budget d’étape restent transitoires', () => {
     expect(modelFailureKind(new Error('Fournisseur sans réponse après 120000 ms.'))).toBe('transient');
-    expect(modelFailureKind(new Error('CIRCUIT_OPEN : tous les maillons de brk sont en pause coupe-circuit
-      + ' (gemini:gemini-3.8-flash jusqu’à 2000001800) ; reprise au plus tôt à 2000001800 (UTC, secondes).'))).toBe('transient');
-    expect(modelFailureKind(new Error('STEP_MODEL_BUDGET_EXHAUSTED : budget d’appels modèle de l’étape épuisé
-      + ' (12345 ms restants, plan S1b-2 v2 point 4) ; relance d’exécution S1b.'))).toBe('transient');
+    expect(modelFailureKind(new Error('CIRCUIT_OPEN : tous les maillons de brk sont en pause coupe-circuit (gemini:gemini-3.8-flash jusqu’à 2000001800) ; reprise au plus tôt à 2000001800 (UTC, secondes).'))).toBe('transient');
+    expect(modelFailureKind(new Error('STEP_MODEL_BUDGET_EXHAUSTED : budget d’appels modèle de l’étape épuisé (12345 ms restants, plan S1b-2 v2 point 4) ; relance d’exécution S1b.'))).toBe('transient');
     expect(modelFailureKind(new Error('MODEL_ROUTE_REFUSED : mauvaise référence'))).toBe('permanent');
   });
 });
