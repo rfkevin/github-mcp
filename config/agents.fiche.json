@@ -60,7 +60,7 @@
       "id": "gpt",
       "participant_id": "gpt6",
       "family": "openai",
-      "active": false,
+      "active": true,
       "models": [
         { "role": "fort", "ref": "groq:openai/gpt-oss-120b" },
         { "role": "rapide", "ref": "groq:openai/gpt-oss-20b" }

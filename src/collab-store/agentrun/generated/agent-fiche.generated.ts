@@ -9,7 +9,7 @@
 export const FICHE_VERSION = 2;
 
 /** Empreinte FNV-1a 64 du contenu exact de la fiche (identité de version, pas un secret). */
-export const FICHE_HASH = "55cc00d2c5f293dc";
+export const FICHE_HASH = "e0af095a4c4d7bf9";
 
 /** Contenu exact de la fiche canonique (audit : version et hash se recomptent depuis ici). */
 export const FICHE_RAW = `{
@@ -74,7 +74,7 @@ export const FICHE_RAW = `{
       "id": "gpt",
       "participant_id": "gpt6",
       "family": "openai",
-      "active": false,
+      "active": true,
       "models": [
         { "role": "fort", "ref": "groq:openai/gpt-oss-120b" },
         { "role": "rapide", "ref": "groq:openai/gpt-oss-20b" }
@@ -157,7 +157,7 @@ export const FICHE_RAW = `{
 /** Variables wrangler AGENT_RUN_* dérivées de la fiche (définitions de modèles uniquement). */
 export const AGENT_RUN_VARS: Readonly<Record<string, string>> = Object.freeze({
 	AGENT_RUN_MODEL: "workers-ai:@cf/zai-org/glm-4.7-flash",
-	AGENT_RUN_PARTICIPANTS: "claude,grok,vibe,gemini",
+	AGENT_RUN_PARTICIPANTS: "claude,grok,vibe,gpt6,gemini",
 	AGENT_RUN_FAMILY_CLAUDE: "anthropic",
 	AGENT_RUN_MODELS_CLAUDE: "anthropic:claude-opus-5-5,anthropic:claude-sonnet-5-5,anthropic:claude-haiku-5-5",
 	AGENT_RUN_FAMILY_GROK: "xai",
