@@ -622,7 +622,8 @@ export interface ResolvedPolicy {
  */
 export async function resolveParticipantPolicy(db: D1Database, env: PolicyEnv, participantId: string): Promise<ResolvedPolicy> {
   const stored = await loadModelChain(db, participantId);
-  if (!stored) return { policy: participantPolicy(env, participantId), source: 'env', chain_version: null, chain: null };
+  // Ligne absente OU chaîne retirée (sentinelle 'null') : défauts wrangler TELLE QU'ELLE (AC4) — le compteur de version reste monotone pour le CAS.
+  if (!stored || !stored.active) return { policy: participantPolicy(env, participantId), source: 'env', chain_version: null, chain: null };
   const models: string[] = [];
   const rejected: ParticipantPolicy['rejected'] = [];
   for (const entry of stored.chain) {
