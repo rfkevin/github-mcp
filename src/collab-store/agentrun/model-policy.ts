@@ -417,3 +417,206 @@ export async function modelCatalog(db: D1Database, env: PolicyEnv, options: { cy
   }
   return out;
 }
+
+
+// ──────────────────────────────────────────────────────────────────────────────
+// CC-8 S3 (CC-PLAN-8 §1.6, unanimité, validé par Kevin) — chaînes de modèles
+// dans le store. La chaîne d'un agent vit dans le store (acte owner
+// set_agent_models, owner/model-chains.ts) : elle remplace sa liste de
+// modèles SANS PR ; les variables wrangler restent les DÉFAUTS, jamais
+// réécrites, et la fiche canonique reste la source des DÉFINITIONS (F1) :
+// chaque maillon doit y exister pour l'agent (modèle ou cible d'alias ep-*),
+// dans sa famille — fail-on-diff, jamais une seconde définition.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Statuts d'un maillon (CC-PLAN-8 §1.6) ; l'ORDRE du tableau de la chaîne porte l'ordre de routage. */
+export const CHAIN_STATUSES = ['inactive', 'candidate', 'beta', 'primary', 'rollback'] as const;
+export type ChainStatus = (typeof CHAIN_STATUSES)[number];
+/**
+ * Maillons routés : primary (courant), beta (essai) et rollback (secours de
+ * dernier recours, cible désignée d'un retour arrière), dans l'ordre du
+ * tableau. candidate (observé, pas encore routé) et inactive (jamais routé,
+ * ex. payant sans budget) restent visibles dans les vues, jamais routés.
+ */
+export const ROUTED_CHAIN_STATUSES: readonly ChainStatus[] = ['primary', 'beta', 'rollback'];
+const CHAIN_REF_RE = /^[a-z][a-z-]{1,15}:\S{1,200}$/;
+
+export interface ChainEntry { readonly ref: string; readonly status: ChainStatus }
+
+export interface StoredChain { participant_id: string; version: number; chain: ChainEntry[]; updated_at: number }
+
+/**
+ * Tables internes au store (jamais dans le schéma canonique gelé), portables
+ * (CREATE IF NOT EXISTS, aucune option moteur). agent_model_chains porte la
+ * chaîne COURANTE par agent (CAS sur version) ; agent_model_chain_versions
+ * est l'historique APPEND-ONLY des versions posées — instantanés immuables,
+ * une ligne par acte set / rollback, jamais réécrite ni supprimée.
+ */
+export const MODEL_CHAIN_SCHEMA = [
+  [
+    'CREATE TABLE IF NOT EXISTS agent_model_chains (',
+    '  participant_id TEXT PRIMARY KEY,',
+    '  version INTEGER NOT NULL,',
+    '  chain_json TEXT NOT NULL,',
+    '  updated_at INTEGER NOT NULL,',
+    '  event_seq INTEGER',
+    ')',
+  ].join(' '),
+  [
+    'CREATE TABLE IF NOT EXISTS agent_model_chain_versions (',
+    '  participant_id TEXT NOT NULL,',
+    '  version INTEGER NOT NULL,',
+    '  chain_json TEXT NOT NULL,',
+    '  set_by TEXT NOT NULL,',
+    "  action TEXT NOT NULL CHECK (action IN ('set', 'rollback')),",
+    "  reason TEXT NOT NULL DEFAULT '',",
+    '  event_seq INTEGER,',
+    '  at INTEGER NOT NULL,',
+    '  PRIMARY KEY (participant_id, version)',
+    ')',
+  ].join(' '),
+] as const;
+
+const chainSchemaEnsured = new WeakSet<object>();
+
+export async function ensureModelChainSchema(db: D1Database): Promise<void> {
+  if (chainSchemaEnsured.has(db as unknown as object)) return;
+  await db.batch(MODEL_CHAIN_SCHEMA.map(statement => db.prepare(statement)));
+  chainSchemaEnsured.add(db as unknown as object);
+}
+
+/** Fiche canonique parsée une fois par isolate (F1 : source unique des définitions). */
+let cachedFiche: Fiche | null = null;
+
+function canonicalFiche(): Fiche {
+  cachedFiche ??= parseFiche(FICHE_RAW);
+  return cachedFiche;
+}
+
+/** Alias ep-* de l'agent pointant cette référence (vue catalogue), ou null. */
+export function chainEndpointAlias(participantId: string, ref: string): string | null {
+  const agent = canonicalFiche().agents.find(item => item.participant_id === participantId);
+  return agent?.endpoints.find(endpoint => endpoint.ref === ref)?.endpoint_id ?? null;
+}
+
+/**
+ * F1 — fail-on-diff : une chaîne ne référence QUE des définitions de la fiche
+ * de l'agent (modèles ou cibles de ses alias ep-*), toutes dans SA famille, et
+ * porte au moins un maillon primary ; toute divergence est refusée — la fiche
+ * et wrangler ne sont jamais réécrites.
+ */
+export function validateModelChain(participantId: string, input: unknown): { family: ModelFamily; entries: ChainEntry[] } {
+  if (!Array.isArray(input) || input.length === 0) {
+    throw new CollabStoreError('CHAIN_INVALID', 'Chaîne vide : 1 à ' + POLICY_MAX_MODELS + ' maillon(s) {ref, status} requis.');
+  }
+  if (input.length > POLICY_MAX_MODELS) {
+    throw new CollabStoreError('CHAIN_INVALID', 'Au plus ' + POLICY_MAX_MODELS + ' maillons par agent.');
+  }
+  const agent = canonicalFiche().agents.find(item => item.participant_id === participantId);
+  if (!agent) {
+    throw new CollabStoreError('CHAIN_FICHE_UNKNOWN', participantId + ' est absent de la fiche canonique (F1) : aucune définition à référencer.');
+  }
+  if (!(MODEL_FAMILIES as readonly string[]).includes(agent.family)) {
+    throw new CollabStoreError('CHAIN_FICHE_DIFF', 'Famille de fiche inconnue pour ' + participantId + ' : ' + agent.family + '.');
+  }
+  const universe = new Set<string>([...agent.models.map(model => model.ref), ...agent.endpoints.map(endpoint => endpoint.ref)]);
+  const entries: ChainEntry[] = [];
+  const seen = new Set<string>();
+  let primary = 0;
+  for (const item of input) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new CollabStoreError('CHAIN_INVALID', 'Maillon de chaîne invalide : {ref, status} requis.');
+    }
+    const { ref, status } = item as Record<string, unknown>;
+    if (typeof ref !== 'string' || !CHAIN_REF_RE.test(ref)) {
+      throw new CollabStoreError('CHAIN_INVALID', 'Référence de maillon invalide : ' + String(ref) + '.');
+    }
+    if (typeof status !== 'string' || !(CHAIN_STATUSES as readonly string[]).includes(status)) {
+      throw new CollabStoreError('CHAIN_STATUS_UNKNOWN', 'Statut de maillon inconnu : ' + String(status) + ' (' + CHAIN_STATUSES.join(', ') + ').');
+    }
+    if (seen.has(ref)) throw new CollabStoreError('CHAIN_INVALID', 'Maillon en double : ' + ref + '.');
+    if (!universe.has(ref)) {
+      throw new CollabStoreError('CHAIN_FICHE_DIFF', ref + ' n’est pas défini par la fiche de ' + participantId + ' (F1 : la chaîne référence des définitions, elle n’en crée jamais).');
+    }
+    const family = familyOf(ref);
+    if (family !== agent.family) {
+      throw new CollabStoreError('CHAIN_FAMILY_DIFF', ref + ' est de famille ' + (family ?? 'inconnue') + ' ≠ ' + agent.family + ' (famille de ' + participantId + ').');
+    }
+    seen.add(ref);
+    if (status === 'primary') primary += 1;
+    entries.push({ ref, status: status as ChainStatus });
+  }
+  if (primary === 0) {
+    throw new CollabStoreError('CHAIN_NO_PRIMARY', 'Aucun maillon primary : la chaîne de ' + participantId + ' ne pourrait rien router.');
+  }
+  return { family: agent.family as ModelFamily, entries };
+}
+
+/** Chaîne courante d'un agent, ou null (défauts wrangler). */
+export async function loadModelChain(db: D1Database, participantId: string): Promise<StoredChain | null> {
+  await ensureModelChainSchema(db);
+  const row = await db.prepare('SELECT participant_id, version, chain_json, updated_at FROM agent_model_chains WHERE participant_id = ?1')
+    .bind(participantId).first<{ participant_id: string; version: number; chain_json: string; updated_at: number }>();
+  if (!row) return null;
+  return { participant_id: row.participant_id, version: row.version, chain: parseChainEntries(row.chain_json), updated_at: row.updated_at };
+}
+
+/** Instantané immuable d'une version posée (null : introuvable). */
+export async function loadChainSnapshot(db: D1Database, participantId: string, version: number): Promise<ChainEntry[] | null> {
+  await ensureModelChainSchema(db);
+  const row = await db.prepare('SELECT chain_json FROM agent_model_chain_versions WHERE participant_id = ?1 AND version = ?2')
+    .bind(participantId, version).first<{ chain_json: string }>();
+  return row ? parseChainEntries(row.chain_json) : null;
+}
+
+/** Maillons lisibles d'un JSON stocké (fail-fermé : illisible = aucun maillon). */
+function parseChainEntries(raw: string): ChainEntry[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: ChainEntry[] = [];
+    for (const item of parsed) {
+      if (item && typeof item === 'object' && typeof (item as ChainEntry).ref === 'string'
+        && typeof (item as ChainEntry).status === 'string' && (CHAIN_STATUSES as readonly string[]).includes((item as ChainEntry).status)) {
+        out.push({ ref: (item as ChainEntry).ref, status: (item as ChainEntry).status });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export interface ResolvedPolicy {
+  policy: ParticipantPolicy | null;
+  /** store : chaîne du store (S3) ; env : listes wrangler (défauts, comportement inchangé). */
+  source: 'store' | 'env';
+  chain_version: number | null;
+  chain: ChainEntry[] | null;
+}
+
+/**
+ * CC-8 S3 — résolution STORE D'ABORD puis wrangler (CC-PLAN-8 §1.6) : la
+ * chaîne posée dans le store remplace la liste de modèles de l'agent (mêmes
+ * règles de choix, même enveloppe, maillons non routés signalés) ; sans
+ * chaîne, la politique des variables d'environnement est rendue TELLE QUELLE
+ * — routage identique à l'existant. Les enveloppes et budgets restent
+ * wrangler : la chaîne ne finance rien.
+ */
+export async function resolveParticipantPolicy(db: D1Database, env: PolicyEnv, participantId: string): Promise<ResolvedPolicy> {
+  const stored = await loadModelChain(db, participantId);
+  if (!stored) return { policy: participantPolicy(env, participantId), source: 'env', chain_version: null, chain: null };
+  const models: string[] = [];
+  const rejected: ParticipantPolicy['rejected'] = [];
+  for (const entry of stored.chain) {
+    if ((ROUTED_CHAIN_STATUSES as readonly string[]).includes(entry.status)) models.push(entry.ref);
+    else rejected.push({ ref: entry.ref, reason: 'statut ' + entry.status + ' non routé' });
+  }
+  const agent = canonicalFiche().agents.find(item => item.participant_id === participantId);
+  const family = (agent && (MODEL_FAMILIES as readonly string[]).includes(agent.family)
+    ? agent.family : familyOf(models[0] ?? stored.chain[0]?.ref ?? '')) as ModelFamily;
+  return {
+    policy: { participant_id: participantId, family, models, rejected, envelope: participantEnvelope(env, participantId) },
+    source: 'store', chain_version: stored.version, chain: stored.chain,
+  };
+}
