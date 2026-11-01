@@ -33,6 +33,7 @@ const VIBE_CHAIN = [
 /** Isolation : les chaînes des tests précédents (base partagée) sont retirées. */
 async function cleanChain(): Promise<void> {
   await ensureSchema(db);
+  await ensureModelChainSchema(db);
   await db.prepare('DELETE FROM agent_model_chains').run();
   await db.prepare('DELETE FROM agent_model_chain_versions').run();
   await db.prepare("INSERT INTO cycles (cycle_id) VALUES ('owner-registry') ON CONFLICT(cycle_id) DO NOTHING").run();
