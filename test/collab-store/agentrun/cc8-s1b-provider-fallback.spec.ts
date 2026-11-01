@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { createRoutedModel, type ProviderModelContext } from '../../../src/collab-store/agentrun';
 import { GEMINI_CC3_TEST_PUBLIC_ORIGIN } from '../../../src/collab-store/executors/gemini';
+import { executorError } from '../../../src/collab-store/executors/fetch-timeout';
 import { freshRun } from './cc7-l2-paid-harness';
 import { ensureModelPolicySchema } from '../../../src/collab-store/agentrun/model-policy';
 
@@ -27,13 +28,17 @@ function client(runId: string, fetchImpl: typeof fetch) {
 }
 
 describe('CC8 S1b — incident Gemini 503, repli pendant le même appel', () => {
-  it('503 sur 3.8 puis réponse 3.6 sans échec du run, avec métriques err/ok ; sans repli ce test échoue', async () => {
+  it.each(['503', 'timeout'] as const)('%s sur 3.8 puis réponse 3.6 avec métriques err/ok ; sans repli ce test échoue', async failure => {
     const run = await freshRun(db, 's1b-fallback', 1_983_000_000, 10_000, 'gemini');
     const seen: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL) => {
       const url = String(input);
       seen.push(url);
-      if (url.includes('gemini-3.8-flash')) return new Response('{"error":{"message":"Service unavailable"}}', { status: 503 });
+      if (url.includes('gemini-3.8-flash')) {
+        // Erreur exacte du helper HTTP partagé, ensuite enveloppée par le vrai protocole Gemini.
+        if (failure === 'timeout') throw executorError('EXECUTOR_TIMEOUT', 'Fournisseur sans réponse après 60000 ms.');
+        return new Response('{"error":{"message":"Service unavailable"}}', { status: 503 });
+      }
       if (url.includes('gemini-3.6-flash')) return new Response(JSON.stringify({
         candidates: [{ content: { role: 'model', parts: [{ text: 'repli réussi' }] } }],
         usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 4 },
