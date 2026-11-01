@@ -41,10 +41,12 @@ async function breakerRow(ref: string) {
 
 describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq 1376)', () => {
   beforeEach(async () => {
-    await db.prepare('DELETE FROM agent_model_breaker WHERE participant_id = ?1').bind(PARTICIPANT).run();
+    // Schéma AVANT purge : sur une base vierge, la table n'existe pas encore au premier rejeu.
     await ensureModelPolicySchema(db);
+    await db.prepare('DELETE FROM agent_model_breaker WHERE participant_id = ?1').bind(PARTICIPANT).run();
   });
   afterEach(async () => {
+    await ensureModelPolicySchema(db);
     await db.prepare('DELETE FROM agent_model_breaker WHERE participant_id = ?1').bind(PARTICIPANT).run();
   });
 

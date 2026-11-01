@@ -66,5 +66,7 @@ describe('CC8 S1b — incident Gemini 503, repli pendant le même appel', () => 
 // neutre : sans cela, trois échecs consécutifs cumulés de 3.8 mettraient le maillon en
 // pause et écarteraient précisément le repli que cette suite doit prouver.
 afterEach(async () => {
+  // Assurer la table avant la purge : un test peut échouer avant ensureModelPolicySchema.
+  await ensureModelPolicySchema(db);
   await db.prepare('DELETE FROM agent_model_breaker WHERE participant_id = ?1').bind('gemini').run();
 });
