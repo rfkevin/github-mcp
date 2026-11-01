@@ -19,6 +19,8 @@
  */
 import { FREE_MODEL_RATES, MODEL_CALL_OPTIONS, parseWorkersAiRef, type WorkersAiBinding } from '../executors/adapter';
 import { reserveNeurons, settleNeurons } from '../executors/run';
+// CC-8 S1b-2 : délai effectif via la politique unique (façade fetch-timeout → run-policy).
+import { providerTimeoutMs } from '../executors/fetch-timeout';
 import { ensureSchema } from '../store/schema';
 import { ModelCallError, type AgentMessage, type ModelClient, type ModelOutput, type ModelUsage, type ToolCall } from './engine';
 
@@ -182,10 +184,13 @@ export function createWorkersAiModel(options: WorkersAiModelOptions): ModelClien
       }
       let raw: unknown;
       try {
+        // CC-8 S1b-2 : délai effectif = min(défaut workers-ai, plafond du type de tâche,
+        // budget d'appels restant de l'étape) — l'ancien DEFAULT_TIMEOUT_MS 60 s devient
+        // le défaut 120 s de la politique unique (v2 points 2 et 4).
         raw = await withTimeout(options.ai.run(model, {
           ...MODEL_CALL_OPTIONS[model], messages, max_tokens: maxOutputTokens,
           ...(tools.length ? { tools } : {}),
-        }), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+        }), providerTimeoutMs('workers-ai', options.timeoutMs, input.task_kind, input.budget_left_ms));
       } catch (error) {
         // Appel incertain : la réserve reste au pire cas (jamais sous-comptée), l'usage est la borne d'entrée.
         throw new ModelCallError('workers_ai_error: ' + (error instanceof Error ? error.message : String(error)),

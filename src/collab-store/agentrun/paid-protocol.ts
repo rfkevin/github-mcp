@@ -181,7 +181,9 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...options.protocol.headers(secret) },
           body: JSON.stringify(prepared.body),
-        }, providerTimeoutMs(options.provider, options.timeoutMs));
+        // CC-8 S1b-2 : délai effectif = min(défaut fournisseur, plafond du type de tâche,
+        // budget d'appels restant de l'étape) — politique unique run-policy (v2 points 2 et 4).
+        }, providerTimeoutMs(options.provider, options.timeoutMs, input.task_kind, input.budget_left_ms));
         raw = await readUpstreamJson(response);
       } catch (error) {
         // Erreur incertaine du fournisseur : la réserve reste au pire cas (cents et
@@ -227,7 +229,8 @@ function createFreeProtocolModel(options: PaidProtocolModelOptions, model: strin
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...options.protocol.headers(secret) },
           body: JSON.stringify(prepared.body),
-        }, providerTimeoutMs(options.provider, options.timeoutMs));
+        // CC-8 S1b-2 : même politique de délai que la branche payante (kind + budget d'étape).
+        }, providerTimeoutMs(options.provider, options.timeoutMs, input.task_kind, input.budget_left_ms));
         raw = await readUpstreamJson(response);
       } catch (error) {
         throw new ModelCallError(options.provider + '_error: ' + (error instanceof Error ? error.message : String(error)),
