@@ -443,7 +443,8 @@ const CHAIN_REF_RE = /^[a-z][a-z-]{1,15}:\S{1,200}$/;
 
 export interface ChainEntry { readonly ref: string; readonly status: ChainStatus }
 
-export interface StoredChain { participant_id: string; version: number; chain: ChainEntry[]; updated_at: number }
+/** Chaîne courante : active = chaîne posée ; inactive = version RETIRÉE (sentinelle 'null', compteur monotone, défauts wrangler). */
+export interface StoredChain { participant_id: string; version: number; active: boolean; chain: ChainEntry[]; updated_at: number }
 
 /**
  * Tables internes au store (jamais dans le schéma canonique gelé), portables
