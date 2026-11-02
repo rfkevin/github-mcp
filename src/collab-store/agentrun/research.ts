@@ -23,6 +23,7 @@ import { listSalonMessages, postSalonMessage, SalonError } from '../salon';
 import { createRun, ToolRefused, type LookupResult, type ToolCall } from './engine';
 import { apiParticipants, RUN_COST_CENTS_CEILING } from './plan';
 import type { ToolSchema } from './workers-ai-model';
+import { recordModelFinding } from './model-finding';
 
 export const RESEARCH_TASK_KIND = 'research';
 export const RESEARCH_SUBJECTS = ['prix', 'infra'] as const;
@@ -370,6 +371,39 @@ export interface ResearchTools {
   lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult>;
 }
 
+/**
+ * CC-8 S4 — branchement veille → finding.
+ * Ligne reconnue (note salon prix) : FINDING provider:model https://…host… YYYY-MM-DD kind?
+ * Ex. « FINDING google:gemini-3.8-flash https://ai.google.dev/gemini-api/docs/pricing 2026-11-02 new_model »
+ * Sans ligne FINDING : aucun enregistrement (la note salon reste le journal).
+ */
+export async function tryRecordFindingFromResearchNote(
+  db: D1Database,
+  taskId: string,
+  body: string,
+  at: number,
+): Promise<{ finding_id: string; status: string } | null> {
+  if (!taskId.startsWith('veille-prix-')) return null;
+  const line = body.split('\n').map((l) => l.trim()).find((l) => /^FINDING\s+/i.test(l));
+  if (!line) return null;
+  const parts = line.replace(/^FINDING\s+/i, '').trim().split(/\s+/);
+  if (parts.length < 3) return null;
+  const [candidate_ref, source_url, as_of, kindRaw] = parts;
+  const kind = kindRaw && (['price_change', 'new_model', 'model_retired', 'effort_change', 'other'] as string[]).includes(kindRaw)
+    ? kindRaw : 'other';
+  const recorded = await recordModelFinding(db, {}, {
+    finding_id: 'mf-research-' + (await sha256Hex([taskId, candidate_ref, source_url, as_of].join('\u001f'))).slice(0, 24),
+    kind,
+    candidate_ref,
+    source_url,
+    as_of,
+    detail: { from: 'research_salon', task_id: taskId },
+    trigger_probe: true,
+    now: at,
+  });
+  return { finding_id: recorded.finding_id, status: recorded.status };
+}
+
 export function createResearchTools(db: D1Database, options: ResearchToolsOptions): ResearchTools {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
@@ -396,7 +430,9 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
       const result = await postSalonMessage(db, { SALON_ENABLED: options.salonEnabled ? 'true' : undefined }, {
         authorPid: scope.participant_id, level: 'info', body, taskId: scope.task_id, now: now(), wakeParticipants: wake });
       await db.prepare('UPDATE agent_research_posts SET msg_id = ?2 WHERE effect_key = ?1').bind(key, result.msg_id).run();
-      return { msg_id: result.msg_id, at: result.at };
+      // CC-8 S4 : veille prix → model.finding + sonde si ligne structurée présente (fail-soft).
+      const finding = await tryRecordFindingFromResearchNote(db, scope.task_id, body, now()).catch(() => null);
+      return { msg_id: result.msg_id, at: result.at, ...(finding ? { model_finding: finding } : {}) };
     } catch (error) {
       // Refus certain du salon (rien n'est écrit) : la réservation est rendue.
       if (error instanceof SalonError) {
