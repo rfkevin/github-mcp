@@ -355,6 +355,17 @@ export interface ResearchToolsOptions {
   now?: () => number;
 }
 
+const FINDING_OUTBOX_SCHEMA = [
+  'CREATE TABLE IF NOT EXISTS agent_research_finding_outbox (',
+  '  effect_key TEXT PRIMARY KEY,',
+  '  task_id TEXT NOT NULL,',
+  '  body TEXT NOT NULL,',
+  '  finding_status TEXT NOT NULL,',
+  '  finding_id TEXT,',
+  '  at INTEGER NOT NULL',
+  ')',
+].join(' ');
+
 const POSTS_SCHEMA = [
   'CREATE TABLE IF NOT EXISTS agent_research_posts (',
   '  effect_key TEXT PRIMARY KEY,',
@@ -404,6 +415,27 @@ export async function tryRecordFindingFromResearchNote(
   return { finding_id: recorded.finding_id, status: recorded.status };
 }
 
+/** Drain outbox : pending → done|none (idempotent, reprise lookup). */
+async function drainFindingOutbox(
+  db: D1Database,
+  effectKey: string,
+  taskId: string,
+  body: string,
+  at: number,
+): Promise<{ finding_id: string; status: string } | null> {
+  const finding = await tryRecordFindingFromResearchNote(db, taskId, body, at).catch(() => null);
+  if (!finding) {
+    await db.prepare(
+      'UPDATE agent_research_finding_outbox SET finding_status = ?2 WHERE effect_key = ?1 AND finding_status = ?3',
+    ).bind(effectKey, 'none', 'pending').run();
+    return null;
+  }
+  await db.prepare(
+    'UPDATE agent_research_finding_outbox SET finding_status = ?2, finding_id = ?3 WHERE effect_key = ?1',
+  ).bind(effectKey, 'done', finding.finding_id).run();
+  return finding;
+}
+
 export function createResearchTools(db: D1Database, options: ResearchToolsOptions): ResearchTools {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
@@ -430,8 +462,12 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
       const result = await postSalonMessage(db, { SALON_ENABLED: options.salonEnabled ? 'true' : undefined }, {
         authorPid: scope.participant_id, level: 'info', body, taskId: scope.task_id, now: now(), wakeParticipants: wake });
       await db.prepare('UPDATE agent_research_posts SET msg_id = ?2 WHERE effect_key = ?1').bind(key, result.msg_id).run();
-      // CC-8 S4 : veille prix → model.finding + sonde si ligne structurée présente (fail-soft).
-      const finding = await tryRecordFindingFromResearchNote(db, scope.task_id, body, now()).catch(() => null);
+      // CC-8 S4 : outbox finding avant tentative (reprise lookup si crash).
+      await db.prepare(FINDING_OUTBOX_SCHEMA).run();
+      await db.prepare(
+        'INSERT OR IGNORE INTO agent_research_finding_outbox (effect_key, task_id, body, finding_status, finding_id, at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)',
+      ).bind(key, scope.task_id, body, 'pending', now()).run();
+      const finding = await drainFindingOutbox(db, key, scope.task_id, body, now());
       return { msg_id: result.msg_id, at: result.at, ...(finding ? { model_finding: finding } : {}) };
     } catch (error) {
       // Refus certain du salon (rien n'est écrit) : la réservation est rendue.
@@ -465,7 +501,16 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
       const row = await db.prepare('SELECT msg_id, at FROM agent_research_posts WHERE effect_key = ?1').bind(ctx.effect_key)
         .first<{ msg_id: string; at: number }>();
       if (!row) return { found: false };
-      return row.msg_id === PENDING ? null : { found: true, result: { msg_id: row.msg_id, at: row.at } };
+      if (row.msg_id === PENDING) return null;
+      await db.prepare(FINDING_OUTBOX_SCHEMA).run();
+      const box = await db.prepare(
+        'SELECT task_id, body, finding_status FROM agent_research_finding_outbox WHERE effect_key = ?1',
+      ).bind(ctx.effect_key).first<{ task_id: string; body: string; finding_status: string }>();
+      let finding: { finding_id: string; status: string } | null = null;
+      if (box && box.finding_status === 'pending') {
+        finding = await drainFindingOutbox(db, ctx.effect_key, box.task_id, box.body, now());
+      }
+      return { found: true, result: { msg_id: row.msg_id, at: row.at, ...(finding ? { model_finding: finding } : {}) } };
     },
   };
 }

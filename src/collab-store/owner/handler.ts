@@ -228,8 +228,11 @@ export async function handleOwnerRequest(
         + (result.error_detail ? ' : ' + result.error_detail : ''))
         + ' pour ' + field('endpoint_id') + ' (seq ' + result.event.seq + ').', error: !result.ok };
     } else if (action === 'probe_model') {
-      // CC-8 S4 : même runner que model.finding (runModelProbe). Fail-closed si PROBE off / non implémenté.
-      const probeEnv: ProbeEnv = { AGENT_RUN_PROBE: (env as ProbeEnv).AGENT_RUN_PROBE };
+      // CC-8 S4 : même runner que model.finding. Live Gemini si clé + PROBE=true.
+      const probeEnv: ProbeEnv = {
+        AGENT_RUN_PROBE: (env as ProbeEnv).AGENT_RUN_PROBE,
+        LLM_KEY_GEMINI: (env as { LLM_KEY_GEMINI?: string }).LLM_KEY_GEMINI,
+      };
       const result = await runModelProbe(db, probeEnv, {
         candidate_ref: field('candidate_ref').trim(),
         source: 'owner_button',
