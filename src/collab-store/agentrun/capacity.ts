@@ -24,6 +24,8 @@ import { centsOfNeurons, envelopeFunded, PAID_MODEL_RATES } from './paid-model';
 import { breakerOpenUntil } from './model-policy';
 import { breakerSkipping } from './run-policy';
 import { participantModelRoute, resolveProviderRoute, type ProviderRoute } from './provider-models';
+// CC-8 S8a : pause serveur réversible (acte owner set_agent_run_status) — garde AVANT toute résolution.
+import { agentRunPaused } from '../owner/agent-run-status';
 
 export interface RunCapacity {
   capable: boolean;
@@ -39,6 +41,12 @@ function errorText(error: unknown): string {
 
 export async function runCapacity(db: D1Database, env: object, participantId: string, cycleId: string | null,
   kind: string, now: Date): Promise<RunCapacity> {
+  // CC-8 S8a : pause serveur réversible (acte owner set_agent_run_status) — AVANT toute politique,
+  // route ou sonde : un participant en pause ne reçoit AUCUN réveil, aucune exécution n'est créée
+  // pour lui. Fail-closed : sans ligne dans agent_run_status, le participant est actif.
+  if (await agentRunPaused(db, participantId)) {
+    return { capable: false, reason: 'AGENT_PAUSED : ' + participantId + ' est en pause serveur (acte owner set_agent_run_status) ; aucun réveil ne lui est confié' };
+  }
   const policyEnv = env as PolicyEnv;
   let policy;
   try {
