@@ -28,6 +28,7 @@ async function ensureFindingSchema(db: D1Database): Promise<void> {
       '  source_url TEXT NOT NULL,',
       '  as_of TEXT NOT NULL,',
       '  detail_json TEXT NOT NULL,',
+      '  detail_hash TEXT NOT NULL DEFAULT "",',
       '  probe_triggered INTEGER NOT NULL DEFAULT 0,',
       '  status TEXT NOT NULL',
       ')',
@@ -56,12 +57,17 @@ export interface ModelFindingRecord {
   candidate_ref: string;
   source_url: string;
   as_of: string;
-  status: 'recorded' | 'duplicate' | 'halted' | 'rejected';
+  status: 'recorded' | 'duplicate' | 'halted' | 'rejected' | 'resumed_probe';
   probe?: ProbeOutcome;
   error?: string;
 }
 
 const AS_OF_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+async function detailHashOf(detailJson: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(detailJson));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /** Enregistre un model.finding et optionnellement lance la sonde unique. */
 export async function recordModelFinding(
@@ -116,20 +122,44 @@ export async function recordModelFinding(
     };
   }
 
-  const existing = await db.prepare('SELECT finding_id, status FROM model_findings WHERE finding_id = ?1')
-    .bind(findingId).first<{ finding_id: string; status: string }>();
+  const detailJson = JSON.stringify(input.detail ?? {});
+  const detailHash = await detailHashOf(detailJson);
+
+  const existing = await db.prepare(
+    'SELECT finding_id, detail_hash, probe_triggered, status FROM model_findings WHERE finding_id = ?1',
+  ).bind(findingId).first<{ finding_id: string; detail_hash: string | null; probe_triggered: number; status: string }>();
+
   if (existing) {
+    if (existing.detail_hash && existing.detail_hash !== detailHash) {
+      return {
+        finding_id: findingId, at, kind, candidate_ref: input.candidate_ref,
+        source_url: url.toString(), as_of: input.as_of, status: 'rejected', error: 'finding_id_conflict',
+      };
+    }
+    // Reprise sonde interrompue après INSERT (probe_triggered=0).
+    if (input.trigger_probe && existing.probe_triggered === 0) {
+      const probe = await runModelProbe(db, env, {
+        candidate_ref: input.candidate_ref,
+        source: 'model_finding',
+        finding_id: findingId,
+        now: at,
+      });
+      await db.prepare('UPDATE model_findings SET probe_triggered = 1 WHERE finding_id = ?1').bind(findingId).run();
+      return {
+        finding_id: findingId, at, kind, candidate_ref: input.candidate_ref,
+        source_url: url.toString(), as_of: input.as_of, status: 'resumed_probe', probe,
+      };
+    }
     return {
       finding_id: findingId, at, kind, candidate_ref: input.candidate_ref,
       source_url: url.toString(), as_of: input.as_of, status: 'duplicate',
     };
   }
 
-  const detailJson = JSON.stringify(input.detail ?? {});
   await db.prepare([
-    'INSERT INTO model_findings (finding_id, at, kind, candidate_ref, source_url, as_of, detail_json, probe_triggered, status)',
-    'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)',
-  ].join(' ')).bind(findingId, at, kind, input.candidate_ref, url.toString(), input.as_of, detailJson, 'recorded').run();
+    'INSERT INTO model_findings (finding_id, at, kind, candidate_ref, source_url, as_of, detail_json, detail_hash, probe_triggered, status)',
+    'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)',
+  ].join(' ')).bind(findingId, at, kind, input.candidate_ref, url.toString(), input.as_of, detailJson, detailHash, 'recorded').run();
 
   let probe: ProbeOutcome | undefined;
   if (input.trigger_probe) {
