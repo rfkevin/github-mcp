@@ -67,6 +67,27 @@ describe('CC-8 S4 — sonde fail-closed + model.finding', () => {
     expect(out.error).toBe('NO_GEMINI_KEY');
   });
 
+  it('PROBE on gemini + mock fetch functionCall → live tools_ok, usable promotion', async () => {
+    await ensureSchema(db);
+    const mockFetch = async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ functionCall: { name: 'probe_ping', args: { ok: true } } }] } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const out = await runModelProbe(db, {
+      AGENT_RUN_PROBE: 'true',
+      LLM_KEY_GEMINI: 'test-key-not-real',
+      probeFetch: mockFetch as typeof fetch,
+    }, {
+      candidate_ref: 'gemini:gemini-3.6-flash',
+      source: 'test',
+      now: NOW,
+    });
+    expect(out.mode).toBe('live');
+    expect(out.provenance).toBe('provider');
+    expect(out.ok).toBe(true);
+    expect(out.tools_ok).toBe(true);
+    expect(probeUsableForPromotion(out)).toBe(true);
+  });
+
   it('allowSimulation : ok test-only, non utilisable promotion', async () => {
     await ensureSchema(db);
     const out = await runModelProbe(db, {}, {
