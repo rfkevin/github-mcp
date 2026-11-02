@@ -202,6 +202,9 @@ describe('CC-7 L5a — outils review, github_diff et github_open_pr', () => {
 
   it('github_open_pr : PR prête avec pied de page D12, lookup au draft false, seconde ouverture = conflit certain', async () => {
     const q = await seedTask('open-pr', () => []);
+    // S7 : ce scénario historique doit posséder un mandat serveur valide.
+    await db.prepare("UPDATE tasks SET status = 'in_progress', owned_paths = ?1 WHERE cycle_id = ?2 AND task_id = 'l5'")
+      .bind(JSON.stringify(['src/collab-store/agentrun/']), q.cycle).run();
     const runId = await newRun(q.cycle, q.owner, 'implement');
     const gh = fakeWrites();
     const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: DEFAULT_API_BASE_BRANCH });
