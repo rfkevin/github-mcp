@@ -239,7 +239,7 @@ describe('CC-8 S7 — mandat serveur et périmètre API', () => {
     const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
     const create = { id: 'b', name: 'github_create_branch', args: { name: 'halted', base_sha: BASE_SHA } };
     await tools.execute(create, { run_id: runId, effect_key: KEY('1') });
-    await db.prepare("INSERT OR REPLACE INTO owner_flags (name, value) VALUES ('halt', '1')").run();
+    await db.prepare("INSERT OR REPLACE INTO owner_flags (name, value, updated_at) VALUES ('halt', '1', 1980000000)").run();
     try {
       expect(await refusal(tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'blocked', base_sha: BASE_SHA } },
         { run_id: runId, effect_key: KEY('2') }))).toBe('api_write_fence_or_halt');
