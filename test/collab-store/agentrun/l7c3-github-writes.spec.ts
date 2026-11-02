@@ -94,6 +94,12 @@ async function newRun(participant: string, kind = 'implement') {
   const created = await createRun(db, { runId, cycleId: 'l7c3-cycle-' + n, participantId: participant, taskId: 'l7', taskKind: kind,
     prompt: 'p', maxSteps: 10, maxTokens: 1_000_000, maxCostCents: 0, deadlineAt: T + 86_400, now: T });
   expect(created.created).toBe(true);
+  // S7: les scénarios historiques d'écriture nécessitent désormais un mandat serveur.
+  await db.prepare("INSERT OR IGNORE INTO cycles (cycle_id) VALUES (?1)").bind('l7c3-cycle-' + n).run();
+  await db.prepare([
+    "INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths)",
+    "VALUES ('l7', ?1, ?2, 'reviewer', 'tester', 'in_progress', ?3)",
+  ].join(' ')).bind('l7c3-cycle-' + n, participant, JSON.stringify(['a.txt', 'src/collab-store/owner/runs.ts'])).run();
   return runId;
 }
 
@@ -211,6 +217,33 @@ describe('CC-5 l7c-3 — parcours et refus', () => {
     expect(pr).toMatchObject({ draft: true, base: BASE });
     expect(gh.prs[0].draft).toBe(true);
     expect(await refusal(tools.execute({ id: 'p', name: 'github_open_draft_pr', args: { name: 'pr', title: 't2' } }, { run_id: runId, effect_key: KEY('3') }))).toBe('CONFLICT');
+  });
+});
+
+describe('CC-8 S7 — mandat serveur et périmètre API', () => {
+  it('refuse les fichiers hors owned_paths avant tout effet GitHub', async () => {
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    const reason = await refusal(tools.execute({ id: 'c', name: 'github_commit_files', args: {
+      name: 'x', expected_head_sha: BASE_SHA, message: 'm',
+      files: [{ path: 'src/another/unauthorized.ts', content: 'export {};'}],
+    } }, { run_id: runId, effect_key: KEY('1') }));
+    expect(reason).toBe('api_write_path_outside_task');
+    expect(gh.calls).toEqual([]);
+  });
+
+  it('refuse un propriétaire différent ou une tâche non active', async () => {
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    const create = () => tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'x', base_sha: BASE_SHA } },
+      { run_id: runId, effect_key: KEY('1') });
+    await db.prepare("UPDATE tasks SET owner_pid = 'grok' WHERE cycle_id = ?1 AND task_id = 'l7'").bind('l7c3-cycle-' + n).run();
+    expect(await refusal(create())).toBe('api_write_task_not_authorized');
+    await db.prepare("UPDATE tasks SET owner_pid = 'vibe', status = 'done' WHERE cycle_id = ?1 AND task_id = 'l7'").bind('l7c3-cycle-' + n).run();
+    expect(await refusal(create())).toBe('api_write_task_not_authorized');
+    expect(gh.calls).toEqual([]);
   });
 });
 
