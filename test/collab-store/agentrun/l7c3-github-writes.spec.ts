@@ -233,6 +233,37 @@ describe('CC-8 S7 — mandat serveur et périmètre API', () => {
     expect(gh.calls).toEqual([]);
   });
 
+  it('HALT interdit toute écriture mais conserve le lookup de réconciliation', async () => {
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    const create = { id: 'b', name: 'github_create_branch', args: { name: 'halted', base_sha: BASE_SHA } };
+    await tools.execute(create, { run_id: runId, effect_key: KEY('1') });
+    await db.prepare("INSERT OR REPLACE INTO owner_flags (name, value) VALUES ('halt', '1')").run();
+    try {
+      expect(await refusal(tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'blocked', base_sha: BASE_SHA } },
+        { run_id: runId, effect_key: KEY('2') }))).toBe('api_write_fence_or_halt');
+      expect(await tools.lookup(create, { run_id: runId, effect_key: KEY('1') })).toMatchObject({ found: true });
+      expect(gh.refs.has('mcp/105856986/vibe-api-blocked')).toBe(false);
+    } finally {
+      await db.prepare("DELETE FROM owner_flags WHERE name = 'halt'").run();
+    }
+  });
+
+  it('préemption chat interdit une nouvelle écriture, lookup demeure possible', async () => {
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    const create = { id: 'b', name: 'github_create_branch', args: { name: 'before-chat', base_sha: BASE_SHA } };
+    await tools.execute(create, { run_id: runId, effect_key: KEY('1') });
+    await db.prepare("UPDATE agent_fences SET holder = 'chat', generation = generation + 1 WHERE lease_key = (SELECT lease_key FROM agent_runs WHERE run_id = ?1)")
+      .bind(runId).run();
+    expect(await refusal(tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'after-chat', base_sha: BASE_SHA } },
+      { run_id: runId, effect_key: KEY('2') }))).toBe('api_write_fence_or_halt');
+    expect(await tools.lookup(create, { run_id: runId, effect_key: KEY('1') })).toMatchObject({ found: true });
+    expect(gh.refs.has('mcp/105856986/vibe-api-after-chat')).toBe(false);
+  });
+
   it('refuse un propriétaire différent ou une tâche non active', async () => {
     const gh = fakeGitHub();
     const runId = await newRun('vibe');
