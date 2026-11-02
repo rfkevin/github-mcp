@@ -192,4 +192,36 @@ describe('CC-8 S8a — planificateur et vue du coordinateur : pause = aucune ex�
     expect(served.created).toBe(1);
     expect(await runsOf(cycle)).toEqual(['gemini']);
   });
+
+  it('fail-closed capacité : lecture du statut impossible → RUN_STATUS_UNAVAILABLE (aucune exécution, aucune sonde) ; sans ligne → actif', async () => {
+    const cycle = await clean('failclosed');
+    await registerParticipant(db, { participant_id: 'gemini', display_label: 'gemini', proof: OWNER_PROOF, op: 's8a-reg-fc-' + (++n) })
+      .catch(() => undefined);
+    const others = AGENTS.filter(pid => pid !== 'gemini');
+    await insertTaskRow(db, { taskId: 't-fail', cycle, owner: 'gemini', reviewer: others[0], tester: others[1] });
+    await pause('gemini', 0, 'paused', 'pause avant panne de lecture');
+    expect((await runCapacity(db, CC3_TEST, 'gemini', null, 'implement', NOW)).reason).toMatch(/^AGENT_PAUSED : /);
+    // Panne de lecture : la table est renommée (aucun DDL dupliqué ; restaurée dans le finally).
+    await db.prepare('ALTER TABLE agent_run_status RENAME TO agent_run_status_panne').run();
+    try {
+      for (const kind of ['implement', 'probe']) {
+        const refused = await runCapacity(db, CC3_TEST, 'gemini', null, kind, NOW);
+        expect(refused.capable, kind).toBe(false);
+        expect(refused.reason, kind).toMatch(/^RUN_STATUS_UNAVAILABLE : /);
+      }
+      const env = { ...CC3_TEST, AGENT_RUN_PARTICIPANTS: 'gemini' };
+      const blocked = await planAgentRuns(db, env, { now: 1_992_000_000 });
+      expect(blocked).toMatchObject({ created: 0, incapable: 1 });
+      expect(blocked.incapable_detail?.[0].reason).toMatch(/^RUN_STATUS_UNAVAILABLE : /);
+      expect(await runsOf(cycle)).toEqual([]); // aucune exécution créée pendant la panne
+    } finally {
+      await db.prepare('ALTER TABLE agent_run_status_panne RENAME TO agent_run_status').run();
+    }
+    // Sans ligne = actif (jamais de pause implicite) : gemini resservi après resumed,
+    // et claude (aucun acte, aucune ligne) garde son refus budgétaire habituel.
+    await pause('gemini', 1, 'resumed');
+    expect((await runCapacity(db, CC3_TEST, 'gemini', null, 'implement', NOW)).capable).toBe(true);
+    expect(await loadAgentRunStatus(db, 'claude')).toBeNull();
+    expect((await runCapacity(db, CC3_TEST, 'claude', null, 'implement', NOW)).reason).toMatch(/^MODEL_BUDGET_EXHAUSTED/);
+  });
 });

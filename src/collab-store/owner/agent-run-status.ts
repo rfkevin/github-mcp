@@ -10,7 +10,9 @@
  * - CAS sur la version attendue (lue, puis revérifiée dans le lot par garde SQL) ;
  * - précondition previous_seq du dernier acte de statut du participant ;
  * - fail-closed : sans ligne dans agent_run_status, le participant est ACTIF —
- *   une lecture défaillante ne met jamais un agent en pause ;
+ *   une lecture défaillante ne met jamais un agent en pause, et ne le déclare
+ *   pas actif non plus : l'erreur est propagée au consommateur unique
+ *   (runCapacity), qui rend le participant incapable (refus RUN_STATUS_UNAVAILABLE) ;
  * - réversibilité : l'acte opposé (paused → resumed) rend le service, le
  *   compteur de version reste monotone ;
  * - l'audit = les événements owner.decision du registre (aucun instantané).
@@ -58,18 +60,19 @@ export async function loadAgentRunStatus(db: D1Database, participantId: string):
 }
 
 /**
- * Le participant est-il en pause serveur ? Fail-closed : sans ligne, ou sur une
- * lecture défaillante, JAMAIS en pause — la pause est un acte owner explicite,
- * rien d'implicite. Lecture seule, un point d'accès par runCapacity.
+ * Le participant est-il en pause serveur ? Sans ligne : ACTIF (la pause est un
+ * acte owner explicite, rien d'implicite). Une erreur de lecture ne décide RIEN :
+ * elle est propagée au consommateur unique (runCapacity), qui rend le participant
+ * incapable — refus typé RUN_STATUS_UNAVAILABLE, fail-closed de la capacité.
+ * Lecture seule, un point d'accès par runCapacity.
  */
 export async function agentRunPaused(db: D1Database, participantId: string): Promise<boolean> {
-  try {
-    const row = await db.prepare('SELECT status FROM agent_run_status WHERE participant_id = ?1')
-      .bind(participantId).first<{ status: string }>();
-    return row?.status === 'paused';
-  } catch {
-    return false;
-  }
+  // La table est assurée ici (idempotent) : son absence n'est pas une panne ; toute
+  // erreur du SELECT qui suit est une lecture réellement défaillante, propagée.
+  await ensureRunStatusSchema(db);
+  const row = await db.prepare('SELECT status FROM agent_run_status WHERE participant_id = ?1')
+    .bind(participantId).first<{ status: string }>();
+  return row?.status === 'paused';
 }
 
 /** seq du dernier acte de statut d'un participant (précondition previous_seq d'une demande exécutable). */
