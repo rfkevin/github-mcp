@@ -40,6 +40,25 @@ async function breakerRow(ref: string) {
     .bind(PARTICIPANT, ref).first<{ consecutive_transient_failures: number; last_failure_at: number | null; circuit_open_until: number; probe_until: number | null }>();
 }
 
+/** Trois échecs transitoires consécutifs depuis at : le maillon passe en pause (ouvert à at + 2 + BREAKER_PAUSE_S). */
+async function seedTransientFailures(ref: string, at: number) {
+  for (let i = 0; i < 3; i++) {
+    await recordModelCallWithBreaker(db, PARTICIPANT, ref, { ok: false, at: at + i, latencyMs: 5, error: TRANSIENT });
+  }
+}
+
+/** fetch de test (D12 #255) : répond OK au maillon de repli okRef, refuse tout autre maillon (refusedLabel dans l'erreur). */
+function backupOnlyFetch(seen: string[], okRef: string, refusedLabel: string): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    seen.push(url);
+    if (url.includes(okRef)) {
+      return new Response(JSON.stringify(GEMINI_OK), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    throw new Error('Modèle ' + refusedLabel + ' appelé : ' + url);
+  }) as typeof fetch;
+}
+
 describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq 1376)', () => {
   beforeEach(async () => {
     // Schéma AVANT purge : sur une base vierge, la table n'existe pas encore au premier rejeu.
@@ -52,9 +71,7 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
   });
 
   it('trois échecs transitoires consécutifs → pause 30 min ; succès → série à zéro ; cumul global intact', async () => {
-    for (let i = 0; i < 3; i++) {
-      await recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT + i, latencyMs: 5, error: TRANSIENT });
-    }
+    await seedTransientFailures(PRIMARY, AT);
     const row = await breakerRow(PRIMARY);
     expect(row?.consecutive_transient_failures).toBe(3);
     expect(row?.circuit_open_until).toBe(AT + 2 + 1_800);
@@ -74,18 +91,9 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
 
   it('maillon en pause écarté : le repli est servi, le maillon en pause n’est pas appelé', async () => {
     const run = await freshRun(db, 's1b2-brk-b', AT, 10_000, PARTICIPANT);
-    for (let i = 0; i < 3; i++) {
-      await recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT + i, latencyMs: 5, error: TRANSIENT });
-    }
+    await seedTransientFailures(PRIMARY, AT);
     const seen: string[] = [];
-    const fetchImpl = (async (input: RequestInfo | URL) => {
-      const url = String(input);
-      seen.push(url);
-      if (url.includes('gemini-3.6-flash')) {
-        return new Response(JSON.stringify(GEMINI_OK), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      throw new Error('Modèle en pause appelé : ' + url);
-    }) as typeof fetch;
+    const fetchImpl = backupOnlyFetch(seen, 'gemini-3.6-flash', 'en pause');
     const result = await client(run.runId, fetchImpl).complete(message);
     expect(result.output.text).toBe('repli réussi');
     expect(seen).toHaveLength(1);
@@ -94,10 +102,8 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
 
   it('tous les maillons en pause : CIRCUIT_OPEN transitoire, AUCUN appel', async () => {
     const run = await freshRun(db, 's1b2-brk-c', AT, 10_000, PARTICIPANT);
-    for (let i = 0; i < 3; i++) {
-      await recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT + i, latencyMs: 5, error: TRANSIENT });
-      await recordModelCallWithBreaker(db, PARTICIPANT, BACKUP, { ok: false, at: AT + i, latencyMs: 5, error: TRANSIENT });
-    }
+    await seedTransientFailures(PRIMARY, AT);
+    await seedTransientFailures(BACKUP, AT);
     const seen: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL) => { seen.push(String(input)); throw new Error('aucun appel attendu'); }) as typeof fetch;
     let thrown: unknown;
@@ -109,9 +115,7 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
 
   it('sonde (task_kind probe) exemptée : le maillon en pause est re-testé, coupe-circuit inchangé', async () => {
     const run = await freshRun(db, 's1b2-brk-d', AT, 10_000, PARTICIPANT);
-    for (let i = 0; i < 3; i++) {
-      await recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT + i, latencyMs: 5, error: TRANSIENT });
-    }
+    await seedTransientFailures(PRIMARY, AT);
     const seen: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL) => {
       seen.push(String(input));
@@ -174,9 +178,7 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
 
   it('bail de sonde post-pause (bloquant 2, D12 #255) : un seul essai à la fois, fenêtre bornée, issue libérée', async () => {
     // Pause EXPIRÉE sur PRIMARY : la ligne reste en ré-qualification (open_until > 0, passée).
-    for (let i = 0; i < 3; i++) {
-      await recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT - 2_000 + i, latencyMs: 5, error: TRANSIENT });
-    }
+    await seedTransientFailures(PRIMARY, AT - 2_000);
     const seeded = await breakerRow(PRIMARY);
     expect(seeded?.circuit_open_until).toBe(AT - 2_000 + 2 + BREAKER_PAUSE_S);
     expect(seeded!.circuit_open_until).toBeLessThan(AT);
@@ -197,19 +199,10 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
 
   it('maillon post-pause dont le bail est tenu par un autre run : écarté, le repli est servi (bloquant 2)', async () => {
     const run = await freshRun(db, 's1b2-brk-g', AT, 10_000, PARTICIPANT);
-    for (let i = 0; i < 3; i++) {
-      await recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT - 2_000 + i, latencyMs: 5, error: TRANSIENT });
-    }
+    await seedTransientFailures(PRIMARY, AT - 2_000);
     expect(await acquireBreakerProbeLease(db, PARTICIPANT, PRIMARY, AT, BREAKER_PROBE_LEASE_S)).toBe(true);
     const seen: string[] = [];
-    const fetchImpl = (async (input: RequestInfo | URL) => {
-      const url = String(input);
-      seen.push(url);
-      if (url.includes('gemini-3.6-flash')) {
-        return new Response(JSON.stringify(GEMINI_OK), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      throw new Error('Modèle en ré-qualification appelé : ' + url);
-    }) as typeof fetch;
+    const fetchImpl = backupOnlyFetch(seen, 'gemini-3.6-flash', 'en ré-qualification');
     const result = await client(run.runId, fetchImpl).complete(message);
     expect(result.output.text).toBe('repli réussi');
     expect(seen).toHaveLength(1);

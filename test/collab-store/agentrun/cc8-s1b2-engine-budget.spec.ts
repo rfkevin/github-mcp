@@ -25,6 +25,25 @@ function toolHost(executed: { count: number }): ToolHost {
   };
 }
 
+/**
+ * Une étape dont l'appel modèle renvoie un effet write_tool, l'horloge avancée à modelEndsAt
+ * en fin d'appel (D12 #255). Renvoie l'issue, le nombre d'effets exécutés et le stop_reason :
+ * les tests de marges partagent ce socle au lieu de corps dupliqués (gate Sonar).
+ */
+async function runOneEffect(prefix: string, deadlineAt: number, modelEndsAt: number): Promise<{ outcome: string; executed: number; stopReason: string }> {
+  const runId = await freshRun(prefix, deadlineAt);
+  const clock = { now: AT + 1 };
+  const executed = { count: 0 };
+  const model: ModelClient = { complete: async () => {
+    clock.now = modelEndsAt;
+    return { output: { text: '', tool_calls: [{ id: 'call-1', name: 'write_tool', args: {} }] }, usage: { tokens: 1, cost_cents: 0 } };
+  } };
+  const deps: EngineDeps = { model, tools: toolHost(executed), now: () => clock.now, workerId: 's1b2-worker' };
+  const outcome = (await runStep(db, runId, deps)).outcome;
+  const run = await db.prepare('SELECT stop_reason FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ stop_reason: string }>();
+  return { outcome, executed: executed.count, stopReason: run?.stop_reason ?? '' };
+}
+
 describe('CC8 S1b-2 — budget d’appels et garde avant effets (engine, plan seq 1376 point 4)', () => {
   it('deadline trop proche : garde budget — arrêt propre model_transient, AUCUN appel modèle', async () => {
     const runId = await freshRun('s1b2-enga', AT + 20); // 20 s < plancher 30 s
@@ -64,43 +83,23 @@ describe('CC8 S1b-2 — budget d’appels et garde avant effets (engine, plan se
   });
 
   it.each([31, 60, 119])('marge %i s avant le plafond d’étape : l’effet n’est JAMAIS lancé (réserve 120 s + 30 s, D12 #255)', async margin => {
-    const runId = await freshRun('s1b2-engm' + margin, AT + 3_600);
-    const clock = { now: AT + 1 };
-    const executed = { count: 0 };
-    const model: ModelClient = { complete: async () => {
-      clock.now = AT + 1 + STEP_TIMEOUT_S - margin; // appel long simulé : la marge restante vaut le paramètre
-      return { output: { text: '', tool_calls: [{ id: 'call-1', name: 'write_tool', args: {} }] }, usage: { tokens: 1, cost_cents: 0 } };
-    } };
-    const deps: EngineDeps = { model, tools: toolHost(executed), now: () => clock.now, workerId: 's1b2-worker' };
-    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
-    expect(executed.count).toBe(0);
-    const run = await db.prepare('SELECT stop_reason FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ stop_reason: string }>();
-    expect(run?.stop_reason).toContain('temps insuffisant avant l’effet');
+    const r = await runOneEffect('s1b2-engm' + margin, AT + 3_600, AT + 1 + STEP_TIMEOUT_S - margin);
+    expect(r.outcome).toBe('failed'); // arrêt propre transient, effet jamais lancé
+    expect(r.executed).toBe(0);
+    expect(r.stopReason).toContain('temps insuffisant avant l’effet');
   });
 
   it('marge exacte 150 s (120 s d’effet + 30 s de marge) : l’effet est lancé, exécuté une seule fois', async () => {
-    const runId = await freshRun('s1b2-engok', AT + 3_600);
-    const clock = { now: AT + 1 };
-    const executed = { count: 0 };
-    const model: ModelClient = { complete: async () => {
-      clock.now = AT + 1 + STEP_TIMEOUT_S - EFFECT_LAUNCH_FLOOR_S;
-      return { output: { text: '', tool_calls: [{ id: 'call-1', name: 'write_tool', args: {} }] }, usage: { tokens: 1, cost_cents: 0 } };
-    } };
-    const deps: EngineDeps = { model, tools: toolHost(executed), now: () => clock.now, workerId: 's1b2-worker' };
-    expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
-    expect(executed.count).toBe(1);
+    const r = await runOneEffect('s1b2-engok', AT + 3_600, AT + 1 + STEP_TIMEOUT_S - EFFECT_LAUNCH_FLOOR_S);
+    expect(r.outcome).toBe('stepped');
+    expect(r.executed).toBe(1);
   });
 
   it('deadline du run trop proche alors que le plafond d’étape est large : l’effet n’est JAMAIS lancé (borné par les DEUX)', async () => {
-    const runId = await freshRun('s1b2-engd', AT + 141); // 140 s restantes à la deadline < 150 s
-    const clock = { now: AT + 1 };
-    const executed = { count: 0 };
-    const model: ModelClient = { complete: async () => {
-      clock.now = AT + 10; // plafond d'étape large (591 s), mais la deadline ne laisse que 131 s
-      return { output: { text: '', tool_calls: [{ id: 'call-1', name: 'write_tool', args: {} }] }, usage: { tokens: 1, cost_cents: 0 } };
-    } };
-    const deps: EngineDeps = { model, tools: toolHost(executed), now: () => clock.now, workerId: 's1b2-worker' };
-    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
-    expect(executed.count).toBe(0);
+    // Deadline à AT + 141 (140 s restantes < 150 s) ; plafond d'étape large (591 s), 131 s restantes.
+    const r = await runOneEffect('s1b2-engd', AT + 141, AT + 10);
+    expect(r.outcome).toBe('failed');
+    expect(r.executed).toBe(0);
+    expect(r.stopReason).toContain('temps insuffisant avant l’effet');
   });
 });

@@ -386,25 +386,23 @@ export async function recordModelCallWithBreaker(db: D1Database, participantId: 
     'WHERE agent_model_breaker.consecutive_transient_failures IS ?6 AND agent_model_breaker.last_failure_at IS ?7',
     '  AND agent_model_breaker.circuit_open_until IS ?8',
   ].join(' ');
-  const writeBreaker = async (retryRow: BreakerRow | null): Promise<boolean> => {
-    const retryNext = outcome.ok ? breakerAfterSuccess() : breakerAfterFailure(retryRow ?? null, outcome.at);
-    const saved = await db.prepare(upsertBreaker).bind(participantId, ref, retryNext.consecutive,
-      outcome.ok ? (retryRow?.last_failure_at ?? null) : outcome.at,
-      retryNext.open_until,
-      retryRow?.consecutive_transient_failures ?? null, retryRow?.last_failure_at ?? null, retryRow?.circuit_open_until ?? 0).run();
-    return (saved.meta.changes ?? 0) >= 1;
+  // L'upsert CAS est TOUJOURS construit depuis un état fraîchement lu : d'abord dans le
+  // même batch que le cumul (atomicité), puis en réessai borné si le CAS conflite.
+  const breakerStatement = (current: BreakerRow | null) => {
+    const next = outcome.ok ? breakerAfterSuccess() : breakerAfterFailure(current ?? null, outcome.at);
+    return db.prepare(upsertBreaker).bind(participantId, ref, next.consecutive,
+      outcome.ok ? (current?.last_failure_at ?? null) : outcome.at,
+      next.open_until,
+      current?.consecutive_transient_failures ?? null, current?.last_failure_at ?? null, current?.circuit_open_until ?? 0);
   };
-  const row = await db.prepare(selectBreaker).bind(participantId, ref).first<BreakerRow>();
-  const next = outcome.ok ? breakerAfterSuccess() : breakerAfterFailure(row ?? null, outcome.at);
-  const breaker = db.prepare(upsertBreaker).bind(participantId, ref, next.consecutive,
-    outcome.ok ? (row?.last_failure_at ?? null) : outcome.at,
-    next.open_until,
-    row?.consecutive_transient_failures ?? null, row?.last_failure_at ?? null, row?.circuit_open_until ?? 0);
-  const [, savedBreaker] = await db.batch([cumulative, breaker]);
+  const readBreaker = () => db.prepare(selectBreaker).bind(participantId, ref).first<BreakerRow>();
+  const row = await readBreaker();
+  const [, savedBreaker] = await db.batch([cumulative, breakerStatement(row)]);
   if ((savedBreaker.meta.changes ?? 0) >= 1) return;
   // Bloquant 3 (D12 #255) : le CAS a conflité (0 ligne) — relire et réécrire, réessai borné.
   for (let attempt = 1; attempt < BREAKER_WRITE_ATTEMPTS; attempt++) {
-    if (await writeBreaker(await db.prepare(selectBreaker).bind(participantId, ref).first<BreakerRow>())) return;
+    const saved = await breakerStatement(await readBreaker()).run();
+    if ((saved.meta.changes ?? 0) >= 1) return;
   }
   // Conflit persistant (≥ BREAKER_WRITE_ATTEMPTS courses simultanées) : sous-comptage borné,
   // jamais sur-comptage ni réouverture (CAS anti-rétrogradation inchangé).
