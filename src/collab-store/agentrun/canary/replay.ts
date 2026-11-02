@@ -99,7 +99,7 @@ function boundedPrompt(event: JournalEventRow, state: string | undefined): strin
 }
 
 /** Les plus récents rejouables de chaque type, ordre stable par type puis seq croissante. */
-export function selectReplayTasks(
+export async function selectReplayTasks(
   events: readonly JournalEventRow[],
   perKind: number = CANARY_MIN_PER_KIND,
 ): Promise<ReplayTask[]> {
