@@ -80,7 +80,7 @@ function basketMicroCents(rate: PromoteRate, inTokens: number, outTokens: number
 
 export async function runCanary(db: D1Database, options: RunCanaryOptions): Promise<CanaryReport> {
   const perKind = options.per_kind ?? CANARY_MIN_PER_KIND;
-  const tasks = selectReplayTasks(await journalEventsForReplay(db, options.cycle_id), perKind);
+  const tasks = await selectReplayTasks(await journalEventsForReplay(db, options.cycle_id), perKind);
   const byKind: Partial<Record<CanaryTaskKind, number>> = {};
   const insufficient: Partial<Record<CanaryTaskKind, number>> = {};
   for (const kind of CANARY_TASK_KINDS) byKind[kind] = 0;

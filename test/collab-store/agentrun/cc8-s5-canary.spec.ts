@@ -117,12 +117,12 @@ describe('CC-8 S5 — rejeu stratifié du journal', () => {
     expect(evidenceStateOf('{pas json')).toBeUndefined();
   });
 
-  it('sélection : 5 plus récents par type, prompts bornés, ordre stable, hash de source', () => {
+  it('sélection : 5 plus récents par type, prompts bornés, ordre stable, hash de source', async () => {
     const rows: JournalEventRow[] = [];
     for (let i = 1; i <= 7; i++) {
       rows.push({ seq: i, type: 'evidence.add', participant_id: 'vibe', payload_json: JSON.stringify({ task: 'S5', state: 'AGREE', review: 'r' + i }) });
     }
-    const tasks = selectReplayTasks(rows, 5);
+    const tasks = await selectReplayTasks(rows, 5);
     expect(tasks).toHaveLength(5);
     expect(tasks.map((t) => t.seq)).toEqual([3, 4, 5, 6, 7]);
     for (const task of tasks) {
@@ -133,12 +133,12 @@ describe('CC-8 S5 — rejeu stratifié du journal', () => {
     }
   });
 
-  it('payload non JSON : ignoré sans exception', () => {
+  it('payload non JSON : ignoré sans exception', async () => {
     const rows: JournalEventRow[] = [
       { seq: 1, type: 'checkpoint', participant_id: 'vibe', payload_json: '{pas json' },
       { seq: 2, type: 'checkpoint', participant_id: 'vibe', payload_json: JSON.stringify({ state: 'ok' }) },
     ];
-    const tasks = selectReplayTasks(rows, 5);
+    const tasks = await selectReplayTasks(rows, 5);
     expect(tasks.map((t) => t.seq)).toEqual([2]);
   });
 });
@@ -189,7 +189,7 @@ describe('CC-8 S5 — runner canary (coût 0, rapport rejouable)', () => {
     expect(report.calls).toBe(15);
     expect(report.calls_by_kind.test).toBe(0);
     expect(report.insufficient).toEqual({ test: 5 });
-    const { decision, proposal } = branchCanaryToF2(greenInput(cycle, report, true));
+    const { decision, proposal } = await branchCanaryToF2(greenInput(cycle, report, true));
     expect(decision.verdict).toBe('propose');
     expect(decision.reasons).toContain('canary_incomplet');
     expect(proposal?.next).toBe('beta');
@@ -207,7 +207,7 @@ describe('CC-8 S5 — runner canary (coût 0, rapport rejouable)', () => {
     expect(report.critical_error).toBe(true);
     expect(report.failures).toBe(20);
     expect(report.calls_by_kind).toEqual({ answer: 5, review: 5, test: 5, implement: 5 });
-    const { decision, proposal } = branchCanaryToF2(greenInput(cycle, report));
+    const { decision, proposal } = await branchCanaryToF2(greenInput(cycle, report));
     expect(decision.verdict).toBe('reject');
     expect(decision.reasons).toContain('canary_critique');
     expect(proposal).toBeNull();
@@ -231,7 +231,7 @@ describe('CC-8 S5 — runner canary (coût 0, rapport rejouable)', () => {
     const report = await runCanary(db, { cycle_id: cycle, candidate_ref: 'c', caller: leaky, now: () => NOW });
     expect(report.quota_rejections).toBe(5);
     expect(report.identity_leak).toBe(true);
-    const { decision } = branchCanaryToF2(greenInput(cycle, report));
+    const { decision } = await branchCanaryToF2(greenInput(cycle, report));
     expect(decision.verdict).toBe('reject');
     expect(decision.reasons).toContain('canary_critique');
   });
@@ -249,7 +249,7 @@ describe('CC-8 S5 — branchement F2 : sortie = tâche de promotion, contre-exem
       candidate_rate: RATES.candidate,
       now: () => NOW,
     });
-    const { decision, proposal } = branchCanaryToF2(greenInput(cycle, report, false));
+    const { decision, proposal } = await branchCanaryToF2(greenInput(cycle, report, false));
     expect(decision.verdict).toBe('propose');
     expect(decision.reasons).toContain('auto_desactivee');
     const p = proposal as PromotionTaskProposal;
@@ -258,7 +258,7 @@ describe('CC-8 S5 — branchement F2 : sortie = tâche de promotion, contre-exem
     expect(p.canary_calls).toBe(20);
     expect(p.report_hash).toMatch(/^[0-9a-f]{64}$/);
     // même rapport → même empreinte (rejouable)
-    const again = branchCanaryToF2(greenInput(cycle, report, false));
+    const again = await branchCanaryToF2(greenInput(cycle, report, false));
     expect((again.proposal as PromotionTaskProposal).report_hash).toBe(p.report_hash);
   });
 
@@ -273,50 +273,50 @@ describe('CC-8 S5 — branchement F2 : sortie = tâche de promotion, contre-exem
       candidate_rate: RATES.candidate,
       now: () => NOW,
     });
-    const { decision, proposal } = branchCanaryToF2(greenInput(cycle, report, true));
+    const { decision, proposal } = await branchCanaryToF2(greenInput(cycle, report, true));
     expect(decision.verdict).toBe('auto_apply');
     expect(proposal?.verdict).toBe('auto_apply');
     expect(proposal?.next).toBe('beta');
   });
 
-  it('contre-exemples F2 conservés à travers le branchement', () => {
+  it('contre-exemples F2 conservés à travers le branchement', async () => {
     // 1 seul appel : jamais auto, même politique on
-    const one = branchCanaryToF2(greenInput('c', reportOf({ calls: 1, calls_by_kind: { answer: 1 } }), true));
+    const one = await branchCanaryToF2(greenInput('c', reportOf({ calls: 1, calls_by_kind: { answer: 1 } }), true));
     expect(one.decision.verdict).toBe('propose');
     expect(one.decision.reasons).toContain('canary_incomplet');
     // type manquant : canary incomplet → propose seulement
-    const missing = branchCanaryToF2(greenInput('c', reportOf({ calls: 15, calls_by_kind: { answer: 5, review: 5, implement: 5 } }), true));
+    const missing = await branchCanaryToF2(greenInput('c', reportOf({ calls: 15, calls_by_kind: { answer: 5, review: 5, implement: 5 } }), true));
     expect(missing.decision.verdict).toBe('propose');
     // alias latest : reject, aucune tâche de promotion
-    const latest = branchCanaryToF2({ ...greenInput('c', reportOf()), candidate_ref: 'gemini:latest' });
+    const latest = await branchCanaryToF2({ ...greenInput('c', reportOf()), candidate_ref: 'gemini:latest' });
     expect(latest.decision.verdict).toBe('reject');
     expect(latest.decision.reasons).toContain('ref_non_epinglee');
     expect(latest.proposal).toBeNull();
     // tarif NaN : reject
-    const nan = branchCanaryToF2({ ...greenInput('c', reportOf()), candidate_rate: { input_per_m: Number.NaN, output_per_m: 1 } });
+    const nan = await branchCanaryToF2({ ...greenInput('c', reportOf()), candidate_rate: { input_per_m: Number.NaN, output_per_m: 1 } });
     expect(nan.decision.verdict).toBe('reject');
     expect(nan.decision.reasons).toContain('tarif_candidat_invalide');
     // efforts invalides : reject sonde
-    const efforts = branchCanaryToF2({ ...greenInput('c', reportOf()), probe: { ok: true, tools_ok: true, efforts_ok: ['niveau-invalide'] } });
+    const efforts = await branchCanaryToF2({ ...greenInput('c', reportOf()), probe: { ok: true, tools_ok: true, efforts_ok: ['niveau-invalide'] } });
     expect(efforts.decision.verdict).toBe('reject');
     expect(efforts.decision.reasons).toContain('sonde_efforts_invalides');
     // sonde échouée : reject
-    const sonde = branchCanaryToF2({ ...greenInput('c', reportOf()), probe: { ok: false, tools_ok: true, efforts_ok: ['low'] } });
+    const sonde = await branchCanaryToF2({ ...greenInput('c', reportOf()), probe: { ok: false, tools_ok: true, efforts_ok: ['low'] } });
     expect(sonde.decision.verdict).toBe('reject');
     expect(sonde.decision.reasons).toContain('sonde_echec');
     // fuite : reject
-    expect(branchCanaryToF2(greenInput('c', reportOf({ identity_leak: true }))).decision.reasons).toContain('canary_critique');
+    expect((await branchCanaryToF2(greenInput('c', reportOf({ identity_leak: true })))).decision.reasons).toContain('canary_critique');
     // taux d échec > 5 % : reject
-    const taux = branchCanaryToF2(greenInput('c', reportOf({ failures: 2 })));
+    const taux = await branchCanaryToF2(greenInput('c', reportOf({ failures: 2 })));
     expect(taux.decision.verdict).toBe('reject');
     expect(taux.decision.reasons).toContain('canary_taux_echec');
     // coût supérieur : propose (jamais auto), pas de reject silencieux
-    const cout = branchCanaryToF2(greenInput('c', reportOf({ cost_ratio: 1.5 }), true));
+    const cout = await branchCanaryToF2(greenInput('c', reportOf({ cost_ratio: 1.5 }), true));
     expect(cout.decision.verdict).toBe('propose');
     expect(cout.decision.reasons).toContain('canary_cout_superieur');
     // gratuit devenu payant : propose gel ou repli
-    const payant = branchCanaryToF2(greenInput('c', reportOf(), true));
-    const gele = branchCanaryToF2({ ...greenInput('c', reportOf(), true), candidate_still_free: false });
+    const payant = await branchCanaryToF2(greenInput('c', reportOf(), true));
+    const gele = await branchCanaryToF2({ ...greenInput('c', reportOf(), true), candidate_still_free: false });
     expect(gele.decision.verdict).toBe('propose');
     expect(gele.decision.reasons).toContain('gratuit_devenu_payant_gel_ou_repli');
     expect(payant.decision.verdict).not.toBe('reject');

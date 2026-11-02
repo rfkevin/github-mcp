@@ -102,7 +102,7 @@ function boundedPrompt(event: JournalEventRow, state: string | undefined): strin
 export function selectReplayTasks(
   events: readonly JournalEventRow[],
   perKind: number = CANARY_MIN_PER_KIND,
-): ReplayTask[] {
+): Promise<ReplayTask[]> {
   const byKind = new Map<CanaryTaskKind, ReplayTask[]>();
   for (const kind of KIND_ORDER) byKind.set(kind, []);
   for (const event of events) {
@@ -117,7 +117,7 @@ export function selectReplayTasks(
       seq: event.seq,
       kind,
       prompt,
-      source_hash: sha256Hex(event.type + '\n' + event.payload_json),
+      source_hash: await sha256Hex(event.type + '\n' + event.payload_json),
     });
   }
   const tasks: ReplayTask[] = [];

@@ -67,7 +67,7 @@ export function canaryResultOf(report: CanaryReport): CanaryResult {
 }
 
 /** Empreinte canonique du rapport (clés triées une fois, rejouable). */
-export function reportHashOf(report: CanaryReport): string {
+export function reportHashOf(report: CanaryReport): Promise<string> {
   const canonical = JSON.stringify(report, (_key, value: unknown) => {
     if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
       const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1));
@@ -79,7 +79,7 @@ export function reportHashOf(report: CanaryReport): string {
 }
 
 /** Branchement : rapport canary + sonde → décision F2 → tâche de promotion ou rien. */
-export function branchCanaryToF2(input: BranchF2Input): PromotionOutcome {
+export async function branchCanaryToF2(input: BranchF2Input): Promise<PromotionOutcome> {
   const decision = decidePromotion({
     current_ref: input.current_ref,
     candidate_ref: input.candidate_ref,
@@ -102,7 +102,7 @@ export function branchCanaryToF2(input: BranchF2Input): PromotionOutcome {
       candidate_ref: input.candidate_ref,
       verdict: decision.verdict,
       reasons: decision.reasons,
-      report_hash: reportHashOf(input.report),
+      report_hash: await reportHashOf(input.report),
       canary_calls: input.report.calls,
       next: 'beta',
     },
