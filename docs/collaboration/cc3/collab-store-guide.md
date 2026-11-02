@@ -159,7 +159,7 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 
 ### `collab_agent_runs_overview`
 - **CC-8 S1a** : vue du **coordinateur** sur les exécutions API de **tous** les agents d'un cycle (`cycle_id`, `limit` 1–100, défaut 40). Réservée au détenteur du mandat du cycle (`collab_next_actions` → `coordinator: true`) ou à un coordinateur owner-approved ; sinon `COORDINATOR_REQUIRED`.
-- **Lecture seule** : `counts` (exécutions par agent et statut), `runs` (métadonnées : run_id, agent, tâche, type, statut, `stop_code` réduit au code typé de la raison d'arrêt, étapes, jetons, coût, dates), `capacity` (dernier verdict du planificateur par agent et type : modèle retenu, ou refus typé `MODEL_BUDGET_EXHAUSTED`, `MODEL_ROUTE_REFUSED`, `NO_MODEL`, `CIRCUIT_OPEN`…), `breaker` (maillons en pause coupe-circuit S1b-2).
+- **Lecture seule** : `counts` (exécutions par agent et statut), `runs` (métadonnées : run_id, agent, tâche, type, statut, `stop_code` réduit au code typé de la raison d'arrêt, étapes, jetons, coût, dates), `capacity` (dernier verdict du planificateur par agent et type : modèle retenu, ou refus typé `MODEL_BUDGET_EXHAUSTED`, `MODEL_ROUTE_REFUSED`, `NO_MODEL`, `CIRCUIT_OPEN`, `AGENT_PAUSED` (participant en pause serveur, acte `set_agent_run_status`, CC-8 S8a : aucun réveil ne lui est confié)…), `breaker` (maillons en pause coupe-circuit S1b-2).
 - **Jamais de contenu privé** : ni consigne, ni résumé, ni sortie de modèle.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `COORDINATOR_REQUIRED`, `STORE_UNAVAILABLE`.
 
@@ -320,7 +320,7 @@ Toute erreur non typée du store (D1 indisponible, binding absent) répond `STOR
 Un agent prépare l’acte au lieu de demander à Kevin de le coller. Il dépose un `owner.request` dont le `payload_json` contient :
 
 - `request_id`, `summary` ;
-- `action` : `install_phases`, `import_state`, `register_endpoint`, `grant_coordinator`, `set_identity_family`, `reassign_task`, `classify_request`, `close_cycle` ou `appoint_cycle_coordinator` (CC-Owner V2 L6 pour les trois derniers) ; `probe_endpoint` et `run_trial` ne sont jamais des demandes exécutables : acte déterministe D1-only scellé dans le même lot, appel réseau externe impossible — la voie reste une demande simple tranchée par decide ;
+- `action` : `install_phases`, `import_state`, `register_endpoint`, `grant_coordinator`, `set_identity_family`, `reassign_task`, `classify_request`, `close_cycle` ou `appoint_cycle_coordinator` (CC-Owner V2 L6 pour les trois derniers) ou `set_agent_run_status` (CC-8 S8a — pause serveur réversible du canal API) ; `probe_endpoint` et `run_trial` ne sont jamais des demandes exécutables : acte déterministe D1-only scellé dans le même lot, appel réseau externe impossible — la voie reste une demande simple tranchée par decide ;
 - `params` :
   - `install_phases` : `{cycle_id, definitions}`, où `definitions` est le JSON des définitions sous forme de chaîne ;
   - `import_state` : `{cycle_id, markdown, owner_label?, target?: {repository, path, ref}}`, l’état faisant au plus 60 000 caractères ;
@@ -329,6 +329,7 @@ Un agent prépare l’acte au lieu de demander à Kevin de le coller. Il dépose
   - `classify_request` : `{request_seq, verdict, note?}` (CC-Owner V2 L6) — la cible est la demande portant ce numéro (seq), son cycle est résolu à l’approbation ; `previous_seq` est toujours `null` (la PK 0011 scelle la cible dans le même lot) ; l’acte lié porte l’identité de la demande exécutable, la cible vit dans `request_classifications` ;
   - `close_cycle` : `{cycle_id}` seul (CC-Owner V2 L6) — clôture DOUCE ; `force`, `reason` et `confirm` ne sont pas des paramètres approuvables (champs inconnus) ; `previous_seq` est toujours `null` ; la demande close elle-même est exclue du comptage et de la garde (exclusion symétrique JS/SQL), sinon elle se bloquerait seule ;
   - `appoint_cycle_coordinator` : `{cycle_id, participant_id, family_id, expected_epoch}` (CC-Owner V2 L6) — nomination (les deux identifiants ensemble) ou révocation par vacance (aucun des deux) ; `previous_seq` = seq du dernier acte de mandat du cycle, `null` s’il n’y en a pas ; jamais déléguable ;
+  - `set_agent_run_status` : `{participant_id, status: "paused"|"resumed", expected_version}` (CC-8 S8a) — pause serveur réversible du canal API d'un participant : jamais déléguable, CAS sur la version du statut du participant (`RUN_STATUS_VERSION_STALE` si périmée, rien n'est écrit), précondition `previous_seq` = dernier acte de statut du participant ; fail-closed : sans ligne, le participant est actif ; l'acte opposé (`resumed`) rend le service au passage suivant ;
 - `payload_sha256` = sha256 du JSON canonique de `{action, params}` (clés triées récursivement, sans espaces) ;
 - `preconditions.previous_seq` : seq du dernier acte du même type sur le cycle cible au moment du dépôt, ou `null` ;
 - `reason`, `risk`, `rollback` (texte requis) ;
@@ -765,3 +766,16 @@ L'acte owner `set_agent_models` (jamais déléguable, CAS `expected_version`, in
 | Code | Lot | Signification | Que faire |
 | --- | --- | --- | --- |
 | `INVALID_RUN_ATTEMPT` | CC-8 S1b | Numéro de tentative hors de la plage autorisée (1 à 3) | Fournir une tentative entière comprise entre 1 et 3 |
+
+
+### CC-8 S8a — pause serveur réversible et réveil événementiel (complément aux sections 3 et 6.1)
+
+**Pause serveur** : l’acte owner `set_agent_run_status` (§6.1 ; jamais déléguable) pose ou lève la pause du canal API d’un participant : table `agent_run_status`, CAS `expected_version` revérifié dans le lot d’écriture, audit = les événements `owner.decision` du registre (aucun instantané). Fail-closed : sans ligne, le participant est actif ; une lecture défaillante ne met jamais personne en pause. La garde `agentRunPaused` s’applique en tête de `runCapacity`, AVANT toute politique, route ou sonde (sondes comprises) : un participant en pause ne reçoit aucun réveil, aucune exécution n’est créée pour lui, et le verdict `AGENT_PAUSED` est journalisé (`agent_run_capacity`) puis rendu au coordinateur par `collab_agent_runs_overview`. L’acte opposé (`resumed`) rend le service au passage suivant ; le compteur de version reste monotone.
+
+**Réveil événementiel** : après une écriture APPLIQUÉE (jamais duplicate, STALE ni refusée) d’un type réveil — `clarify.ask` adressée (`to` non vide), `evidence.add`, `task.claim`, `task.status`, `task.handoff`, `owner.decision` (canal /owner) ou `round.add` (via `collab_phase_adjust`) — le canal programme le MÊME passage que le webhook via `ctx.waitUntil`, jamais bloquant pour la réponse ; les étapes restent des alarmes du Durable Object. Anti-rafale : bail D1 `agent_run_pass_lease` (CAS atomique, TTL 60 s) — au plus un passage événementiel par minute ; le webhook et le passage programmé restent inchangés, ce dernier demeure le filet de sécurité. Les autres actes owner (halt, close, register…) ne réveillent pas.
+
+| Code | Lot | Signification | Que faire |
+| --- | --- | --- | --- |
+| `RUN_STATUS_INVALID` | CC-8 S8a | `status` hors `paused`/`resumed` | Corriger le payload de la demande |
+| `RUN_STATUS_VERSION_STALE` | CC-8 S8a | Le statut de réveil du participant est à une autre version que celle attendue (relue avant l’acte ou revérifiée dans le lot) : rien n’est écrit | Relire la version affichée sur `/owner` et redéposer |
+| `RUN_STATUS_VERSION_INVALID` | CC-8 S8a | `expected_version` n’est pas un entier ≥ 0 | Corriger le payload de la demande |

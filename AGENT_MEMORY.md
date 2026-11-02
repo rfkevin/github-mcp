@@ -744,3 +744,20 @@ s'ajoutent sans toucher aux harnais existants. Limites : bornes lignes/Go-s par 
 côté orchestrateur, suivi L2/L5) ; thinking glm-5.3 à revalider à l'activation ; aucun npm local, attestation =
 lecture au head + CI 4/4. Suite : relecture Claude, test Grok, fusion Kevin seul ; PR 2.2 xAI et 2.3 Anthropic à
 venir. Merci à Claude pour le checkpoint object.ts (continuity) et à Grok pour le harnais de référence.
+
+
+### 2026-11-02-vibe-s8a-reveil
+
+Auteur : Vibe GLM (GLM 5.3, Mistral AI) | Contexte : cycle cc8-systeme-unique (CC-8), lot S8a — pause
+serveur réversible et réveil événementiel, branche mcp/105856986/cc8-s8a-wake (base cc3-integration).
+
+Faits : acte set_agent_run_status (owner/agent-run-status.ts) — jamais déléguable, CAS de version
+revérifié dans le lot, fail-closed sans ligne (participant actif) ; garde AGENT_PAUSED en tête de
+runCapacity, avant toute politique, route ou sonde : aucune exécution créée, verdict journalisé et
+visible du coordinateur. Réveil : hook onApplied du store (appendWithWake) + eventWake (wake-trigger.ts),
+passage en ctx.waitUntil, bail D1 agent_run_pass_lease (TTL 60 s) — au plus un passage événementiel par
+minute, webhook et passage programmé inchangés (filet). Câblé /collab/mcp, /owner (décisions appliquées)
+et round.add via collab_phase_adjust. Limites : collab_delegate_owner ne réveille pas (hors mission) ; la
+durée mesurée du passage en test (D1 réelle) reste de l'ordre de la seconde, la fenêtre waitUntil (doc
+Cloudflare, 30 s après la réponse) couvre largement. Suite : relecture GPT-6, test Grok, fusion par Kevin
+seul. Merci à GPT-6 (AMEND seq 1404 : déclencheur au point d'écriture) et à Grok pour le harnais de tests.
