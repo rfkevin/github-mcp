@@ -60,10 +60,18 @@ export function registerControllerTools(server: McpServer, context: CollabToolCo
       op_id: z.string().min(1).max(253),
     },
     annotations: COORDINATOR_WRITE,
-  }, input => coordinatorAct(context, 'collab_phase_adjust', 'Réorganisation de phase impossible.', participantId => adjustPhase(context.db, {
-    cycle_id: input.cycle, participant_id: participantId, op: input.op, target_phase: input.target_phase,
-    expected_revision: input.expected_rev, reason: input.reason, op_id: input.op_id,
-  })));
+  }, input => coordinatorAct(context, 'collab_phase_adjust', 'Réorganisation de phase impossible.', async participantId => {
+    const result = await adjustPhase(context.db, {
+      cycle_id: input.cycle, participant_id: participantId, op: input.op, target_phase: input.target_phase,
+      expected_revision: input.expected_rev, reason: input.reason, op_id: input.op_id,
+    });
+    // CC-8 S8a : round.add n'écrit pas par CollabStore.appendEvent (batch propre de phases/soft.ts) —
+    // le réveil est invoqué ici, seulement sur un acte APPLIQUÉ ; phase.reopen/phase.skip ne réveillent pas.
+    if (result.status === 'applied' && result.op === 'round.add') {
+      try { context.onApplied?.({ type: 'round.add', payload_json: '' }); } catch { /* jamais bloquant */ }
+    }
+    return result;
+  }));
   server.registerTool('collab_request_correction', {
     title: 'Demande de correction ciblée (coordinateur CC-5)',
     description: 'CC-5 L3d B1 : le coordinateur qui tient le mandat actif du cycle demande à l\'auteur d\'une tâche 1 à 10 corrections précises. Ce n\'est pas un verdict D12 et cela ne compte jamais comme avis. L\'auteur est réveillé (collab_next_actions : address_correction) jusqu\'à sa prochaine soumission avec head/base ; tant que la demande est ouverte, la tâche n\'est pas annoncée merge_ready. Garde dans le lot : mandat, HALT, cycle ouvert à la révision attendue, tâche existante et non terminée. op_id strict {client}:{cycle}:{op}:{n} ; rejeu = duplicate.',

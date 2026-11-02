@@ -100,15 +100,20 @@ export interface StoreContextTask {
 export interface StoreOptions {
   dailyWriteLimit?: number;
   now?: () => Date;
+  /** CC-8 S8a : hook de réveil événementiel — appelé seulement après un événement APPLIQUÉ, jamais sur duplicate/STALE/refus. */
+  onApplied?: (event: { type: string; payload_json: string }) => void;
 }
 
 export class CollabStore {
   private readonly now: () => Date;
   private readonly dailyWriteLimit: number;
+  /** CC-8 S8a : réveil événementiel optionnel — une erreur du hook ne remonte jamais vers l'écriture. */
+  private readonly onApplied?: StoreOptions['onApplied'];
 
   constructor(private readonly db: D1Database, options: StoreOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.dailyWriteLimit = options.dailyWriteLimit ?? DEFAULT_DAILY_WRITE_LIMIT;
+    this.onApplied = options.onApplied;
   }
 
   async currentRevision(cycleId: string): Promise<number> {
@@ -119,13 +124,30 @@ export class CollabStore {
     return row?.revision ?? 0;
   }
 
+  /**
+   * CC-8 S8a : les deux seuls points d'écriture publique d'un événement passent ici —
+   * le hook de réveil ne voit qu'un événement APPLIQUÉ (jamais duplicate, STALE ni
+   * refusé) et ne peut jamais faire échouer l'écriture.
+   */
+  private async appendWithWake(input: AppendEventInput, invocationIntent?: InvocationIntent): Promise<AppendOutcome> {
+    const outcome = await this.appendEventInternal(input, invocationIntent);
+    if (outcome.status === 'applied' && this.onApplied) {
+      try {
+        this.onApplied({ type: outcome.event.type, payload_json: outcome.event.payload_json });
+      } catch {
+        // Le réveil ne doit jamais faire échouer une écriture appliquée.
+      }
+    }
+    return outcome;
+  }
+
   async appendEvent(input: AppendEventInput): Promise<AppendOutcome> {
-    return this.appendEventInternal(input);
+    return this.appendWithWake(input);
   }
 
   /** A1 internal path: event + durable outbox intent share the same CAS batch. */
   async appendActionableEvent(input: AppendEventInput, invocation: InvocationIntent): Promise<AppendOutcome> {
-    return this.appendEventInternal(input, invocation);
+    return this.appendWithWake(input, invocation);
   }
 
   private async appendEventInternal(input: AppendEventInput, invocationIntent?: InvocationIntent): Promise<AppendOutcome> {

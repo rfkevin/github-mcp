@@ -134,6 +134,13 @@ const TABLES = [
     '  at INTEGER NOT NULL',
     ')'].join(' '),
   'CREATE INDEX IF NOT EXISTS agent_run_reads_run ON agent_run_reads (run_id)',
+  // CC-8 S8a : bail anti-rafale du passage événementiel — singleton mutable (jamais dans
+  // NO_DELETE) : au plus un passage événementiel par PASS_LEASE_TTL_S (wake-trigger.ts).
+  ['CREATE TABLE IF NOT EXISTS agent_run_pass_lease (',
+    '  id INTEGER PRIMARY KEY CHECK (id = 1),',
+    '  holder TEXT NOT NULL,',
+    '  expires_at INTEGER NOT NULL',
+    ')'].join(' '),
 ];
 
 const NO_DELETE = ['agent_fences', 'agent_runs', 'agent_run_steps', 'agent_run_effects', 'agent_run_wakeups',
