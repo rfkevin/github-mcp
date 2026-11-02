@@ -5,6 +5,7 @@ import type { StoreEventType } from '../../../src/collab-store/contracts';
 import {
   acquireEventPassLease, eventWake, PASS_LEASE_TTL_S, wakeWorthy, WAKE_EVENT_TYPES,
 } from '../../../src/collab-store/agentrun/wake-trigger';
+import type { WakeFn } from '../../../src/collab-store/agentrun/orchestrator';
 import { ensureAgentRunSchema } from '../../../src/collab-store/agentrun/schema';
 import type { AgentRunObjectEnv } from '../../../src/collab-store/agentrun/object';
 import { latestRunStatusActSeq } from '../../../src/collab-store/owner/agent-run-status';
@@ -29,7 +30,7 @@ const CC3_VARS = wrangler.env['cc3-test'].vars;
 // (le wake de test est injecté) ; COLLAB_DB pointe la base du test pour le bail et le passage.
 const WAKE_TEST: AgentRunObjectEnv = { ...CC3_VARS, AI: {} as never, LLM_KEY_GEMINI: 'k', AGENT_RUNS_ENABLED: 'true',
   AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: 'gemini', COLLAB_DB: db, AGENT_RUN: {} as never };
-const REJECT_WAKE = async (): Promise<{ accepted: boolean; reason: string }> => ({ accepted: false, reason: 'test' });
+const REJECT_WAKE: WakeFn = async () => ({ accepted: false, reason: 'test' });
 let n = 0;
 
 /** Contexte d'exécution factice : collecte les promesses de waitUntil, les attend à la demande. */
@@ -185,7 +186,8 @@ describe('CC-8 S8a — pipeline du canal /collab/mcp : écriture appliquée → 
     const storeOff = new CollabStore(db, { onApplied: eventWake({ ...WAKE_TEST, AGENT_RUNS_ENABLED: 'false' }, off.ctx, REJECT_WAKE) });
     const noBinding = fakeWaitCtx();
     const storeNoBinding = new CollabStore(db, { onApplied: eventWake({ ...WAKE_TEST, AGENT_RUN: undefined }, noBinding.ctx, REJECT_WAKE) });
-    for (const [label, store] of [['off', storeOff], ['no-binding', storeNoBinding] as const]) {
+    const cases: Array<[string, CollabStore]> = [['off', storeOff], ['no-binding', storeNoBinding]];
+    for (const [label, store] of cases) {
       const out = await store.appendEvent({ cycle_id: cycle, type: 'evidence.add', participant_id: 'vibe',
         expected_rev: 1, payload_json: JSON.stringify({ task: 't', source: 's', state: 'ok' }),
         op_id: 'vibe:' + cycle + ':s8a' + label + ':1' });
