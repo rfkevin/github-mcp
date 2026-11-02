@@ -11,10 +11,12 @@ import { isPinnedRef, type ProbeResult } from './promote/decision';
 
 export const PROBE_EFFORTS_DEFAULT = Object.freeze(['low', 'medium', 'high'] as const);
 
+export type ProbeProvenance = 'simulation' | 'provider' | 'none';
+export type ProbeMode = 'disabled' | 'not_implemented' | 'simulated' | 'live' | 'halted' | 'rejected';
+
 export interface ProbeEnv {
-  /** Exact « true » pour autoriser une sonde réelle ; absent = mock coût 0. */
+  /** Exact « true » pour tenter une sonde live ; sinon disabled. */
   AGENT_RUN_PROBE?: string;
-  AGENT_RUN_PROMOTE_AUTO?: string;
 }
 
 export interface ProbeRequest {
@@ -25,6 +27,8 @@ export interface ProbeRequest {
   /** finding_id si déclenché par model.finding. */
   finding_id?: string;
   now?: number;
+  /** Tests unitaires seulement — résultat simulated non utilisable en promotion. */
+  allowSimulation?: boolean;
 }
 
 export interface ProbeOutcome extends ProbeResult {
@@ -32,7 +36,13 @@ export interface ProbeOutcome extends ProbeResult {
   readonly source: ProbeRequest['source'];
   readonly finding_id?: string;
   readonly at: number;
-  readonly mode: 'mock' | 'live' | 'halted' | 'disabled' | 'rejected';
+  readonly mode: ProbeMode;
+  readonly provenance: ProbeProvenance;
+}
+
+/** true seulement si preuve provider live — filtre avant decidePromotion. */
+export function probeUsableForPromotion(outcome: ProbeOutcome): boolean {
+  return outcome.ok && outcome.tools_ok && outcome.provenance === 'provider' && outcome.mode === 'live';
 }
 
 /** Porte sonde : exact « true ». Éteinte par défaut. */
@@ -61,47 +71,47 @@ export async function runModelProbe(
   };
 
   if (await isAutomationHalted(db)) {
-    return {
-      ...base,
-      ok: false,
-      tools_ok: false,
-      efforts_ok: [],
-      error: 'HALT_ACTIVE',
-      mode: 'halted',
-    };
+    return { ...base, ok: false, tools_ok: false, efforts_ok: [], error: 'HALT_ACTIVE', mode: 'halted', provenance: 'none' };
   }
 
   if (!isPinnedRef(request.candidate_ref)) {
-    return {
-      ...base,
-      ok: false,
-      tools_ok: false,
-      efforts_ok: [],
-      error: 'ref_non_epinglee',
-      mode: 'rejected',
-    };
+    return { ...base, ok: false, tools_ok: false, efforts_ok: [], error: 'ref_non_epinglee', mode: 'rejected', provenance: 'none' };
   }
 
-  // Fail-closed coût 0 : sans porte PROBE, mock déterministe (CI + bouton dry-run).
-  if (!probeEnabled(env)) {
+  // Simulation explicite (tests) — provenance simulation, jamais pour auto_apply.
+  if (request.allowSimulation === true) {
     return {
       ...base,
       ok: true,
       tools_ok: true,
       efforts_ok: [...PROBE_EFFORTS_DEFAULT],
       cost_micro_cents: 0,
-      mode: 'mock',
+      mode: 'simulated',
+      provenance: 'simulation',
     };
   }
 
-  // Live : pas d’appel payant ici — même forme mock jusqu’à S7 câblage provider réel.
-  // La porte AGENT_RUN_PROBE=true documente l’intention ; le runner reste coût 0.
+  // Porte éteinte : disabled, ok=false (review GPT-6 : pas de faux succès).
+  if (!probeEnabled(env)) {
+    return {
+      ...base,
+      ok: false,
+      tools_ok: false,
+      efforts_ok: [],
+      error: 'PROBE_DISABLED',
+      mode: 'disabled',
+      provenance: 'none',
+    };
+  }
+
+  // Porte on mais client fournisseur non branché → not_implemented (pas de mock live).
   return {
     ...base,
-    ok: true,
-    tools_ok: true,
-    efforts_ok: [...PROBE_EFFORTS_DEFAULT],
-    cost_micro_cents: 0,
-    mode: 'live',
+    ok: false,
+    tools_ok: false,
+    efforts_ok: [],
+    error: 'PROBE_NOT_IMPLEMENTED',
+    mode: 'not_implemented',
+    provenance: 'none',
   };
 }
