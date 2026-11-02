@@ -167,9 +167,9 @@ export async function runModelProbe(
   const model = request.candidate_ref.slice(colon + 1);
 
   // Live mesuré : Gemini seulement en S4 (clé owner). Autres fournisseurs → not_implemented.
+  // google: et gemini: → même endpoint (alias historique tests).
   if (provider === 'gemini' || provider === 'google') {
-    // google: → même endpoint Gemini (alias historique tests).
-    const measured = await liveGeminiProbe(env, model.startsWith('gemini') || provider === 'gemini' ? model : model);
+    const measured = await liveGeminiProbe(env, model);
     const toolsOk = measured.tools_ok;
     const ok = measured.ok && toolsOk;
     return {
