@@ -24,6 +24,7 @@ import { createRun, ToolRefused, type LookupResult, type ToolCall } from './engi
 import { apiParticipants, RUN_COST_CENTS_CEILING } from './plan';
 import type { ToolSchema } from './workers-ai-model';
 import { recordModelFinding } from './model-finding';
+import type { ProbeEnv } from './probe';
 
 export const RESEARCH_TASK_KIND = 'research';
 export const RESEARCH_SUBJECTS = ['prix', 'infra'] as const;
@@ -351,6 +352,8 @@ const RESEARCH_READS: readonly ResearchToolName[] = ['web_fetch_official', 'stor
 
 export interface ResearchToolsOptions {
   salonEnabled: boolean;
+  /** CC-8 S4 : env sonde (AGENT_RUN_PROBE + LLM_KEY_GEMINI) pour FINDING → probe live. */
+  probeEnv?: ProbeEnv;
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -393,6 +396,7 @@ export async function tryRecordFindingFromResearchNote(
   taskId: string,
   body: string,
   at: number,
+  probeEnv: ProbeEnv = {},
 ): Promise<{ finding_id: string; status: string } | null> {
   if (!taskId.startsWith('veille-prix-')) return null;
   const line = body.split('\n').map((l) => l.trim()).find((l) => /^FINDING\s+/i.test(l));
@@ -402,7 +406,7 @@ export async function tryRecordFindingFromResearchNote(
   const [candidate_ref, source_url, as_of, kindRaw] = parts;
   const kind = kindRaw && (['price_change', 'new_model', 'model_retired', 'effort_change', 'other'] as string[]).includes(kindRaw)
     ? kindRaw : 'other';
-  const recorded = await recordModelFinding(db, {}, {
+  const recorded = await recordModelFinding(db, probeEnv, {
     finding_id: 'mf-research-' + (await sha256Hex([taskId, candidate_ref, source_url, as_of].join('\u001f'))).slice(0, 24),
     kind,
     candidate_ref,
@@ -422,8 +426,9 @@ async function drainFindingOutbox(
   taskId: string,
   body: string,
   at: number,
+  probeEnv: ProbeEnv = {},
 ): Promise<{ finding_id: string; status: string } | null> {
-  const finding = await tryRecordFindingFromResearchNote(db, taskId, body, at).catch(() => null);
+  const finding = await tryRecordFindingFromResearchNote(db, taskId, body, at, probeEnv).catch(() => null);
   if (!finding) {
     await db.prepare(
       'UPDATE agent_research_finding_outbox SET finding_status = ?2 WHERE effect_key = ?1 AND finding_status = ?3',
@@ -439,6 +444,7 @@ async function drainFindingOutbox(
 export function createResearchTools(db: D1Database, options: ResearchToolsOptions): ResearchTools {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
+  const probeEnv: ProbeEnv = options.probeEnv ?? {};
   const isResearch = (kind: string) => kind === RESEARCH_TASK_KIND;
   async function run(runId: string) {
     const row = await db.prepare('SELECT participant_id, task_id, task_kind FROM agent_runs WHERE run_id = ?1').bind(runId)
@@ -467,7 +473,7 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
       await db.prepare(
         'INSERT OR IGNORE INTO agent_research_finding_outbox (effect_key, task_id, body, finding_status, finding_id, at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)',
       ).bind(key, scope.task_id, body, 'pending', now()).run();
-      const finding = await drainFindingOutbox(db, key, scope.task_id, body, now());
+      const finding = await drainFindingOutbox(db, key, scope.task_id, body, now(), probeEnv);
       return { msg_id: result.msg_id, at: result.at, ...(finding ? { model_finding: finding } : {}) };
     } catch (error) {
       // Refus certain du salon (rien n'est écrit) : la réservation est rendue.
@@ -508,7 +514,7 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
       ).bind(ctx.effect_key).first<{ task_id: string; body: string; finding_status: string }>();
       let finding: { finding_id: string; status: string } | null = null;
       if (box && box.finding_status === 'pending') {
-        finding = await drainFindingOutbox(db, ctx.effect_key, box.task_id, box.body, now());
+        finding = await drainFindingOutbox(db, ctx.effect_key, box.task_id, box.body, now(), probeEnv);
       }
       return { found: true, result: { msg_id: row.msg_id, at: row.at, ...(finding ? { model_finding: finding } : {}) } };
     },
