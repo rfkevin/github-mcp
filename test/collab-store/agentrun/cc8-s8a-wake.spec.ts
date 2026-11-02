@@ -200,11 +200,11 @@ describe('CC-8 S8a — canal /owner : une décision owner appliquée réveille, 
   const SECRET = 'x'.repeat(32); // owner/config.ts : MIN_OWNER_SECRET_LENGTH = 32.
   const OWNER_ENV = { COLLAB_DB: db, OWNER_AUTH_MODE: 'secret', OWNER_SECRET: SECRET };
 
-  it('approbation d'une demande exécutable set_agent_run_status → passage déclenché ; rejeu duplicate → rien', async () => {
+  it('approbation d’une demande exécutable set_agent_run_status → passage déclenché ; rejeu duplicate → rien', async () => {
     const cycle = await clean('owner');
     const runId = await seedPendingWakeup('owner');
     const harness = fakeWaitCtx();
-    // Décision approvée = événement owner.decision APPLIQUÉ (type réveil) : le passage doit partir.
+    // Décision approuvée = événement owner.decision APPLIQUÉ (type réveil) : le passage doit partir.
     const params = { participant_id: 'gemini', status: 'paused', expected_version: 0 };
     const payload = {
       request_id: 's8a-wake-' + (++n), summary: 'Pause serveur de Gemini (S8a, réveil événementiel)',
