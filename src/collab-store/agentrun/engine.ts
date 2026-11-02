@@ -41,7 +41,7 @@ import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
 import { modelFailureKind } from './model-failure';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
-import { EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
+import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
 
 // CC-8 S1b-2 : dérivée de la politique unique (run-policy.ts), API en secondes conservée.
 export const STEP_TIMEOUT_S = STEP_TIMEOUT_MS / 1000;
@@ -423,18 +423,21 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         continue;
       }
     }
-    // CC-8 S1b-2 : garde avant chaque effet — un effet qui ne peut pas finir avant le
-    // plafond d'étape (marge < 30 s) n'est JAMAIS lancé : arrêt propre transient, aucun
-    // effet ambiguous, la relance d'exécution S1b reprend (v2 point 4).
+    // CC-8 S1b-2 (relecture D12 #255, bloquant 1) : garde avant chaque effet — l'effet doit
+    // pouvoir FINIR avant le plafond d'étape ET la deadline du run : on réserve son timeout
+    // maximal (120 s) + le plancher de 30 s (EFFECT_LAUNCH_FLOOR_S), borné par les DEUX.
+    // Jamais d'effet coupé au milieu ni ambiguous ; en dessous : arrêt propre transient,
+    // la relance d'exécution S1b reprend (v2 point 4).
     // Un ancien worker dont la réclamation a été reprise entre-temps ne décide de rien :
     // réclamation fraîche relue, il rend 'busy' — jamais un faux 'failed' au nom d'un autre.
-    if (claimed.claimed_at + STEP_TIMEOUT_S - deps.now() < STEP_MODEL_BUDGET_FLOOR_MS / 1000) {
+    if (claimed.claimed_at + STEP_TIMEOUT_S - deps.now() < EFFECT_LAUNCH_FLOOR_S
+      || run.deadline_at - deps.now() < EFFECT_LAUNCH_FLOOR_S) {
       const fresh = await db.prepare('SELECT claimed_by, claimed_at, attempts FROM agent_run_steps WHERE run_id = ?1 AND n = ?2')
         .bind(runId, n).first<{ claimed_by: string; claimed_at: number; attempts: number }>();
       if (!fresh || fresh.claimed_by !== deps.workerId || fresh.claimed_at !== claimed.claimed_at
         || fresh.attempts !== claim.attempts) return { outcome: 'busy' };
-      await stopAs(db, runId, 'failed', 'model_transient: temps d’étape insuffisant avant l’effet ' + call.name
-        + ' (marge < 30 s, plan S1b-2 v2 point 4) ; relance d’exécution S1b.', deps.now(), claim);
+      await stopAs(db, runId, 'failed', 'model_transient: temps insuffisant avant l’effet ' + call.name
+        + ' (il faut ' + EFFECT_LAUNCH_FLOOR_S + ' s devant le plafond d’étape et la deadline, relecture D12 #255) ; relance d’exécution S1b.', deps.now(), claim);
       return { outcome: 'failed' };
     }
     const effect = await runEffect(db, runId, claim, idx, call, deps);

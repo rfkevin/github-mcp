@@ -38,9 +38,9 @@ import { modelFailureKind } from './model-failure';
 // CC-7 F1 : fiche canonique des agents — tampon version + hash (module pur fiche.ts, artefact généré).
 import { ficheStamp } from './fiche';
 import { FICHE_HASH, FICHE_VERSION } from './generated/agent-fiche.generated';
-import { breakerOpenUntil, budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, recordModelCall, recordModelCallWithBreaker, recordModelChoice, resolveParticipantPolicy, type PolicyEnv } from './model-policy';
+import { acquireBreakerProbeLease, breakerOpenUntil, budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, recordModelCall, recordModelCallWithBreaker, recordModelChoice, resolveParticipantPolicy, type PolicyEnv } from './model-policy';
 // CC-8 S1b-2 : prédicat pur du coupe-circuit (option B).
-import { breakerSkipping, STEP_MODEL_BUDGET_FLOOR_MS } from './run-policy';
+import { breakerSkipping, BREAKER_PROBE_LEASE_S, STEP_MODEL_BUDGET_FLOOR_MS } from './run-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
 export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-30';
@@ -300,9 +300,10 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
       // sont levés avant tout appel, donc jamais comptés par le coupe-circuit.
       const taskKind = input.task_kind || run.task_kind;
       const isProbe = taskKind === 'probe';
+      const nowSec = Math.floor(now.getTime() / 1000);
+      let openUntil = new Map<string, number>();
       if (!isProbe) {
-        const openUntil = await breakerOpenUntil(ctx.db, run.participant_id, candidates.map(candidate => candidate.ref));
-        const nowSec = Math.floor(now.getTime() / 1000);
+        openUntil = await breakerOpenUntil(ctx.db, run.participant_id, candidates.map(candidate => candidate.ref));
         const available = candidates.filter(candidate => !breakerSkipping({ circuit_open_until: openUntil.get(candidate.ref) ?? 0 }, nowSec));
         if (!available.length) {
           const resume = Math.max(...candidates.map(candidate => openUntil.get(candidate.ref) ?? 0));
@@ -324,6 +325,12 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           throw new ModelCallError('STEP_MODEL_BUDGET_EXHAUSTED : budget d’appels modèle de l’étape épuisé ('
             + Math.max(0, Math.trunc(budgetLeftMs)) + ' ms restants, plan S1b-2 v2 point 4) ; relance d’exécution S1b.', null);
         }
+        // Bloquant 2 (D12 #255) : ré-qualification post-pause — UN SEUL essai à la fois par
+        // maillon, bail CAS pris juste avant l'appel (un maillon jamais appelé ne bloque
+        // personne). L'issue de l'appel libère le bail (recordModelCallWithBreaker).
+        const open = openUntil.get(candidate.ref) ?? 0;
+        if (!isProbe && open > 0 && open <= nowSec
+          && !(await acquireBreakerProbeLease(ctx.db, run.participant_id, candidate.ref, nowSec, BREAKER_PROBE_LEASE_S))) continue;
         const started = Date.now();
         try {
           const result = await candidate.model().complete(budgetLeftMs === undefined ? input : { ...input, budget_left_ms: budgetLeftMs });

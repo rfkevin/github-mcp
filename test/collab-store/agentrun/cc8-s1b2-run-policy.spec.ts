@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BREAKER_PAUSE_S, BREAKER_WINDOW_S, clampTimeoutMs, DO_MEMORY_GB, providerTimeoutMs, runDeadlineS,
+  BREAKER_PAUSE_S, BREAKER_PROBE_LEASE_S, BREAKER_WINDOW_S, clampTimeoutMs, DO_MEMORY_GB,
+  EFFECT_LAUNCH_FLOOR_S, providerTimeoutMs, runDeadlineS,
   STEP_MODEL_BUDGET_FLOOR_MS, stepModelBudgetMs, worstCaseStepGbS,
   breakerAfterFailure, breakerAfterSuccess, breakerSkipping,
 } from '../../../src/collab-store/agentrun/run-policy';
@@ -25,6 +26,10 @@ describe('CC8 S1b-2 — politique unique de temps (run-policy, plan seq 1376)', 
     expect(stepModelBudgetMs(40_000, 0)).toBe(10_000);
     expect(stepModelBudgetMs(0, 0)).toBe(1); // deadline dépassée : la garde engine arrête sous 30 s
     expect(STEP_MODEL_BUDGET_FLOOR_MS).toBe(30_000);
+    // D12 #255 (bloquants 1 et 2) : réserve avant effet = 120 s + 30 s ; bail de sonde post-pause.
+    expect(EFFECT_LAUNCH_FLOOR_S).toBe(150);
+    expect(BREAKER_PROBE_LEASE_S).toBeGreaterThan(120); // couvre un appel au plafond 120 s
+    expect(BREAKER_PROBE_LEASE_S).toBe(180);
   });
 
   it('deadline par type de tâche : 900 s partout à la fusion (montée S7 après P95)', () => {

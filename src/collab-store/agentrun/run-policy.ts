@@ -86,6 +86,13 @@ export const EFFECT_TIMEOUT_MS = 120_000;
 export const STEP_MODEL_BUDGET_MS = 480_000;
 /** Marge minimale pour tenter un appel ou un effet ; en dessous : arrêt propre, classé transient. */
 export const STEP_MODEL_BUDGET_FLOOR_MS = 30_000;
+/**
+ * Marge requise avant de LANCER un effet (relecture D12 #255, bloquant 1) : l'effet doit
+ * pouvoir FINIR avant le plafond d'étape ET la deadline du run — on réserve son timeout
+ * maximal (EFFECT_TIMEOUT_MS : jamais coupé au milieu) + le plancher de 30 s. 150 s à la
+ * fusion ; l'engine borne par les deux, jamais l'un sans l'autre.
+ */
+export const EFFECT_LAUNCH_FLOOR_S = (EFFECT_TIMEOUT_MS + STEP_MODEL_BUDGET_FLOOR_MS) / 1000;
 
 /**
  * Budget des appels modèle d'une étape : min(480 s, deadline d'exécution restante
@@ -114,6 +121,14 @@ export function stepModelBudgetMs(deadlineAt: number, now: number, stepTimeoutMs
 export const BREAKER_FAILURES = 3;
 export const BREAKER_WINDOW_S = 1_800;
 export const BREAKER_PAUSE_S = 1_800;
+/**
+ * Bail de sonde post-pause (relecture D12 #255, bloquant 2) : après l'expiration d'une
+ * pause, UN SEUL essai à la fois par maillon (participant × modèle) — le premier écrivain
+ * pose probe_until = now + fenêtre, les autres runs écartent le maillon jusqu'à l'issue.
+ * Fenêtre > plafond d'appel (120 s) : un écrivain vivant ne peut jamais être doublé, un
+ * écrivain disparu ne bloque que le temps de la fenêtre.
+ */
+export const BREAKER_PROBE_LEASE_S = 180;
 
 /** Ligne de agent_model_breaker (une par participant × modèle). */
 export interface BreakerRow {

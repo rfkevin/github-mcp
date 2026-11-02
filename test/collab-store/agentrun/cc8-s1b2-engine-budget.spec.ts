@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { createRun, runStep, type EngineDeps, type ModelClient, type ToolHost } from '../../../src/collab-store/agentrun/engine';
+import { createRun, runStep, STEP_TIMEOUT_S, type EngineDeps, type ModelClient, type ToolHost } from '../../../src/collab-store/agentrun/engine';
+import { EFFECT_LAUNCH_FLOOR_S } from '../../../src/collab-store/agentrun/run-policy';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
@@ -58,7 +59,48 @@ describe('CC8 S1b-2 — budget d’appels et garde avant effets (engine, plan se
     expect(seenBudgetLeft).toBe(480_000); // le budget d’étape complet est bien transmis à l’appel
     expect(executed.count).toBe(0); // AUCUN effet lancé : pas d’effet ambiguous, pas de double effet
     const run = await db.prepare('SELECT stop_reason FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ stop_reason: string }>();
-    expect(run?.stop_reason).toContain('temps d’étape insuffisant');
+    expect(run?.stop_reason).toContain('temps insuffisant avant l’effet');
     expect(run?.stop_reason).toContain('model_transient');
+  });
+
+  it.each([31, 60, 119])('marge %i s avant le plafond d’étape : l’effet n’est JAMAIS lancé (réserve 120 s + 30 s, D12 #255)', async margin => {
+    const runId = await freshRun('s1b2-engm' + margin, AT + 3_600);
+    const clock = { now: AT + 1 };
+    const executed = { count: 0 };
+    const model: ModelClient = { complete: async () => {
+      clock.now = AT + 1 + STEP_TIMEOUT_S - margin; // appel long simulé : la marge restante vaut le paramètre
+      return { output: { text: '', tool_calls: [{ id: 'call-1', name: 'write_tool', args: {} }] }, usage: { tokens: 1, cost_cents: 0 } };
+    } };
+    const deps: EngineDeps = { model, tools: toolHost(executed), now: () => clock.now, workerId: 's1b2-worker' };
+    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
+    expect(executed.count).toBe(0);
+    const run = await db.prepare('SELECT stop_reason FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ stop_reason: string }>();
+    expect(run?.stop_reason).toContain('temps insuffisant avant l’effet');
+  });
+
+  it('marge exacte 150 s (120 s d’effet + 30 s de marge) : l’effet est lancé, exécuté une seule fois', async () => {
+    const runId = await freshRun('s1b2-engok', AT + 3_600);
+    const clock = { now: AT + 1 };
+    const executed = { count: 0 };
+    const model: ModelClient = { complete: async () => {
+      clock.now = AT + 1 + STEP_TIMEOUT_S - EFFECT_LAUNCH_FLOOR_S;
+      return { output: { text: '', tool_calls: [{ id: 'call-1', name: 'write_tool', args: {} }] }, usage: { tokens: 1, cost_cents: 0 } };
+    } };
+    const deps: EngineDeps = { model, tools: toolHost(executed), now: () => clock.now, workerId: 's1b2-worker' };
+    expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    expect(executed.count).toBe(1);
+  });
+
+  it('deadline du run trop proche alors que le plafond d’étape est large : l’effet n’est JAMAIS lancé (borné par les DEUX)', async () => {
+    const runId = await freshRun('s1b2-engd', AT + 141); // 140 s restantes à la deadline < 150 s
+    const clock = { now: AT + 1 };
+    const executed = { count: 0 };
+    const model: ModelClient = { complete: async () => {
+      clock.now = AT + 10; // plafond d'étape large (591 s), mais la deadline ne laisse que 131 s
+      return { output: { text: '', tool_calls: [{ id: 'call-1', name: 'write_tool', args: {} }] }, usage: { tokens: 1, cost_cents: 0 } };
+    } };
+    const deps: EngineDeps = { model, tools: toolHost(executed), now: () => clock.now, workerId: 's1b2-worker' };
+    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
+    expect(executed.count).toBe(0);
   });
 });

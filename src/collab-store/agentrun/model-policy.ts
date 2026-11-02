@@ -261,19 +261,22 @@ export const MODEL_POLICY_SCHEMA = [
   // CC-8 S1b-2 (v2 point 7, option B) : coupe-circuit PAR PARTICIPANT × MODÈLE — une ligne par maillon.
   `CREATE TABLE IF NOT EXISTS agent_model_breaker (participant_id TEXT NOT NULL, ref TEXT NOT NULL,
     consecutive_transient_failures INTEGER NOT NULL DEFAULT 0, last_failure_at INTEGER, circuit_open_until INTEGER NOT NULL DEFAULT 0,
+    probe_until INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (participant_id, ref))`,
 ] as const;
 
-/** CC-7 L9b : colonnes ajoutées aux tables L9a déjà créées (ALTER idempotent : colonne existante ignorée). */
-const MODEL_POLICY_COLUMNS = [['agent_model_prefs', 'effort'], ['agent_model_choices', 'effort']] as const;
+/** Colonnes ajoutées aux tables déjà créées (ALTER idempotent : colonne existante ignorée). */
+const MODEL_POLICY_COLUMNS = [['agent_model_prefs', 'effort', 'TEXT'], ['agent_model_choices', 'effort', 'TEXT'],
+  // CC-8 S1b-2 (relecture D12 #255, bloquant 2) : bail de sonde post-pause du coupe-circuit.
+  ['agent_model_breaker', 'probe_until', 'INTEGER NOT NULL DEFAULT 0']] as const;
 const migrated = new WeakSet<D1Database>();
 
 export async function ensureModelPolicySchema(db: D1Database): Promise<void> {
   await db.batch(MODEL_POLICY_SCHEMA.map(statement => db.prepare(statement)));
   if (migrated.has(db)) return;
-  for (const [table, column] of MODEL_POLICY_COLUMNS) {
+  for (const [table, column, type] of MODEL_POLICY_COLUMNS) {
     const columns = (await db.prepare('PRAGMA table_info(' + table + ')').all<{ name: string }>()).results;
-    if (!columns.some(row => row.name === column)) await db.prepare('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' TEXT').run();
+    if (!columns.some(row => row.name === column)) await db.prepare('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + type).run();
   }
   migrated.add(db);
 }
@@ -347,13 +350,20 @@ export async function recordModelCall(db: D1Database, ref: string, outcome: { ok
   ].join(' ')).bind(ref, outcome.ok ? 1 : 0, outcome.ok ? 0 : 1, outcome.ok ? outcome.at : null, outcome.ok ? null : outcome.at, error, outcome.latencyMs).run();
 }
 
+/** Réessais d’écriture CAS du coupe-circuit (bloquant 3, D12 #255) — borne la boucle de conflit. */
+const BREAKER_WRITE_ATTEMPTS = 4;
+
 /**
  * CC-8 S1b-2 (v2 point 7) : cumul global (agent_model_calls, sémantique inchangée)
  * + coupe-circuit PAR PARTICIPANT × MODÈLE, écrits dans la MÊME transaction D1
  * (db.batch). L’upsert breaker porte un CAS anti-rétrogradation : un appel
- * concurrent plus frais n’est jamais écrasé (pause conservée). Une course
- * simultanée peut au pire sous-compter la série d’une unité — jamais
- * sur-compter ni rouvrir une pause ; le registre comptable reste agent_model_calls.
+ * concurrent plus frais n’est jamais écrasé (pause conservée).
+ * Relecture D12 #255 (bloquant 3) : le résultat du batch est VÉRIFIÉ — si le CAS
+ * conflite (0 ligne : un autre écrivain a compté plus fraîchement), on relit et
+ * on réécrit (réessai borné) : la série converge vers son seuil même sous charge.
+ * À l’épuisement des tentatives, au pire sous-compter d’une unité par appel
+ * conflité — jamais sur-compter ni rouvrir une pause ; le registre comptable
+ * reste agent_model_calls.
  */
 export async function recordModelCallWithBreaker(db: D1Database, participantId: string, ref: string,
   outcome: { ok: boolean; at: number; latencyMs: number; error?: string }): Promise<void> {
@@ -365,24 +375,56 @@ export async function recordModelCallWithBreaker(db: D1Database, participantId: 
     '  last_ok_at = COALESCE(excluded.last_ok_at, last_ok_at), last_err_at = COALESCE(excluded.last_err_at, last_err_at),',
     '  last_error = COALESCE(excluded.last_error, last_error), last_latency_ms = excluded.last_latency_ms',
   ].join(' ')).bind(ref, outcome.ok ? 1 : 0, outcome.ok ? 0 : 1, outcome.ok ? outcome.at : null, outcome.ok ? null : outcome.at, error, outcome.latencyMs);
-  const row = await db.prepare([
-    'SELECT consecutive_transient_failures, last_failure_at, circuit_open_until FROM agent_model_breaker',
-    'WHERE participant_id = ?1 AND ref = ?2',
-  ].join(' ')).bind(participantId, ref).first<BreakerRow>();
-  const next = outcome.ok ? breakerAfterSuccess() : breakerAfterFailure(row ?? null, outcome.at);
-  const breaker = db.prepare([
-    'INSERT INTO agent_model_breaker (participant_id, ref, consecutive_transient_failures, last_failure_at, circuit_open_until)',
-    'VALUES (?1, ?2, ?3, ?4, ?5)',
+  const selectBreaker = 'SELECT consecutive_transient_failures, last_failure_at, circuit_open_until FROM agent_model_breaker WHERE participant_id = ?1 AND ref = ?2';
+  // L’issue d’un appel libère le bail de sonde de ré-qualification (bloquant 2, D12 #255).
+  const upsertBreaker = [
+    'INSERT INTO agent_model_breaker (participant_id, ref, consecutive_transient_failures, last_failure_at, circuit_open_until, probe_until)',
+    'VALUES (?1, ?2, ?3, ?4, ?5, 0)',
     'ON CONFLICT(participant_id, ref) DO UPDATE SET consecutive_transient_failures = excluded.consecutive_transient_failures,',
-    '  last_failure_at = excluded.last_failure_at, circuit_open_until = excluded.circuit_open_until',
+    '  last_failure_at = excluded.last_failure_at, circuit_open_until = excluded.circuit_open_until, probe_until = 0',
     // CAS anti-rétrogradation : n’écraser que l’état que l’on vient de lire.
     'WHERE agent_model_breaker.consecutive_transient_failures IS ?6 AND agent_model_breaker.last_failure_at IS ?7',
     '  AND agent_model_breaker.circuit_open_until IS ?8',
-  ].join(' ')).bind(participantId, ref, next.consecutive,
+  ].join(' ');
+  const writeBreaker = async (retryRow: BreakerRow | null): Promise<boolean> => {
+    const retryNext = outcome.ok ? breakerAfterSuccess() : breakerAfterFailure(retryRow ?? null, outcome.at);
+    const saved = await db.prepare(upsertBreaker).bind(participantId, ref, retryNext.consecutive,
+      outcome.ok ? (retryRow?.last_failure_at ?? null) : outcome.at,
+      retryNext.open_until,
+      retryRow?.consecutive_transient_failures ?? null, retryRow?.last_failure_at ?? null, retryRow?.circuit_open_until ?? 0).run();
+    return (saved.meta.changes ?? 0) >= 1;
+  };
+  const row = await db.prepare(selectBreaker).bind(participantId, ref).first<BreakerRow>();
+  const next = outcome.ok ? breakerAfterSuccess() : breakerAfterFailure(row ?? null, outcome.at);
+  const breaker = db.prepare(upsertBreaker).bind(participantId, ref, next.consecutive,
     outcome.ok ? (row?.last_failure_at ?? null) : outcome.at,
     next.open_until,
     row?.consecutive_transient_failures ?? null, row?.last_failure_at ?? null, row?.circuit_open_until ?? 0);
-  await db.batch([cumulative, breaker]);
+  const [, savedBreaker] = await db.batch([cumulative, breaker]);
+  if ((savedBreaker.meta.changes ?? 0) >= 1) return;
+  // Bloquant 3 (D12 #255) : le CAS a conflité (0 ligne) — relire et réécrire, réessai borné.
+  for (let attempt = 1; attempt < BREAKER_WRITE_ATTEMPTS; attempt++) {
+    if (await writeBreaker(await db.prepare(selectBreaker).bind(participantId, ref).first<BreakerRow>())) return;
+  }
+  // Conflit persistant (≥ BREAKER_WRITE_ATTEMPTS courses simultanées) : sous-comptage borné,
+  // jamais sur-comptage ni réouverture (CAS anti-rétrogradation inchangé).
+}
+
+/**
+ * CC-8 S1b-2 (relecture D12 #255, bloquant 2) : bail de sonde post-pause — après
+ * l’expiration d’une pause, UN SEUL essai à la fois par maillon (participant × modèle).
+ * CAS atomique : seul un maillon en ré-qualification (pause trippée, expirée) sans bail
+ * vivant est acquérable ; l’issue de l’appel (recordModelCallWithBreaker) libère le bail,
+ * l’expiration de la fenêtre couvre un écrivain disparu.
+ */
+export async function acquireBreakerProbeLease(db: D1Database, participantId: string, ref: string,
+  nowSec: number, leaseS: number): Promise<boolean> {
+  await ensureModelPolicySchema(db);
+  const saved = await db.prepare(
+    'UPDATE agent_model_breaker SET probe_until = ?3 WHERE participant_id = ?1 AND ref = ?2'
+    + ' AND circuit_open_until > 0 AND circuit_open_until <= ?4 AND (probe_until IS NULL OR probe_until <= ?4)')
+    .bind(participantId, ref, nowSec + leaseS, nowSec).run();
+  return (saved.meta.changes ?? 0) === 1;
 }
 
 /** CC-8 S1b-2 : fins de pause des maillons d’un participant (lecture seule, au plus POLICY_MAX_MODELS refs). */

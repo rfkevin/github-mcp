@@ -2,7 +2,8 @@ import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRoutedModel, type ProviderModelContext } from '../../../src/collab-store/agentrun';
 import { GEMINI_CC3_TEST_PUBLIC_ORIGIN } from '../../../src/collab-store/executors/gemini';
-import { breakerOpenUntil, ensureModelPolicySchema, recordModelCallWithBreaker } from '../../../src/collab-store/agentrun/model-policy';
+import { acquireBreakerProbeLease, breakerOpenUntil, ensureModelPolicySchema, recordModelCallWithBreaker } from '../../../src/collab-store/agentrun/model-policy';
+import { BREAKER_PAUSE_S, BREAKER_PROBE_LEASE_S, breakerSkipping } from '../../../src/collab-store/agentrun/run-policy';
 import { modelFailureKind } from '../../../src/collab-store/agentrun/model-failure';
 import { freshRun } from './cc7-l2-paid-harness';
 
@@ -35,8 +36,8 @@ function client(runId: string, fetchImpl: typeof fetch, nowFn: () => number = ()
 }
 
 async function breakerRow(ref: string) {
-  return db.prepare('SELECT consecutive_transient_failures, last_failure_at, circuit_open_until FROM agent_model_breaker WHERE participant_id = ?1 AND ref = ?2')
-    .bind(PARTICIPANT, ref).first<{ consecutive_transient_failures: number; last_failure_at: number | null; circuit_open_until: number }>();
+  return db.prepare('SELECT consecutive_transient_failures, last_failure_at, circuit_open_until, probe_until FROM agent_model_breaker WHERE participant_id = ?1 AND ref = ?2')
+    .bind(PARTICIPANT, ref).first<{ consecutive_transient_failures: number; last_failure_at: number | null; circuit_open_until: number; probe_until: number | null }>();
 }
 
 describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq 1376)', () => {
@@ -159,5 +160,59 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
     expect(seen).toHaveLength(1); // primaire seul : 120 s − 100 s consommés < plancher 30 s
     expect((thrown as Error).message).toContain('STEP_MODEL_BUDGET_EXHAUSTED');
     expect(modelFailureKind(thrown)).toBe('transient');
+  });
+
+  it('concurrence CAS (bloquant 3, D12 #255) : deux échecs simultanés comptent DEUX unités, la série converge', async () => {
+    await Promise.all([
+      recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT, latencyMs: 5, error: TRANSIENT }),
+      recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT, latencyMs: 5, error: TRANSIENT }),
+    ]);
+    const row = await breakerRow(PRIMARY);
+    expect(row?.consecutive_transient_failures).toBe(2);
+    expect(row?.circuit_open_until).toBe(0); // deux échecs : pas encore de pause
+  });
+
+  it('bail de sonde post-pause (bloquant 2, D12 #255) : un seul essai à la fois, fenêtre bornée, issue libérée', async () => {
+    // Pause EXPIRÉE sur PRIMARY : la ligne reste en ré-qualification (open_until > 0, passée).
+    for (let i = 0; i < 3; i++) {
+      await recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT - 2_000 + i, latencyMs: 5, error: TRANSIENT });
+    }
+    const seeded = await breakerRow(PRIMARY);
+    expect(seeded?.circuit_open_until).toBe(AT - 2_000 + 2 + BREAKER_PAUSE_S);
+    expect(seeded!.circuit_open_until).toBeLessThan(AT);
+    // Premier preneur : bail ; second, même seconde : refusé (single probe).
+    expect(await acquireBreakerProbeLease(db, PARTICIPANT, PRIMARY, AT, BREAKER_PROBE_LEASE_S)).toBe(true);
+    expect(await acquireBreakerProbeLease(db, PARTICIPANT, PRIMARY, AT, BREAKER_PROBE_LEASE_S)).toBe(false);
+    // Écrivain disparu : après la fenêtre, ré-acquérable.
+    expect(await acquireBreakerProbeLease(db, PARTICIPANT, PRIMARY, AT + BREAKER_PROBE_LEASE_S + 1, BREAKER_PROBE_LEASE_S)).toBe(true);
+    // L'issue de la sonde libère le bail ET remet la série à zéro.
+    await recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: true, at: AT + BREAKER_PROBE_LEASE_S + 10, latencyMs: 3 });
+    const healed = await breakerRow(PRIMARY);
+    expect(healed?.consecutive_transient_failures).toBe(0);
+    expect(healed?.probe_until).toBe(0);
+    expect(breakerSkipping({ circuit_open_until: healed?.circuit_open_until ?? 0 }, AT + BREAKER_PROBE_LEASE_S + 20)).toBe(false);
+    // Maillon sain : plus de bail nécessaire (ni écarté, ni en ré-qualification).
+    expect(await acquireBreakerProbeLease(db, PARTICIPANT, PRIMARY, AT + BREAKER_PROBE_LEASE_S + 20, BREAKER_PROBE_LEASE_S)).toBe(false);
+  });
+
+  it('maillon post-pause dont le bail est tenu par un autre run : écarté, le repli est servi (bloquant 2)', async () => {
+    const run = await freshRun(db, 's1b2-brk-g', AT, 10_000, PARTICIPANT);
+    for (let i = 0; i < 3; i++) {
+      await recordModelCallWithBreaker(db, PARTICIPANT, PRIMARY, { ok: false, at: AT - 2_000 + i, latencyMs: 5, error: TRANSIENT });
+    }
+    expect(await acquireBreakerProbeLease(db, PARTICIPANT, PRIMARY, AT, BREAKER_PROBE_LEASE_S)).toBe(true);
+    const seen: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.includes('gemini-3.6-flash')) {
+        return new Response(JSON.stringify(GEMINI_OK), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error('Modèle en ré-qualification appelé : ' + url);
+    }) as typeof fetch;
+    const result = await client(run.runId, fetchImpl).complete(message);
+    expect(result.output.text).toBe('repli réussi');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('gemini-3.6-flash');
   });
 });
