@@ -98,14 +98,14 @@ function boundedPrompt(event: JournalEventRow, state: string | undefined): strin
   return head + normalized.slice(0, Math.max(0, CANARY_PROMPT_MAX - head.length));
 }
 
-/** Les plus récents rejouables de chaque type, ordre stable par type puis seq croissante. */
+/** Les plus récents rejouables de chaque type, ordre stable par type puis seq croissante ; insensible au sens de la liste reçue (tri interne par seq décroissante). */
 export async function selectReplayTasks(
   events: readonly JournalEventRow[],
   perKind: number = CANARY_MIN_PER_KIND,
 ): Promise<ReplayTask[]> {
   const byKind = new Map<CanaryTaskKind, ReplayTask[]>();
   for (const kind of KIND_ORDER) byKind.set(kind, []);
-  for (const event of events) {
+  for (const event of [...events].sort((a, b) => b.seq - a.seq)) {
     const state = evidenceStateOf(event.payload_json);
     const kind = replayKindOf(event.type, state);
     if (kind === null) continue;
