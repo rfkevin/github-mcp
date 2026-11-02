@@ -221,7 +221,8 @@ describe('CC-7 L11 — catalogue MCP', () => {
     expect(await list({ AGENT_RUNS_ENABLED: 'false', AGENT_RUN_RESEARCH: 'true' })).not.toContain('collab_research_assign');
     const on = await list({ AGENT_RUNS_ENABLED: 'true', AGENT_RUN_RESEARCH: 'true' });
     expect(on).toContain('collab_research_assign');
-    // 20 = 18 outils du lot L11 + collab_memory_inventory + collab_memory_growth_simulate (M1b, toujours enregistrés).
-    expect(on.length).toBe(20);
+    // 21 = 18 outils du lot L11 + collab_memory_inventory + collab_memory_growth_simulate (M1b, toujours enregistrés)
+    // + collab_agent_runs_overview (CC-8 S1a 2/3, toujours enregistré).
+    expect(on.length).toBe(21);
   });
 });
