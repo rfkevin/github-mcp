@@ -173,6 +173,13 @@ export function createGitHubWriteTools(options: GitHubWriteToolsOptions): GitHub
   async function authorized(runId: string, paths?: readonly string[]): Promise<void> {
     const run = await scope(runId);
     if (run.task_kind !== 'implement' || !run.task_id || run.status !== 'running') throw new ToolRefused('api_write_task_not_authorized');
+    // Contrôle au plus près de l'effet : HALT et bail API doivent toujours être valides.
+    const fence = await options.db.prepare([
+      'SELECT 1 AS allowed FROM agent_runs r JOIN agent_fences f ON f.lease_key = r.lease_key',
+      "WHERE r.run_id = ?1 AND r.status = 'running' AND f.generation = r.generation",
+      "AND f.holder = 'api' AND NOT EXISTS (SELECT 1 FROM owner_flags WHERE name = 'halt' AND value = '1')",
+    ].join(' ')).bind(runId).first<{ allowed: number }>();
+    if (!fence) throw new ToolRefused('api_write_fence_or_halt');
     const task = await options.db.prepare(
       'SELECT owner_pid, status, owned_paths FROM tasks WHERE cycle_id = ?1 AND task_id = ?2',
     ).bind(run.cycle_id, run.task_id).first<{ owner_pid: string; status: string; owned_paths: string }>();
@@ -249,8 +256,9 @@ export function createGitHubWriteTools(options: GitHubWriteToolsOptions): GitHub
       }
     },
     async lookup(call, ctx) {
+      // lookup est une opération de lecture de réconciliation : ne pas la bloquer
+      // après HALT, préemption chat ou fin de tâche (sinon effet ambigu irrécupérable).
       const { participant_id } = await scope(ctx.run_id);
-      await authorized(ctx.run_id);
       const branch = apiBranch(participant_id, (call.args ?? {}).name);
       switch (call.name as GitHubWriteToolName) {
         case 'github_create_branch': {
