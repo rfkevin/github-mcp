@@ -208,4 +208,21 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
     expect(seen).toHaveLength(1);
     expect(seen[0]).toContain('gemini-3.6-flash');
   });
+
+  it('tous les maillons post-pause au bail détenu : CIRCUIT_OPEN transitoire, AUCUN appel (2e relecture D12 #255)', async () => {
+    const run = await freshRun(db, 's1b2-brk-h', AT, 10_000, PARTICIPANT);
+    await seedTransientFailures(PRIMARY, AT - 2_000);
+    await seedTransientFailures(BACKUP, AT - 2_000);
+    expect(await acquireBreakerProbeLease(db, PARTICIPANT, PRIMARY, AT, BREAKER_PROBE_LEASE_S)).toBe(true);
+    expect(await acquireBreakerProbeLease(db, PARTICIPANT, BACKUP, AT, BREAKER_PROBE_LEASE_S)).toBe(true);
+    const seen: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => { seen.push(String(input)); throw new Error('aucun maillon ne doit être appelé'); }) as typeof fetch;
+    let thrown: unknown;
+    try { await client(run.runId, fetchImpl).complete(message); } catch (error) { thrown = error; }
+    expect(seen).toHaveLength(0); // bail détenu sur chaque maillon : aucun appel
+    expect(thrown).toBeInstanceOf(Error); // jamais un throw undefined
+    expect((thrown as Error).message).toContain('CIRCUIT_OPEN');
+    expect((thrown as Error).message).toContain('bail de sonde détenu');
+    expect(modelFailureKind(thrown)).toBe('transient'); // relance S1b possible
+  });
 });

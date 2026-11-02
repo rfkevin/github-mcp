@@ -317,6 +317,10 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
       // consommé par les maillons précédents ; sous le plancher de 30 s : arrêt propre
       // transient, AUCUN appel supplémentaire (v2 point 4).
       const completeStartedMs = (ctx.now?.() ?? new Date()).getTime();
+      // 2e relecture D12 #255 : maillons écartés parce que leur bail de sonde post-pause
+      // est détenu par un autre run — si TOUS le sont, AUCUN appel n'a lieu et lastError
+      // resterait undefined ; l'échec doit rester TRANSITOIRE (CIRCUIT_OPEN, relance S1b).
+      const leaseBlocked: string[] = [];
       for (const candidate of candidates) {
         const budgetLeftMs = typeof input.budget_left_ms === 'number'
           ? input.budget_left_ms - ((ctx.now?.() ?? new Date()).getTime() - completeStartedMs)
@@ -328,9 +332,17 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         // Bloquant 2 (D12 #255) : ré-qualification post-pause — UN SEUL essai à la fois par
         // maillon, bail CAS pris juste avant l'appel (un maillon jamais appelé ne bloque
         // personne). L'issue de l'appel libère le bail (recordModelCallWithBreaker).
+        // Fencing (2e relecture #255) : sans jeton, le bail ne peut pas être libéré par un
+        // appel antérieur — un maillon ré-qualifié n'est appelé que par le preneur du bail
+        // (les sondes exemptées écrivent via recordModelCall, jamais le breaker ni le bail),
+        // et l'appel du preneur dure au plus 120 s (providerTimeoutMs) < fenêtre 180 s :
+        // son issue tombe donc TOUJOURS dans sa propre fenêtre, jamais sur celle d'un autre.
         const open = openUntil.get(candidate.ref) ?? 0;
         if (!isProbe && open > 0 && open <= nowSec
-          && !(await acquireBreakerProbeLease(ctx.db, run.participant_id, candidate.ref, nowSec, BREAKER_PROBE_LEASE_S))) continue;
+          && !(await acquireBreakerProbeLease(ctx.db, run.participant_id, candidate.ref, nowSec, BREAKER_PROBE_LEASE_S))) {
+          leaseBlocked.push(candidate.ref);
+          continue;
+        }
         const started = Date.now();
         try {
           const result = await candidate.model().complete(budgetLeftMs === undefined ? input : { ...input, budget_left_ms: budgetLeftMs });
@@ -354,6 +366,14 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           }
           if (!transient) throw error;
         }
+      }
+      // 2e relecture D12 #255 : zéro appel parce que chaque bail de sonde était détenu —
+      // échec TRANSITOIRE explicite, jamais un throw undefined classé permanent.
+      if (lastError === undefined && leaseBlocked.length) {
+        throw new ModelCallError('CIRCUIT_OPEN : tous les maillons de ' + run.participant_id
+          + ' sont en ré-qualification post-pause, bail de sonde détenu par un autre run ('
+          + leaseBlocked.join(', ') + ', fenêtre ' + BREAKER_PROBE_LEASE_S + ' s) ; reprise au plus tôt à '
+          + (nowSec + BREAKER_PROBE_LEASE_S) + ' (UTC, secondes), relance d’exécution S1b.', null);
       }
       throw lastError;
     },
