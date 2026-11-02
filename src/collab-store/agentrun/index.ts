@@ -38,8 +38,8 @@ export {
 } from './chat-continuity';
 export { applyChatAutoLease, CHAT_AUTO_HOLD_SECONDS, CHAT_AUTO_LEASE_TYPES, type ChatLeaseEffect } from './chat-auto-lease';
 export {
-  runModelProbe, probeEnabled, PROBE_EFFORTS_DEFAULT,
-  type ProbeEnv, type ProbeRequest, type ProbeOutcome,
+  runModelProbe, probeEnabled, probeUsableForPromotion, PROBE_EFFORTS_DEFAULT,
+  type ProbeEnv, type ProbeRequest, type ProbeOutcome, type ProbeMode, type ProbeProvenance,
 } from './probe';
 export {
   recordModelFinding, FINDING_KINDS,
