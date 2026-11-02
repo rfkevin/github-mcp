@@ -163,19 +163,18 @@ describe('CC-8 S8a — pipeline du canal /collab/mcp : écriture appliquée → 
     // clarify.ask sans to appliquée : question non adressée, aucun réveil.
     expect((await append('clarify.ask', { question: 'note' }, 'vibe:' + cycle + ':s8aorphan:1', 2)).status).toBe('applied');
     expect(harness.count()).toBe(0);
-    // Duplicate (même op_id rejoué) : statut duplicate, le hook n'est jamais appelé.
-    expect((await append('evidence.add', { task: 't', source: 's', state: 'ok' }, 'vibe:' + cycle + ':s8adup:1', 3)).status).toBe('applied');
+    // Bail tenu AVANT l'écriture réveil (la promesse du hook démarre dès l'append) :
+    // l'écriture suivante s'applique, sa promesse s'exécute, mais aucun passage ne part.
+    expect(await acquireEventPassLease(db, Math.floor(Date.now() / 1000), 'manuel')).toBe(true);
+    const held = await append('evidence.add', { task: 't', source: 's', state: 'ok' }, 'vibe:' + cycle + ':s8adup:1', 3);
+    expect(held.status).toBe('applied');
     expect(harness.count()).toBe(1);
+    // Duplicate (même op_id rejoué) : statut duplicate, le hook n'est jamais appelé.
     expect((await append('evidence.add', { task: 't', source: 's', state: 'ok' }, 'vibe:' + cycle + ':s8adup:1', 4)).status).toBe('duplicate');
     expect(harness.count()).toBe(1);
     // STALE (révision périmée) : refusé, aucun réveil.
     expect((await append('evidence.add', { task: 't', source: 's', state: 'ok' }, 'vibe:' + cycle + ':s8astale:1', 99)).status).toBe('stale');
     expect(harness.count()).toBe(1);
-    // Bail tenu manuellement : la promesse s'exécute mais aucun passage ne part.
-    expect(await acquireEventPassLease(db, Math.floor(Date.now() / 1000), 'manuel')).toBe(true);
-    const held = await append('evidence.add', { task: 't', source: 's', state: 'ok' }, 'vibe:' + cycle + ':s8aheld:1',
-      await store.currentRevision(cycle));
-    expect(held.status).toBe('applied');
     await harness.run();
     expect((await wakeupOf(runId)).attempts).toBe(0); // aucun passage n'a réclamé le réveil
   });
@@ -189,7 +188,7 @@ describe('CC-8 S8a — pipeline du canal /collab/mcp : écriture appliquée → 
     const cases: Array<[string, CollabStore]> = [['off', storeOff], ['no-binding', storeNoBinding]];
     for (const [label, store] of cases) {
       const out = await store.appendEvent({ cycle_id: cycle, type: 'evidence.add', participant_id: 'vibe',
-        expected_rev: 1, payload_json: JSON.stringify({ task: 't', source: 's', state: 'ok' }),
+        expected_rev: await store.currentRevision(cycle), payload_json: JSON.stringify({ task: 't', source: 's', state: 'ok' }),
         op_id: 'vibe:' + cycle + ':s8a' + label + ':1' });
       expect(out.status, label).toBe('applied');
     }
