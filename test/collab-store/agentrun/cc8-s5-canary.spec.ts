@@ -329,7 +329,7 @@ describe('CC-8 S5 — branchement F2 : sortie = tâche de promotion, contre-exem
     const missing = await branchCanaryToF2(greenInput('c', reportOf({ calls: 15, calls_by_kind: { answer: 5, review: 5, implement: 5 } }), true));
     expect(missing.decision.verdict).toBe('propose');
     // alias latest : reject, aucune tâche de promotion
-    const latest = await branchCanaryToF2({ ...greenInput('c', reportOf()), candidate_ref: 'gemini:latest' });
+    const latest = await branchCanaryToF2({ ...greenInput('c', reportOf({ candidate_ref: 'gemini:latest' })), candidate_ref: 'gemini:latest' });
     expect(latest.decision.verdict).toBe('reject');
     expect(latest.decision.reasons).toContain('ref_non_epinglee');
     expect(latest.proposal).toBeNull();
