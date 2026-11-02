@@ -48,6 +48,7 @@ async function seedFullJournal(cycle: string): Promise<void> {
 }
 
 const okCaller: CanaryCaller = {
+  provenance: 'simulation',
   async call() {
     return { ok: true, in_tokens: 100, out_tokens: 50, latency_ms: 10 };
   },
@@ -80,8 +81,9 @@ function greenInput(cycle: string, report: CanaryReport, auto = false): BranchF2
 /** Rapport littéral (contre-exemples sans journal). */
 function reportOf(overrides: Partial<CanaryReport> = {}): CanaryReport {
   return {
-    cycle_id: 'cc8-s5-x',
+    cycle_id: 'c',
     candidate_ref: 'gemini:gemini-3.6-flash',
+    provenance: 'simulation',
     created_at: NOW.toISOString(),
     calls: 20,
     failures: 0,
@@ -199,11 +201,12 @@ describe('CC-8 S5 — runner canary (coût 0, rapport rejouable)', () => {
     const cycle = await seedCycle();
     await seedFullJournal(cycle);
     const broken: CanaryCaller = {
+      provenance: 'simulation',
       async call() {
         throw new Error('PANNE');
       },
     };
-    const report = await runCanary(db, { cycle_id: cycle, candidate_ref: 'c', caller: broken, now: () => NOW });
+    const report = await runCanary(db, { cycle_id: cycle, candidate_ref: 'gemini:gemini-3.6-flash', caller: broken, now: () => NOW });
     expect(report.critical_error).toBe(true);
     expect(report.failures).toBe(20);
     expect(report.calls_by_kind).toEqual({ answer: 5, review: 5, test: 5, implement: 5 });
@@ -217,6 +220,7 @@ describe('CC-8 S5 — runner canary (coût 0, rapport rejouable)', () => {
     const cycle = await seedCycle();
     await seedFullJournal(cycle);
     const leaky: CanaryCaller = {
+      provenance: 'simulation',
       async call(task) {
         return {
           ok: true,
@@ -228,7 +232,7 @@ describe('CC-8 S5 — runner canary (coût 0, rapport rejouable)', () => {
         };
       },
     };
-    const report = await runCanary(db, { cycle_id: cycle, candidate_ref: 'c', caller: leaky, now: () => NOW });
+    const report = await runCanary(db, { cycle_id: cycle, candidate_ref: 'gemini:gemini-3.6-flash', caller: leaky, now: () => NOW });
     expect(report.quota_rejections).toBe(5);
     expect(report.identity_leak).toBe(true);
     const { decision } = await branchCanaryToF2(greenInput(cycle, report));
@@ -262,7 +266,7 @@ describe('CC-8 S5 — branchement F2 : sortie = tâche de promotion, contre-exem
     expect((again.proposal as PromotionTaskProposal).report_hash).toBe(p.report_hash);
   });
 
-  it('politique auto allumée (test seulement) : canary complet → auto_apply', async () => {
+  it('politique auto + canary simulé : propose seulement, jamais auto_apply (fail-closed)', async () => {
     const cycle = await seedCycle();
     await seedFullJournal(cycle);
     const report = await runCanary(db, {
@@ -273,10 +277,47 @@ describe('CC-8 S5 — branchement F2 : sortie = tâche de promotion, contre-exem
       candidate_rate: RATES.candidate,
       now: () => NOW,
     });
+    expect(report.provenance).toBe('simulation');
+    const { decision, proposal } = await branchCanaryToF2(greenInput(cycle, report, true));
+    expect(decision.verdict).toBe('propose');
+    expect(decision.reasons).toContain('canary_simule_pas_de_promotion_auto');
+    expect(proposal?.verdict).toBe('propose');
+    expect(proposal?.next).toBe('beta');
+  });
+
+  it('politique auto + canary réel (provenance real, test seulement) : auto_apply', async () => {
+    const cycle = await seedCycle();
+    await seedFullJournal(cycle);
+    const realCaller: CanaryCaller = {
+      provenance: 'real',
+      async call() {
+        return { ok: true, in_tokens: 100, out_tokens: 50, latency_ms: 10 };
+      },
+    };
+    const report = await runCanary(db, {
+      cycle_id: cycle,
+      candidate_ref: 'gemini:gemini-3.6-flash',
+      caller: realCaller,
+      current_rate: RATES.current,
+      candidate_rate: RATES.candidate,
+      now: () => NOW,
+    });
+    expect(report.provenance).toBe('real');
     const { decision, proposal } = await branchCanaryToF2(greenInput(cycle, report, true));
     expect(decision.verdict).toBe('auto_apply');
     expect(proposal?.verdict).toBe('auto_apply');
     expect(proposal?.next).toBe('beta');
+  });
+
+  it('rapport d’un autre cycle ou candidat : reject fail-closed, aucune proposition', async () => {
+    const autreCycle = await branchCanaryToF2(greenInput('c', reportOf({ cycle_id: 'autre-cycle' }), true));
+    expect(autreCycle.decision.verdict).toBe('reject');
+    expect(autreCycle.decision.reasons).toContain('rapport_cycle_etranger');
+    expect(autreCycle.proposal).toBeNull();
+    const autreCandidat = await branchCanaryToF2(greenInput('c', reportOf({ candidate_ref: 'gemini:gemini-9-pro' }), true));
+    expect(autreCandidat.decision.verdict).toBe('reject');
+    expect(autreCandidat.decision.reasons).toContain('rapport_candidat_etranger');
+    expect(autreCandidat.proposal).toBeNull();
   });
 
   it('contre-exemples F2 conservés à travers le branchement', async () => {

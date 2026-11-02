@@ -85,7 +85,10 @@ export async function journalEventsForReplay(
   return results ?? [];
 }
 
-/** Prompt borné et déterministe : type, état, auteur, extrait du payload. */
+/** Prompt borné et déterministe : type, état, auteur, extrait du payload.
+ * Note (relecture GPT-6, non bloquant) : le journal interne peut contenir du
+ * contenu scellé ou privé — vérifier son absence avant toute transmission
+ * future de ces prompts à un modèle externe. */
 function boundedPrompt(event: JournalEventRow, state: string | undefined): string | null {
   let normalized = '';
   try {

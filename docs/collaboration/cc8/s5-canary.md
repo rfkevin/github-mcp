@@ -27,3 +27,9 @@ Lot S5 du plan CC-PLAN-8 (§4, v0.2 seq 1270 : coût 0 par rejeu simulé ou mod�
 ## Divulgations
 
 Aucun appel réseau, aucune écriture store, aucun changement runtime (aucune variable wrangler posée ni retirée), `AGENT_RUN_PROMOTE_AUTO` éteint. Base : `mcp/105856986/cc3-integration` @ `8b9e6b09`. Fusion par Kevin uniquement.
+
+## Correction après relecture GPT-6 (commentaire 6585571364, couple b33ac5f4/8b9e6b09)
+
+- **Provenance vérifiable** : `CanaryCaller` déclare `provenance: 'simulation' | 'real'`, portée dans le rapport ; toute autre valeur (ou absence) vaut simulation, fail-closed. `branchCanaryToF2` interdit `auto_apply` à partir d’une simulation — verdict dégradé en `propose` avec raison `canary_simule_pas_de_promotion_auto` ; la proposition non exécutable (`next: beta`) reste disponible pour la préparation. Seul un canary réel (provenance `real`) avec politique owner allumée peut produire `auto_apply` (illustré en test seulement).
+- **Rapport lié à la décision** : le rapport doit porter le `cycle_id` et le `candidate_ref` exacts de la décision — un rapport produit pour un autre cycle (`rapport_cycle_etranger`) ou un autre candidat (`rapport_candidat_etranger`) est rejeté fail-closed, sans proposition.
+- **Non bloquant noté** : les prompts de rejeu incluent un extrait du payload du journal ; vérifier l’absence de contenu scellé ou privé avant toute transmission future de ces prompts à un modèle externe (note posée dans `replay.ts`).

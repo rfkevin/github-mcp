@@ -80,6 +80,15 @@ export function reportHashOf(report: CanaryReport): Promise<string> {
 
 /** Branchement : rapport canary + sonde → décision F2 → tâche de promotion ou rien. */
 export async function branchCanaryToF2(input: BranchF2Input): Promise<PromotionOutcome> {
+  // Fail-closed (relecture GPT-6) : le rapport doit être celui du couple
+  // cycle/candidat de la décision — un rapport favorable produit pour un autre
+  // cycle ou un autre modèle ne donne droit à rien, aucune proposition.
+  if (input.report.cycle_id !== input.cycle_id) {
+    return { decision: { verdict: 'reject', reasons: ['rapport_cycle_etranger'] }, proposal: null };
+  }
+  if (input.report.candidate_ref !== input.candidate_ref) {
+    return { decision: { verdict: 'reject', reasons: ['rapport_candidat_etranger'] }, proposal: null };
+  }
   const decision = decidePromotion({
     current_ref: input.current_ref,
     candidate_ref: input.candidate_ref,
@@ -94,6 +103,28 @@ export async function branchCanaryToF2(input: BranchF2Input): Promise<PromotionO
     paid_ceiling_ok: input.paid_ceiling_ok,
   });
   if (decision.verdict === 'reject') return { decision, proposal: null };
+  // Fail-closed (relecture GPT-6) : une simulation ne prouve jamais un essai
+  // réel — auto_apply interdit depuis une simulation ; la proposition non
+  // exécutable (next beta) reste disponible pour la préparation.
+  if (decision.verdict === 'auto_apply' && input.report.provenance !== 'real') {
+    const downgraded: PromoteDecision = {
+      verdict: 'propose',
+      reasons: [...decision.reasons, 'canary_simule_pas_de_promotion_auto'],
+    };
+    return {
+      decision: downgraded,
+      proposal: {
+        cycle_id: input.cycle_id,
+        current_ref: input.current_ref,
+        candidate_ref: input.candidate_ref,
+        verdict: 'propose',
+        reasons: downgraded.reasons,
+        report_hash: await reportHashOf(input.report),
+        canary_calls: input.report.calls,
+        next: 'beta',
+      },
+    };
+  }
   return {
     decision,
     proposal: {

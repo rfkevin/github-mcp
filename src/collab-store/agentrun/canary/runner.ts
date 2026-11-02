@@ -26,6 +26,8 @@ export interface CanaryCallOutcome {
 
 /** Un appel canary = un prompt de rejeu sur la candidate. Fourni par l'appelant. */
 export interface CanaryCaller {
+  /** Provenance déclarée des appels : simulation (tests, préparation) ou réel. */
+  readonly provenance: 'simulation' | 'real';
   call(task: ReplayTask): Promise<CanaryCallOutcome>;
 }
 
@@ -42,6 +44,8 @@ export interface CanaryCallRecord {
 export interface CanaryReport {
   readonly cycle_id: string;
   readonly candidate_ref: string;
+  /** Provenance des appels : auto_apply F2 exige real, sinon simulation. */
+  readonly provenance: 'simulation' | 'real';
   readonly created_at: string;
   readonly calls: number;
   readonly failures: number;
@@ -80,6 +84,9 @@ function basketMicroCents(rate: PromoteRate, inTokens: number, outTokens: number
 
 export async function runCanary(db: D1Database, options: RunCanaryOptions): Promise<CanaryReport> {
   const perKind = options.per_kind ?? CANARY_MIN_PER_KIND;
+  // Fail-closed (relecture GPT-6) : seule une provenance déclarée real vaut
+  // réel, toute autre valeur (ou absence) est une simulation.
+  const provenance = options.caller.provenance === 'real' ? 'real' : 'simulation';
   const tasks = await selectReplayTasks(await journalEventsForReplay(db, options.cycle_id), perKind);
   const byKind: Partial<Record<CanaryTaskKind, number>> = {};
   const insufficient: Partial<Record<CanaryTaskKind, number>> = {};
@@ -133,6 +140,7 @@ export async function runCanary(db: D1Database, options: RunCanaryOptions): Prom
   return {
     cycle_id: options.cycle_id,
     candidate_ref: options.candidate_ref,
+    provenance,
     created_at: (options.now ?? (() => new Date()))().toISOString(),
     calls,
     failures,
