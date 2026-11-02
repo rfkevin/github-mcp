@@ -14,6 +14,9 @@ import {
   releaseOwnRun,
   CHAT_HOLD_SECONDS_DEFAULT,
 } from '../agentrun/chat-continuity';
+import { coordinatorRunOverview } from '../agentrun/capacity';
+import { previewNextActions } from '../controller/next-actions';
+import { isCoordinator } from '../owner/coordinators';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
@@ -27,6 +30,31 @@ async function registered(context: CollabToolContext, tool: string): Promise<str
 }
 
 export function registerAgentRunTools(server: McpServer, context: CollabToolContext): void {
+  server.registerTool('collab_agent_runs_overview', {
+    title: 'Vue du coordinateur sur les exécutions API (CC-8 S1a)',
+    description: 'Lecture seule, coordinateur seulement (mandat du cycle ou coordinateur owner-approved, sinon COORDINATOR_REQUIRED) : '
+      + 'pour un cycle, état des exécutions API de TOUS les agents (statut, code d’arrêt, étapes, jetons, coût), comptes par agent, '
+      + 'dernier verdict de capacité du planificateur par agent et type (refus typé ou modèle retenu) et maillons en pause coupe-circuit. '
+      + 'Métadonnées seulement : ni consigne, ni résumé, ni sortie de modèle.',
+    inputSchema: {
+      cycle_id: z.string().min(1).max(64),
+      limit: z.number().int().min(1).max(100).optional(),
+    },
+    annotations: READ_ONLY,
+  }, async (input) => {
+    try {
+      const participantId = await registered(context, 'collab_agent_runs_overview');
+      const view = await previewNextActions(context.db, input.cycle_id, participantId);
+      if (!view.coordinator && !await isCoordinator(context.db, participantId)) {
+        throw new CollabStoreError('COORDINATOR_REQUIRED', 'collab_agent_runs_overview : réservé au coordinateur du cycle ' + input.cycle_id + '.');
+      }
+      const overview = await coordinatorRunOverview(context.db, input.cycle_id, { now: Math.floor(Date.now() / 1000), limit: input.limit });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(overview) }] };
+    } catch (error) {
+      return collabFailure(error, 'Vue des exécutions impossible.', {}, context.fallback);
+    }
+  });
+
   server.registerTool('collab_list_agent_runs', {
     title: 'Lister mes exécutions API (CC-5 l7e)',
     description: 'Lecture seule : exécutions agent API de VOTRE participant serveur uniquement (masquage CR-C). Option cycle_id pour filtrer. Aucune écriture.',

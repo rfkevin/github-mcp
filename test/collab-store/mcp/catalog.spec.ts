@@ -27,7 +27,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
     const result = fixture.rpcResult(await response.text()) as { tools: Array<{ name: string }> };
     expect(result.tools.map(tool => tool.name).sort())
-      .toEqual(['collab_agent_run_summary', 'collab_append_event', 'collab_delegate_owner', 'collab_dispatch_task', 'collab_export',
+      .toEqual(['collab_agent_run_summary', 'collab_agent_runs_overview', 'collab_append_event', 'collab_delegate_owner', 'collab_dispatch_task', 'collab_export',
         'collab_get_context', 'collab_get_delta', 'collab_list_agent_runs', 'collab_list_executors',
         'collab_memory_growth_simulate', 'collab_memory_inventory', 'collab_next_actions',
         'collab_phase_adjust', 'collab_phase_advance', 'collab_preempt_agent_run', 'collab_release_agent_run', 'collab_request_correction']);
@@ -66,7 +66,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     expect(names).toContain('collab_salon_pending_wakes');
     expect(names).toContain('collab_salon_ack_wake');
     expect(names.filter(n => n.startsWith('collab_salon_'))).toHaveLength(4);
-    expect(names.length).toBe(21);
+    expect(names.length).toBe(22);
   });
 
   // CC-7 L9a : porte AGENT_RUNS_ENABLED allumée → catalogue des modèles et choix de modèle (catalogue défaut reste 17).
@@ -82,6 +82,6 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     const names = result.tools.map(tool => tool.name);
     expect(names).toContain('collab_model_catalog');
     expect(names).toContain('collab_choose_model');
-    expect(names.length).toBe(19);
+    expect(names.length).toBe(20);
   });
 });

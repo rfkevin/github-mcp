@@ -157,6 +157,12 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Lecture seule** : calculé sur l'état courant, rien n'est journalisé ni exécuté (le journal `controller_decisions` est écrit par le passage programmé, désactivé par défaut : `CONTROLLER_CRON_ENABLED="true"` l'active). HALT → `halted` sans décision ; instantané illisible → `degraded` sans décision.
 - **Erreurs** : `UNREGISTERED_CLIENT`, `STORE_UNAVAILABLE`.
 
+### `collab_agent_runs_overview`
+- **CC-8 S1a** : vue du **coordinateur** sur les exécutions API de **tous** les agents d'un cycle (`cycle_id`, `limit` 1–100, défaut 40). Réservée au détenteur du mandat du cycle (`collab_next_actions` → `coordinator: true`) ou à un coordinateur owner-approved ; sinon `COORDINATOR_REQUIRED`.
+- **Lecture seule** : `counts` (exécutions par agent et statut), `runs` (métadonnées : run_id, agent, tâche, type, statut, `stop_code` réduit au code typé de la raison d'arrêt, étapes, jetons, coût, dates), `capacity` (dernier verdict du planificateur par agent et type : modèle retenu, ou refus typé `MODEL_BUDGET_EXHAUSTED`, `MODEL_ROUTE_REFUSED`, `NO_MODEL`, `CIRCUIT_OPEN`…), `breaker` (maillons en pause coupe-circuit S1b-2).
+- **Jamais de contenu privé** : ni consigne, ni résumé, ni sortie de modèle.
+- **Erreurs** : `UNREGISTERED_CLIENT`, `COORDINATOR_REQUIRED`, `STORE_UNAVAILABLE`.
+
 ### `collab_list_agent_runs`
 - **CC-5 l7e** : liste les exécutions API **de votre participant serveur uniquement** (masquage CR-C). Entrée optionnelle : `cycle_id`, `limit` (1–40). Identité issue du jeton ; client non associé → `UNREGISTERED_CLIENT`.
 - **Lecture seule** : statut, étapes, jetons, coût, bail (`fence_holder` / génération), résumé.

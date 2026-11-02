@@ -32,7 +32,7 @@ import { chatActiveWithin } from '../context/active-work';
 import { sha256Hex } from '../store/hash';
 import { createRun } from './engine';
 import { ensureAgentRunSchema } from './schema';
-import { runCapacity, type RunCapacity } from './capacity';
+import { recordCapacity, runCapacity, type RunCapacity } from './capacity';
 // CC-8 S1b-2 : deadline d'exécution PAR TYPE DE TÂCHE — politique unique (v2 point 5).
 import { runDeadlineS } from './run-policy';
 import { decisionKey } from '../controller/journal';
@@ -338,6 +338,8 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
     if (value === undefined) {
       value = await runCapacity(db, env, participantId, cycleId, kind, nowDate);
       capacityCache.set(key, value);
+      // CC-8 S1a 2/3 : verdict journalisé (capable ou refus typé) — lu par la vue du coordinateur.
+      await recordCapacity(db, { participant_id: participantId, cycle_id: cycleId, kind, capacity: value, now: input.now });
       if (!value.capable) detail.push({ participant_id: participantId, cycle_id: cycleId, kind, reason: value.reason });
     }
     return value.capable;

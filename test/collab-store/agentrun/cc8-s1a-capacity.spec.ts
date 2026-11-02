@@ -2,14 +2,16 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import wranglerRaw from '../../../wrangler.jsonc?raw';
 import { planAgentRuns } from '../../../src/collab-store/agentrun';
-import { runCapacity } from '../../../src/collab-store/agentrun/capacity';
+import { coordinatorRunOverview, runCapacity, stopReasonCode } from '../../../src/collab-store/agentrun/capacity';
+import { ensureModelPolicySchema } from '../../../src/collab-store/agentrun/model-policy';
+import { appointCycleCoordinator } from '../../../src/collab-store/owner/delegation-execution';
 import { ensureAgentRunSchema } from '../../../src/collab-store/agentrun/schema';
 import { decisionKey, ensureControllerJournal } from '../../../src/collab-store/controller/journal';
 import { previewNextActions } from '../../../src/collab-store/controller/next-actions';
-import { registerParticipant } from '../../../src/collab-store/owner/decisions';
+import { mapClient, registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
-import { OWNER_PROOF } from '../coordinator-helpers';
+import { collabToolHandler, OWNER_PROOF } from '../coordinator-helpers';
 
 // CC-8 S1a (CC-PLAN-8, synthèse seq 1262 validée par Kevin) — capacité et équité du planificateur.
 // Constat réel du 2026-11-01 (cc8-systeme-unique) : les exécutions de Claude et Grok (aucune clé ni budget dans
@@ -196,5 +198,153 @@ describe('CC-8 S1a — équité par ancienneté, à tour de rôle', () => {
     // Limite 2 : un tour = Vibe (réveil suivant) puis Gemini — Vibe ne prend pas les deux places.
     expect((await planAgentRuns(db, two, { now: 1_986_000_060, limit: 2 })).created).toBe(2);
     expect(await runsOf(cycle)).toEqual(['gemini', 'vibe', 'vibe']);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// CC-8 S1a 2/3 — refus anticipé sur coupe-circuit, capacité journalisée, vue du coordinateur.
+// ──────────────────────────────────────────────────────────────────────────────
+const GEMINI_REFS = CC3_VARS.AGENT_RUN_MODELS_GEMINI.split(',');
+
+async function openBreaker(participantId: string, refs: string[], until: number): Promise<void> {
+  await ensureModelPolicySchema(db);
+  for (const ref of refs) {
+    await db.prepare([
+      'INSERT INTO agent_model_breaker (participant_id, ref, consecutive_transient_failures, last_failure_at, circuit_open_until, probe_until)',
+      'VALUES (?1, ?2, 3, ?3, ?4, 0) ON CONFLICT(participant_id, ref) DO UPDATE SET consecutive_transient_failures = 3,',
+      'last_failure_at = excluded.last_failure_at, circuit_open_until = excluded.circuit_open_until, probe_until = 0',
+    ].join(' ')).bind(participantId, ref, until - 1800, until).run();
+  }
+}
+
+async function closeBreaker(participantId: string): Promise<void> {
+  await ensureModelPolicySchema(db);
+  await db.prepare('DELETE FROM agent_model_breaker WHERE participant_id = ?1').bind(participantId).run();
+}
+
+describe('CC-8 S1a 2/3 — refus anticipé : coupe-circuit S1b-2 pris en compte avant toute exécution', () => {
+  it('runCapacity : tous les maillons en pause → CIRCUIT_OPEN ; un seul en pause → maillon suivant ; pause échue → capable ; sonde exemptée', async () => {
+    await ensureSchema(db);
+    const now = Math.floor(NOW.getTime() / 1000);
+    try {
+      await openBreaker('gemini', GEMINI_REFS, now + 600);
+      const all = await runCapacity(db, CC3_TEST, 'gemini', null, 'implement', NOW);
+      expect(all.capable).toBe(false);
+      expect(all.reason).toMatch(/^CIRCUIT_OPEN : tous les maillons de gemini/);
+      // Sonde S4/S5 : exemptée, comme dans le routage réel.
+      expect((await runCapacity(db, CC3_TEST, 'gemini', null, 'probe', NOW)).capable).toBe(true);
+      // Pause échue : capable de nouveau, sans écriture.
+      expect((await runCapacity(db, CC3_TEST, 'gemini', null, 'implement', new Date((now + 601) * 1000))).capable).toBe(true);
+      // Seul gemini-3.8 en pause : le maillon suivant est retenu (même ordre que le routage).
+      await closeBreaker('gemini');
+      await openBreaker('gemini', [GEMINI_REFS[0]], now + 600);
+      expect(await runCapacity(db, CC3_TEST, 'gemini', null, 'implement', NOW)).toEqual({ capable: true, reason: GEMINI_REFS[1] });
+      // Coupe-circuit par participant × modèle (option B) : vibe n'est pas touché.
+      expect((await runCapacity(db, CC3_TEST, 'vibe', null, 'implement', NOW)).capable).toBe(true);
+    } finally {
+      await closeBreaker('gemini');
+    }
+  });
+
+  it('chemin sans politique : la référence unique en pause → CIRCUIT_OPEN', async () => {
+    await ensureSchema(db);
+    const now = Math.floor(NOW.getTime() / 1000);
+    const solo = { AGENT_RUN_MODEL: 'workers-ai:@cf/zai-org/glm-4.7-flash', AI: {} };
+    try {
+      await openBreaker('solo-s1a', ['workers-ai:@cf/zai-org/glm-4.7-flash'], now + 600);
+      expect((await runCapacity(db, solo, 'solo-s1a', null, 'answer', NOW)).reason).toMatch(/^CIRCUIT_OPEN : workers-ai:/);
+    } finally {
+      await closeBreaker('solo-s1a');
+    }
+  });
+
+  it('planificateur : Gemini tout en pause → aucune exécution, refus typé ; la pause échue, il est servi', async () => {
+    const cycle = await seed('circuit', ['gemini']);
+    const env = { ...CC3_TEST, AGENT_RUN_PARTICIPANTS: 'gemini' };
+    try {
+      await openBreaker('gemini', GEMINI_REFS, 1_987_000_000 + 600);
+      const blocked = await planAgentRuns(db, env, { now: 1_987_000_000 });
+      expect(blocked).toMatchObject({ created: 0, incapable: 1 });
+      expect(blocked.incapable_detail?.[0].reason).toMatch(/^CIRCUIT_OPEN/);
+      expect(await runsOf(cycle)).toEqual([]);
+      const served = await planAgentRuns(db, env, { now: 1_987_000_000 + 900 });
+      expect(served.created).toBe(1);
+      expect(await runsOf(cycle)).toEqual(['gemini']);
+    } finally {
+      await closeBreaker('gemini');
+    }
+  });
+});
+
+describe('CC-8 S1a 2/3 — capacité journalisée et vue du coordinateur', () => {
+  it('chaque verdict évalué par le planificateur est consigné (capable ou refus typé), puis mis à jour', async () => {
+    const cycle = await seed('journal');
+    await planAgentRuns(db, CC3_TEST, { now: 1_988_000_000 });
+    const { results } = await db.prepare('SELECT participant_id, task_kind, capable, reason, checked_at FROM agent_run_capacity WHERE cycle_id = ?1 ORDER BY participant_id')
+      .bind(cycle).all<{ participant_id: string; task_kind: string; capable: number; reason: string; checked_at: number }>();
+    expect(results.map(row => [row.participant_id, row.task_kind, row.capable])).toEqual([
+      ['claude', 'implement', 0], ['gemini', 'implement', 1], ['grok', 'implement', 0], ['vibe', 'implement', 1]]);
+    expect(results.find(row => row.participant_id === 'claude')!.reason).toMatch(/^MODEL_BUDGET_EXHAUSTED : /);
+    expect(results.find(row => row.participant_id === 'vibe')!.reason).toBe('workers-ai:@cf/zai-org/glm-4.7-flash');
+    // Passage suivant : même clé, ligne mise à jour (une ligne par agent, cycle et type).
+    await planAgentRuns(db, CC3_TEST, { now: 1_988_000_900 });
+    const again = await db.prepare('SELECT COUNT(*) AS c, MAX(checked_at) AS at FROM agent_run_capacity WHERE cycle_id = ?1').bind(cycle).first<{ c: number; at: number }>();
+    expect(again).toEqual({ c: 4, at: 1_988_000_900 });
+  });
+
+  it('coordinatorRunOverview : exécutions de tous les agents, comptes, capacité, coupe-circuit — jamais la consigne ni le résumé', async () => {
+    const cycle = await seed('vue');
+    await planAgentRuns(db, CC3_TEST, { now: 1_989_000_000 });
+    await db.prepare("UPDATE agent_runs SET status = 'failed', stop_reason = ?2, summary = 'SECRET-RESUME' WHERE cycle_id = ?1 AND participant_id = 'vibe'")
+      .bind(cycle, 'model_transient: CIRCUIT_OPEN : détail libre du fournisseur').run();
+    try {
+      await openBreaker('gemini', [GEMINI_REFS[0]], 1_989_000_000 + 600);
+      const view = await coordinatorRunOverview(db, cycle, { now: 1_989_000_010 });
+      expect(view.runs.map(run => run.participant_id).sort()).toEqual(['gemini', 'vibe']);
+      const vibe = view.runs.find(run => run.participant_id === 'vibe')!;
+      expect(vibe).toMatchObject({ status: 'failed', stop_code: 'model_transient:CIRCUIT_OPEN', task_kind: 'implement' });
+      const text = JSON.stringify(view);
+      expect(text).not.toContain('SECRET-RESUME');
+      expect(text).not.toContain('détail libre');
+      expect(Object.keys(vibe)).not.toContain('prompt');
+      expect(Object.keys(vibe)).not.toContain('summary');
+      expect(view.counts).toEqual(expect.arrayContaining([{ participant_id: 'vibe', status: 'failed', runs: 1 }]));
+      expect(view.capacity.filter(row => !row.capable).map(row => row.participant_id).sort()).toEqual(['claude', 'grok']);
+      expect(view.breaker).toEqual([{ participant_id: 'gemini', ref: GEMINI_REFS[0], consecutive_failures: 3, open_until: 1_989_000_600 }]);
+    } finally {
+      await closeBreaker('gemini');
+    }
+  });
+
+  it('stopReasonCode : code typé seulement, sans détail libre', () => {
+    expect(stopReasonCode('model_error: MODEL_BUDGET_EXHAUSTED : Aucun modèle abordable pour claude…')).toBe('model_error:MODEL_BUDGET_EXHAUSTED');
+    expect(stopReasonCode('deadline')).toBe('deadline');
+    expect(stopReasonCode('')).toBe('');
+  });
+
+  it('outil collab_agent_runs_overview : coordinateur du cycle seulement (COORDINATOR_REQUIRED sinon)', async () => {
+    const cycle = await seed('outil');
+    const tag = 's1a-' + n;
+    const coordinator = 'coord-' + tag;
+    await registerParticipant(db, { participant_id: coordinator, display_label: coordinator, proof: OWNER_PROOF, op: 'reg-' + coordinator });
+    const family = 'fam-' + tag;
+    await db.prepare('INSERT INTO participant_identity_families (participant_id, family_id, event_seq, updated_at) VALUES (?1, ?2, NULL, 1)')
+      .bind(coordinator, family).run();
+    await appointCycleCoordinator(db, { cycleId: cycle, participantId: coordinator, familyId: family, expectedEpoch: 0, proof: OWNER_PROOF, op: 'appoint-' + tag });
+    for (const pid of [coordinator, 'vibe']) {
+      await mapClient(db, { oauth_client_id: 'client-' + tag + '-' + pid, participant_id: pid, proof: OWNER_PROOF, op: 'map-' + tag + '-' + pid });
+    }
+    await planAgentRuns(db, CC3_TEST, { now: 1_990_000_000 });
+    const asCoordinator = await collabToolHandler(db, 'collab_agent_runs_overview', 'client-' + tag + '-' + coordinator);
+    const ok = await asCoordinator({ cycle_id: cycle });
+    expect(ok.isError).toBeFalsy();
+    const body = JSON.parse(ok.content[0].text) as { cycle_id: string; runs: unknown[]; capacity: unknown[] };
+    expect(body.cycle_id).toBe(cycle);
+    expect(body.runs.length).toBe(2);
+    expect(body.capacity.length).toBe(4);
+    const asAgent = await collabToolHandler(db, 'collab_agent_runs_overview', 'client-' + tag + '-vibe');
+    const denied = await asAgent({ cycle_id: cycle });
+    expect(denied.isError).toBe(true);
+    expect((denied as unknown as { structuredContent: { error: { code: string } } }).structuredContent.error.code).toBe('COORDINATOR_REQUIRED');
   });
 });
