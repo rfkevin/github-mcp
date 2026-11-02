@@ -38,7 +38,9 @@ import { modelFailureKind } from './model-failure';
 // CC-7 F1 : fiche canonique des agents — tampon version + hash (module pur fiche.ts, artefact généré).
 import { ficheStamp } from './fiche';
 import { FICHE_HASH, FICHE_VERSION } from './generated/agent-fiche.generated';
-import { budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, resolveParticipantPolicy, recordModelCall, recordModelChoice, type PolicyEnv } from './model-policy';
+import { acquireBreakerProbeLease, breakerOpenUntil, budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, recordModelCall, recordModelCallWithBreaker, recordModelChoice, resolveParticipantPolicy, type PolicyEnv } from './model-policy';
+// CC-8 S1b-2 : prédicat pur du coupe-circuit (option B).
+import { breakerSkipping, BREAKER_PROBE_LEASE_S, STEP_MODEL_BUDGET_FLOOR_MS } from './run-policy';
 
 /** Date (UTC) du registre gratuit ; à revalider avant toute activation. */
 export const API_FREE_MODELS_SNAPSHOT_DATE = '2026-10-30';
@@ -289,21 +291,89 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         model = build(ref, route.tier, participantEnvelope(env as PolicyEnv, run.participant_id));
       }
       let lastError: unknown;
-      const candidates = [{ ref, model: () => model }, ...fallback.map(item => ({
+      let candidates = [{ ref, model: () => model }, ...fallback.map(item => ({
         ref: item.ref, model: () => build(item.ref, 'auto', item.envelope, item.effort),
       }))];
+      // CC-8 S1b-2 : coupe-circuit option B (participant × modèle). Les sondes (task_kind
+      // probe) sont exemptées : elles re-testent un maillon en pause — c’est le signal S6,
+      // jamais une mutation de chaîne. Les refus de budget local ne passent pas ici : ils
+      // sont levés avant tout appel, donc jamais comptés par le coupe-circuit.
+      const taskKind = input.task_kind || run.task_kind;
+      const isProbe = taskKind === 'probe';
+      const nowSec = Math.floor(now.getTime() / 1000);
+      let openUntil = new Map<string, number>();
+      if (!isProbe) {
+        openUntil = await breakerOpenUntil(ctx.db, run.participant_id, candidates.map(candidate => candidate.ref));
+        const available = candidates.filter(candidate => !breakerSkipping({ circuit_open_until: openUntil.get(candidate.ref) ?? 0 }, nowSec));
+        if (!available.length) {
+          const resume = Math.max(...candidates.map(candidate => openUntil.get(candidate.ref) ?? 0));
+          throw new ModelCallError('CIRCUIT_OPEN : tous les maillons de ' + run.participant_id + ' sont en pause coupe-circuit ('
+            + candidates.map(candidate => candidate.ref + ' jusqu’à ' + (openUntil.get(candidate.ref) ?? 0)).join(', ')
+            + ') ; reprise au plus tôt à ' + resume + ' (UTC, secondes).', null);
+        }
+        candidates = available;
+      }
+      // CC-8 S1b-2 : chaque appel reçoit le budget RESTANT de l'étape, décompté du temps
+      // consommé par les maillons précédents ; sous le plancher de 30 s : arrêt propre
+      // transient, AUCUN appel supplémentaire (v2 point 4).
+      const completeStartedMs = (ctx.now?.() ?? new Date()).getTime();
+      // 2e relecture D12 #255 : maillons écartés parce que leur bail de sonde post-pause
+      // est détenu par un autre run — si TOUS le sont, AUCUN appel n'a lieu et lastError
+      // resterait undefined ; l'échec doit rester TRANSITOIRE (CIRCUIT_OPEN, relance S1b).
+      const leaseBlocked: string[] = [];
       for (const candidate of candidates) {
+        const budgetLeftMs = typeof input.budget_left_ms === 'number'
+          ? input.budget_left_ms - ((ctx.now?.() ?? new Date()).getTime() - completeStartedMs)
+          : undefined;
+        if (typeof budgetLeftMs === 'number' && budgetLeftMs < STEP_MODEL_BUDGET_FLOOR_MS) {
+          throw new ModelCallError('STEP_MODEL_BUDGET_EXHAUSTED : budget d’appels modèle de l’étape épuisé ('
+            + Math.max(0, Math.trunc(budgetLeftMs)) + ' ms restants, plan S1b-2 v2 point 4) ; relance d’exécution S1b.', null);
+        }
+        // Bloquant 2 (D12 #255) : ré-qualification post-pause — UN SEUL essai à la fois par
+        // maillon, bail CAS pris juste avant l'appel (un maillon jamais appelé ne bloque
+        // personne). L'issue de l'appel libère le bail (recordModelCallWithBreaker).
+        // Fencing (2e relecture #255) : sans jeton, le bail ne peut pas être libéré par un
+        // appel antérieur — un maillon ré-qualifié n'est appelé que par le preneur du bail
+        // (les sondes exemptées écrivent via recordModelCall, jamais le breaker ni le bail),
+        // et l'appel du preneur dure au plus 120 s (providerTimeoutMs) < fenêtre 180 s :
+        // son issue tombe donc TOUJOURS dans sa propre fenêtre, jamais sur celle d'un autre.
+        const open = openUntil.get(candidate.ref) ?? 0;
+        if (!isProbe && open > 0 && open <= nowSec
+          && !(await acquireBreakerProbeLease(ctx.db, run.participant_id, candidate.ref, nowSec, BREAKER_PROBE_LEASE_S))) {
+          leaseBlocked.push(candidate.ref);
+          continue;
+        }
         const started = Date.now();
         try {
-          const result = await candidate.model().complete(input);
-          await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
+          const result = await candidate.model().complete(budgetLeftMs === undefined ? input : { ...input, budget_left_ms: budgetLeftMs });
+          if (isProbe) {
+            await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
+          } else {
+            await recordModelCallWithBreaker(ctx.db, run.participant_id, candidate.ref,
+              { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
+          }
           return result;
         } catch (error) {
           lastError = error;
-          await recordModelCall(ctx.db, candidate.ref, { ok: false, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started,
-            error: error instanceof Error ? error.message : String(error) });
-          if (modelFailureKind(error) !== 'transient') throw error;
+          const transient = modelFailureKind(error) === 'transient';
+          const outcome = { ok: false, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started,
+            error: error instanceof Error ? error.message : String(error) };
+          // Échec PERMANENT : cumul seul — le coupe-circuit ne compte que le transitoire.
+          if (!transient || isProbe) {
+            await recordModelCall(ctx.db, candidate.ref, outcome);
+          } else {
+            await recordModelCallWithBreaker(ctx.db, run.participant_id, candidate.ref, outcome);
+          }
+          if (!transient) throw error;
         }
+      }
+      // 2e relecture D12 #255 : zéro appel parce que chaque bail de sonde était détenu —
+      // échec TRANSITOIRE explicite, jamais un throw undefined classé permanent.
+      if (lastError === undefined && leaseBlocked.length) {
+        throw new ModelCallError('CIRCUIT_OPEN : tous les maillons de ' + run.participant_id
+          + ' sont en ré-qualification post-pause, bail de sonde détenu par un autre run ('
+          + leaseBlocked.join(', ') + ', fenêtre ' + BREAKER_PROBE_LEASE_S + ' s) ; reprise au plus tôt à '
+          + (nowSec + BREAKER_PROBE_LEASE_S) + ' (UTC, secondes), relance d’exécution S1b.', null);
       }
       throw lastError;
     },

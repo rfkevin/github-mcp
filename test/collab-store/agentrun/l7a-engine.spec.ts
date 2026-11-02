@@ -272,23 +272,27 @@ describe('CC-5 l7a — réclamation liée à la tentative (revue D12 #188)', () 
     expect((await runSummary(db, input.runId))!.effects).toEqual([]);
   });
 
-  it('reprise pendant qu’un effet est en vol (lancé il y a moins de EFFECT_TIMEOUT_S) : busy, un seul commit', async () => {
+  it('double réveil pendant l’exécution d’un effet (réclamation valide) : busy, un seul commit', async () => {
     const { input } = await newRun();
     let clock = T0 + 1;
     let inFlight = true;
     let resumed: string | null = null;
     const model = {
       state: { calls: 0 },
-      // Appel modèle long : l'effet sera lancé à T0+590, peu avant l'expiration de la réclamation.
-      async complete() { this.state.calls += 1; clock = T0 + 590; return { output: READ_THEN_COMMIT[1], usage: { tokens: 10, cost_cents: 0 } }; },
+      // Effet lancé à T0+100 : la garde S1b-2 réserve 150 s devant le plafond d'étape
+      // (D12 #255) — un effet lancé conforme FINIT toujours avant l'expiration de la
+      // réclamation : une reprise pendant sa fenêtre n'est plus possible, seule la
+      // fraîcheur de réclamation protège, et elle suffit (busy).
+      async complete() { this.state.calls += 1; clock = T0 + 100; return { output: READ_THEN_COMMIT[1], usage: { tokens: 10, cost_cents: 0 } }; },
     };
     const h = host({
       lookup: async () => ({ found: false }),
       onExecute: async () => {
         if (!inFlight) return;
         inFlight = false;
-        // Pendant l'exécution de A, la réclamation expire et C reprend l'étape.
-        resumed = (await runStep(db, input.runId, { model, tools: h.tools, now: () => T0 + 1 + STEP_TIMEOUT_S, workerId: 'w3' })).outcome;
+        // Double réveil pendant l'exécution de l'effet : la réclamation de A est encore
+        // valide, C rend busy sans rien relancer ni relire le modèle.
+        resumed = (await runStep(db, input.runId, { model, tools: h.tools, now: () => T0 + 200, workerId: 'w3' })).outcome;
       },
     });
     await runStep(db, input.runId, { model, tools: h.tools, now: () => clock, workerId: 'w1' });

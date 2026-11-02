@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createRoutedModel, type ProviderModelContext } from '../../../src/collab-store/agentrun';
 import { GEMINI_CC3_TEST_PUBLIC_ORIGIN } from '../../../src/collab-store/executors/gemini';
 import { executorError } from '../../../src/collab-store/executors/fetch-timeout';
@@ -59,4 +59,14 @@ describe('CC8 S1b — incident Gemini 503, repli pendant le même appel', () => 
     expect(after[1].ok - before[1].ok).toBe(1);
     expect((await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(run.runId).first<{status:string}>())?.status).not.toBe('failed');
   });
+});
+
+// CC-8 S1b-2 : le coupe-circuit (participant × modèle, table agent_model_breaker) persiste en
+// base — purger les lignes du participant de test pour que chaque rejeu reparte d’un état
+// neutre : sans cela, trois échecs consécutifs cumulés de 3.8 mettraient le maillon en
+// pause et écarteraient précisément le repli que cette suite doit prouver.
+afterEach(async () => {
+  // Assurer la table avant la purge : un test peut échouer avant ensureModelPolicySchema.
+  await ensureModelPolicySchema(db);
+  await db.prepare('DELETE FROM agent_model_breaker WHERE participant_id = ?1').bind('gemini').run();
 });

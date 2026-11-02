@@ -33,6 +33,8 @@ import { sha256Hex } from '../store/hash';
 import { createRun } from './engine';
 import { ensureAgentRunSchema } from './schema';
 import { runCapacity, type RunCapacity } from './capacity';
+// CC-8 S1b-2 : deadline d'exécution PAR TYPE DE TÂCHE — politique unique (v2 point 5).
+import { runDeadlineS } from './run-policy';
 import { decisionKey } from '../controller/journal';
 import type { Decision } from '../controller/rules';
 
@@ -44,7 +46,8 @@ export const PLAN_MAX_TOKENS = 24_000;
 /** S1b : enveloppe totale de jetons par type d'exécution (jamais supérieure au plafond historique). */
 export const TASK_KIND_MAX_TOKENS = Object.freeze({ answer: 8_000, review: 16_000, test: 16_000, implement: 24_000, design: 12_000 });
 export function taskKindMaxTokens(kind: PlannedTaskKind): number { return TASK_KIND_MAX_TOKENS[kind]; }
-export const PLAN_DEADLINE_S = 900;
+/** CC-8 S1b-2 : dérivé de la politique unique (run-policy) — 900 s partout à la fusion, montée S7 après P95. */
+export const PLAN_DEADLINE_S = runDeadlineS('answer');
 
 /**
  * CC-7 L5b (N2) : plafond de coût PAR TYPE DE TÂCHE de chaque exécution API,
@@ -394,7 +397,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
             return (await createRun(db, {
               runId: ids[attempt - 1], cycleId, participantId, taskId: '', taskKind: 'answer',
             prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env)),
-            maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens('answer'), maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+            maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens('answer'), maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + runDeadlineS('answer'), now: input.now,
             })).created;
           } });
           continue;
@@ -428,7 +431,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
             runId: ids[attempt - 1], cycleId, participantId,
             taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
             maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens(kind), maxCostCents: taskKindCostCents(env, kind),
-            deadlineAt: input.now + PLAN_DEADLINE_S, now: input.now,
+            deadlineAt: input.now + runDeadlineS(kind), now: input.now,
           })).created;
         } });
       }
