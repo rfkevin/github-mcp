@@ -6,7 +6,7 @@
  * Une demande exécutable est un owner.request dont le payload porte :
  *   request_id, summary, action (install_phases, import_state, register_endpoint,
  *   grant_coordinator, set_identity_family, reassign_task, classify_request,
- *   close_cycle, appoint_cycle_coordinator, set_agent_models), params,
+ *   close_cycle, appoint_cycle_coordinator, set_agent_models, set_agent_run_status), params,
  *   payload_sha256 = sha256(JSON canonique {action, params}),
  *   preconditions.previous_seq (dernier acte du même type sur le cycle cible
  *   au dépôt, null s'il n'y en a pas), reason, risk, rollback, et en option
@@ -45,9 +45,11 @@ import { appointCycleCoordinator, latestMandateActSeq, MANDATE_FAMILY_RE, MANDAT
 // CC-8 S3 : chaîne de modèles dans le store — acte owner, validation structurelle ici, conformité F1 à l'exécution.
 import { latestModelChainActSeq, setAgentModels } from './model-chains';
 import { CHAIN_STATUSES, POLICY_MAX_MODELS } from '../agentrun/model-policy';
+// CC-8 S8a : pause serveur réversible d'un participant — acte owner, validation structurelle ici, CAS à l'exécution.
+import { latestRunStatusActSeq, RUN_STATUSES, setAgentRunStatus, type RunStatus } from './agent-run-status';
 
 export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator', 'set_identity_family', 'reassign_task',
-  'classify_request', 'close_cycle', 'appoint_cycle_coordinator', 'set_agent_models'] as const;
+  'classify_request', 'close_cycle', 'appoint_cycle_coordinator', 'set_agent_models', 'set_agent_run_status'] as const;
 export type ExecutableAction = (typeof EXECUTABLE_ACTIONS)[number];
 const SHA_RE = /^[0-9a-f]{64}$/;
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -222,6 +224,25 @@ function validateParams(action: ExecutableAction, params: Record<string, unknown
     }
     return participantId;
   }
+  if (action === 'set_agent_run_status') {
+    // CC-8 S8a : pause serveur réversible — structure seulement ici ; le participant réel
+    // et le CAS de version se vérifient à l'exécution de l'acte (owner/agent-run-status.ts).
+    const extra = Object.keys(params).filter(key => !['participant_id', 'status', 'expected_version'].includes(key));
+    if (extra.length) throw new Error('params : champs inconnus ' + extra.join(', ') + '.');
+    const participantId = params.participant_id;
+    if (typeof participantId !== 'string' || !/^[a-z0-9][a-z0-9:_-]{0,127}$/i.test(participantId)) {
+      throw new Error('params.participant_id invalide.');
+    }
+    const status = params.status;
+    if (typeof status !== 'string' || !(RUN_STATUSES as readonly string[]).includes(status)) {
+      throw new Error('params.status : paused ou resumed.');
+    }
+    const expectedVersion = params.expected_version;
+    if (!Number.isSafeInteger(expectedVersion) || (expectedVersion as number) < 0) {
+      throw new Error('params.expected_version : entier >= 0 (version courante du statut de réveil du participant).');
+    }
+    return participantId;
+  }
   if (action === 'reassign_task') {
     // CC-5 l3d 2b-2c : cible = « cycle/tâche » (précondition par tâche).
     const parsed = parseReassignParams(params);
@@ -273,7 +294,7 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('params : objet requis.');
     const target = validateParams(action as ExecutableAction, params as Record<string, unknown>);
     const cycleId = action === 'register_endpoint' || action === 'grant_coordinator' || action === 'set_identity_family'
-      || action === 'set_agent_models'
+      || action === 'set_agent_models' || action === 'set_agent_run_status'
       ? REGISTRY_CYCLE : action === 'reassign_task' ? String((params as Record<string, unknown>).cycle_id) : target;
     // L6 : pour classify_request, target (request:<seq>) n’est pas un cycle — le
     // cycle réel (celui de la demande classée) est résolu à l’approbation.
@@ -315,6 +336,8 @@ export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction
   if (action === 'reassign_task') return latestReassignActSeq(db, cycleId);
   // CC-8 S3 : la cible d'une chaîne est le participant ; son dernier acte de chaîne borne la précondition.
   if (action === 'set_agent_models') return latestModelChainActSeq(db, cycleId);
+  // CC-8 S8a : la cible d'un statut de réveil est le participant ; son dernier acte borne la précondition.
+  if (action === 'set_agent_run_status') return latestRunStatusActSeq(db, cycleId);
   await ensureSchema(db);
   const prefix = (action === 'install_phases' ? PHASE_INSTALL_KEY_PREFIX : STATE_IMPORT_KEY_PREFIX) + cycleId + ':';
   const row = await db.prepare("SELECT MAX(seq) AS seq FROM events WHERE cycle_id = ?1 AND type = 'owner.decision' AND substr(idempotency_key, 1, length(?2)) = ?2")
@@ -355,7 +378,7 @@ export async function describePending(page: PendingPage, now: () => Date = () =>
     const body = req.action === 'install_phases' ? String(req.params.definitions)
       : req.action === 'register_endpoint' || req.action === 'grant_coordinator' || req.action === 'set_identity_family'
         || req.action === 'reassign_task' || req.action === 'classify_request' || req.action === 'close_cycle'
-        || req.action === 'appoint_cycle_coordinator' || req.action === 'set_agent_models'
+        || req.action === 'appoint_cycle_coordinator' || req.action === 'set_agent_models' || req.action === 'set_agent_run_status'
         ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
     // L3e 2b : la même classification que la délégation, affichée ; une panne n'empêche jamais la page.
     const state_diff = db && req.action === 'import_state'
@@ -533,6 +556,18 @@ export async function decideOwnerRequest(db: D1Database, input: {
     return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action, cycle_id: REGISTRY_CYCLE,
       detail: 'chaîne ' + result.participant_id + ' v' + result.version + ' : '
         + (result.chain ? result.chain.map(link => link.ref + ' (' + link.status + ')').join(', ') : 'retirée (défauts wrangler)') } };
+  }
+  if (req.action === 'set_agent_run_status') {
+    // CC-8 S8a : pause serveur réversible — jamais déléguable, CAS expected_version
+    // revérifié dans le lot, fail-closed sans ligne (participant actif).
+    const result = await setAgentRunStatus(db, {
+      participant_id: String(req.params.participant_id),
+      status: req.params.status as RunStatus,
+      expected_version: req.params.expected_version as number,
+      reason: req.reason, proof: input.proof, binding, now: input.now,
+    });
+    return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action, cycle_id: REGISTRY_CYCLE,
+      detail: result.participant_id + ' → ' + result.run_status + ' (v' + result.version + ')' } };
   }
   const target = req.params.target as { repository: string; path: string; ref: string } | undefined | null;
   const result = await importStateSnapshot(db, {

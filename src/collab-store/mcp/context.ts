@@ -52,6 +52,8 @@ export interface CollabToolContext {
   flags: { salonEnabled: boolean; agentRunsEnabled: boolean; researchEnabled: boolean };
   /** CC-7 L9a : vue réduite du Worker pour le catalogue des modèles (aucune valeur de secret). */
   models: PolicyEnv;
+  /** CC-8 S8a : hook de réveil événementiel du store (optionnel, jamais bloquant). */
+  onApplied?: (event: { type: string; payload_json: string }) => void;
 }
 
 export function createCollabToolContext(
@@ -68,6 +70,8 @@ export function createCollabToolContext(
   const store = new CollabStore(env.COLLAB_DB, {
     dailyWriteLimit: options.dailyWriteLimit ?? collabDailyWriteLimit(env.COLLAB_DAILY_WRITE_LIMIT),
     now,
+    // CC-8 S8a : réveil événementiel — propagé au store (hook applied) et au contexte (actes hors appendEvent).
+    ...(options.onApplied ? { onApplied: options.onApplied } : {}),
   });
   const db = env.COLLAB_DB;
   let resolved: Promise<ParticipantIdentity> | undefined;
@@ -81,6 +85,7 @@ export function createCollabToolContext(
     flags: { salonEnabled: env.SALON_ENABLED === 'true', agentRunsEnabled: env.AGENT_RUNS_ENABLED === 'true',
       researchEnabled: env.AGENT_RUN_RESEARCH === 'true' },
     models: modelEnvOf(env),
+    ...(options.onApplied ? { onApplied: options.onApplied } : {}),
     // clientId vient du jeton validé (handler.ts) : seul chemin qui enregistre un client observé.
     identity: () => (resolved ??= resolveTokenParticipant(db, clientId)) };
 }

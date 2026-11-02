@@ -13,6 +13,8 @@ import { SALON_PATH, handleSalonRequest, type SalonRouteEnv } from './collab-sto
 import { controllerCronEnabled, runScheduledControllers } from './collab-store/controller/scheduled';
 import { WEBHOOK_PATH, handleGitHubWebhook, type WebhookEnv } from './collab-store/controller/webhook';
 import { agentRunPass } from './collab-store/agentrun/orchestrator';
+// CC-8 S8a : réveil événementiel des canaux (même passage que le webhook, bail anti-rafale D1).
+import { eventWake } from './collab-store/agentrun/wake-trigger';
 import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './collab-store/agentrun/object';
 import { announceReadyToPromote, runAutoMergePass } from './collab-store/gates/auto-merge';
 import { autoMergeGitHubFrom, type AutoMergeRootEnv } from './auto-merge-root';
@@ -118,8 +120,9 @@ export default {
     const pathname = new URL(request.url).pathname;
     // Owner remains out of OAuth and never delegates owner rights to an MCP token.
     if (pathname === OWNER_PATH) {
+      // CC-8 S8a : les décisions owner appliquées réveillent le planificateur (waitUntil, jamais bloquant).
       const owner = await handleOwnerRequest(request, env as unknown as OwnerRouteEnv, origin, undefined,
-        () => listOAuthClientIds(oauth));
+        () => listOAuthClientIds(oauth), eventWake(env as unknown as AgentRunObjectEnv, ctx));
       if (owner) return owner;
     }
     // CC-7 L4b — salon d'équipe : même preuve owner que /owner, hors OAuth MCP.

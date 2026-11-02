@@ -95,6 +95,8 @@ export async function handleOwnerRequest(
   origin: string,
   jwks: JwksResolver = defaultJwksResolver,
   listClientIds: () => Promise<string[]> = async () => [],
+  /** CC-8 S8a : réveil événementiel — une décision APPLIQUÉE (owner.decision) programme un passage, jamais bloquant. */
+  wake?: (event: { type: string; payload_json: string }) => void,
 ): Promise<Response | null> {
   const config = ownerChannelConfig(env);
   if (!config || !env.COLLAB_DB) return null;
@@ -145,6 +147,11 @@ export async function handleOwnerRequest(
         request_seq: seqField ? Number(seqField) : undefined, cycle_id: field('cycle_id') || undefined,
         payload_sha256: field('payload_sha256') || undefined,
       });
+      // CC-8 S8a : owner.decision APPLIQUÉE est un type réveil ; les autres actes owner
+      // (halt, close, register…) ne réveillent pas (hors liste de la mission S8a).
+      if (result.status === 'applied') {
+        try { wake?.(result.event); } catch { /* jamais bloquant pour la réponse owner */ }
+      }
       message = { text: (result.status === 'duplicate' ? 'Déjà enregistré : ' : 'Décision enregistrée : ')
         + result.decision + ' (seq ' + result.event.seq + ').'
         + (result.executed ? ' Exécuté : ' + result.executed.action + ' sur ' + result.executed.cycle_id + ' — ' + result.executed.detail + '.' : '')
