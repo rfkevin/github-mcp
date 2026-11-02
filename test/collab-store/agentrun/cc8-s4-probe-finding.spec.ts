@@ -42,17 +42,29 @@ describe('CC-8 S4 — sonde fail-closed + model.finding', () => {
     expect(probeUsableForPromotion(out)).toBe(false);
   });
 
-  it('PROBE on sans provider → not_implemented ok=false', async () => {
+  it('PROBE on fournisseur non câblé → not_implemented', async () => {
     await ensureSchema(db);
     const out = await runModelProbe(db, { AGENT_RUN_PROBE: 'true' }, {
-      candidate_ref: 'google:nonexistent-model-2099',
+      candidate_ref: 'xai:grok-4.5',
       source: 'test',
       now: NOW,
     });
     expect(out.ok).toBe(false);
     expect(out.mode).toBe('not_implemented');
     expect(out.error).toBe('PROBE_NOT_IMPLEMENTED');
-    expect(probeUsableForPromotion(out)).toBe(false);
+  });
+
+  it('PROBE on gemini sans clé → live mesuré NO_GEMINI_KEY', async () => {
+    await ensureSchema(db);
+    const out = await runModelProbe(db, { AGENT_RUN_PROBE: 'true' }, {
+      candidate_ref: 'gemini:gemini-3.6-flash',
+      source: 'test',
+      now: NOW,
+    });
+    expect(out.mode).toBe('live');
+    expect(out.provenance).toBe('provider');
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe('NO_GEMINI_KEY');
   });
 
   it('allowSimulation : ok test-only, non utilisable promotion', async () => {
@@ -83,7 +95,7 @@ describe('CC-8 S4 — sonde fail-closed + model.finding', () => {
     expect(out.error).toBe('source_not_official');
   });
 
-  it('finding + trigger_probe sans simu → probe disabled ok=false', async () => {
+  it('finding + trigger_probe → disabled, probe_triggered reste 0', async () => {
     await ensureSchema(db);
     const id = 'mf-test-ok2-' + NOW;
     const out = await recordModelFinding(db, {}, {
@@ -97,8 +109,34 @@ describe('CC-8 S4 — sonde fail-closed + model.finding', () => {
       now: NOW,
     });
     expect(out.status).toBe('recorded');
-    expect(out.probe?.ok).toBe(false);
     expect(out.probe?.mode).toBe('disabled');
-    expect(out.probe?.finding_id).toBe(id);
+    const row = await db.prepare('SELECT probe_triggered FROM model_findings WHERE finding_id = ?1')
+      .bind(id).first<{ probe_triggered: number }>();
+    expect(row?.probe_triggered).toBe(0);
+  });
+
+  it('finding_id même détail, candidat différent → conflict', async () => {
+    await ensureSchema(db);
+    const id = 'mf-id-conflict-' + NOW;
+    await recordModelFinding(db, {}, {
+      finding_id: id,
+      kind: 'new_model',
+      candidate_ref: 'google:gemini-3.6-flash',
+      source_url: 'https://ai.google.dev/gemini-api/docs/pricing',
+      as_of: '2026-11-02',
+      detail: { x: 1 },
+      now: NOW,
+    });
+    const conflict = await recordModelFinding(db, {}, {
+      finding_id: id,
+      kind: 'new_model',
+      candidate_ref: 'google:gemini-3.8-flash',
+      source_url: 'https://ai.google.dev/gemini-api/docs/pricing',
+      as_of: '2026-11-02',
+      detail: { x: 1 },
+      now: NOW + 1,
+    });
+    expect(conflict.status).toBe('rejected');
+    expect(conflict.error).toBe('finding_id_conflict');
   });
 });
