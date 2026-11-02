@@ -280,12 +280,13 @@ describe('CC-8 S5 — branchement F2 : sortie = tâche de promotion, contre-exem
     expect(report.provenance).toBe('simulation');
     const { decision, proposal } = await branchCanaryToF2(greenInput(cycle, report, true));
     expect(decision.verdict).toBe('propose');
+    expect(decision.reasons).toContain('canary_v0_auto_interdit');
     expect(decision.reasons).toContain('canary_simule_pas_de_promotion_auto');
     expect(proposal?.verdict).toBe('propose');
     expect(proposal?.next).toBe('beta');
   });
 
-  it('politique auto + canary réel (provenance real, test seulement) : auto_apply', async () => {
+  it('caller mock étiqueté real : jamais auto_apply en v0 (fail-closed)', async () => {
     const cycle = await seedCycle();
     await seedFullJournal(cycle);
     const realCaller: CanaryCaller = {
@@ -303,9 +304,11 @@ describe('CC-8 S5 — branchement F2 : sortie = tâche de promotion, contre-exem
       now: () => NOW,
     });
     expect(report.provenance).toBe('real');
+    // v0 : une étiquette real déclarée n’est pas une preuve — pas d’auto_apply.
     const { decision, proposal } = await branchCanaryToF2(greenInput(cycle, report, true));
-    expect(decision.verdict).toBe('auto_apply');
-    expect(proposal?.verdict).toBe('auto_apply');
+    expect(decision.verdict).toBe('propose');
+    expect(decision.reasons).toContain('canary_v0_auto_interdit');
+    expect(proposal?.verdict).toBe('propose');
     expect(proposal?.next).toBe('beta');
   });
 

@@ -103,14 +103,16 @@ export async function branchCanaryToF2(input: BranchF2Input): Promise<PromotionO
     paid_ceiling_ok: input.paid_ceiling_ok,
   });
   if (decision.verdict === 'reject') return { decision, proposal: null };
-  // Fail-closed (relecture GPT-6) : une simulation ne prouve jamais un essai
-  // réel — auto_apply interdit depuis une simulation ; la proposition non
-  // exécutable (next beta) reste disponible pour la préparation.
-  if (decision.verdict === 'auto_apply' && input.report.provenance !== 'real') {
-    const downgraded: PromoteDecision = {
-      verdict: 'propose',
-      reasons: [...decision.reasons, 'canary_simule_pas_de_promotion_auto'],
-    };
+  // Fail-closed (relectures GPT-6 6585571364 et 6586929922) : la provenance
+  // déclarée n’est pas une preuve vérifiable — un caller étiqueté real reste
+  // forgeable. En v0 (simulation seulement), auto_apply est interdit
+  // INCONDITIONNELLEMENT ; sa réactivation exigera un adaptateur fournisseur
+  // attesté et contrôlé côté serveur, ou une attestation non forgeable. La
+  // proposition non exécutable (next beta) reste disponible pour préparation.
+  if (decision.verdict === 'auto_apply') {
+    const reasons = [...decision.reasons, 'canary_v0_auto_interdit'];
+    if (input.report.provenance !== 'real') reasons.push('canary_simule_pas_de_promotion_auto');
+    const downgraded: PromoteDecision = { verdict: 'propose', reasons };
     return {
       decision: downgraded,
       proposal: {
