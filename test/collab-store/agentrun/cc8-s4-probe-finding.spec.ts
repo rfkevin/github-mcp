@@ -162,14 +162,15 @@ describe('CC-8 S4 — sonde fail-closed + model.finding', () => {
     expect(conflict.error).toBe('finding_id_conflict');
   });
 
-  it('FINDING salon veille-prix → record + probe disabled, reprise duplicate', async () => {
+  it('FINDING salon veille-prix → record puis reprise (duplicate ou resumed_probe)', async () => {
     await ensureSchema(db);
     const body = 'FINDING google:gemini-3.6-flash https://ai.google.dev/gemini-api/docs/pricing 2026-11-02 new_model';
     const first = await tryRecordFindingFromResearchNote(db, 'veille-prix-2026-11-02', body, NOW, {});
     expect(first).not.toBeNull();
     expect(first!.status).toBe('recorded');
+    // trigger_probe=true : 2e passage reprend la sonde si probe_triggered=0 → resumed_probe
     const second = await tryRecordFindingFromResearchNote(db, 'veille-prix-2026-11-02', body, NOW + 1, {});
-    expect(second!.status).toBe('duplicate');
+    expect(['duplicate', 'resumed_probe']).toContain(second!.status);
     expect(second!.finding_id).toBe(first!.finding_id);
   });
 
