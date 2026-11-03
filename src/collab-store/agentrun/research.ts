@@ -474,23 +474,28 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
       .bind(key, ctx.run_id, PENDING, now()).run();
     if (!reserved.meta.changes) throw new ToolRefused('one_post_per_run');
     const wake = scope.task_id.startsWith('veille-infra-') && scope.participant_id !== 'claude' ? ['claude'] : undefined;
+    // CC-8 S4 : outbox AVANT publication salon — une interruption après le post
+    // ne peut plus perdre le finding (reprise drain au lookup).
+    await db.prepare(FINDING_OUTBOX_SCHEMA).run();
+    await db.prepare(
+      'INSERT OR IGNORE INTO agent_research_finding_outbox (effect_key, task_id, body, finding_status, finding_id, at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)',
+    ).bind(key, scope.task_id, body, 'pending', now()).run();
     try {
       const result = await postSalonMessage(db, { SALON_ENABLED: options.salonEnabled ? 'true' : undefined }, {
         authorPid: scope.participant_id, level: 'info', body, taskId: scope.task_id, now: now(), wakeParticipants: wake });
       await db.prepare('UPDATE agent_research_posts SET msg_id = ?2 WHERE effect_key = ?1').bind(key, result.msg_id).run();
-      // CC-8 S4 : outbox finding avant tentative (reprise lookup si crash).
-      await db.prepare(FINDING_OUTBOX_SCHEMA).run();
-      await db.prepare(
-        'INSERT OR IGNORE INTO agent_research_finding_outbox (effect_key, task_id, body, finding_status, finding_id, at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)',
-      ).bind(key, scope.task_id, body, 'pending', now()).run();
       const finding = await drainFindingOutbox(db, key, scope.task_id, body, now(), probeEnv);
       return { msg_id: result.msg_id, at: result.at, ...(finding ? { model_finding: finding } : {}) };
     } catch (error) {
-      // Refus certain du salon (rien n'est écrit) : la réservation est rendue.
+      // Refus certain du salon (rien n'est écrit) : réservation post + outbox rendues.
       if (error instanceof SalonError) {
         await db.prepare('DELETE FROM agent_research_posts WHERE effect_key = ?1 AND msg_id = ?2').bind(key, PENDING).run();
+        await db.prepare(
+          'DELETE FROM agent_research_finding_outbox WHERE effect_key = ?1 AND finding_status = ?2',
+        ).bind(key, 'pending').run();
         throw new ToolRefused(error.code);
       }
+      // Autre erreur après outbox : laisse pending pour reprise lookup (ne pas none).
       throw error;
     }
   }
