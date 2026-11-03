@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { runModelProbe, probeEnabled, probeUsableForPromotion } from '../../../src/collab-store/agentrun/probe';
 import { recordModelFinding } from '../../../src/collab-store/agentrun/model-finding';
+import { tryRecordFindingFromResearchNote } from '../../../src/collab-store/agentrun/research';
 import { isPinnedRef } from '../../../src/collab-store/agentrun/promote/decision';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
@@ -159,5 +160,22 @@ describe('CC-8 S4 — sonde fail-closed + model.finding', () => {
     });
     expect(conflict.status).toBe('rejected');
     expect(conflict.error).toBe('finding_id_conflict');
+  });
+
+  it('FINDING salon veille-prix → record + probe disabled, reprise duplicate', async () => {
+    await ensureSchema(db);
+    const body = 'FINDING google:gemini-3.6-flash https://ai.google.dev/gemini-api/docs/pricing 2026-11-02 new_model';
+    const first = await tryRecordFindingFromResearchNote(db, 'veille-prix-2026-11-02', body, NOW, {});
+    expect(first).not.toBeNull();
+    expect(first!.status).toBe('recorded');
+    const second = await tryRecordFindingFromResearchNote(db, 'veille-prix-2026-11-02', body, NOW + 1, {});
+    expect(second!.status).toBe('duplicate');
+    expect(second!.finding_id).toBe(first!.finding_id);
+  });
+
+  it('sans ligne FINDING → null (outbox none)', async () => {
+    await ensureSchema(db);
+    const out = await tryRecordFindingFromResearchNote(db, 'veille-prix-2026-11-02', 'aucun finding ici', NOW, {});
+    expect(out).toBeNull();
   });
 });
