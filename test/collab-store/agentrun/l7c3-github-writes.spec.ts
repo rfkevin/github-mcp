@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
   runStep, createRun, createReadToolHost, createGitHubWriteTools, apiBranch, effectTrailer, GitHubWriteRefused, ToolRefused,
-  GITHUB_WRITE_TOOLS_BY_KIND, READ_TOOLS_BY_KIND, WRITE_TOOLS_BY_KIND, DEFAULT_API_BASE_BRANCH,
+  GITHUB_WRITE_TOOLS_BY_KIND, READ_TOOLS_BY_KIND, WRITE_TOOLS_BY_KIND, DEFAULT_API_BASE_BRANCH, createStoreWriteTools,
   type GitHubWrites, type ModelClient, type ModelOutput,
 } from '../../../src/collab-store/agentrun';
 import { engineFor, apiBaseBranch, AGENT_RUN_SYSTEM } from '../../../src/collab-store/agentrun/object';
@@ -263,6 +263,30 @@ describe('CC-8 S7 — mandat serveur et périmètre API', () => {
     expect(await tools.lookup(create, { run_id: runId, effect_key: KEY('1') })).toMatchObject({ found: true });
     expect(gh.refs.has('mcp/105856986/vibe-api-after-chat')).toBe(false);
   });
+
+  for (const status of ['done', 'blocked'] as const) {
+    it('S7 : une API ne peut pas rouvrir une tâche ' + status + ' pour écrire', async () => {
+      const gh = fakeGitHub();
+      const runId = await newRun('vibe');
+      const cycle = 'l7c3-cycle-' + n;
+      await db.prepare("UPDATE tasks SET status = ?1 WHERE cycle_id = ?2 AND task_id = 'l7'")
+        .bind(status, cycle).run();
+      const github = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+      const store = createStoreWriteTools(db);
+      const branch = { id: 'b', name: 'github_create_branch', args: { name: 'after-' + status, base_sha: BASE_SHA } };
+      expect(await refusal(github.execute(branch, { run_id: runId, effect_key: KEY('1') })))
+        .toBe('api_write_task_not_authorized');
+      expect(await refusal(store.execute({ id: 's', name: 'store_task_status',
+        args: { task: 'l7', status: 'in_progress' } }, { run_id: runId, effect_key: KEY('2') })))
+        .toBe('api_task_reopen_forbidden');
+      const row = await db.prepare("SELECT status FROM tasks WHERE cycle_id = ?1 AND task_id = 'l7'")
+        .bind(cycle).first<{ status: string }>();
+      expect(row?.status).toBe(status);
+      expect(await refusal(github.execute(branch, { run_id: runId, effect_key: KEY('3') })))
+        .toBe('api_write_task_not_authorized');
+      expect(gh.calls).toEqual([]);
+    });
+  }
 
   it('refuse un propriétaire différent ou une tâche non active', async () => {
     const gh = fakeGitHub();
