@@ -445,9 +445,16 @@ async function drainFindingOutbox(
     ).bind(effectKey, 'none', 'pending').run();
     return null;
   }
-  await db.prepare(
-    'UPDATE agent_research_finding_outbox SET finding_status = ?2, finding_id = ?3 WHERE effect_key = ?1',
-  ).bind(effectKey, 'done', finding.finding_id).run();
+  // done seulement pour statuts durables — halted laisse pending (re-drain après reprise).
+  const durable = finding.status === 'recorded'
+    || finding.status === 'duplicate'
+    || finding.status === 'resumed_probe'
+    || finding.status === 'rejected';
+  if (durable) {
+    await db.prepare(
+      'UPDATE agent_research_finding_outbox SET finding_status = ?2, finding_id = ?3 WHERE effect_key = ?1',
+    ).bind(effectKey, 'done', finding.finding_id).run();
+  }
   return finding;
 }
 
