@@ -419,7 +419,11 @@ export async function tryRecordFindingFromResearchNote(
   return { finding_id: recorded.finding_id, status: recorded.status };
 }
 
-/** Drain outbox : pending → done|none (idempotent, reprise lookup). */
+/**
+ * Drain outbox : pending → done|none (idempotent, reprise lookup).
+ * none = pas de ligne FINDING (définitif).
+ * Erreur transitoire → laisse pending (reprise au lookup suivant), ne perd pas la sonde.
+ */
 async function drainFindingOutbox(
   db: D1Database,
   effectKey: string,
@@ -428,7 +432,13 @@ async function drainFindingOutbox(
   at: number,
   probeEnv: ProbeEnv = {},
 ): Promise<{ finding_id: string; status: string } | null> {
-  const finding = await tryRecordFindingFromResearchNote(db, taskId, body, at, probeEnv).catch(() => null);
+  let finding: { finding_id: string; status: string } | null;
+  try {
+    finding = await tryRecordFindingFromResearchNote(db, taskId, body, at, probeEnv);
+  } catch {
+    // Crash / D1 : reste pending pour reprise lookup — ne pas marquer none.
+    return null;
+  }
   if (!finding) {
     await db.prepare(
       'UPDATE agent_research_finding_outbox SET finding_status = ?2 WHERE effect_key = ?1 AND finding_status = ?3',

@@ -132,7 +132,7 @@ export async function recordModelFinding(
       || existing.candidate_ref !== input.candidate_ref
       || existing.source_url !== sourceStr
       || existing.as_of !== input.as_of
-      || (existing.detail_hash && existing.detail_hash !== detailHash);
+      || (existing.detail_hash ?? '') !== detailHash;
     if (identityMismatch) {
       return {
         finding_id: findingId, at, kind, candidate_ref: input.candidate_ref,
