@@ -74,6 +74,11 @@ export interface PairResult {
   passed: boolean;
 }
 
+function samePieces(a: readonly string[], b: readonly string[]): boolean {
+  // Structurelle : longueur + éléments exacts (évite ['a\nb'] vs ['a','b'] via join).
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 function sameFrozen(input: FrozenInput, out: ChannelOutput): boolean {
   return (
     out.cycleId === input.cycleId &&
@@ -81,7 +86,7 @@ function sameFrozen(input: FrozenInput, out: ChannelOutput): boolean {
     out.kind === input.kind &&
     out.prompt === input.prompt &&
     out.budget === input.budget &&
-    out.pieces.join('\n') === input.pieces.join('\n')
+    samePieces(out.pieces, input.pieces)
   );
 }
 
@@ -121,15 +126,30 @@ function distinctTaskIds(results: readonly PairResult[], kind: Kind): Set<string
   return new Set(results.filter((r) => r.kind === kind).map((r) => r.taskId));
 }
 
+/** Une seule entrée par (kind, taskId) ; les copies ne comptent ni pour le min ni pour le taux. */
+function uniqueByTask(results: readonly PairResult[]): PairResult[] | null {
+  const seen = new Set<string>();
+  const unique: PairResult[] = [];
+  for (const row of results) {
+    const key = row.kind + '\0' + row.taskId;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    unique.push(row);
+  }
+  return unique;
+}
+
 export function verdictOf(results: readonly PairResult[], halted: boolean): HarnessVerdict {
   const refused = (reason: string, rate: number | null): HarnessVerdict =>
     ({ harnessAccepted: false, s9Closed: false, parityLive: false, reason, rate });
   if (halted) return refused('HALT', null);
+  const unique = uniqueByTask(results);
+  if (!unique) return refused('duplicate_task', null);
   for (const kind of KINDS) {
-    if (distinctTaskIds(results, kind).size < MIN_PER_KIND) return refused('min_per_kind', null);
+    if (distinctTaskIds(unique, kind).size < MIN_PER_KIND) return refused('min_per_kind', null);
   }
-  if (results.some((r) => r.eliminated)) return refused('eliminatory', null);
-  const rate = results.filter((r) => r.passed).length / results.length;
+  if (unique.some((r) => r.eliminated)) return refused('eliminatory', null);
+  const rate = unique.filter((r) => r.passed).length / unique.length;
   if (rate < PASS_THRESHOLD) return refused('below_threshold', rate);
   return { harnessAccepted: true, s9Closed: false, parityLive: false, reason: 'harness_only', rate };
 }
@@ -182,7 +202,25 @@ describe('CC-8 S9 — harnais de parité (pas le live)', () => {
     const row = pair('answer', 1, 'MARK');
     const once = scorePair(row.input, row.chat, row.api, 'judge');
     const padded = [once, once, once, ...board(true).filter((r) => r.kind !== 'answer')];
-    expect(verdictOf(padded, false).reason).toBe('min_per_kind');
+    expect(verdictOf(padded, false).reason).toBe('duplicate_task');
+  });
+
+  it('refuse une collision structurée de pièces join-newline', () => {
+    const row = pair('answer', 1, 'MARK');
+    const collidable = { ...row.chat, pieces: ['a\nb'] as const };
+    const inputPieces = { ...row.input, pieces: ['a', 'b'] as const };
+    expect(() => scorePair(inputPieces, collidable, { ...row.api, pieces: ['a', 'b'] }, 'judge')).toThrow('input_mismatch');
+    expect(() => scorePair(inputPieces, { ...row.chat, pieces: ['a', 'b'] }, collidable, 'judge')).toThrow('input_mismatch');
+  });
+
+  it('les copies PASS ne gonflent pas le taux des 80 %', () => {
+    const fails = board(false);
+    const passRow = pair('answer', 99, 'MARK');
+    const passOnce = scorePair(passRow.input, passRow.chat, passRow.api, 'judge');
+    const padded = [...fails, ...Array.from({ length: 100 }, () => passOnce)];
+    const verdict = verdictOf(padded, false);
+    expect(verdict.reason).toBe('duplicate_task');
+    expect(verdict.rate).toBeNull();
   });
 
   it('refuse le juge auteur', () => {
