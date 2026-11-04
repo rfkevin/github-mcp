@@ -546,6 +546,8 @@ export async function decideOwnerRequest(db: D1Database, input: {
     // CC-8 S3 : chaîne de modèles d'un participant — jamais déléguable, CAS
     // expected_version revérifié dans le lot, instantané immuable par version ;
     // rollback = restauration de v-1, v0 retire la chaîne (défauts wrangler).
+    // CC-8 S6 : setAgentModels prouve la fenêtre bêta pour toute promotion d'un
+    // maillon bêta → principal (garde câblée dans model-chains.ts, chemin unique).
     const result = await setAgentModels(db, {
       participant_id: String(req.params.participant_id),
       expected_version: req.params.expected_version as number,

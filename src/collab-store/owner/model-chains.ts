@@ -21,6 +21,9 @@
  */
 import { CollabStoreError } from '../store/collab-store';
 import { ensureModelChainSchema, loadChainSnapshot, loadModelChain, POLICY_MAX_MODELS, validateModelChain, type ChainEntry } from '../agentrun/model-policy';
+// CC-8 S6 : la promotion bêta → principal prouve sa fenêtre (garde du module bêta, refus = rien n'est écrit).
+import { assertBetaPrimaryWindow } from '../agentrun/beta/advance';
+import { loadBetaTrack } from '../agentrun/beta/store';
 import { ownerAppend, REGISTRY_CYCLE, type OwnerWriteResult } from './decisions';
 import { assertBindingPrecondition, bindingKey, bindingPayload, bindingStatements, type OwnerRequestBinding } from './binding';
 import type { OwnerProof } from './proof';
@@ -107,6 +110,20 @@ export async function setAgentModels(db: D1Database, input: {
   const newVersion = currentVersion + 1;
   const at = Math.floor((input.now?.() ?? new Date()).getTime() / 1000);
   const reason = (input.reason ?? '').slice(0, 500);
+  // CC-8 S6 : promotion bêta → principal — l'acte owner DOIT prouver la fenêtre
+  // (>= 20 exécutions ET >= 48 h depuis l'exposition, seuils préenregistrés) :
+  // le caractère manuel de l'acte ne prouve pas le seuil (relecture GPT-6). La
+  // garde couvre le set ET le rollback : tout maillon actuellement en bêta dans
+  // la chaîne courante qui devient primary passe par assertBetaPrimaryWindow.
+  // Chemin unique : la demande exécutable set_agent_models (owner/executable.ts)
+  // appelle cette même fonction.
+  const promotedFromBeta = (chain ?? [])
+    .filter(entry => entry.status === 'primary')
+    .map(entry => entry.ref)
+    .filter(ref => (current?.chain ?? []).some(item => item.ref === ref && item.status === 'beta'));
+  for (const ref of promotedFromBeta) {
+    await assertBetaPrimaryWindow(db, input.participant_id, ref, at);
+  }
   const chainJson = JSON.stringify(chain);
   const prefix = CHAIN_KEY_PREFIX + input.participant_id;
   const key = input.binding ? bindingKey(prefix, input.binding) : prefix + ':' + input.op;
@@ -121,9 +138,16 @@ export async function setAgentModels(db: D1Database, input: {
       },
       proof: input.proof,
       // CAS : la version ne doit pas avoir bougé entre la lecture et le lot (course fermée en SQL).
+      // CC-8 S6 : pour chaque maillon promu depuis la bêta, le suivi doit être
+      // TOUJOURS en bêta dans la transaction — une fermeture ou un retour
+      // arrière concurrent entre la garde de fenêtre et le lot annule tout.
       extraGuard: {
-        sql: 'COALESCE((SELECT version FROM agent_model_chains WHERE participant_id = ?4), 0) = ?5',
-        binds: [input.participant_id, currentVersion],
+        sql: 'COALESCE((SELECT version FROM agent_model_chains WHERE participant_id = ?4), 0) = ?5'
+          + (promotedFromBeta.length > 0
+            ? ' AND ' + promotedFromBeta.map((ref, index) =>
+              "(SELECT status FROM agent_model_beta WHERE participant_id = ?4 AND candidate_ref = ?" + (6 + index) + ") = 'beta'").join(' AND ')
+            : ''),
+        binds: [input.participant_id, currentVersion, ...promotedFromBeta],
       },
       sideEffects: eventKey => [
         ...(input.binding ? bindingStatements(db, input.binding, input.proof, eventKey, input.now) : []),
@@ -148,6 +172,15 @@ export async function setAgentModels(db: D1Database, input: {
       if (nowVersion !== currentVersion) {
         throw new CollabStoreError('CHAIN_VERSION_STALE',
           'La chaîne de ' + input.participant_id + ' a changé entre-temps (version ' + nowVersion + ') : rien n’est écrit, redéposez à jour.');
+      }
+      // CC-8 S6 : le CAS de version tient, c'est le suivi de bêta qui a bougé
+      // entre la garde de fenêtre et le lot — refus typé, rien n'est écrit.
+      for (const ref of promotedFromBeta) {
+        const track = await loadBetaTrack(db, input.participant_id, ref);
+        if (!track || track.status !== 'beta') {
+          throw new CollabStoreError('BETA_TRACK_STALE',
+            'Le suivi de bêta de ' + input.participant_id + ' / ' + ref + ' a changé entre la garde de fenêtre et l’acte : rien n’est écrit, relisez et rejouez.');
+        }
       }
     }
     throw error;

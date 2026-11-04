@@ -791,3 +791,33 @@ L'acte owner `set_agent_models` (jamais déléguable, CAS `expected_version`, in
 **Fail-closed du branchement (relecture GPT-6)** : le rapport doit porter le `cycle_id` et le `candidate_ref` exacts de la décision — un rapport produit pour un autre cycle ou un autre candidat est rejeté (`rapport_cycle_etranger`/`rapport_candidat_etranger`), sans proposition. Il déclare aussi sa provenance : `auto_apply` exige un canary `real` ; une simulation produit au mieux `propose` (`canary_simule_pas_de_promotion_auto`), la tâche de promotion restant disponible pour la préparation.
 
 **v0 simulation-only (relecture GPT-6, 6586929922)** : la provenance déclarée n’est pas une preuve vérifiable (un caller étiqueté `real` reste forgeable) — `auto_apply` est interdit INCONDITIONNELLEMENT par le branchement en v0 : tout verdict `auto_apply` de la décision pure est dégradé en `propose` (raison `canary_v0_auto_interdit`, avec `canary_simule_pas_de_promotion_auto` en plus pour une simulation), la tâche de promotion restant disponible pour la préparation. Réactivation future : adaptateur fournisseur attesté et contrôlé côté serveur, ou attestation non forgeable — jamais une étiquette déclarée par l’appelant.
+
+
+### CC-8 S6 — suivi de bêta des chaînes de modèles (complément à la section 7)
+
+Le lot S6 (bilan : docs/collaboration/cc8/s6-beta.md) ajoute le suivi de bêta d'un maillon de chaîne : ouverture sur preuve canary (tâche de promotion du lot S5, candidate déjà posée en secours par `set_agent_models`), avance secours → bêta aux seuils PRÉENREGISTRÉS (>= 20 exécutions ET >= 48 h), retour arrière automatique d'une bêta cassée (>= 5 exécutions, taux d'échec > 5 %, retour à la chaîne d'avant l'exposition), fermeture (bookkeeping). La promotion bêta → principal reste un acte owner (`set_agent_models` sur /owner) : aucun chemin automatique vers primary n'existe dans ce module. La garde transactionnelle CAS (suivi + version de chaîne + HALT, revue #115 R1) annule tout le lot en cas de course — jamais last-write-wins. L'arrêt d'urgence coupe l'ouverture, l'avance ET le retour arrière automatique (`AUTOMATION_HALTED`) ; l'owner garde le rollback manuel.
+
+| Code | Lot | Signification | Que faire |
+| --- | --- | --- | --- |
+| `BETA_PARTICIPANT_INVALID` | CC-8 S6 | Identifiant de participant mal formé pour un suivi de bêta | Corriger l'identifiant |
+| `BETA_REF_INVALID` | CC-8 S6 | Candidate non épinglée (jamais d'alias latest) | Fournir une référence épinglée |
+| `BETA_PROPOSAL_INVALID` | CC-8 S6 | La preuve n'est pas une tâche de promotion vers la bêta (verdict reject, ou cible hors bêta) | Seule une tâche de promotion du canary (S5) ouvre un suivi |
+| `BETA_CANARY_INSUFFISANT` | CC-8 S6 | Preuve canary de moins de 20 appels | Compléter le canary |
+| `BETA_PROOF_INVALID` | CC-8 S6 | Empreinte du rapport (64 hex) ou cycle absent de la preuve | Corriger la preuve |
+| `BETA_CHAIN_ABSENT` | CC-8 S6 | Aucune chaîne active dans le store pour le participant (absente ou retirée, sentinelle) | Poser une chaîne par set_agent_models (owner) |
+| `BETA_CANDIDATE_ABSENT` | CC-8 S6 | La candidate n'est pas un maillon de la chaîne du participant | Ajouter le maillon par acte owner |
+| `BETA_ENTRY_NOT_SECOURS` | CC-8 S6 | Le maillon ne porte pas le statut rollback (secours) : la bêta se mérite d'abord comme secours | Poser la candidate en secours par set_agent_models |
+| `BETA_TRACK_OPEN` | CC-8 S6 | Un suivi est déjà ouvert pour ce participant et cette candidate | Fermer le suivi, ou attendre |
+| `BETA_TRACK_UNKNOWN` | CC-8 S6 | Aucun suivi de bêta pour ce participant et cette candidate | Ouvrir un suivi sur preuve canary |
+| `BETA_TRACK_CLOSED` | CC-8 S6 | Le suivi est fermé (stale ou rolled_back) : l'opération ne s'applique pas | Rouvrir par une nouvelle preuve, ou arbitrage owner |
+| `BETA_TRACK_STALE` | CC-8 S6 | Course CAS : le suivi a changé entre la lecture et le lot, tout le lot est annulé | Relire et rejouer |
+| `BETA_CHAIN_STALE` | CC-8 S6 | La chaîne a changé depuis l'ouverture du suivi (acte owner) : suivi périmé, rien n'est écrit | Rouvrir un suivi sur la version courante |
+| `BETA_THRESHOLDS_NOT_MET` | CC-8 S6 | Paliers préenregistrés non atteints (exécutions ou durée insuffisantes ; ou bêta insuffisamment observée) | Attendre les paliers ; rien n'est écrit |
+| `BETA_NOT_IN_BETA` | CC-8 S6 | Retour arrière automatique ou garde de promotion principal demandés hors bêta exposée | — |
+| `BETA_SNAPSHOT_MISSING` | CC-8 S6 | Instantané de la chaîne d'avant exposition absent de l'audit : retour arrière impossible | Arbitrage owner (set_agent_models manuel) |
+| `BETA_CRITERIA_INTACT` | CC-8 S6 | La bêta ne casse pas ses seuils : aucun retour arrière (rien n'est écrit) | — |
+
+| `BETA_CHAIN_DIVERGED` | CC-8 S6 | La chaîne live n'est plus celle créée par l'exposition bêta (modification owner entre-temps, candidate gardée en bêta) : le retour arrière automatique refuse d'effacer son acte, rien n'est écrit | Arbitrage owner : rollback manuel via set_agent_models |
+| `BETA_PRIMARY_WINDOW_NOT_MET` | CC-8 S6 | Fenêtre bêta non atteinte (moins de 20 exécutions réelles ou moins de 48 h depuis l'exposition, seuils préenregistrés) : la garde de l'acte owner refuse la promotion principal | Attendre les paliers préenregistrés ; rien n'est écrit |
+
+**Fenêtre principal et divergence (revue GPT-6)** : la promotion bêta → principal reste un acte owner (`set_agent_models` sur /owner), sans chemin automatique — mais l'acte DOIT appeler `assertBetaPrimaryWindow` (lecture seule) avant de promouvoir et refuser sur erreur : fenêtre bêta >= 20 exécutions réelles ET >= 48 h depuis l'exposition (`advanced_at`), aux seuils préenregistrés du suivi ; le caractère manuel de l'acte ne prouve pas le seuil. Le retour arrière automatique ne s'applique que si la chaîne live est exactement la version créée par l'exposition : une modification owner postérieure (autre maillon) donne `BETA_CHAIN_DIVERGED` sans écriture, l'arbitrage reste au rollback manuel owner.
