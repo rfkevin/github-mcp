@@ -415,9 +415,15 @@ function executorSection(rows: CapabilityRow[], secret: string): string {
       + secret + '<p><button type="submit">Enregistrer les notes</button></p></form>';
     return '<details class="ep">' + head + facts + probeButton + trialForm + notesForm + '</details>';
   }).join('');
+  const modelProbe = '<fieldset><form method="post" action="/owner"><input type="hidden" name="action" value="probe_model">'
+    + '<p class="note">CC-8 S4 — sonde modèle unique (même runner que model.finding). Fail-closed si AGENT_RUN_PROBE off.</p>'
+    + '<label>Réf candidate (provider:model épinglée) <input type="text" name="candidate_ref" required maxlength="220" '
+    + 'placeholder="google:gemini-3.6-flash" pattern="[a-z][a-z-]{1,15}:\\S{1,200}"></label>'
+    + secret + '<p><button type="submit">Sonder le modèle</button></p></form></fieldset>';
   return executorStatusCounts(rows)
     + (items ? items
       : '<p class="note">Aucun endpoint inscrit. Un agent prépare l’inscription ; vous l’approuvez dans les demandes en attente.</p>')
+    + modelProbe
     + '<p class="note">Un endpoint ne devient actif qu’après une sonde réussie puis une demande d’activation approuvée. '
     + 'La sonde et la tâche d’essai font un appel réel au fournisseur gratuit avec des consignes fixées par le serveur.</p>';
 }

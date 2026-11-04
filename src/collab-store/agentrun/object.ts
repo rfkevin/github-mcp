@@ -150,7 +150,14 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
       // CC-7 L9b : l'agent choisit lui-même son modèle et sa réflexion quand l'aiguillage par participant est posé.
       modelChoice: routed ? env as unknown as PolicyEnv : null,
       // CC-7 L11 : chercheurs en tournante (porte AGENT_RUN_RESEARCH, éteinte par défaut).
-      research: researchEnabled(env) ? { salonEnabled: env.SALON_ENABLED === 'true' } : null });
+      research: researchEnabled(env) ? {
+        salonEnabled: env.SALON_ENABLED === 'true',
+        // CC-8 S4 : même env sonde que /owner (clé Gemini + AGENT_RUN_PROBE).
+        probeEnv: {
+          AGENT_RUN_PROBE: (env as { AGENT_RUN_PROBE?: string }).AGENT_RUN_PROBE,
+          LLM_KEY_GEMINI: env.LLM_KEY_GEMINI,
+        },
+      } : null });
     const schemas = (kind: string) => tools.schemas(kind);
     if (routed) {
       const model = createRoutedModel(env, { env, db, runId: _runId, envelope, schemas, system: AGENT_RUN_SYSTEM,

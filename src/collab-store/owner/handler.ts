@@ -27,6 +27,7 @@ import { setExecutorNotes } from './executor-notes';
 import { listIdentityFamilies } from '../identity/families';
 import { relayLines } from '../controller/relay';
 import { listRunsForOwner } from '../agentrun/chat-continuity';
+import { runModelProbe, type ProbeEnv } from '../agentrun/probe';
 
 export const OWNER_PATH = '/owner';
 // CC-3 C6 : un import d'état CC-STATE-1 (≤ 256 Kio) passe par ce formulaire ; marge pour l'encodage.
@@ -63,7 +64,7 @@ function denied(reason: string): Response {
   return new Response('Accès owner refusé.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
 }
 
-export const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator', 'close_cycle', 'classify_request', 'create_product'] as const;
+export const ACTIONS = ['view', 'decide', 'register', 'map', 'unmap', 'import_state', 'install_phases', 'halt', 'resume', 'probe_endpoint', 'probe_model', 'run_trial', 'update_executor_notes', 'appoint_cycle_coordinator', 'close_cycle', 'classify_request', 'create_product'] as const;
 
 /** CC-4 A2 : données du tableau de bord (demandes décrites, arrêt d'urgence, budget). */
 async function dashboardData(db: D1Database, before?: number, productEnabled = false) {
@@ -226,6 +227,22 @@ export async function handleOwnerRequest(
       message = { text: 'Sonde ' + (result.ok ? 'réussie' : 'en échec' + (result.error ? ' (' + result.error + ')' : '')
         + (result.error_detail ? ' : ' + result.error_detail : ''))
         + ' pour ' + field('endpoint_id') + ' (seq ' + result.event.seq + ').', error: !result.ok };
+    } else if (action === 'probe_model') {
+      // CC-8 S4 : même runner que model.finding. Live Gemini si clé + PROBE=true.
+      const probeEnv: ProbeEnv = {
+        AGENT_RUN_PROBE: (env as ProbeEnv).AGENT_RUN_PROBE,
+        LLM_KEY_GEMINI: (env as { LLM_KEY_GEMINI?: string }).LLM_KEY_GEMINI,
+      };
+      const result = await runModelProbe(db, probeEnv, {
+        candidate_ref: field('candidate_ref').trim(),
+        source: 'owner_button',
+      });
+      message = {
+        text: 'Sonde modèle ' + result.candidate_ref + ' : ' + result.mode
+          + (result.error ? ' (' + result.error + ')' : '')
+          + ' · ok=' + String(result.ok) + ' · provenance=' + result.provenance + '.',
+        error: !result.ok,
+      };
     } else if (action === 'run_trial') {
       const result = await runOwnerTrial(db, providerAdapterFactory(env), {
         endpoint_id: field('endpoint_id'), instruction: field('trial_instruction'), data: field('trial_data'),

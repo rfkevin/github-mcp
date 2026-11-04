@@ -23,6 +23,8 @@ import { listSalonMessages, postSalonMessage, SalonError } from '../salon';
 import { createRun, ToolRefused, type LookupResult, type ToolCall } from './engine';
 import { apiParticipants, RUN_COST_CENTS_CEILING } from './plan';
 import type { ToolSchema } from './workers-ai-model';
+import { recordModelFinding } from './model-finding';
+import type { ProbeEnv } from './probe';
 
 export const RESEARCH_TASK_KIND = 'research';
 export const RESEARCH_SUBJECTS = ['prix', 'infra'] as const;
@@ -350,9 +352,22 @@ const RESEARCH_READS: readonly ResearchToolName[] = ['web_fetch_official', 'stor
 
 export interface ResearchToolsOptions {
   salonEnabled: boolean;
+  /** CC-8 S4 : env sonde (AGENT_RUN_PROBE + LLM_KEY_GEMINI) pour FINDING → probe live. */
+  probeEnv?: ProbeEnv;
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
+
+const FINDING_OUTBOX_SCHEMA = [
+  'CREATE TABLE IF NOT EXISTS agent_research_finding_outbox (',
+  '  effect_key TEXT PRIMARY KEY,',
+  '  task_id TEXT NOT NULL,',
+  '  body TEXT NOT NULL,',
+  '  finding_status TEXT NOT NULL,',
+  '  finding_id TEXT,',
+  '  at INTEGER NOT NULL',
+  ')',
+].join(' ');
 
 const POSTS_SCHEMA = [
   'CREATE TABLE IF NOT EXISTS agent_research_posts (',
@@ -370,9 +385,83 @@ export interface ResearchTools {
   lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult>;
 }
 
+/**
+ * CC-8 S4 — branchement veille → finding.
+ * Ligne reconnue (note salon prix) : FINDING provider:model https://…host… YYYY-MM-DD kind?
+ * Ex. « FINDING google:gemini-3.8-flash https://ai.google.dev/gemini-api/docs/pricing 2026-11-02 new_model »
+ * Sans ligne FINDING : aucun enregistrement (la note salon reste le journal).
+ */
+export async function tryRecordFindingFromResearchNote(
+  db: D1Database,
+  taskId: string,
+  body: string,
+  at: number,
+  probeEnv: ProbeEnv = {},
+): Promise<{ finding_id: string; status: string } | null> {
+  if (!taskId.startsWith('veille-prix-')) return null;
+  const line = body.split('\n').map((l) => l.trim()).find((l) => /^FINDING\s+/i.test(l));
+  if (!line) return null;
+  const parts = line.replace(/^FINDING\s+/i, '').trim().split(/\s+/);
+  if (parts.length < 3) return null;
+  const [candidate_ref, source_url, as_of, kindRaw] = parts;
+  const kind = kindRaw && (['price_change', 'new_model', 'model_retired', 'effort_change', 'other'] as string[]).includes(kindRaw)
+    ? kindRaw : 'other';
+  const recorded = await recordModelFinding(db, probeEnv, {
+    finding_id: 'mf-research-' + (await sha256Hex([taskId, candidate_ref, source_url, as_of].join('\u001f'))).slice(0, 24),
+    kind,
+    candidate_ref,
+    source_url,
+    as_of,
+    detail: { from: 'research_salon', task_id: taskId },
+    trigger_probe: true,
+    now: at,
+  });
+  return { finding_id: recorded.finding_id, status: recorded.status };
+}
+
+/**
+ * Drain outbox : pending → done|none (idempotent, reprise lookup).
+ * none = pas de ligne FINDING (définitif).
+ * Erreur transitoire → laisse pending (reprise au lookup suivant), ne perd pas la sonde.
+ */
+async function drainFindingOutbox(
+  db: D1Database,
+  effectKey: string,
+  taskId: string,
+  body: string,
+  at: number,
+  probeEnv: ProbeEnv = {},
+): Promise<{ finding_id: string; status: string } | null> {
+  let finding: { finding_id: string; status: string } | null;
+  try {
+    finding = await tryRecordFindingFromResearchNote(db, taskId, body, at, probeEnv);
+  } catch {
+    // Crash / D1 : reste pending pour reprise lookup — ne pas marquer none.
+    return null;
+  }
+  if (!finding) {
+    await db.prepare(
+      'UPDATE agent_research_finding_outbox SET finding_status = ?2 WHERE effect_key = ?1 AND finding_status = ?3',
+    ).bind(effectKey, 'none', 'pending').run();
+    return null;
+  }
+  // done seulement pour statuts durables — halted laisse pending (re-drain après reprise).
+  const durable = finding.status === 'recorded'
+    || finding.status === 'duplicate'
+    || finding.status === 'resumed_probe'
+    || finding.status === 'rejected';
+  if (durable) {
+    await db.prepare(
+      'UPDATE agent_research_finding_outbox SET finding_status = ?2, finding_id = ?3 WHERE effect_key = ?1',
+    ).bind(effectKey, 'done', finding.finding_id).run();
+  }
+  return finding;
+}
+
 export function createResearchTools(db: D1Database, options: ResearchToolsOptions): ResearchTools {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
+  const probeEnv: ProbeEnv = options.probeEnv ?? {};
   const isResearch = (kind: string) => kind === RESEARCH_TASK_KIND;
   async function run(runId: string) {
     const row = await db.prepare('SELECT participant_id, task_id, task_kind FROM agent_runs WHERE run_id = ?1').bind(runId)
@@ -392,17 +481,28 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
       .bind(key, ctx.run_id, PENDING, now()).run();
     if (!reserved.meta.changes) throw new ToolRefused('one_post_per_run');
     const wake = scope.task_id.startsWith('veille-infra-') && scope.participant_id !== 'claude' ? ['claude'] : undefined;
+    // CC-8 S4 : outbox AVANT publication salon — une interruption après le post
+    // ne peut plus perdre le finding (reprise drain au lookup).
+    await db.prepare(FINDING_OUTBOX_SCHEMA).run();
+    await db.prepare(
+      'INSERT OR IGNORE INTO agent_research_finding_outbox (effect_key, task_id, body, finding_status, finding_id, at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)',
+    ).bind(key, scope.task_id, body, 'pending', now()).run();
     try {
       const result = await postSalonMessage(db, { SALON_ENABLED: options.salonEnabled ? 'true' : undefined }, {
         authorPid: scope.participant_id, level: 'info', body, taskId: scope.task_id, now: now(), wakeParticipants: wake });
       await db.prepare('UPDATE agent_research_posts SET msg_id = ?2 WHERE effect_key = ?1').bind(key, result.msg_id).run();
-      return { msg_id: result.msg_id, at: result.at };
+      const finding = await drainFindingOutbox(db, key, scope.task_id, body, now(), probeEnv);
+      return { msg_id: result.msg_id, at: result.at, ...(finding ? { model_finding: finding } : {}) };
     } catch (error) {
-      // Refus certain du salon (rien n'est écrit) : la réservation est rendue.
+      // Refus certain du salon (rien n'est écrit) : réservation post + outbox rendues.
       if (error instanceof SalonError) {
         await db.prepare('DELETE FROM agent_research_posts WHERE effect_key = ?1 AND msg_id = ?2').bind(key, PENDING).run();
+        await db.prepare(
+          'DELETE FROM agent_research_finding_outbox WHERE effect_key = ?1 AND finding_status = ?2',
+        ).bind(key, 'pending').run();
         throw new ToolRefused(error.code);
       }
+      // Autre erreur après outbox : laisse pending pour reprise lookup (ne pas none).
       throw error;
     }
   }
@@ -429,7 +529,16 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
       const row = await db.prepare('SELECT msg_id, at FROM agent_research_posts WHERE effect_key = ?1').bind(ctx.effect_key)
         .first<{ msg_id: string; at: number }>();
       if (!row) return { found: false };
-      return row.msg_id === PENDING ? null : { found: true, result: { msg_id: row.msg_id, at: row.at } };
+      if (row.msg_id === PENDING) return null;
+      await db.prepare(FINDING_OUTBOX_SCHEMA).run();
+      const box = await db.prepare(
+        'SELECT task_id, body, finding_status FROM agent_research_finding_outbox WHERE effect_key = ?1',
+      ).bind(ctx.effect_key).first<{ task_id: string; body: string; finding_status: string }>();
+      let finding: { finding_id: string; status: string } | null = null;
+      if (box && box.finding_status === 'pending') {
+        finding = await drainFindingOutbox(db, ctx.effect_key, box.task_id, box.body, now(), probeEnv);
+      }
+      return { found: true, result: { msg_id: row.msg_id, at: row.at, ...(finding ? { model_finding: finding } : {}) } };
     },
   };
 }
