@@ -44,7 +44,7 @@ function actionValues(html: string): string[] {
   return [...html.matchAll(/name="action" value="([^"]*)"/g)].map(match => match[1]);
 }
 
-const SECTIONS = ['pending', 'classified', 'relay', 'agent-runs', 'automation', 'coordinators', 'mandate',
+const SECTIONS = ['pending', 'classified', 'relay', 'agent-runs', 'beta', 'automation', 'coordinators', 'mandate',
   'close', 'executors', 'participants', 'families', 'clients', 'imports', 'phases', 'product'];
 
 describe('CC-Owner V2 L4 — inventaire de la page owner', () => {
@@ -68,7 +68,7 @@ describe('CC-Owner V2 L4 — inventaire de la page owner', () => {
     expect(dashboardPage(config, withoutCycles)).not.toContain('Cycles :');
   });
 
-  it('navigation par ancres : liens vers les 15 sections, chaque ancre résolue, collante et tactile', () => {
+  it('navigation par ancres : liens vers les 16 sections, chaque ancre résolue, collante et tactile', () => {
     const html = dashboardPage(config, inventoryData(false));
     expect(html).toContain('<nav class="toc"');
     const hrefs = [...html.matchAll(/<a href="#([^"]+)"/g)].map(match => match[1]);
