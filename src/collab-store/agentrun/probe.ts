@@ -125,14 +125,26 @@ async function liveGeminiProbe(
   }
   const parts = (json as { candidates?: Array<{ content?: { parts?: Array<Record<string, unknown>> } }> })
     ?.candidates?.[0]?.content?.parts ?? [];
-  const hasFn = parts.some((p) => p && typeof p === 'object' && 'functionCall' in p);
+  // GPT-6 : exiger probe_ping + args.ok===true (refuser null / nom inconnu / args invalides).
+  const hasFn = parts.some((p) => isValidProbePing(p));
   return {
-    ok: true,
+    ok: hasFn,
     tools_ok: hasFn,
     efforts_ok: hasFn ? ['low'] : [],
     cost_micro_cents: 0,
     ...(hasFn ? {} : { error: 'NO_FUNCTION_CALL' }),
   };
+}
+
+/** functionCall structuré : name=probe_ping et args.ok===true. */
+function isValidProbePing(part: unknown): boolean {
+  if (!part || typeof part !== 'object') return false;
+  const fc = (part as { functionCall?: unknown }).functionCall;
+  if (!fc || typeof fc !== 'object') return false;
+  const call = fc as { name?: unknown; args?: unknown };
+  if (call.name !== 'probe_ping') return false;
+  if (!call.args || typeof call.args !== 'object') return false;
+  return (call.args as { ok?: unknown }).ok === true;
 }
 
 export async function runModelProbe(
@@ -170,6 +182,20 @@ export async function runModelProbe(
   // google: et gemini: → même endpoint (alias historique tests).
   if (provider === 'gemini' || provider === 'google') {
     const measured = await liveGeminiProbe(env, model);
+    // Pré-réseau (pas de clé / modèle non supporté) : ne PAS consommer la sonde
+    // (mode≠live ou provenance≠provider → probeAttemptCompleted=false).
+    if (measured.error === 'NO_GEMINI_KEY' || measured.error === 'GEMINI_MODEL_UNSUPPORTED') {
+      return {
+        ...base,
+        ok: false,
+        tools_ok: false,
+        efforts_ok: [],
+        error: measured.error,
+        cost_micro_cents: 0,
+        mode: 'not_implemented',
+        provenance: 'none',
+      };
+    }
     const toolsOk = measured.tools_ok;
     const ok = measured.ok && toolsOk;
     return {
