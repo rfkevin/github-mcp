@@ -10,18 +10,28 @@ export interface WriteGrant {
 }
 export interface WriteScope extends WriteGrant { run_id: string; owned_paths: string[] }
 
+function validIdentifier(value: unknown): boolean {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200;
+}
+function validGrantPath(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  return validPath(value.endsWith('/') ? value.slice(0, -1) : value);
+}
+function parseGrant(value: unknown): WriteGrant {
+  if (!value || typeof value !== 'object') throw new Error();
+  if (Object.keys(value).sort().join(',') !== 'branch,cycle,participant,paths,task') throw new Error();
+  const item = value as Record<string, unknown>;
+  if (!['cycle', 'task', 'participant', 'branch'].every(key => validIdentifier(item[key]))) throw new Error();
+  if (!Array.isArray(item.paths) || item.paths.length === 0 || item.paths.length > 50) throw new Error();
+  if (!item.paths.every(validGrantPath)) throw new Error();
+  return item as unknown as WriteGrant;
+}
 export function grants(policy: WritePolicy): WriteGrant[] {
   if (!policy.tasks) return [];
   try {
     const value: unknown = JSON.parse(policy.tasks);
     if (!Array.isArray(value) || value.length > 50) throw new Error();
-    return value.map(item => {
-      if (!item || typeof item !== 'object' || Object.keys(item).sort().join(',') !== 'branch,cycle,participant,paths,task'
-        || !['cycle', 'task', 'participant', 'branch'].every(k => typeof item[k] === 'string' && item[k].length > 0 && item[k].length <= 200)
-        || !Array.isArray(item.paths) || !item.paths.length || item.paths.length > 50
-        || !item.paths.every((p: unknown) => typeof p === 'string' && validPath(p.endsWith('/') ? p.slice(0, -1) : p))) throw new Error();
-      return item as WriteGrant;
-    });
+    return value.map(parseGrant);
   } catch { throw new ToolRefused('api_write_policy_invalid'); }
 }
 
