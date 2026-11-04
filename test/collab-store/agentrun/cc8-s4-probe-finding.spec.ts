@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { runModelProbe, probeEnabled, probeUsableForPromotion } from '../../../src/collab-store/agentrun/probe';
+import { runModelProbe, probeEnabled, probeUsableForPromotion, probeAttemptCompleted } from '../../../src/collab-store/agentrun/probe';
 import { recordModelFinding } from '../../../src/collab-store/agentrun/model-finding';
 import { tryRecordFindingFromResearchNote } from '../../../src/collab-store/agentrun/research';
 import { isPinnedRef } from '../../../src/collab-store/agentrun/promote/decision';
@@ -55,17 +55,88 @@ describe('CC-8 S4 — sonde fail-closed + model.finding', () => {
     expect(out.error).toBe('PROBE_NOT_IMPLEMENTED');
   });
 
-  it('PROBE on gemini sans clé → live mesuré NO_GEMINI_KEY', async () => {
+  it('PROBE on gemini sans clé → not_implemented, sonde non consommée', async () => {
     await ensureSchema(db);
     const out = await runModelProbe(db, { AGENT_RUN_PROBE: 'true' }, {
       candidate_ref: 'gemini:gemini-3.6-flash',
       source: 'test',
       now: NOW,
     });
-    expect(out.mode).toBe('live');
-    expect(out.provenance).toBe('provider');
+    expect(out.mode).toBe('not_implemented');
+    expect(out.provenance).toBe('none');
     expect(out.ok).toBe(false);
     expect(out.error).toBe('NO_GEMINI_KEY');
+    expect(probeAttemptCompleted(out)).toBe(false);
+  });
+
+  it('functionCall null / nom invalide → tools_ok false', async () => {
+    await ensureSchema(db);
+    const mockNull = async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ functionCall: null }] } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const outNull = await runModelProbe(db, {
+      AGENT_RUN_PROBE: 'true',
+      LLM_KEY_GEMINI: 'test-key',
+      probeFetch: mockNull as typeof fetch,
+    }, { candidate_ref: 'gemini:gemini-3.6-flash', source: 'test', now: NOW });
+    expect(outNull.mode).toBe('live');
+    expect(outNull.ok).toBe(false);
+    expect(outNull.tools_ok).toBe(false);
+    expect(probeUsableForPromotion(outNull)).toBe(false);
+
+    const mockBad = async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ functionCall: { name: 'other', args: { ok: true } } }] } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const outBad = await runModelProbe(db, {
+      AGENT_RUN_PROBE: 'true',
+      LLM_KEY_GEMINI: 'test-key',
+      probeFetch: mockBad as typeof fetch,
+    }, { candidate_ref: 'gemini:gemini-3.6-flash', source: 'test', now: NOW + 1 });
+    expect(outBad.tools_ok).toBe(false);
+    expect(probeUsableForPromotion(outBad)).toBe(false);
+  });
+
+  it('finding sans clé → probe_triggered=0 puis reprise avec clé mock', async () => {
+    await ensureSchema(db);
+    const id = 'mf-nokey-resume-' + NOW;
+    const first = await recordModelFinding(db, { AGENT_RUN_PROBE: 'true' }, {
+      finding_id: id,
+      kind: 'new_model',
+      candidate_ref: 'google:gemini-3.6-flash',
+      source_url: 'https://ai.google.dev/gemini-api/docs/pricing',
+      as_of: '2026-11-02',
+      detail: { n: 1 },
+      trigger_probe: true,
+      now: NOW,
+    });
+    expect(first.status).toBe('recorded');
+    expect(first.probe?.error).toBe('NO_GEMINI_KEY');
+    const row1 = await db.prepare('SELECT probe_triggered FROM model_findings WHERE finding_id = ?1')
+      .bind(id).first<{ probe_triggered: number }>();
+    expect(row1?.probe_triggered).toBe(0);
+
+    const mockFetch = async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ functionCall: { name: 'probe_ping', args: { ok: true } } }] } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const second = await recordModelFinding(db, {
+      AGENT_RUN_PROBE: 'true',
+      LLM_KEY_GEMINI: 'test-key',
+      probeFetch: mockFetch as typeof fetch,
+    }, {
+      finding_id: id,
+      kind: 'new_model',
+      candidate_ref: 'google:gemini-3.6-flash',
+      source_url: 'https://ai.google.dev/gemini-api/docs/pricing',
+      as_of: '2026-11-02',
+      detail: { n: 1 },
+      trigger_probe: true,
+      now: NOW + 1,
+    });
+    expect(second.status).toBe('resumed_probe');
+    expect(second.probe?.ok).toBe(true);
+    const row2 = await db.prepare('SELECT probe_triggered FROM model_findings WHERE finding_id = ?1')
+      .bind(id).first<{ probe_triggered: number }>();
+    expect(row2?.probe_triggered).toBe(1);
   });
 
   it('PROBE on gemini + mock fetch functionCall → live tools_ok, usable promotion', async () => {
