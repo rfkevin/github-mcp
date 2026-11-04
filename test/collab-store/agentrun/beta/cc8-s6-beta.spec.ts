@@ -13,6 +13,8 @@ import {
   type BetaCanaryProof,
 } from '../../../../src/collab-store/agentrun/beta';
 import { ensureModelChainSchema, loadChainSnapshot, loadModelChain } from '../../../../src/collab-store/agentrun/model-policy';
+import { setAgentModels } from '../../../../src/collab-store/owner/model-chains';
+import type { OwnerProof } from '../../../../src/collab-store/owner/proof';
 import { ensureSchema } from '../../../../src/collab-store/store/schema';
 import { CollabStoreError } from '../../../../src/collab-store/store/collab-store';
 
@@ -363,5 +365,113 @@ describe('CC-8 S6 — suivi de bêta', () => {
     expect(broken[0]?.beta_metrics.failure_rate).toBeCloseTo(1 / 6, 5);
     expect(broken[0]?.rollback_broken).toBe(true);
     expect(broken[0]?.thresholds.rollback.max_failure_rate).toBe(0.05);
+  });
+});
+
+
+// CC-8 S6 rev3 (relecture GPT-6 seq 1472) — l'acte owner set_agent_models est
+// CÂBLÉ à la garde de fenêtre : toute promotion d'un maillon actuellement en
+// bêta vers primary passe par assertBetaPrimaryWindow (chemin unique de
+// owner/model-chains.ts), refus = rien n'est écrit. Le participant doit exister
+// dans la fiche canonique (F1) : 'vibe' (famille zai) référence
+// zai:glm-4.7-flash et zai:glm-5.3 ; les versions de chaîne y sont monotones
+// d'un test à l'autre (une ligne par participant, jamais réinitialisée).
+const VIBE = 'vibe';
+const ownerProof: OwnerProof = { kind: 'secret', subject: 'owner-secret' };
+
+const promoteAct = (target: D1Database, op: string, expectedVersion: number, nowSec: number) => setAgentModels(target, {
+  participant_id: VIBE,
+  expected_version: expectedVersion,
+  chain: [{ ref: CANDIDATE, status: 'primary' }, { ref: PRIMARY, status: 'rollback' }],
+  reason: 'promotion bêta → principal',
+  proof: ownerProof,
+  op,
+  now: () => new Date(nowSec * 1000),
+});
+
+/** Chaîne v<version> avec CANDIDATE en secours, suivi ouvert, 20 exécutions secours, avance → bêta (chaîne v+1). */
+async function exposeBeta(version: number, advanceAt: number, trackVersion: number, hash: string): Promise<void> {
+  await seedChain(VIBE, [{ ref: PRIMARY, status: 'primary' }, { ref: CANDIDATE, status: 'rollback' }], version);
+  const opened = await openBetaTrack(db, { participant_id: VIBE, candidate_ref: CANDIDATE, canary: proof(20, hash), expected_chain_version: version, now: NOW });
+  expect(opened.status).toBe('applied');
+  await executions(VIBE, CANDIDATE, 20, NOW);
+  const advanced = await advanceSecoursToBeta(db, { participant_id: VIBE, candidate_ref: CANDIDATE, expected_track_version: trackVersion, now: advanceAt });
+  expect(advanced.status).toBe('applied');
+}
+
+/** D1 qui exécute « onGuardBatch » juste avant le lot CAS de l'acte owner (course déterministe). */
+function racingDb(onGuardBatch: () => Promise<unknown>): D1Database {
+  let armed = false;
+  return new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'prepare') {
+        return (sql: string) => {
+          if (sql.includes('collab_store_guard') && sql.includes('agent_model_beta')) armed = true;
+          return (target as unknown as { prepare: (sql: string) => D1PreparedStatement }).prepare(sql);
+        };
+      }
+      if (prop === 'batch') {
+        return async (statements: D1PreparedStatement[]) => {
+          if (armed) {
+            armed = false;
+            await onGuardBatch();
+          }
+          return (target as unknown as { batch: (statements: D1PreparedStatement[]) => Promise<unknown> }).batch(statements);
+        };
+      }
+      const value = Reflect.get(target, prop, target as object);
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    },
+  }) as unknown as D1Database;
+}
+
+describe('CC-8 S6 — l’acte owner set_agent_models prouve la fenêtre bêta', () => {
+  it('19 exécutions et 47 h : promotion refusée ; 20 et 48 h : promotion actée', async () => {
+    await exposeBeta(1, T_ADV, 1, 'a');
+    await executions(VIBE, CANDIDATE, 19, T_ADV);
+    expect(await refusal(promoteAct(db, 's6-promote-refus', 2, T_ADV + 47 * 3600))).toBe('BETA_PRIMARY_WINDOW_NOT_MET');
+    expect((await loadModelChain(db, VIBE))?.chain.find(item => item.ref === CANDIDATE)?.status).toBe('beta');
+    expect(await chainVersionRow(VIBE, 3)).toBe(null);
+    await executions(VIBE, CANDIDATE, 1, T_ADV + 19);
+    const accepted = await promoteAct(db, 's6-promote-accept', 2, T_ADV + BETA_ADVANCE_MIN_DURATION_S + 60);
+    expect(accepted.status).toBe('applied');
+    expect(accepted.version).toBe(3);
+    expect((await loadModelChain(db, VIBE))?.chain.find(item => item.ref === CANDIDATE)?.status).toBe('primary');
+    expect((await chainVersionRow(VIBE, 3))?.set_by).toBe('secret:owner-secret');
+  });
+
+  it('course : suivi fermé entre la garde et le lot → BETA_TRACK_STALE, rien n’est écrit', async () => {
+    await closeBetaTrack(db, { participant_id: VIBE, candidate_ref: CANDIDATE, expected_track_version: 2, reason: 'fin du parcours promotion', now: T_ADV });
+    await exposeBeta(4, T_ADV + 7200, 4, 'b');
+    await executions(VIBE, CANDIDATE, 20, T_ADV + 7200);
+    const racing = racingDb(() => closeBetaTrack(db, { participant_id: VIBE, candidate_ref: CANDIDATE, expected_track_version: 5, reason: 'course simulée', now: T_ADV + 7200 }));
+    expect(await refusal(promoteAct(racing, 's6-promote-race', 5, T_ADV + 7200 + BETA_ADVANCE_MIN_DURATION_S + 60))).toBe('BETA_TRACK_STALE');
+    const chain = await loadModelChain(db, VIBE);
+    expect(chain?.version).toBe(5);
+    expect(chain?.chain.find(item => item.ref === CANDIDATE)?.status).toBe('beta');
+    expect(await chainVersionRow(VIBE, 6)).toBe(null);
+  });
+
+  it('suivi fermé avant l’acte : promotion refusée même si la fenêtre avait été atteinte', async () => {
+    await exposeBeta(6, T_ADV + 10_000, 7, 'c');
+    await executions(VIBE, CANDIDATE, 20, T_ADV + 10_000);
+    await closeBetaTrack(db, { participant_id: VIBE, candidate_ref: CANDIDATE, expected_track_version: 8, reason: 'candidature écartée', now: T_ADV + 10_000 });
+    expect(await refusal(promoteAct(db, 's6-promote-closed', 7, T_ADV + 10_000 + BETA_ADVANCE_MIN_DURATION_S + 60))).toBe('BETA_NOT_IN_BETA');
+    const chain = await loadModelChain(db, VIBE);
+    expect(chain?.version).toBe(7);
+    expect(chain?.chain.find(item => item.ref === CANDIDATE)?.status).toBe('beta');
+    expect(await chainVersionRow(VIBE, 8)).toBe(null);
+  });
+
+  it('une promotion hors bêta (secours jamais exposé) ne passe pas par la garde', async () => {
+    await seedChain(VIBE, [{ ref: PRIMARY, status: 'primary' }, { ref: CANDIDATE, status: 'rollback' }], 8);
+    const direct = await setAgentModels(db, {
+      participant_id: VIBE, expected_version: 8,
+      chain: [{ ref: CANDIDATE, status: 'primary' }, { ref: 'workers-ai:@cf/zai-org/glm-4.7-flash', status: 'rollback' }],
+      reason: 'chaîne neuve sans exposition bêta', proof: ownerProof, op: 's6-promote-neuf',
+      now: () => new Date(NOW * 1000),
+    });
+    expect(direct.status).toBe('applied');
+    expect(direct.version).toBe(9);
   });
 });

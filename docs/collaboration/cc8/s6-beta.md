@@ -25,15 +25,15 @@ Lot S6 du plan CC-PLAN-8 (§5 paliers de bêta, v0.2 seq 1270, plan voté seq 12
 - **avance** : 19 exécutions puis durée insuffisante → BETA_THRESHOLDS_NOT_MET sans écriture ; paliers atteints → chaîne v2 maillon beta, audit versions (system:beta-track, set), suivi bêta (pre_beta_version, advanced_at) + événement ; rejeu = duplicate sans v3 ; course CAS → BETA_TRACK_STALE sans écriture, le gagnant applique ensuite ; chaîne modifiée par l'owner depuis l'ouverture → BETA_CHAIN_STALE ; halt → AUTOMATION_HALTED ;
 - **retour arrière** : 1/6 échecs → chaîne d'avant exposition restaurée en v3 (action rollback), suivi rolled_back avec motif, événement ; rejeu = duplicate ; 0 échec → BETA_CRITERIA_INTACT sans écriture ; 4 exécutions → BETA_THRESHOLDS_NOT_MET ; halt → AUTOMATION_HALTED ; maillon rétracté par l'owner → BETA_CHAIN_STALE ;
 - **fenêtre principal** : garde lecture seule assertBetaPrimaryWindow — 0 exécution en bêta ou < 48 h depuis l'exposition → BETA_PRIMARY_WINDOW_NOT_MET sans écriture ; paliers atteints → métriques de fenêtre rendues (exécutions, échecs, heures), aucun événement ni version créés ; hors bêta exposée → BETA_NOT_IN_BETA ;
+- **acte owner câblé (rev3)** : set_agent_models appelle la garde pour toute promotion d'un maillon bêta → primary (owner/model-chains.ts, chemin unique) ; 19 exécutions/47 h refusées sans écriture, 20/48 h acceptées (v+1, instantané owner) ; suivi fermé entre la garde et le lot (course SQL) → BETA_TRACK_STALE sans écriture ; promotion hors bêta (secours jamais exposé) libre ;
 - **contre-exemple owner** : chaîne modifiée pendant la bêta (autre maillon, candidate gardée, v3) puis bêta cassée → BETA_CHAIN_DIVERGED sans écriture : la version owner survit, le suivi reste bêta, aucune version rollback ni événement ;
 - **fermeture** : suivi stale avec motif, rejeu duplicate, réouverture avec nouvelle preuve (compteur monotone : fermeture → 2, réouverture → 3) ;
 - **métriques** : fenêtres secours/bêta séparées, advance_blockers visibles avant paliers, rollback_broken après casse, seuils préenregistrés lisibles.
 
-## Raccordements v0 (aucun dans ce lot — module autonome)
+## Raccordements (rev3 — correction relecture GPT-6 seq 1472)
 
-- moteur (engine.ts) → recordBetaExecution après chaque appel du maillon suivi ;
-- contrôleur (orchestrator.ts) → advanceSecoursToBeta / autoRollbackBeta sur les métriques ;
-- /owner (owner/handler.ts, owner/page.ts) → betaMetrics (vue paliers et santé) ; l'acte set_agent_models appelle assertBetaPrimaryWindow avant toute promotion bêta → principal (refus sur erreur) ;
+- **RÉALISÉ dans ce lot** : l'acte owner `set_agent_models` (owner/model-chains.ts — chemin unique, la demande exécutable du même nom dans owner/executable.ts passe par cette même fonction) appelle `assertBetaPrimaryWindow` pour TOUTE promotion d'un maillon actuellement en bêta vers primary (set ET rollback) : refus = rien n'est écrit ; course fermée en SQL (le suivi doit rester en bêta DANS la transaction, re-diagnostic typé BETA_TRACK_STALE). Testés : 19 exécutions / 47 h refusées, 20 / 48 h acceptées, suivi fermé entre la garde et le lot = acte annulé.
+- **Futurs** (hors périmètre S6, extension d'owned_paths sur approbation Kevin) : moteur (engine.ts) → recordBetaExecution après chaque appel du maillon suivi ; contrôleur (orchestrator.ts) → advanceSecoursToBeta / autoRollbackBeta sur les métriques ; /owner (owner/handler.ts, owner/page.ts) → betaMetrics (vue paliers et santé). Tant que le moteur n'est pas raccordé, le comptage ne peut venir que d'appels directs (tests/mock).
 - extensions d'owned_paths hors périmètre S6 : à poser sur approbation de Kevin, avec le recalibrage des seuils après les mesures du lot S1.
 
 ## Divulgations
