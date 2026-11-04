@@ -11,6 +11,7 @@ import {
   objectAlarm, objectWake, SIMULATED_MODEL, EMPTY_TOOL_HOST,
   type AgentRunEnv, type ObjectSlot, type OrchestratorDeps, type WakeResult, type AlarmResult,
 } from './orchestrator';
+import type { ApiChecks } from './github-write/tools';
 import type { EngineDeps } from './engine';
 import { createWorkersAiModel } from './workers-ai-model';
 import { createPaidWorkersAiModel, parseParticipantEnvelope } from './paid-model';
@@ -39,6 +40,11 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   AGENT_RUN_REPOSITORY?: string;
   /** 7c-3 : « true » pour injecter les écritures GitHub (branche API de l'agent, PR brouillon) ; absent = aucune. */
   AGENT_RUN_GITHUB_WRITES?: string;
+  /** S7: owner configuration; both lists empty by default. Grants freeze branch and paths. */
+  AGENT_RUN_GITHUB_WRITERS?: string;
+  AGENT_RUN_GITHUB_TASKS?: string;
+  AGENT_RUN_CHECKS?: string;
+  GITHUB_CHECKS_CONFIG?: string;
   /** 7c-3 : branche de base des branches API et cible des PR brouillons (défaut DEFAULT_API_BASE_BRANCH, jamais main/master). */
   AGENT_RUN_BASE_BRANCH?: string;
   /** 7d / CC-7 L2 : modèle payant workers-ai:@cf/vendor/model, zai:<modèle>, xai:<modèle> ou anthropic:<modèle> derrière l’enveloppe par participant ; absent = chemin 7c-1 inchangé. */
@@ -115,7 +121,7 @@ const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
  * AGENT_RUNS_ENABLED reste la seule porte d'activation (éteint par défaut).
  */
 export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undefined, githubReads: GitHubReads | null = null,
-  githubWrites: GitHubWrites | null = null): EngineFactory {
+  githubWrites: GitHubWrites | null = null, apiChecks: ApiChecks | null = null): EngineFactory {
   if (testFactory) return testFactory;
   if (!fallbackDb) return simulated;
   // CC-7 L8 : un modèle par participant (AGENT_RUN_MODEL_<PARTICIPANT>) ; sans aucune de ces variables,
@@ -136,7 +142,7 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   const github = repository ? githubReads : null;
   // 7c-3 : écritures GitHub seulement avec un dépôt, l'interrupteur dédié et l'adaptateur de la racine.
   const writes = repository && env.AGENT_RUN_GITHUB_WRITES === 'true' && githubWrites
-    ? { writes: githubWrites, baseBranch: apiBaseBranch(env.AGENT_RUN_BASE_BRANCH) } : null;
+    ? { writes: githubWrites, baseBranch: apiBaseBranch(env.AGENT_RUN_BASE_BRANCH), s7: { policy: { writers: env.AGENT_RUN_GITHUB_WRITERS, tasks: env.AGENT_RUN_GITHUB_TASKS }, reads: github, checks: apiChecks } } : null;
   const envelope = parseParticipantEnvelope(env);
   // CC-7 L5b (N1) : plafond de sortie PAR type de tâche (TASK_KIND_BOUNDS via le résolveur).
   const maxOutputTokensFor = (kind: string) => resolveEffectiveMaxTokens({ task_kind: kind });
@@ -220,6 +226,8 @@ export class AgentRunObject extends DurableObject<AgentRunObjectEnv> {
     return null;
   }
 
+  protected apiChecks(): ApiChecks | null { return null; }
+
   private deps(): OrchestratorDeps {
     const storage = this.ctx.storage;
     const slot: ObjectSlot = {
@@ -236,7 +244,7 @@ export class AgentRunObject extends DurableObject<AgentRunObjectEnv> {
       db, env: this.env, slot,
       ownsLease: leaseKey => !!this.env.AGENT_RUN && this.env.AGENT_RUN.idFromName(leaseKey).equals(this.ctx.id),
       nowMs: () => Date.now(),
-      engine: engineFor(this.env, db, this.githubReads(), this.githubWrites()),
+      engine: engineFor(this.env, db, this.githubReads(), this.githubWrites(), this.apiChecks()),
       workerId: () => 'do:' + crypto.randomUUID(),
     };
   }

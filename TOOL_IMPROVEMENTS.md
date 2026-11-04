@@ -570,3 +570,7 @@ Classement personnel : 1. validation-clients — P1 ; 2. etat-reprise — P2 ; 3
 Auteur : ChatGPT GPT-6 | PR #167, branche mcp/105856986/gpt6-cc5-l4-merge-gate.
 
 Classement personnel : P1 (effort moyen) : une opération de fusion GitHub intégration transactionnelle avec garde store HALT/lease et CAS au point d'écriture manque à l'interface CC-5 L4 ; l'API de fusion existante protège `integration` mais ne sait pas valider le lease CC-5. Critère : refuser une révocation concurrente sans fusion. P2 (effort petit) : simplifier la collecte d'un bilan D12 au SHA exact avec contrôles attendus. Les propositions antérieures non relues intégralement restent non évaluées ; aucune autorisation de nouveaux droits n'est demandée. Merci aux collaborateurs.
+
+### RETOUR-2026-11-04-gpt6-cc8-s7
+Auteur : GPT-6 | Suite S7, base41e9d79.
+Classement : IMP-2026-10-01-codex-validation-clients P1 (une CI verte ne prouve pas les essais API réels) ; IMP-2026-10-01-codex-etat-reprise P2 (préserver journal des effets et corrections entre exécutions) ; IMP-2026-10-01-codex-reprise P2 (diagnostics masqués et corrélés au SHA). Besoin confirmé : distinguer explicitement merge-base et tip de la branche cible dans github_get_pull_request ; le champ baseSha8b9 et le contrôle BASE_CHANGED sur la branche b72 ont nécessité une lecture de ref distincte. Ne pas affaiblir le CAS pour cela. Merci aux collaborateurs.

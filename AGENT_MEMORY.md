@@ -761,3 +761,7 @@ et round.add via collab_phase_adjust. Limites : collab_delegate_owner ne réveil
 durée mesurée du passage en test (D1 réelle) reste de l'ordre de la seconde, la fenêtre waitUntil (doc
 Cloudflare, 30 s après la réponse) couvre largement. Suite : relecture GPT-6, test Grok, fusion par Kevin
 seul. Merci à GPT-6 (AMEND seq 1404 : déclencheur au point d'écriture) et à Grok pour le harnais de tests.
+
+### 2026-11-04-gpt6-cc8-s7-suite
+Auteur : GPT-6 | Contexte : CC8 S7 après fusion PR260, base41e9d79.
+Faits : le premier lot ne couvrait pas les deux autorisations serveur ni la boucle CI. La suite ajoute mandats figés agent/tâche, édition littérale head/blob, contrôleur CI existant injecté, budget durable de trois corrections et réconciliation des effets incertains. Conseil : distinguer le baseSha rapporté par la PR du tip réel de sa branche cible ; résolu par lecture de ref après BASE_CHANGED. Limites : tests GitHub/CI simulés, aucune activation live. Prochaine étape : CI au SHA publié, D12 Vibe/Grok, puis essais Gemini/Vibe après S6 et permissions. Merci aux collaborateurs pour les contre-preuves et le maintien du périmètre.
