@@ -21,6 +21,7 @@ import { PolicyViolationError } from './security/policy';
 import { AgentRunObject as StoreAgentRunObject } from './collab-store/agentrun/object';
 import type { GitHubReads } from './collab-store/agentrun/read-tools';
 import { GitHubWriteRefused, type GitHubWrites } from './collab-store/agentrun/github-tools';
+import { apiChecksFrom } from './agent-run-checks';
 
 export function githubReadsFrom(env: { GITHUB_APP_ID?: string; GITHUB_INSTALLATION_ID?: string; GITHUB_PRIVATE_KEY?: string }): GitHubReads | null {
   if (!env.GITHUB_APP_ID || !env.GITHUB_INSTALLATION_ID || !env.GITHUB_PRIVATE_KEY) return null;
@@ -99,6 +100,10 @@ export function githubWritesFrom(env: AppEnv, repository: string): GitHubWrites 
 }
 
 export class AgentRunObject extends StoreAgentRunObject {
+  protected override apiChecks() {
+    const repository = this.env.AGENT_RUN_REPOSITORY;
+    return repository && this.env.AGENT_RUN_GITHUB_WRITES === 'true' ? apiChecksFrom(this.env, repository) : null;
+  }
   protected override githubReads(): GitHubReads | null {
     return this.env.AGENT_RUN_REPOSITORY ? githubReadsFrom(this.env) : null;
   }

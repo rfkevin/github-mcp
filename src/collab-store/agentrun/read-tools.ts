@@ -28,6 +28,7 @@ import { ToolRefused, type LookupResult, type ToolCall, type ToolHost, type Tool
 import type { ToolSchema } from './workers-ai-model';
 import { createStoreWriteTools, WRITE_TOOL_SCHEMAS, type WriteToolName } from './store-tools';
 import { createGitHubWriteTools, GITHUB_WRITE_TOOL_SCHEMAS, type GitHubWrites, type GitHubWriteToolName } from './github-tools';
+import { createS7Tools, S7_SCHEMAS, type S7Options } from './github-write/tools';
 import { sha256Hex } from '../store/hash';
 import { createVerdictTools, VERDICT_TOOL_SCHEMAS } from './verdict-tools';
 import { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_TOOL_SCHEMAS } from './contribution-tools';
@@ -137,7 +138,7 @@ export interface ReadToolHostOptions {
    * 7c-3 : écritures GitHub (type `implement` seulement) sur la branche API du participant ;
    * exigent aussi `repository`. Absent = aucune écriture GitHub.
    */
-  githubWrites?: { writes: GitHubWrites; baseBranch: string } | null;
+  githubWrites?: { writes: GitHubWrites; baseBranch: string; s7?: S7Options } | null;
   /** CC-7 L3 : lectures de continuité (store_memory, store_continuity) et registre complet dans store_context. Absent = inchangé. */
   continuity?: boolean;
   /** CC-7 L5b (S10) : store_verdict (verdicts contrôlés serveur) pour les kinds review et test ; absent = aucun verdict. */
@@ -170,9 +171,10 @@ function stringArg(args: Record<string, unknown>, name: string, pattern: RegExp)
 
 export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { schemas(taskKind: string): ToolSchema[] } {
   const writes = options.storeWrites ? createStoreWriteTools(options.db) : null;
-  const gh = options.githubWrites && options.repository !== null
-    ? createGitHubWriteTools({ db: options.db, repository: options.repository, writes: options.githubWrites.writes, baseBranch: options.githubWrites.baseBranch })
-    : null;
+  const ghOptions = options.githubWrites && options.repository !== null
+    ? { db: options.db, repository: options.repository, writes: options.githubWrites.writes, baseBranch: options.githubWrites.baseBranch } : null;
+  const gh = ghOptions ? (options.githubWrites?.s7 ? createS7Tools(ghOptions, options.githubWrites.s7) : createGitHubWriteTools(ghOptions)) : null;
+  const ghSchemas = options.githubWrites?.s7 ? [...GITHUB_WRITE_TOOL_SCHEMAS, ...S7_SCHEMAS] : GITHUB_WRITE_TOOL_SCHEMAS;
   // CC-7 L5b (S10) : store_verdict, seulement avec un dépôt ET des lectures GitHub.
   const verdicts = options.verdicts && options.repository !== null && options.github !== null
     ? createVerdictTools({ db: options.db, repository: options.repository, github: options.github, requiredChecks: options.requiredChecks })
@@ -192,7 +194,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       ...(contributions && taskKind === CONTRIBUTION_TASK_KIND ? ['store_contribute' as const] : []),
       ...(modelChoice && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_choose_model' as const] : []),
       ...(research ? research.writes(taskKind) : [])];
-  const isGitHubWrite = (name: string) => GITHUB_WRITE_TOOL_SCHEMAS.some(schema => schema.name === name);
+  const isGitHubWrite = (name: string) => ghSchemas.some(schema => schema.name === name);
   const allowed = (taskKind: string): readonly ReadToolName[] => {
     const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
     // Sans dépôt ou client GitHub, les outils GitHub ne sont pas proposés du tout.
@@ -303,7 +305,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     },
     schemas(taskKind: string): ToolSchema[] {
       const names = new Set<string>([...readNames(taskKind), ...writeNames(taskKind)]);
-      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...GITHUB_WRITE_TOOL_SCHEMAS, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
+      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...ghSchemas, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.
