@@ -52,12 +52,14 @@ async function exposeSecours(participant: string, hash = 'a'): Promise<void> {
   });
 }
 
-/** Enregistre `count` appels du maillon suivi (les `failures` premiers en échec). */
+/** Enregistre `count` appels du maillon suivi (les `failures` premiers en échec).
+ * L’insertion ignore les doublons de run_id : l’horodatage fait partie de
+ * l’identifiant pour semer plusieurs fenêtres du même participant. */
 async function seedExecutions(participant: string, count: number, at: number, failures = 0): Promise<void> {
   for (let i = 0; i < count; i += 1) {
     const row = await recordBetaExecution(db, {
       participant_id: participant, ref: CANDIDATE, ok: i >= failures,
-      run_id: 's6w-' + participant + '-' + i, at: at + i,
+      run_id: 's6w-' + participant + '-' + at + '-' + i, at: at + i,
     });
     expect(row.open_track).toBe(true);
   }
@@ -92,14 +94,15 @@ async function advancedTrack(hash = 'a'): Promise<string> {
   return participant;
 }
 
-/** Purge du harnais : participants vibe-s6w-* dans les tables des chaînes et suivis de bêta. */
+/** Purge du harnais : participants vibe-s6w-* des suivis, briseurs et chaînes.
+ * Exécutions et événements de bêta : append-only (triggers no_delete), jamais
+ * purgés — chaque lecture du harnais filtre par participant unique. */
 async function purgeHarness(): Promise<void> {
   await ensureBetaSchema(db);
   await ensureModelChainSchema(db);
   await ensureModelPolicySchema(db);
   await db.batch([
     db.prepare("delete from agent_model_beta where participant_id like 'vibe-s6w-%'"),
-    db.prepare("delete from agent_model_beta_executions where participant_id like 'vibe-s6w-%'"),
     db.prepare("delete from agent_model_breaker where participant_id like 'vibe-s6w-%'"),
     db.prepare("delete from agent_model_chains where participant_id like 'vibe-s6w-%'"),
     db.prepare("delete from agent_model_chain_versions where participant_id like 'vibe-s6w-%'"),
@@ -160,13 +163,17 @@ describe('CC-8 S6 suite — maintenance périodique (orchestrateur)', () => {
 
 describe('CC-8 S6 suite — comptage des appels réellement routés (provider)', () => {
   const routes = { LLM_KEY_ZAI: 'fake-test-key' };
+  // Tarif du maillon suivi relevé le 2026-10-25, RATE_STALE_DAYS = 30 : le NOW
+  // global (2033) périmerait le relevé, la candidate serait indisponible et le
+  // repli ne pourrait être ni servi ni compté. Ici le relevé est frais.
+  const ROUTE_NOW = 1_793_102_400; // 2026-10-27T12:00:00Z
   const message = { messages: [{ role: 'user' as const, content: 'ping' }], tools: [], task_kind: 'answer' };
 
   function routedModel(runId: string, fetchImpl: typeof fetch) {
     const ctx: ProviderModelContext = { env: routes, db, runId,
       envelope: { dayCents: 200, cycleCents: 1_000, dayTokens: 0, dayRequests: 0 },
       schemas: () => [], system: 'test', maxOutputTokens: 4096,
-      now: () => new Date(NOW * 1000), fetchImpl };
+      now: () => new Date(ROUTE_NOW * 1000), fetchImpl };
     return createRoutedModel(routes, ctx);
   }
 
@@ -176,7 +183,7 @@ describe('CC-8 S6 suite — comptage des appels réellement routés (provider)',
     await seedChain(participant);
     await exposeSecours(participant, hash);
     await ensureModelPolicySchema(db);
-    const run = await freshRun(db, 's6w', NOW, 10_000, participant);
+    const run = await freshRun(db, 's6w', ROUTE_NOW, 10_000, participant);
     return { participant, runId: run.runId };
   }
 
@@ -207,13 +214,13 @@ describe('CC-8 S6 suite — comptage des appels réellement routés (provider)',
   });
 
   it('l’échec réel du maillon suivi compte un échec (taux du retour arrière)', async () => {
-    const { participant, runId } = await wiredRun('g');
+    const { participant, runId } = await wiredRun('0');
     await expect(routedModel(runId, zaiFetchAllFail).complete(message)).rejects.toThrow();
     expect(await countedRuns(participant)).toEqual([{ run_id: runId, ok: 0 }]);
   });
 
   it('une sonde ne compte JAMAIS, même en servant le maillon suivi', async () => {
-    const { participant, runId } = await wiredRun('h');
+    const { participant, runId } = await wiredRun('1');
     const result = await routedModel(runId, zaiFetch('sonde bêta')).complete({ ...message, task_kind: 'probe' });
     expect(result.output.text).toBe('sonde bêta');
     expect(await countedRuns(participant)).toEqual([]);
