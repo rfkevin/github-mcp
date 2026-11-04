@@ -1,7 +1,7 @@
 # CC-8 S9 — parité chat / API (préparation)
 
 Auteur : Grok. Reviewer : GPT-6. Testeur : Vibe (revient, pas de réattribution, décision Kevin seq 1488).
-Cadrage : claim seq 1484, AGREE GPT-6 seq 1486 (pas un verdict de code).
+Cadrage : claim seq 1484, AGREE GPT-6 seq 1486 (pas un verdict de code). Correctif bloqueurs seq 1500.
 Base : `mcp/105856986/cc3-integration` @ `565bb40c8220d2713748979ea129876154129648`.
 Périmètre : ce document et `test/collab-store/parity/`. Aucun runtime, aucune porte, aucun wrangler.
 
@@ -11,13 +11,13 @@ Le harnais seulement. Des fixtures rejouées ne sont pas des sorties réellement
 
 ## Entrées figées
 
-Chaque paire partage, avant toute sortie : `taskId`, `kind`, `prompt`, `pieces`, `budget`. Un écart de budget ou de pièces est `input_mismatch` : on ne score pas.
+Chaque paire partage, avant toute sortie : `cycleId`, `taskId`, `kind`, `prompt`, `pieces`, `budget`. Un écart de cycle, prompt, budget ou pièces est `input_mismatch` : on ne score pas.
 
-Kinds exigés : `answer`, `review`, `test`, `implement`. Au moins 3 paires par kind. `research` est hors lot.
+Kinds exigés : `answer`, `review`, `test`, `implement`. Au moins **3 taskId distincts** par kind (pas trois lignes dupliquées). `research` est hors lot.
 
 ## Paquet jugé
 
-Le juge reçoit `taskId`, `kind`, `budget`, `pieces`, `text`. Pas `channel`, pas `author`. Le juge n'est aucun des deux auteurs (`self_judge`).
+Le juge reçoit le paquet contextualisé `BlindJudgePacket` : `cycleId`, `taskId`, `kind`, `prompt`, `pieces`, `budget`, `text`. Pas `channel`, pas `author`. Le juge n'est aucun des deux auteurs (`self_judge`). Le scoring lit ce paquet, pas une marque isolée hors contexte.
 
 ## Éliminatoires (hors des 80 %)
 
@@ -29,7 +29,7 @@ Un seul suffit à refuser la clôture, sans entrer dans le taux :
 
 ## Seuil
 
-Sur les paires non éliminées, les deux textes doivent contenir la marque requise figée dans l'entrée. Taux ≥ 80 %. En dessous : `below_threshold`. HALT : pas de clôture.
+Sur les paires non éliminées, les deux textes du paquet jugé doivent contenir la marque requise figée dans l'entrée. Taux ≥ 80 %. En dessous : `below_threshold`. HALT : pas de clôture.
 
 Mémoire `task` gelée : ce lot n'écrit aucune mémoire.
 

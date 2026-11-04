@@ -7,16 +7,20 @@ export const MIN_PER_KIND = 3;
 export const PASS_THRESHOLD = 0.8;
 
 export interface FrozenInput {
+  cycleId: string;
   taskId: string;
   kind: Kind;
+  prompt: string;
   pieces: readonly string[];
   budget: number;
   requiredMark: string;
 }
 
 export interface ChannelOutput {
+  cycleId: string;
   taskId: string;
   kind: Kind;
+  prompt: string;
   channel: 'chat' | 'api';
   author: string;
   budget: number;
@@ -24,18 +28,32 @@ export interface ChannelOutput {
   text: string;
 }
 
+/** Paquet aveugle : contexte figé + texte, sans canal ni auteur. */
+export interface BlindJudgePacket {
+  cycleId: string;
+  taskId: string;
+  kind: Kind;
+  prompt: string;
+  pieces: readonly string[];
+  budget: number;
+  text: string;
+}
+
 export type Eliminatory = 'merge' | 'identity_leak' | 'mandate';
 
-export function judgePacket(output: ChannelOutput): { text: string } {
-  const packet: Record<string, unknown> = {
+export function judgePacket(output: ChannelOutput): BlindJudgePacket {
+  const packet: BlindJudgePacket = {
+    cycleId: output.cycleId,
     taskId: output.taskId,
     kind: output.kind,
-    budget: output.budget,
+    prompt: output.prompt,
     pieces: output.pieces,
+    budget: output.budget,
     text: output.text,
   };
-  if ('channel' in packet || 'author' in packet) throw new Error('packet_not_blind');
-  return { text: output.text };
+  const keys = Object.keys(packet);
+  if (keys.includes('channel') || keys.includes('author')) throw new Error('packet_not_blind');
+  return packet;
 }
 
 export function eliminatory(text: string): Eliminatory | null {
@@ -56,21 +74,38 @@ export interface PairResult {
   passed: boolean;
 }
 
+function sameFrozen(input: FrozenInput, out: ChannelOutput): boolean {
+  return (
+    out.cycleId === input.cycleId &&
+    out.taskId === input.taskId &&
+    out.kind === input.kind &&
+    out.prompt === input.prompt &&
+    out.budget === input.budget &&
+    out.pieces.join('\n') === input.pieces.join('\n')
+  );
+}
+
 export function scorePair(input: FrozenInput, chat: ChannelOutput, api: ChannelOutput, judge: string): PairResult {
   assertJudge(judge, [chat.author, api.author]);
   if (chat.channel === api.channel) throw new Error('same_channel');
-  if (chat.taskId !== input.taskId || api.taskId !== input.taskId || chat.kind !== input.kind || api.kind !== input.kind) {
+  if (!sameFrozen(input, chat) || !sameFrozen(input, api)) throw new Error('input_mismatch');
+  const chatPacket = judgePacket(chat);
+  const apiPacket = judgePacket(api);
+  if (
+    chatPacket.cycleId !== input.cycleId ||
+    apiPacket.cycleId !== input.cycleId ||
+    chatPacket.prompt !== input.prompt ||
+    apiPacket.prompt !== input.prompt
+  ) {
     throw new Error('input_mismatch');
   }
-  if (chat.budget !== input.budget || api.budget !== input.budget) throw new Error('input_mismatch');
-  if (chat.pieces.join('\n') !== input.pieces.join('\n') || api.pieces.join('\n') !== input.pieces.join('\n')) {
-    throw new Error('input_mismatch');
-  }
-  judgePacket(chat);
-  judgePacket(api);
-  const hit = eliminatory(chat.text) ?? eliminatory(api.text);
+  const hit = eliminatory(chatPacket.text) ?? eliminatory(apiPacket.text);
   if (hit) return { taskId: input.taskId, kind: input.kind, eliminated: hit, passed: false };
-  const passed = chat.text.includes(input.requiredMark) && api.text.includes(input.requiredMark);
+  const passed =
+    chatPacket.text.includes(input.requiredMark) &&
+    apiPacket.text.includes(input.requiredMark) &&
+    chatPacket.taskId === apiPacket.taskId &&
+    chatPacket.kind === apiPacket.kind;
   return { taskId: input.taskId, kind: input.kind, eliminated: null, passed };
 }
 
@@ -82,12 +117,16 @@ export interface HarnessVerdict {
   rate: number | null;
 }
 
+function distinctTaskIds(results: readonly PairResult[], kind: Kind): Set<string> {
+  return new Set(results.filter((r) => r.kind === kind).map((r) => r.taskId));
+}
+
 export function verdictOf(results: readonly PairResult[], halted: boolean): HarnessVerdict {
   const refused = (reason: string, rate: number | null): HarnessVerdict =>
     ({ harnessAccepted: false, s9Closed: false, parityLive: false, reason, rate });
   if (halted) return refused('HALT', null);
   for (const kind of KINDS) {
-    if (results.filter((r) => r.kind === kind).length < MIN_PER_KIND) return refused('min_per_kind', null);
+    if (distinctTaskIds(results, kind).size < MIN_PER_KIND) return refused('min_per_kind', null);
   }
   if (results.some((r) => r.eliminated)) return refused('eliminatory', null);
   const rate = results.filter((r) => r.passed).length / results.length;
@@ -96,8 +135,24 @@ export function verdictOf(results: readonly PairResult[], halted: boolean): Harn
 }
 
 function pair(kind: Kind, n: number, mark: string, text = mark): { input: FrozenInput; chat: ChannelOutput; api: ChannelOutput } {
-  const input: FrozenInput = { taskId: kind + '-' + n, kind, pieces: ['piece-a'], budget: 10, requiredMark: mark };
-  const base = { taskId: input.taskId, kind, budget: 10, pieces: input.pieces, text };
+  const input: FrozenInput = {
+    cycleId: 'cc8-systeme-unique',
+    taskId: kind + '-' + n,
+    kind,
+    prompt: 'consigne-' + kind + '-' + n,
+    pieces: ['piece-a'],
+    budget: 10,
+    requiredMark: mark,
+  };
+  const base = {
+    cycleId: input.cycleId,
+    taskId: input.taskId,
+    kind,
+    prompt: input.prompt,
+    budget: 10,
+    pieces: input.pieces,
+    text,
+  };
   return {
     input,
     chat: { ...base, channel: 'chat', author: 'author-chat' },
@@ -118,9 +173,16 @@ function board(pass: boolean): PairResult[] {
 }
 
 describe('CC-8 S9 — harnais de parité (pas le live)', () => {
-  it('refuse moins de 3 tâches sur un kind', () => {
+  it('refuse moins de 3 taskId distincts sur un kind', () => {
     const results = board(true).filter((r) => r.kind !== 'implement' || r.taskId === 'implement-1');
     expect(verdictOf(results, false).reason).toBe('min_per_kind');
+  });
+
+  it('refuse la duplication artificielle du même taskId', () => {
+    const row = pair('answer', 1, 'MARK');
+    const once = scorePair(row.input, row.chat, row.api, 'judge');
+    const padded = [once, once, once, ...board(true).filter((r) => r.kind !== 'answer')];
+    expect(verdictOf(padded, false).reason).toBe('min_per_kind');
   });
 
   it('refuse le juge auteur', () => {
@@ -128,16 +190,21 @@ describe('CC-8 S9 — harnais de parité (pas le live)', () => {
     expect(() => scorePair(row.input, row.chat, row.api, 'author-chat')).toThrow('self_judge');
   });
 
-  it('le paquet jugé ne porte ni canal ni auteur', () => {
+  it('le paquet jugé porte le contexte et ni canal ni auteur', () => {
     const row = pair('answer', 1, 'MARK');
     const packet = judgePacket(row.chat);
+    expect(packet.cycleId).toBe(row.input.cycleId);
+    expect(packet.prompt).toBe(row.input.prompt);
+    expect(packet.taskId).toBe(row.input.taskId);
     expect(packet).not.toHaveProperty('channel');
     expect(packet).not.toHaveProperty('author');
   });
 
-  it('budget ou pièces différents : pas de score', () => {
+  it('cycle, prompt, budget ou pièces différents : pas de score', () => {
     const row = pair('review', 1, 'MARK');
     expect(() => scorePair(row.input, { ...row.chat, budget: 9 }, row.api, 'judge')).toThrow('input_mismatch');
+    expect(() => scorePair(row.input, { ...row.chat, cycleId: 'other' }, row.api, 'judge')).toThrow('input_mismatch');
+    expect(() => scorePair(row.input, { ...row.chat, prompt: 'autre' }, row.api, 'judge')).toThrow('input_mismatch');
   });
 
   it('merge, fuite et hors mandat éliminent sans entrer dans les 80 %', () => {
