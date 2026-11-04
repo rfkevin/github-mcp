@@ -27,6 +27,8 @@ import { setExecutorNotes } from './executor-notes';
 import { listIdentityFamilies } from '../identity/families';
 import { relayLines } from '../controller/relay';
 import { listRunsForOwner } from '../agentrun/chat-continuity';
+// CC-8 S6 (suite) : suivis de bêta des chaînes de modèles (lecture seule).
+import { betaMetrics } from '../agentrun/beta';
 import { runModelProbe, type ProbeEnv } from '../agentrun/probe';
 
 export const OWNER_PATH = '/owner';
@@ -86,6 +88,8 @@ async function dashboardData(db: D1Database, before?: number, productEnabled = f
     cycles: await cycleStatusCounts(db),
     // CC-5 l7e : exécutions API (lecture seule ; panne → liste vide).
     agentRuns: await listRunsForOwner(db).catch(() => []),
+    // CC-8 S6 (suite) : suivis de bêta (lecture seule ; panne → liste vide).
+    betaTracks: await betaMetrics(db).catch(() => []),
   };
 }
 

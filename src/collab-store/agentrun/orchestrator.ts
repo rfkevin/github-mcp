@@ -18,6 +18,8 @@ import { meteredDb } from './metered-db';
 import { ensureAgentRunSchema } from './schema';
 // CC-8 S1b-2 : réservation Go-s dérivée de la borne effective d'étape (v2 point 6).
 import { worstCaseStepGbS } from './run-policy';
+// CC-8 S6 (suite) : maintenance périodique des suivis de bêta (avance, retour arrière).
+import { advanceSecoursToBeta, autoRollbackBeta, loadBetaTracks } from './beta';
 
 /** Recul d'une alarme après `busy` : 5 s, 10 s, 20 s… plafonné à 300 s. */
 export const BUSY_BACKOFF_BASE_S = 5;
@@ -263,6 +265,8 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
 export type WakeFn = (leaseKey: string, runId: string) => Promise<WakeResult>;
 
 export interface PassResult { delivered: number; failed: number; rescued: number; planned?: number; skipped?: 'disabled' }
+  /** CC-8 S6 (suite) : maintenance des suivis de bêta du passage (absent si désactivé). */
+  beta?: { advanced: number; rolledBack: number; skipped: number; errors: number };
 
 /**
  * Livre l'outbox de réveil : réclamation par CAS avec expiration (un livreur à la
@@ -346,6 +350,48 @@ export async function rescueStalledRuns(db: D1Database, input: { now: number; wa
   return rescued;
 }
 
+/**
+ * CC-8 S6 (raccordement suite) : maintenance périodique des suivis de bêta —
+ * avance secours → bêta quand les paliers préenregistrés sont atteints, retour
+ * arrière automatique d'une bêta qui casse ses seuils. Chaque écriture reste
+ * CAS + HALT + audit append-only dans le module bêta : ici on relit chaque
+ * suivi FRAÎCHEMENT (expected_track_version courant) et on rejoue ; un refus
+ * typé (paliers non atteints, bêta saine, course, HALT) compte pour 'skipped'
+ * sans jamais interrompre le passage.
+ */
+export async function betaMaintenance(db: D1Database, input: { now: number; limit?: number }): Promise<{
+  advanced: number; rolledBack: number; skipped: number; errors: number;
+}> {
+  await ensureAgentRunSchema(db);
+  const open = (await loadBetaTracks(db))
+    .filter(track => track.status === 'secours' || track.status === 'beta')
+    .slice(0, Math.max(1, Math.min(input.limit ?? 25, 100)));
+  let advanced = 0;
+  let rolledBack = 0;
+  let skipped = 0;
+  let errors = 0;
+  for (const track of open) {
+    try {
+      const step = { participant_id: track.participant_id, candidate_ref: track.candidate_ref,
+        expected_track_version: track.track_version, now: input.now };
+      const result = track.status === 'secours' ? await advanceSecoursToBeta(db, step) : await autoRollbackBeta(db, step);
+      if (result.status !== 'applied') skipped += 1; // déjà appliqué par un passage concurrent
+      else if (track.status === 'secours') advanced += 1;
+      else rolledBack += 1;
+    } catch (error) {
+      const code = (error as { code?: string }).code ?? '';
+      // Paliers non atteints / bêta saine : le refus typé attendu de chaque passage, sans journal.
+      if (code === 'BETA_THRESHOLDS_NOT_MET' || code === 'BETA_CRITERIA_INTACT') { skipped += 1; continue; }
+      // Course CAS, HALT, chaîne divergée… : rien n'a été écrit — journal borné, jamais bloquant.
+      skipped += 1;
+      if (code === '') errors += 1;
+      await journal(db, input.now, 'beta_maintenance', track.participant_id + '/' + track.candidate_ref,
+        (code || 'BETA_MAINTENANCE_ERROR') + ' : ' + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+  return { advanced, rolledBack, skipped, errors };
+}
+
 /** Passage complet appelé par le webhook ou le Cron : no-op sans écriture si désactivé. */
 export async function agentRunPass(db: D1Database | undefined, env: AgentRunEnv, input: { now: number; deliverer: string; wake: WakeFn | null }): Promise<PassResult> {
   if (!agentRunsEnabled(env) || !db || !input.wake) return { delivered: 0, failed: 0, rescued: 0, skipped: 'disabled' };
@@ -359,7 +405,14 @@ export async function agentRunPass(db: D1Database | undefined, env: AgentRunEnv,
   }
   const { delivered, failed } = await deliverWakeups(db, { now: input.now, deliverer: input.deliverer, wake: input.wake });
   const rescued = await rescueStalledRuns(db, { now: input.now, wake: input.wake });
-  return { delivered, failed, rescued, planned };
+  // CC-8 S6 (suite) : maintenance des suivis de bêta — jamais bloquante pour le passage.
+  let beta: PassResult['beta'];
+  try {
+    beta = await betaMaintenance(db, { now: input.now });
+  } catch {
+    beta = { advanced: 0, rolledBack: 0, skipped: 0, errors: 0 };
+  }
+  return { delivered, failed, rescued, planned, beta };
 }
 
 // ---------------------------------------------------------------- dépendances par défaut (7b)

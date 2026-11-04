@@ -216,7 +216,7 @@ export async function loadBetaTrack(db: D1Database, participantId: string, candi
   return row ? trackOf(row) : null;
 }
 
-async function loadBetaTracks(db: D1Database, participantId?: string): Promise<BetaTrack[]> {
+export async function loadBetaTracks(db: D1Database, participantId?: string): Promise<BetaTrack[]> {
   await ensureBetaSchema(db);
   const rows = participantId !== undefined
     ? await db.prepare(TRACK_BY_PARTICIPANT).bind(participantId).all<TrackRow>()
