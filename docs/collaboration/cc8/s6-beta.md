@@ -7,7 +7,7 @@ Lot S6 du plan CC-PLAN-8 (§5 paliers de bêta, v0.2 seq 1270, plan voté seq 12
 | Partie | Contenu | PR |
 | --- | --- | --- |
 | 1/2 | src/collab-store/agentrun/beta/ : store.ts (tables internes, suivi, exécutions comptées, métriques), advance.ts (avance, retour arrière automatique, fermeture) + spec cc8-s6-beta.spec.ts | cette PR |
-| 2/2 | Ce bilan | cette PR |
+| 2/2 | Ce bilan + complément au guide du store (codes S6 en section 7, exigé par le test docs-coverage du dépôt — convention des lots S3/S5) | cette PR |
 
 ## Choix
 
@@ -22,9 +22,9 @@ Lot S6 du plan CC-PLAN-8 (§5 paliers de bêta, v0.2 seq 1270, plan voté seq 12
 
 - **ouverture** : preuve conforme → suivi secours + événement ; rejeu même empreinte = duplicate ; autre preuve → BETA_TRACK_OPEN ; < 20 appels → BETA_CANARY_INSUFFISANT ; verdict reject ou next hors bêta → BETA_PROPOSAL_INVALID ; alias latest → BETA_REF_INVALID ; maillon absent → BETA_CANDIDATE_ABSENT, statut primary → BETA_ENTRY_NOT_SECOURS ; version CAS expirée → CHAIN_VERSION_STALE ; chaîne retirée (sentinelle) → BETA_CHAIN_ABSENT ;
 - **exécutions** : idempotentes par run, ignorées hors suivi ouvert (avant ouverture, après fermeture) ;
-- **avance** : 19 exécutions puis durée insuffisante → BETA_THRESHOLDS_NOT_MET sans écriture ; paliers atteints → chaîne v2 maillon beta, audit versions (system:beta-track, set), suivi bêta (pre_beta_version, advanced_at) + événement ; rejeu = duplicate sans v3 ; course CAS → BETA_TRACK_STALE ; chaîne modifiée par l'owner depuis l'ouverture → BETA_CHAIN_STALE ; halt → AUTOMATION_HALTED ;
+- **avance** : 19 exécutions puis durée insuffisante → BETA_THRESHOLDS_NOT_MET sans écriture ; paliers atteints → chaîne v2 maillon beta, audit versions (system:beta-track, set), suivi bêta (pre_beta_version, advanced_at) + événement ; rejeu = duplicate sans v3 ; course CAS → BETA_TRACK_STALE sans écriture, le gagnant applique ensuite ; chaîne modifiée par l'owner depuis l'ouverture → BETA_CHAIN_STALE ; halt → AUTOMATION_HALTED ;
 - **retour arrière** : 1/6 échecs → chaîne d'avant exposition restaurée en v3 (action rollback), suivi rolled_back avec motif, événement ; rejeu = duplicate ; 0 échec → BETA_CRITERIA_INTACT sans écriture ; 4 exécutions → BETA_THRESHOLDS_NOT_MET ; halt → AUTOMATION_HALTED ; maillon rétracté par l'owner → BETA_CHAIN_STALE ;
-- **fermeture** : suivi stale avec motif, rejeu duplicate, réouverture avec nouvelle preuve (track_version 2) ;
+- **fermeture** : suivi stale avec motif, rejeu duplicate, réouverture avec nouvelle preuve (compteur monotone : fermeture → 2, réouverture → 3) ;
 - **métriques** : fenêtres secours/bêta séparées, advance_blockers visibles avant paliers, rollback_broken après casse, seuils préenregistrés lisibles.
 
 ## Raccordements v0 (aucun dans ce lot — module autonome)

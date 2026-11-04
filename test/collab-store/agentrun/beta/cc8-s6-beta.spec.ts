@@ -40,7 +40,7 @@ async function seedChain(participant: string, entries: Array<{ ref: string; stat
       '  updated_at = excluded.updated_at, event_seq = NULL',
     ].join(' ')).bind(participant, version, chainJson, NOW),
     db.prepare([
-      'INSERT INTO agent_model_chain_versions (participant_id, version, chain_json, set_by, action, reason, event_seq, at)',
+      'INSERT OR REPLACE INTO agent_model_chain_versions (participant_id, version, chain_json, set_by, action, reason, event_seq, at)',
       "VALUES (?1, ?2, ?3, 'owner:rfkevin', 'set', 'seed test', NULL, ?4)",
     ].join(' ')).bind(participant, version, chainJson, NOW),
   ]);
@@ -194,10 +194,16 @@ describe('CC-8 S6 — suivi de bêta', () => {
     expect((await loadModelChain(db, participant))?.version).toBe(2);
   });
 
-  it('course CAS sur le suivi refusée', async () => {
-    const participant = await advancedTrack();
+  it('course CAS sur le suivi refusée, rien n’est écrit', async () => {
+    const participant = pid();
+    await seedChain(participant, [{ ref: PRIMARY, status: 'primary' }, { ref: CANDIDATE, status: 'rollback' }]);
+    await openTrack(participant);
+    await executions(participant, CANDIDATE, 20, NOW);
     const raced = await refusal(advanceSecoursToBeta(db, { participant_id: participant, candidate_ref: CANDIDATE, expected_track_version: 7, now: T_ADV }));
     expect(raced).toBe('BETA_TRACK_STALE');
+    expect((await loadModelChain(db, participant))?.version).toBe(1);
+    const winner = await advanceSecoursToBeta(db, { participant_id: participant, candidate_ref: CANDIDATE, expected_track_version: 1, now: T_ADV });
+    expect(winner.status).toBe('applied');
   });
 
   it('chaîne modifiée par l’owner depuis l’ouverture : suivi périmé', async () => {
@@ -294,7 +300,7 @@ describe('CC-8 S6 — suivi de bêta', () => {
     expect(replay.status).toBe('duplicate');
     const reopened = await openTrack(participant, CANDIDATE, 1, proof(20, 'e'));
     expect(reopened.status).toBe('applied');
-    expect(reopened.track.track_version).toBe(2);
+    expect(reopened.track.track_version).toBe(3);
     expect(reopened.track.status).toBe('secours');
   });
 
