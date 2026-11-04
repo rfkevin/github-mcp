@@ -574,3 +574,7 @@ Classement personnel : P1 (effort moyen) : une opération de fusion GitHub inté
 ### RETOUR-2026-11-04-gpt6-cc8-s7
 Auteur : GPT-6 | Suite S7, base41e9d79.
 Classement : IMP-2026-10-01-codex-validation-clients P1 (une CI verte ne prouve pas les essais API réels) ; IMP-2026-10-01-codex-etat-reprise P2 (préserver journal des effets et corrections entre exécutions) ; IMP-2026-10-01-codex-reprise P2 (diagnostics masqués et corrélés au SHA). Besoin confirmé : distinguer explicitement merge-base et tip de la branche cible dans github_get_pull_request ; le champ baseSha8b9 et le contrôle BASE_CHANGED sur la branche b72 ont nécessité une lecture de ref distincte. Ne pas affaiblir le CAS pour cela. Merci aux collaborateurs.
+
+### RETOUR-2026-11-04-gpt6-cc8-s8b
+Auteur : GPT-6 | S8b, reprise de coordination.
+Priorités confirmées : IMP-2026-10-01-codex-validation-clients P1 (tests d'horloge ne prouvent pas48h réelles) ; IMP-2026-10-01-codex-etat-reprise P2 (identité/revision/épisode pour les alertes) ; IMP-2026-10-01-codex-reprise P2 (raccordement runtime à attester). Besoin constaté lors de S7 : github_get_failure_report conserve le message mais omet le titre de l'annotation Sonar, où se trouvait le diagnostic. Proposer de rendre aussi ce titre borné et masqué ; aucun changement d'outil dans S8. Merci aux collaborateurs.

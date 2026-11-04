@@ -175,3 +175,5 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `src/agent-run-checks.ts` : adaptation racine du contrôleur Actions existant, diagnostics masqués.
 - `test/collab-store/agentrun/github-write/s7.spec.ts` : permissions, reprise et corrections CI.
 - `docs/collaboration/cc8/s7-api-write.md` : configuration et acceptation réelle restante.
+
+- CC8 S8b : `src/collab-store/controller/autonomy.ts` supervise les tâches blocked et le silence du mandat, prépare les alertes salon et demandes owner sous HALT/CAS ; raccordements `scheduled.ts`, `webhook.ts`, `src/index.ts`. Tests : `test/collab-store/controller/s8-autonomy.spec.ts`. Protocole réel 48 h : `docs/collaboration/cc8/s8-autonomy.md`.
