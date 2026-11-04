@@ -813,6 +813,11 @@ Le lot S6 (bilan : docs/collaboration/cc8/s6-beta.md) ajoute le suivi de bêta d
 | `BETA_TRACK_STALE` | CC-8 S6 | Course CAS : le suivi a changé entre la lecture et le lot, tout le lot est annulé | Relire et rejouer |
 | `BETA_CHAIN_STALE` | CC-8 S6 | La chaîne a changé depuis l'ouverture du suivi (acte owner) : suivi périmé, rien n'est écrit | Rouvrir un suivi sur la version courante |
 | `BETA_THRESHOLDS_NOT_MET` | CC-8 S6 | Paliers préenregistrés non atteints (exécutions ou durée insuffisantes ; ou bêta insuffisamment observée) | Attendre les paliers ; rien n'est écrit |
-| `BETA_NOT_IN_BETA` | CC-8 S6 | Retour arrière automatique demandé hors bêta exposée | — |
+| `BETA_NOT_IN_BETA` | CC-8 S6 | Retour arrière automatique ou garde de promotion principal demandés hors bêta exposée | — |
 | `BETA_SNAPSHOT_MISSING` | CC-8 S6 | Instantané de la chaîne d'avant exposition absent de l'audit : retour arrière impossible | Arbitrage owner (set_agent_models manuel) |
 | `BETA_CRITERIA_INTACT` | CC-8 S6 | La bêta ne casse pas ses seuils : aucun retour arrière (rien n'est écrit) | — |
+
+| `BETA_CHAIN_DIVERGED` | CC-8 S6 | La chaîne live n'est plus celle créée par l'exposition bêta (modification owner entre-temps, candidate gardée en bêta) : le retour arrière automatique refuse d'effacer son acte, rien n'est écrit | Arbitrage owner : rollback manuel via set_agent_models |
+| `BETA_PRIMARY_WINDOW_NOT_MET` | CC-8 S6 | Fenêtre bêta non atteinte (moins de 20 exécutions réelles ou moins de 48 h depuis l'exposition, seuils préenregistrés) : la garde de l'acte owner refuse la promotion principal | Attendre les paliers préenregistrés ; rien n'est écrit |
+
+**Fenêtre principal et divergence (revue GPT-6)** : la promotion bêta → principal reste un acte owner (`set_agent_models` sur /owner), sans chemin automatique — mais l'acte DOIT appeler `assertBetaPrimaryWindow` (lecture seule) avant de promouvoir et refuser sur erreur : fenêtre bêta >= 20 exécutions réelles ET >= 48 h depuis l'exposition (`advanced_at`), aux seuils préenregistrés du suivi ; le caractère manuel de l'acte ne prouve pas le seuil. Le retour arrière automatique ne s'applique que si la chaîne live est exactement la version créée par l'exposition : une modification owner postérieure (autre maillon) donne `BETA_CHAIN_DIVERGED` sans écriture, l'arbitrage reste au rollback manuel owner.

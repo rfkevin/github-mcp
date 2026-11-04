@@ -1,14 +1,20 @@
 /**
  * CC-8 S6 (CC-PLAN-8 §5 paliers de bêta) — paliers du suivi : avance
- * secours → bêta, retour arrière automatique d'une bêta cassée, fermeture.
+ * secours → bêta, retour arrière automatique, fermeture, et garde de la
+ * fenêtre bêta avant la promotion principal (acte owner).
  *
- * L'exposition automatique est LIMITÉE au statut beta : la promotion vers
- * primary reste un acte owner (set_agent_models sur /owner). Le retour
- * arrière automatique restaure la chaîne d'AVANT l'exposition (instantané
- * pre_beta_version de l'audit append-only S3) : même une version retirée par
- * l'owner y est restaurée via la sentinelle. Chaque écriture passe par la
- * garde transactionnelle C2 (CAS suivi + version de chaîne + HALT) : une
- * course ou un arrêt d'urgence annule TOUT le lot, jamais last-write-wins.
+ * L’exposition automatique est LIMITÉE au statut beta : la promotion vers
+ * primary reste un acte owner (set_agent_models sur /owner) qui DOIT passer
+ * par assertBetaPrimaryWindow — fenêtre bêta >= 20 exécutions ET >= 48 h
+ * depuis l’exposition (relecture GPT-6 : le caractère manuel de l’acte ne
+ * prouve pas le seuil). Le retour arrière automatique restaure la chaîne
+ * d’AVANT l’exposition (instantané pre_beta_version de l’audit append-only
+ * S3) : même une version retirée par l’owner y est restaurée via la sentinelle —
+ * mais il REFUSE si l’owner a modifié la chaîne depuis l’exposition
+ * (BETA_CHAIN_DIVERGED : jamais d’écrasement de son acte). Chaque écriture passe
+ * par la garde transactionnelle C2 (CAS suivi + version de chaîne + HALT) :
+ * une course ou un arrêt d’urgence annule TOUT le lot, jamais
+ * last-write-wins.
  */
 import { CollabStoreError } from '../../store/collab-store';
 import { assertAutomationRunning, HALT_ACTIVE_SQL } from '../../owner/automation';
@@ -123,13 +129,17 @@ export async function advanceSecoursToBeta(db: D1Database, input: BetaTrackStepI
 }
 
 /**
- * Retour arrière AUTOMATIQUE d'une bêta qui casse ses seuils préenregistrés
- * (>= 5 exécutions en bêta ET taux d'échec > 5 %) : la chaîne d'AVANT
- * l'exposition (instantané pre_beta_version) est republiée dans une nouvelle
+ * Retour arrière AUTOMATIQUE d’une bêta qui casse ses seuils préenregistrés
+ * (>= 5 exécutions en bêta ET taux d’échec > 5 %) : la chaîne d’AVANT
+ * l’exposition (instantané pre_beta_version) est republiée dans une nouvelle
  * version (action rollback, audit append-only), le suivi passe à rolled_back
  * avec son motif. Une bêta saine ne produit RIEN (BETA_CRITERIA_INTACT).
- * L'arrêt d'urgence coupe AUSSI ce chemin (fail-safe) : l'owner peut toujours
- * rouler manuellement via set_agent_models sur /owner.
+ * Contre-exemple relecture GPT-6 : si l’owner a modifié la chaîne APRÈS
+ * l’exposition (autre maillon, candidate gardée en bêta), la chaîne live n’est
+ * plus celle que le module a exposée — restaurer l’instantané entier
+ * effacerait son acte : refus typé BETA_CHAIN_DIVERGED sans écriture,
+ * arbitrage owner (set_agent_models manuel). L’arrêt d’urgence coupe AUSSI ce
+ * chemin (fail-safe) : l’owner peut toujours rouler manuellement via /owner.
  */
 export async function autoRollbackBeta(db: D1Database, input: BetaTrackStepInput): Promise<BetaStepResult> {
   await ensureBetaSchema(db);
@@ -153,6 +163,11 @@ export async function autoRollbackBeta(db: D1Database, input: BetaTrackStepInput
   if (!entry || entry.status !== 'beta') {
     throw new CollabStoreError('BETA_CHAIN_STALE',
       'La chaîne de ' + input.participant_id + ' ne route plus ' + input.candidate_ref + ' en bêta (owner retracté ?) : retour automatique refusé, arbitrage owner.');
+  }
+  if (chain.version !== track.chain_version + 1) {
+    throw new CollabStoreError("BETA_CHAIN_DIVERGED",
+      "La chaîne de " + input.participant_id + " est à la version " + chain.version + ", l’exposition bêta a créé la v" + (track.chain_version + 1)
+      + " : la chaîne a été modifiée depuis l’exposition (owner). Le retour arrière automatique refuse d’effacer cette modification — arbitrage owner via set_agent_models, rien n’est écrit.");
   }
   if (track.pre_beta_version === null) {
     throw new CollabStoreError('BETA_SNAPSHOT_MISSING', 'Le suivi ne porte pas la version d’avant exposition : retour arrière impossible sans arbitrage owner.');
@@ -241,4 +256,69 @@ export async function closeBetaTrack(db: D1Database, input: BetaTrackStepInput &
     });
   }
   return { status: 'applied', chain_version: track.chain_version, track_version: input.expected_track_version + 1 };
+}
+
+// ── Fenêtre bêta avant principal (garde de l’acte owner) ───────────────────────
+
+export interface BetaPrimaryWindow {
+  readonly participant_id: string;
+  readonly candidate_ref: string;
+  readonly since: number;
+  readonly executions: number;
+  readonly ok: number;
+  readonly failures: number;
+  readonly failure_rate: number | null;
+  readonly hours: number;
+}
+
+/**
+ * Garde de la promotion bêta → principal (plan 1262/1270 : « puis bêta
+ * >= 20 exécutions ET >= 48 h, puis principal par /owner »). L’acte owner
+ * (set_agent_models sur /owner) DOIT appeler cette fonction avant de
+ * promouvoir le maillon bêta en primary et refuser sur erreur : le caractère
+ * manuel de l’acte ne prouve pas le seuil (relecture GPT-6). La fenêtre se
+ * juge aux seuils PRÉENREGISTRÉS à l’ouverture du suivi : >= 20 exécutions
+ * réelles DEPUIS l’exposition (advanced_at) ET >= 48 h. Lecture seule :
+ * aucune écriture, aucun compteur modifié ; HALT ne s’applique pas — l’acte
+ * owner reste maître, seule l’automatisation est coupée.
+ */
+export async function assertBetaPrimaryWindow(db: D1Database, participantId: string, candidateRef: string,
+  now: number): Promise<BetaPrimaryWindow> {
+  await ensureBetaSchema(db);
+  const track = await loadBetaTrack(db, participantId, candidateRef);
+  if (!track) throw new CollabStoreError("BETA_TRACK_UNKNOWN", "Aucun suivi de bêta pour " + participantId + " / " + candidateRef + ".");
+  if (track.status !== "beta") {
+    throw new CollabStoreError("BETA_NOT_IN_BETA", "Le suivi est en " + track.status + " : la fenêtre bêta ne se juge que sur une bêta exposée.");
+  }
+  const chain = await loadModelChain(db, participantId);
+  const entry = chain && chain.active ? chain.chain.find(item => item.ref === candidateRef) : undefined;
+  if (!chain || !chain.active || !entry || entry.status !== "beta") {
+    throw new CollabStoreError("BETA_NOT_IN_BETA", "La chaîne de " + participantId + " ne route plus " + candidateRef + " en bêta : promotion refusée, arbitrage owner.");
+  }
+  const advancedAt = track.advanced_at;
+  if (advancedAt === null) {
+    throw new CollabStoreError("BETA_NOT_IN_BETA", "Bêta sans date d’exposition : suivi incohérent, promotion refusée.");
+  }
+  const window = await stageMetrics(db, participantId, candidateRef, advancedAt, null);
+  const blockers: string[] = [];
+  if (window.executions < track.thresholds.advance.min_executions) {
+    blockers.push(window.executions + " exécutions < " + track.thresholds.advance.min_executions + " requises");
+  }
+  if (now - advancedAt < track.thresholds.advance.min_duration_s) {
+    blockers.push(betaHours(now - advancedAt) + " h < " + betaHours(track.thresholds.advance.min_duration_s) + " h requises");
+  }
+  if (blockers.length > 0) {
+    throw new CollabStoreError("BETA_PRIMARY_WINDOW_NOT_MET",
+      "Fenêtre bêta non atteinte : " + blockers.join(", ") + " — la promotion principal attend les paliers préenregistrés, rien n’est écrit.");
+  }
+  return {
+    participant_id: participantId,
+    candidate_ref: candidateRef,
+    since: advancedAt,
+    executions: window.executions,
+    ok: window.ok,
+    failures: window.failures,
+    failure_rate: window.failure_rate,
+    hours: betaHours(now - advancedAt),
+  };
 }

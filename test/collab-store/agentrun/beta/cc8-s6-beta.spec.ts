@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
   advanceSecoursToBeta,
+  assertBetaPrimaryWindow,
   autoRollbackBeta,
   betaEvents,
   betaMetrics,
@@ -288,6 +289,46 @@ describe('CC-8 S6 — suivi de bêta', () => {
     await seedChain(participant, [{ ref: PRIMARY, status: 'primary' }], 3);
     await executions(participant, CANDIDATE, 6, T_ADV, 2);
     expect(await refusal(autoRollbackBeta(db, { participant_id: participant, candidate_ref: CANDIDATE, expected_track_version: 2, now: T_ADV + 3600 }))).toBe('BETA_CHAIN_STALE');
+  });
+
+  it('fenêtre principal non atteinte : promotion refusée', async () => {
+    const participant = await advancedTrack();
+    expect(await refusal(assertBetaPrimaryWindow(db, participant, CANDIDATE, T_ADV + 3600))).toBe('BETA_PRIMARY_WINDOW_NOT_MET');
+    await executions(participant, CANDIDATE, 20, T_ADV);
+    expect(await refusal(assertBetaPrimaryWindow(db, participant, CANDIDATE, T_ADV + 3600))).toBe('BETA_PRIMARY_WINDOW_NOT_MET');
+    expect((await loadModelChain(db, participant))?.version).toBe(2);
+    expect((await betaEvents(db, participant, CANDIDATE)).map(event => event.kind)).toEqual(['open', 'advance']);
+  });
+
+  it('fenêtre principal atteinte : garde lecture seule, métriques rendues', async () => {
+    const participant = await advancedTrack();
+    await executions(participant, CANDIDATE, 20, T_ADV);
+    const window = await assertBetaPrimaryWindow(db, participant, CANDIDATE, T_ADV + BETA_ADVANCE_MIN_DURATION_S + 3600);
+    expect(window.executions).toBe(20);
+    expect(window.failures).toBe(0);
+    expect(window.hours).toBe(49);
+    expect((await loadModelChain(db, participant))?.version).toBe(2);
+    expect((await betaEvents(db, participant, CANDIDATE)).map(event => event.kind)).toEqual(['open', 'advance']);
+  });
+
+  it('garde principal hors bêta exposée : refus', async () => {
+    const participant = pid();
+    await seedChain(participant, [{ ref: PRIMARY, status: 'primary' }, { ref: CANDIDATE, status: 'rollback' }]);
+    await openTrack(participant);
+    expect(await refusal(assertBetaPrimaryWindow(db, participant, CANDIDATE, T_ADV))).toBe('BETA_NOT_IN_BETA');
+  });
+
+  it('owner modifie un autre maillon pendant la bêta : retour arrière refusé, son acte préservé', async () => {
+    const participant = await advancedTrack();
+    await seedChain(participant, [{ ref: PRIMARY, status: 'inactive' }, { ref: CANDIDATE, status: 'beta' }], 3);
+    await executions(participant, CANDIDATE, 6, T_ADV, 2);
+    expect(await refusal(autoRollbackBeta(db, { participant_id: participant, candidate_ref: CANDIDATE, expected_track_version: 2, now: T_ADV + 3600 }))).toBe('BETA_CHAIN_DIVERGED');
+    const chain = await loadModelChain(db, participant);
+    expect(chain?.version).toBe(3);
+    expect(chain?.chain.find(item => item.ref === PRIMARY)?.status).toBe('inactive');
+    expect((await betaMetrics(db, { participant_id: participant, now: T_ADV + 3600 }))[0]?.status).toBe('beta');
+    expect(await chainVersionRow(participant, 4)).toBe(null);
+    expect((await betaEvents(db, participant, CANDIDATE)).map(event => event.kind)).toEqual(['open', 'advance']);
   });
 
   it('fermeture puis réouverture : compteur de suivi monotone', async () => {
