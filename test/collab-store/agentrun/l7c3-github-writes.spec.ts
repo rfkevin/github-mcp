@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
   runStep, createRun, createReadToolHost, createGitHubWriteTools, apiBranch, effectTrailer, GitHubWriteRefused, ToolRefused,
-  GITHUB_WRITE_TOOLS_BY_KIND, READ_TOOLS_BY_KIND, WRITE_TOOLS_BY_KIND, DEFAULT_API_BASE_BRANCH,
+  GITHUB_WRITE_TOOLS_BY_KIND, READ_TOOLS_BY_KIND, WRITE_TOOLS_BY_KIND, DEFAULT_API_BASE_BRANCH, createStoreWriteTools,
   type GitHubWrites, type ModelClient, type ModelOutput,
 } from '../../../src/collab-store/agentrun';
 import { engineFor, apiBaseBranch, AGENT_RUN_SYSTEM } from '../../../src/collab-store/agentrun/object';
@@ -94,6 +94,12 @@ async function newRun(participant: string, kind = 'implement') {
   const created = await createRun(db, { runId, cycleId: 'l7c3-cycle-' + n, participantId: participant, taskId: 'l7', taskKind: kind,
     prompt: 'p', maxSteps: 10, maxTokens: 1_000_000, maxCostCents: 0, deadlineAt: T + 86_400, now: T });
   expect(created.created).toBe(true);
+  // S7: les scénarios historiques d'écriture nécessitent désormais un mandat serveur.
+  await db.prepare("INSERT OR IGNORE INTO cycles (cycle_id) VALUES (?1)").bind('l7c3-cycle-' + n).run();
+  await db.prepare([
+    "INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths)",
+    "VALUES ('l7', ?1, ?2, 'reviewer', 'tester', 'in_progress', ?3)",
+  ].join(' ')).bind('l7c3-cycle-' + n, participant, JSON.stringify(['a.txt', 'src/collab-store/owner/runs.ts'])).run();
   return runId;
 }
 
@@ -211,6 +217,88 @@ describe('CC-5 l7c-3 — parcours et refus', () => {
     expect(pr).toMatchObject({ draft: true, base: BASE });
     expect(gh.prs[0].draft).toBe(true);
     expect(await refusal(tools.execute({ id: 'p', name: 'github_open_draft_pr', args: { name: 'pr', title: 't2' } }, { run_id: runId, effect_key: KEY('3') }))).toBe('CONFLICT');
+  });
+});
+
+describe('CC-8 S7 — mandat serveur et périmètre API', () => {
+  it('refuse les fichiers hors owned_paths avant tout effet GitHub', async () => {
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    const reason = await refusal(tools.execute({ id: 'c', name: 'github_commit_files', args: {
+      name: 'x', expected_head_sha: BASE_SHA, message: 'm',
+      files: [{ path: 'src/another/unauthorized.ts', content: 'export {};'}],
+    } }, { run_id: runId, effect_key: KEY('1') }));
+    expect(reason).toBe('api_write_path_outside_task');
+    expect(gh.calls).toEqual([]);
+  });
+
+  it('HALT interdit toute écriture mais conserve le lookup de réconciliation', async () => {
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    const create = { id: 'b', name: 'github_create_branch', args: { name: 'halted', base_sha: BASE_SHA } };
+    await tools.execute(create, { run_id: runId, effect_key: KEY('1') });
+    await db.prepare("INSERT OR REPLACE INTO owner_flags (name, value, updated_at) VALUES ('halt', '1', 1980000000)").run();
+    try {
+      expect(await refusal(tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'blocked', base_sha: BASE_SHA } },
+        { run_id: runId, effect_key: KEY('2') }))).toBe('api_write_fence_or_halt');
+      expect(await tools.lookup(create, { run_id: runId, effect_key: KEY('1') })).toMatchObject({ found: true });
+      expect(gh.refs.has('mcp/105856986/vibe-api-blocked')).toBe(false);
+    } finally {
+      await db.prepare("DELETE FROM owner_flags WHERE name = 'halt'").run();
+    }
+  });
+
+  it('préemption chat interdit une nouvelle écriture, lookup demeure possible', async () => {
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    const create = { id: 'b', name: 'github_create_branch', args: { name: 'before-chat', base_sha: BASE_SHA } };
+    await tools.execute(create, { run_id: runId, effect_key: KEY('1') });
+    await db.prepare("UPDATE agent_fences SET holder = 'chat', generation = generation + 1 WHERE lease_key = (SELECT lease_key FROM agent_runs WHERE run_id = ?1)")
+      .bind(runId).run();
+    expect(await refusal(tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'after-chat', base_sha: BASE_SHA } },
+      { run_id: runId, effect_key: KEY('2') }))).toBe('api_write_fence_or_halt');
+    expect(await tools.lookup(create, { run_id: runId, effect_key: KEY('1') })).toMatchObject({ found: true });
+    expect(gh.refs.has('mcp/105856986/vibe-api-after-chat')).toBe(false);
+  });
+
+  for (const status of ['done', 'blocked'] as const) {
+    it('S7 : une API ne peut pas rouvrir une tâche ' + status + ' pour écrire', async () => {
+      const gh = fakeGitHub();
+      const runId = await newRun('vibe');
+      const cycle = 'l7c3-cycle-' + n;
+      await db.prepare("UPDATE tasks SET status = ?1 WHERE cycle_id = ?2 AND task_id = 'l7'")
+        .bind(status, cycle).run();
+      const github = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+      const store = createStoreWriteTools(db);
+      const branch = { id: 'b', name: 'github_create_branch', args: { name: 'after-' + status, base_sha: BASE_SHA } };
+      expect(await refusal(github.execute(branch, { run_id: runId, effect_key: KEY('1') })))
+        .toBe('api_write_task_not_authorized');
+      expect(await refusal(store.execute({ id: 's', name: 'store_task_status',
+        args: { task: 'l7', status: 'in_progress' } }, { run_id: runId, effect_key: KEY('2') })))
+        .toBe('api_task_reopen_forbidden');
+      const row = await db.prepare("SELECT status FROM tasks WHERE cycle_id = ?1 AND task_id = 'l7'")
+        .bind(cycle).first<{ status: string }>();
+      expect(row?.status).toBe(status);
+      expect(await refusal(github.execute(branch, { run_id: runId, effect_key: KEY('3') })))
+        .toBe('api_write_task_not_authorized');
+      expect(gh.calls).toEqual([]);
+    });
+  }
+
+  it('refuse un propriétaire différent ou une tâche non active', async () => {
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    const create = () => tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'x', base_sha: BASE_SHA } },
+      { run_id: runId, effect_key: KEY('1') });
+    await db.prepare("UPDATE tasks SET owner_pid = 'grok' WHERE cycle_id = ?1 AND task_id = 'l7'").bind('l7c3-cycle-' + n).run();
+    expect(await refusal(create())).toBe('api_write_task_not_authorized');
+    await db.prepare("UPDATE tasks SET owner_pid = 'vibe', status = 'done' WHERE cycle_id = ?1 AND task_id = 'l7'").bind('l7c3-cycle-' + n).run();
+    expect(await refusal(create())).toBe('api_write_task_not_authorized');
+    expect(gh.calls).toEqual([]);
   });
 });
 

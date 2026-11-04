@@ -164,6 +164,15 @@ export function createStoreWriteTools(db: D1Database): StoreWriteTools {
       const opId = effectOpId(participant_id, cycle_id, ctx.effect_key);
       let expected = await store.currentRevision(cycle_id);
       for (let attempt = 0; attempt <= STALE_RETRIES; attempt += 1) {
+        // S7 : l'API ne peut rouvrir une tâche bloquée, en revue ou terminée.
+        // Vérifier à chaque tentative CAS, y compris après un STALE concurrent.
+        if (type === 'task.status' && call.args?.status === 'in_progress') {
+          const current = await db.prepare('SELECT status FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
+            .bind(cycle_id, call.args.task).first<{ status: string }>();
+          if (!current || !['proposed', 'accepted', 'in_progress'].includes(current.status)) {
+            throw new ToolRefused('api_task_reopen_forbidden');
+          }
+        }
         let outcome;
         try {
           outcome = await store.appendEvent({ cycle_id, type, participant_id, expected_rev: expected, payload_json: JSON.stringify(payload),

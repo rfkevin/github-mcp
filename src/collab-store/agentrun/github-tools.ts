@@ -163,10 +163,39 @@ export interface GitHubWriteTools {
 export function createGitHubWriteTools(options: GitHubWriteToolsOptions): GitHubWriteTools {
   const base = options.baseBranch;
   if (!BASE_RE.test(base) || /^(?:main|master)$/i.test(base) || base.includes('..')) throw new Error('baseBranch invalide pour le canal API.');
-  async function scope(runId: string): Promise<{ participant_id: string }> {
-    const run = await options.db.prepare('SELECT participant_id FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ participant_id: string }>();
+  async function scope(runId: string): Promise<{ participant_id: string; cycle_id: string; task_id: string; task_kind: string; status: string }> {
+    const run = await options.db.prepare('SELECT participant_id, cycle_id, task_id, task_kind, status FROM agent_runs WHERE run_id = ?1')
+      .bind(runId).first<{ participant_id: string; cycle_id: string; task_id: string; task_kind: string; status: string }>();
     if (!run) throw new ToolRefused('unknown_run');
     return run;
+  }
+  /** S7: le modèle ne peut jamais s'attribuer une autorisation d'écriture. */
+  async function authorized(runId: string, paths?: readonly string[]): Promise<void> {
+    const run = await scope(runId);
+    if (run.task_kind !== 'implement' || !run.task_id || run.status !== 'running') throw new ToolRefused('api_write_task_not_authorized');
+    // Contrôle au plus près de l'effet : HALT et bail API doivent toujours être valides.
+    const fence = await options.db.prepare([
+      'SELECT 1 AS allowed FROM agent_runs r JOIN agent_fences f ON f.lease_key = r.lease_key',
+      "WHERE r.run_id = ?1 AND r.status = 'running' AND f.generation = r.generation",
+      "AND f.holder = 'api' AND NOT EXISTS (SELECT 1 FROM owner_flags WHERE name = 'halt' AND value = '1')",
+    ].join(' ')).bind(runId).first<{ allowed: number }>();
+    if (!fence) throw new ToolRefused('api_write_fence_or_halt');
+    const task = await options.db.prepare(
+      'SELECT owner_pid, status, owned_paths FROM tasks WHERE cycle_id = ?1 AND task_id = ?2',
+    ).bind(run.cycle_id, run.task_id).first<{ owner_pid: string; status: string; owned_paths: string }>();
+    if (!task || task.owner_pid !== run.participant_id || task.status !== 'in_progress') {
+      throw new ToolRefused('api_write_task_not_authorized');
+    }
+    let owned: unknown;
+    try { owned = JSON.parse(task.owned_paths); } catch { throw new ToolRefused('api_write_scope_invalid'); }
+    if (!Array.isArray(owned) || !owned.length || !owned.every(p => typeof p === 'string' && p.length > 0)) {
+      throw new ToolRefused('api_write_scope_invalid');
+    }
+    for (const path of paths ?? []) {
+      if (!owned.some(prefix => prefix.endsWith('/') ? path.startsWith(prefix) : path === prefix)) {
+        throw new ToolRefused('api_write_path_outside_task');
+      }
+    }
   }
   async function refusedOnCertain<T>(effect: () => Promise<T>): Promise<T> {
     try {
@@ -185,6 +214,7 @@ export function createGitHubWriteTools(options: GitHubWriteToolsOptions): GitHub
       if (!ctx.effect_key) throw new ToolRefused('effect_key_required');
       const trailer = effectTrailer(ctx.effect_key);
       const { participant_id } = await scope(ctx.run_id);
+      await authorized(ctx.run_id);
       const args = call.args ?? {};
       const branch = apiBranch(participant_id, args.name);
       switch (call.name as GitHubWriteToolName) {
@@ -197,6 +227,7 @@ export function createGitHubWriteTools(options: GitHubWriteToolsOptions): GitHub
           const head = sha(args, 'expected_head_sha');
           const message = line(args, 'message', 120) + '\n\n' + trailer;
           const changes = files(args);
+          await authorized(ctx.run_id, changes.map(change => change.path));
           const commit = await refusedOnCertain(() => options.writes.commitFiles(options.repository, branch, head, message, changes));
           return { branch, commit_sha: commit.commit_sha, files: changes.map(change => change.path) };
         }
@@ -225,6 +256,8 @@ export function createGitHubWriteTools(options: GitHubWriteToolsOptions): GitHub
       }
     },
     async lookup(call, ctx) {
+      // lookup est une opération de lecture de réconciliation : ne pas la bloquer
+      // après HALT, préemption chat ou fin de tâche (sinon effet ambigu irrécupérable).
       const { participant_id } = await scope(ctx.run_id);
       const branch = apiBranch(participant_id, (call.args ?? {}).name);
       switch (call.name as GitHubWriteToolName) {
