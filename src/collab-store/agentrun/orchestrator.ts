@@ -264,9 +264,9 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
 
 export type WakeFn = (leaseKey: string, runId: string) => Promise<WakeResult>;
 
-export interface PassResult { delivered: number; failed: number; rescued: number; planned?: number; skipped?: 'disabled' }
+export interface PassResult { delivered: number; failed: number; rescued: number; planned?: number; skipped?: 'disabled';
   /** CC-8 S6 (suite) : maintenance des suivis de bêta du passage (absent si désactivé). */
-  beta?: { advanced: number; rolledBack: number; skipped: number; errors: number };
+  beta?: { advanced: number; rolledBack: number; skipped: number; errors: number }; }
 
 /**
  * Livre l'outbox de réveil : réclamation par CAS avec expiration (un livreur à la
