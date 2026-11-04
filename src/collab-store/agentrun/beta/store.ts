@@ -353,7 +353,7 @@ export async function openBetaTrack(db: D1Database, input: OpenBetaTrackInput): 
         "  status = 'secours', track_version = agent_model_beta.track_version + 1, chain_version = excluded.chain_version,",
         '  canary_report_hash = excluded.canary_report_hash, canary_cycle_id = excluded.canary_cycle_id,',
         '  canary_calls = excluded.canary_calls, thresholds_json = excluded.thresholds_json,',
-        '  opened_at = excluded.opened_at, pre_beta_version = NULL, advanced_at = NULL, closed_at = NULL, close_reason = ''',
+        "  opened_at = excluded.opened_at, pre_beta_version = NULL, advanced_at = NULL, closed_at = NULL, close_reason = ''",
         "WHERE agent_model_beta.status IN ('rolled_back','stale')",
       ].join(' ')).bind(input.participant_id, input.candidate_ref, chain.version,
         input.canary.report_hash, input.canary.cycle_id, input.canary.calls, thresholdsJson, input.now),
