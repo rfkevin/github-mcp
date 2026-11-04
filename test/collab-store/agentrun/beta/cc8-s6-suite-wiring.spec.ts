@@ -162,10 +162,15 @@ describe('CC-8 S6 suite — maintenance périodique (orchestrateur)', () => {
 });
 
 describe('CC-8 S6 suite — comptage des appels réellement routés (provider)', () => {
-  const routes = { LLM_KEY_ZAI: 'fake-test-key' };
-  // Tarif du maillon suivi relevé le 2026-10-25, RATE_STALE_DAYS = 30 : le NOW
-  // global (2033) périmerait le relevé, la candidate serait indisponible et le
-  // repli ne pourrait être ni servi ni compté. Ici le relevé est frais.
+  // Enveloppe payante commune du canal API : sans elle (0 par défaut), la
+  // candidate payée est écartée du repli par le filtre de budget — jamais tentée,
+  // jamais comptée. Le temps du describe s'approche du relevé tarifaire du
+  // maillon suivi (2026-10-25), pas du NOW global (2033).
+  const routes = {
+    LLM_KEY_ZAI: 'fake-test-key',
+    AGENT_RUN_PAID_PARTICIPANT_DAY_CENTS: '10000',
+    AGENT_RUN_PAID_PARTICIPANT_CYCLE_CENTS: '10000',
+  };
   const ROUTE_NOW = 1_793_102_400; // 2026-10-27T12:00:00Z
   const message = { messages: [{ role: 'user' as const, content: 'ping' }], tools: [], task_kind: 'answer' };
 
