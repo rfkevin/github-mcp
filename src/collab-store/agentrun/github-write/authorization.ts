@@ -19,7 +19,9 @@ function validGrantPath(value: unknown): boolean {
 }
 function parseGrant(value: unknown): WriteGrant {
   if (!value || typeof value !== 'object') throw new Error();
-  if (Object.keys(value).sort().join(',') !== 'branch,cycle,participant,paths,task') throw new Error();
+  const keys = Object.keys(value);
+  const expectedKeys = ['branch', 'cycle', 'participant', 'paths', 'task'];
+  if (keys.length !== expectedKeys.length || !expectedKeys.every(key => keys.includes(key))) throw new Error();
   const item = value as Record<string, unknown>;
   if (!['cycle', 'task', 'participant', 'branch'].every(key => validIdentifier(item[key]))) throw new Error();
   if (!Array.isArray(item.paths) || item.paths.length === 0 || item.paths.length > 50) throw new Error();
