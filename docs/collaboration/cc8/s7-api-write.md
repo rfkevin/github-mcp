@@ -57,6 +57,10 @@ Le moteur n'envoie plus systématiquement toutes les étapes anciennes au fourni
 
 Ce lot traite la répétition des résultats ; il ne garantit pas encore un plafond strict pré-appel et ne justifie aucune hausse de `TASK_KIND_MAX_TOKENS` sans mesure P95 post-optimisation. Le mode réduit exige une validation D12 indépendante et un essai piloté dans `cc3-test` avant activation.
 
+### CC8 S7 — temps de CI et nombre d'étapes (lot distinct)
+
+Un run API `implement` dispose de **12 étapes au lieu de 6** pour permettre lectures de mandat, branche, commit, lancement des vérifications, éventuelles consultations CI encore `pending`, corrections bornées et ouverture de PR. Tous les autres kinds restent à 6 étapes. Il ne s'agit **pas** d'une augmentation de jetons : `TASK_KIND_MAX_TOKENS.implement=24000`, coût autorisé `0`, délai de run et politique de stop/bail/CAS/HALT restent inchangés. Les jetons sont toujours cumulés et limités indépendamment du nombre d'étapes. Si les preuves D1 exigées par le garde de complétude de la PR #271 manquent, les étapes supplémentaires ne transforment pas un final en succès. Les deux PR requièrent leurs propres validations CI/D12 et une fusion explicite du propriétaire ; aucun lancement du troisième pilote avant déploiement.
+
 ### Points du plan à préserver pour la coordination
 
 S6 : secours puis bêta observée pendant >=20 exécutions ET >=48h, puis principal par /owner (rectification du cadrage ambigu1457 transmise à Vibe). S8a ne clôture pas S8 : restent escalade des blocages24h, demande de secours coordinateur et observation48h. S9 exige au moins trois tâches par type, mêmes entrées chat/API, jugement aveugle indépendant et seuil80%. S10 ne retire un chemin qu'après preuve du remplaçant. S11 reste synchronisation master/intégration, accords et promotion finale Kevin.
