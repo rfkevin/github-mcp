@@ -155,6 +155,7 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     // CC-7 L5b (S10) : store_verdict proposé aux kinds review/test dès que les lectures GitHub existent.
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
       verdicts: github !== null, requiredChecks, contributions: true, continuity: continuityEnabled(env),
+      contextCompaction: env.AGENT_RUN_CONTEXT_COMPACTION === 'true',
       // CC-7 L9b : l'agent choisit lui-même son modèle et sa réflexion quand l'aiguillage par participant est posé.
       modelChoice: routed ? env as unknown as PolicyEnv : null,
       // CC-7 L11 : chercheurs en tournante (porte AGENT_RUN_RESEARCH, éteinte par défaut).
