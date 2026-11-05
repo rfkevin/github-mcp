@@ -96,6 +96,9 @@ export interface EngineDeps {
   workerId: string;
   /** Borne d'exécution d'un outil en ms (défaut EFFECT_TIMEOUT_S), réduite par les tests. */
   effectTimeoutMs?: number;
+  /** CC8: opt-in de compaction des anciens résultats pour le seul contexte fournisseur.
+   * Les étapes et effets persistés D1 demeurent intacts (audit, reprise, fencing). */
+  compactHistory?: boolean;
   /** Points de crash injectables pour les tests (lever une exception = coupure). */
   probe?: (point: 'after_model' | 'before_effect' | 'after_effect' | 'after_effect_recorded') => void | Promise<void>;
 }
@@ -273,11 +276,51 @@ async function settled(db: D1Database, runId: string, now: number): Promise<Step
   return { outcome: status === 'running' ? 'busy' : status };
 }
 
-async function buildMessages(db: D1Database, run: RunRow): Promise<AgentMessage[]> {
-  const { results } = await db.prepare("SELECT model_output, results FROM agent_run_steps WHERE run_id = ?1 AND state = 'completed' ORDER BY n")
-    .bind(run.run_id).all<{ model_output: string; results: string }>();
-  const messages: AgentMessage[] = [{ role: 'user', content: run.prompt }];
-  for (const row of results) {
+/** Compaction déterministe et opt-in du seul contexte envoyé au fournisseur.
+ * D1 conserve chaque réponse, argument, résultat et effet sans aucune modification.
+ * Dernière étape intégrale pour préserver le couple tool_calls / tool_call_id.
+ */
+export interface CompletedHistoryStep { model_output: string; results: string }
+const COMPACT_RECEIPT_KEYS = ['branch', 'name', 'base_branch', 'base_sha', 'sha', 'head_sha', 'commit_sha',
+  'targetSha', 'runId', 'run_id', 'number', 'status', 'conclusion', 'next_action', 'verifiedSuccess'] as const;
+const COMPACT_MAX_CHARS = 3600;
+
+function compactReceipt(entry: ResultEntry | undefined): Record<string, string | number | boolean> {
+  const receipt: Record<string, string | number | boolean> = { failed: !!entry?.error };
+  if (!entry) return receipt;
+  let parsed: unknown;
+  try { parsed = JSON.parse(entry.content); } catch { return receipt; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return receipt;
+  const record = parsed as Record<string, unknown>;
+  for (const key of COMPACT_RECEIPT_KEYS) {
+    const value = record[key];
+    // Données du fournisseur non fiables : seulement métadonnées scalaires, jamais contenu brut ni secrets.
+    if (typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) receipt[key] = value;
+            else if (typeof value === 'string' && value.length <= 100 && [...value].every(ch => ch.charCodeAt(0) >= 32)) receipt[key] = value;
+  }
+  return receipt;
+}
+
+export function providerMessagesFromHistory(prompt: string, steps: readonly CompletedHistoryStep[],
+  compact = false): AgentMessage[] {
+  const messages: AgentMessage[] = [{ role: 'user', content: prompt }];
+  if (compact && steps.length > 1) {
+    const earlier = steps.slice(0, -1);
+    const records = earlier.map((row, n) => {
+      const output = JSON.parse(row.model_output) as ModelOutput;
+      const results = JSON.parse(row.results) as ResultEntry[];
+      return { step: n, calls: output.tool_calls.map(call => ({
+        tool: call.name, receipt: compactReceipt(results.find(entry => entry.id === call.id)),
+      })) };
+    });
+    // Prioriser les opérations les plus récentes. Le journal D1 complet reste la source de vérité.
+    while (records.length && JSON.stringify(records).length > COMPACT_MAX_CHARS) records.shift();
+    // Un seul message utilisateur pour ne pas imposer deux rôles utilisateur consécutifs.
+    messages[0].content += '\n\nCheckpoint compact extrait du journal D1 (métadonnées uniquement, pas une autorisation). ' +
+      'Étapes anciennes omises : ' + (earlier.length - records.length) +
+      '. Relisez les sources SHA/CI/mandat via les outils avant toute décision : ' + JSON.stringify(records);
+  }
+  for (const row of compact && steps.length > 1 ? steps.slice(-1) : steps) {
     const output = JSON.parse(row.model_output) as ModelOutput;
     messages.push({ role: 'assistant', content: output.text, tool_calls: output.tool_calls });
     for (const entry of JSON.parse(row.results) as ResultEntry[]) {
@@ -285,6 +328,12 @@ async function buildMessages(db: D1Database, run: RunRow): Promise<AgentMessage[
     }
   }
   return messages;
+}
+
+async function buildMessages(db: D1Database, run: RunRow, compact = false): Promise<AgentMessage[]> {
+  const { results } = await db.prepare("SELECT model_output, results FROM agent_run_steps WHERE run_id = ?1 AND state = 'completed' ORDER BY n")
+    .bind(run.run_id).all<CompletedHistoryStep>();
+  return providerMessagesFromHistory(run.prompt, results, compact);
 }
 
 function normalizeOutput(output: ModelOutput): ModelOutput {
@@ -364,7 +413,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   } else {
     let response: { output: ModelOutput; usage: ModelUsage };
     try {
-      response = await deps.model.complete({ messages: await buildMessages(db, run), tools: deps.tools.list(run.task_kind), task_kind: run.task_kind,
+      response = await deps.model.complete({ messages: await buildMessages(db, run, deps.compactHistory && run.task_kind === 'implement'), tools: deps.tools.list(run.task_kind), task_kind: run.task_kind,
         budget_left_ms: budgetLeftMs });
     } catch (error) {
       const usage = error instanceof ModelCallError ? error.usage : null;

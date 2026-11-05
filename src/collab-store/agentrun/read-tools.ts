@@ -65,7 +65,8 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
   { name: 'store_context', description: 'Contexte du cycle de cette exécution : phase, révision et tâches où votre participant a un rôle.',
     parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'store_delta', description: 'Événements du cycle après since_seq (au plus 50), masqués selon votre participant.',
-    parameters: { type: 'object', properties: { since_seq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50 } },
+    parameters: { type: 'object', properties: { since_seq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50 },
+      full: { type: 'boolean', description: 'Demander les événements complets si une preuve exacte est nécessaire (opt-in).' } },
       required: ['since_seq'], additionalProperties: false } },
   { name: 'github_read_file', description: 'Lire un fichier texte du dépôt autorisé à une référence (branche ou SHA).',
     parameters: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' } }, required: ['path', 'ref'], additionalProperties: false } },
@@ -141,6 +142,8 @@ export interface ReadToolHostOptions {
   githubWrites?: { writes: GitHubWrites; baseBranch: string; s7?: S7Options } | null;
   /** CC-7 L3 : lectures de continuité (store_memory, store_continuity) et registre complet dans store_context. Absent = inchangé. */
   continuity?: boolean;
+  /** CC8 : opt-in. Contexte focalisé sur la tâche pour implement seulement; tout reste accessible via full:true. */
+  contextCompaction?: boolean;
   /** CC-7 L5b (S10) : store_verdict (verdicts contrôlés serveur) pour les kinds review et test ; absent = aucun verdict. */
   verdicts?: boolean;
   /** CC-7 L6b : contrôles CI exigés par nom pour store_verdict (absent = tous les contrôles présents verts). */
@@ -153,7 +156,7 @@ export interface ReadToolHostOptions {
   research?: ResearchToolsOptions | null;
 }
 
-interface RunScope { cycle_id: string; participant_id: string }
+interface RunScope { cycle_id: string; participant_id: string; task_id: string; task_kind: string }
 
 function intArg(args: Record<string, unknown>, name: string, min: number, max: number, fallback?: number): number {
   const value = args[name] ?? fallback;
@@ -206,7 +209,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   const readNames = (taskKind: string): readonly string[] =>
     [...allowed(taskKind), ...continuityNames(taskKind), ...(research ? research.reads(taskKind) : [])];
   async function scope(runId: string): Promise<RunScope> {
-    const run = await options.db.prepare('SELECT cycle_id, participant_id FROM agent_runs WHERE run_id = ?1').bind(runId).first<RunScope>();
+    const run = await options.db.prepare('SELECT cycle_id, participant_id, task_id, task_kind FROM agent_runs WHERE run_id = ?1').bind(runId).first<RunScope>();
     if (!run) throw new ToolRefused('unknown_run');
     return run;
   }
@@ -219,12 +222,23 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     if (contributions && call.name === 'store_contribute') return contributions.execute(call, ctx);
     if (modelChoice && call.name === 'store_choose_model') return modelChoice.execute(call, ctx);
     if (research && RESEARCH_TOOL_SCHEMAS.some(schema => schema.name === call.name)) return research.execute(call, ctx);
-    const { cycle_id, participant_id } = await scope(ctx.run_id);
+    const { cycle_id, participant_id, task_id, task_kind } = await scope(ctx.run_id);
     const args = call.args ?? {};
     const store = new CollabStore(options.db);
     switch (call.name as ReadToolName) {
       case 'store_context': {
         const mine = await store.getContext(cycle_id, participant_id);
+        if (options.contextCompaction && task_kind === 'implement' && task_id) {
+          const current = mine.tasks.find(task => task.task_id === task_id);
+          if (!current) throw new ToolRefused('api_task_context_not_visible');
+          const last = await options.db.prepare('SELECT MAX(seq) AS latest FROM events WHERE cycle_id = ?1')
+            .bind(cycle_id).first<{ latest: number | null }>();
+          const latestSeq = last?.latest ?? 0;
+          return { cycle_id, phase: mine.phase, status: mine.status, revision: mine.revision,
+            task: current, scope: 'task-first', latest_seq: latestSeq,
+            recent_since_seq: Math.max(0, latestSeq - 50),
+            note: 'Lire store_delta avec since_seq=recent_since_seq puis next_since_seq ; full:true pour les preuves exactes.' };
+        }
         if (!options.continuity) return mine;
         // E1-E3 (l8) : le registre complet du cycle, en lecture, pas seulement les tâches où l'on a un rôle.
         const all = await store.getContext(cycle_id);
@@ -236,6 +250,15 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const since = intArg(args, 'since_seq', 0, Number.MAX_SAFE_INTEGER);
         const limit = intArg(args, 'limit', 1, 50, 50);
         const { events, hasMore } = await store.getDelta(cycle_id, since, limit, participant_id);
+        if (options.contextCompaction && task_kind === 'implement' && task_id && args.full !== true) {
+          const globalKinds = new Set(['owner.decision', 'owner.request', 'round.add', 'phase.advance', 'phase.adjust']);
+          const filtered = events.filter(event => globalKinds.has(event.type) || event.payload_json.includes(task_id));
+          return { has_more: hasMore, next_since_seq: events.length ? events[events.length - 1].seq : since,
+            filtered_for: task_id, omitted_in_page: events.length - filtered.length,
+            events: filtered.map(event => ({ seq: event.seq, type: event.type, participant_id: event.participant_id,
+              payload: event.payload_json.length <= 1400 ? event.payload_json
+                : JSON.stringify({ truncated: true, preview: event.payload_json.slice(0, 1100) }) })) };
+        }
         return { has_more: hasMore, events: events.map(event => ({ seq: event.seq, type: event.type, participant_id: event.participant_id, payload: event.payload_json })) };
       }
       case 'github_read_file': {

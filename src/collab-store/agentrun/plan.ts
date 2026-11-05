@@ -222,7 +222,7 @@ export function taskPrompt(kind: TaskWakeKind, cycleId: string, taskId: string, 
     const object = subject === 'none' ? '' : ' Objet de la décision : ' + subject + '.';
     return [
       'Tâche ' + taskId + ' du cycle ' + cycleId + ' : elle attend votre implémentation.' + object,
-      'Lisez le contexte avec store_context et store_delta, puis les sources avec github_read_file.',
+      'Lisez le mandat actuel avec store_context (task-first si mode compact). Consultez store_delta depuis recent_since_seq puis next_since_seq pour les derniers événements. Pour toute preuve exacte, utilisez store_delta avec full:true et relisez les fichiers avec github_read_file.',
       'Appelez github_write_scope pour connaître le mandat exact, son nom de branche et base_sha (SHA de commit de la base, PAS SHA de blob). Utilisez le name et le base_sha fournis pour github_create_branch ; ne devinez aucun SHA. Après chaque commit, github_run_checks puis github_check_result au SHA courant ; attendez si pending, corrigez si rouge, trois corrections maximum puis escalade. CI verte ne remplace pas D12.',
       'Travaillez sur VOTRE branche API : github_create_branch au besoin, github_commit_files avec expected_head_sha lu avant chaque commit.',
       'Ouvrez ensuite la PR prête à la revue avec github_open_pr : jamais de fusion, d’approbation ni de résolution de conflit.',

@@ -36,6 +36,8 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   AGENT_RUN_DB_BINDING?: string;
   /** 7c-1 : modèle réel `workers-ai:@cf/vendor/model` ; absent = modèle simulé (défaut, rien de réel). */
   AGENT_RUN_MODEL?: string;
+  /** CC8 : activer la compaction du contexte fournisseur sur cc3-test seulement, opt-in. */
+  AGENT_RUN_CONTEXT_COMPACTION?: string;
   /** 7c-1 : dépôt unique lisible par les exécutions (ex. rfkevin/github-mcp) ; absent = aucun outil GitHub. */
   AGENT_RUN_REPOSITORY?: string;
   /** 7c-3 : « true » pour injecter les écritures GitHub (branche API de l'agent, PR brouillon) ; absent = aucune. */
@@ -148,11 +150,12 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   const maxOutputTokensFor = (kind: string) => resolveEffectiveMaxTokens({ task_kind: kind });
   // CC-7 L6b : store_verdict exige les contrôles CI nommés (S10 « CI 4/4 »).
   const requiredChecks = parseRequiredChecks(env.AGENT_RUN_REQUIRED_CHECKS);
-  return (_runId, stepDb) => {
+  const makeEngine: EngineFactory = (_runId, stepDb) => {
     const db = stepDb ?? fallbackDb;
     // CC-7 L5b (S10) : store_verdict proposé aux kinds review/test dès que les lectures GitHub existent.
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
       verdicts: github !== null, requiredChecks, contributions: true, continuity: continuityEnabled(env),
+      contextCompaction: env.AGENT_RUN_CONTEXT_COMPACTION === 'true',
       // CC-7 L9b : l'agent choisit lui-même son modèle et sa réflexion quand l'aiguillage par participant est posé.
       modelChoice: routed ? env as unknown as PolicyEnv : null,
       // CC-7 L11 : chercheurs en tournante (porte AGENT_RUN_RESEARCH, éteinte par défaut).
@@ -198,6 +201,8 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
         schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
     return { model, tools, now };
   };
+  return (runId, stepDb) => ({ ...makeEngine(runId, stepDb),
+    compactHistory: env.AGENT_RUN_CONTEXT_COMPACTION === 'true' });
 }
 
 /** Branche de base du canal API : valeur valide, jamais main ni master, sinon le défaut figé en code. */

@@ -49,6 +49,14 @@ Le planificateur historique peut encore réveiller une tâche implement lorsque 
 
 Avant essai réel : S6 intégré, contrôleur CI valide, capacité et permissions constatées, pause Gemini levée explicitement par Kevin. Aucun changement de configuration, secret, budget ou pause n'est inclus. Les essais doivent prouver rouge→verte sans humain et trois échecs→escalade avant clôture S7.
 
+### CC8 — optimisation contexte (opt-in, non activée par cette PR)
+
+La variable `AGENT_RUN_CONTEXT_COMPACTION=true` active deux vues réduites **uniquement pour les tâches API implement** : `store_context` renvoie le mandat courant (task-first), le curseur des événements récents, sans l'inventaire de toutes les tâches ; `store_delta` filtre les événements de la tâche et quelques décisions globales, avec `next_since_seq` pour paginer. `store_delta(full:true)` permet de récupérer les événements intégraux lorsque la preuve exige leur texte exact ; une charge utile trop longue en mode réduit est explicitement marquée `truncated`.
+
+Le moteur n'envoie plus systématiquement toutes les étapes anciennes au fournisseur : il forme un checkpoint déterministe de métadonnées borné à 3600 caractères et garde **la dernière étape outil/résultat intacte**, avec appariement des identifiants d'appels. Toutes les décisions, sorties, résultats, effets, SHA, engagements et preuves restent **intacts en D1** ; après interruption, la vue est reconstruite depuis le journal, sans résumé LLM ni changement de la politique d'écriture. En l'absence du flag, comportement historique inchangé, y compris `store_context`, `store_delta`, et l'historique du fournisseur. Les plafonds de jetons, budgets payants, pauses, autorisations GitHub, fenêtres temporelles et règles D12 restent inchangés.
+
+Ce lot traite la répétition des résultats ; il ne garantit pas encore un plafond strict pré-appel et ne justifie aucune hausse de `TASK_KIND_MAX_TOKENS` sans mesure P95 post-optimisation. Le mode réduit exige une validation D12 indépendante et un essai piloté dans `cc3-test` avant activation.
+
 ### Points du plan à préserver pour la coordination
 
 S6 : secours puis bêta observée pendant >=20 exécutions ET >=48h, puis principal par /owner (rectification du cadrage ambigu1457 transmise à Vibe). S8a ne clôture pas S8 : restent escalade des blocages24h, demande de secours coordinateur et observation48h. S9 exige au moins trois tâches par type, mêmes entrées chat/API, jugement aveugle indépendant et seuil80%. S10 ne retire un chemin qu'après preuve du remplaçant. S11 reste synchronisation master/intégration, accords et promotion finale Kevin.
