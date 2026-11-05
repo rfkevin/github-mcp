@@ -156,7 +156,7 @@ export interface ReadToolHostOptions {
   research?: ResearchToolsOptions | null;
 }
 
-interface RunScope { cycle_id: string; participant_id: string }
+interface RunScope { cycle_id: string; participant_id: string; task_id: string; task_kind: string }
 
 function intArg(args: Record<string, unknown>, name: string, min: number, max: number, fallback?: number): number {
   const value = args[name] ?? fallback;
