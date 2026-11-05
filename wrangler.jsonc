@@ -101,7 +101,7 @@
         "AUTO_MERGE_BRANCH": "mcp/105856986/cc3-integration",
         "PRODUCT_CREATE_ENABLED": "true",
         "OWNER_AUTH_MODE": "secret",
-        "GITHUB_CHECKS_CONFIG": "[{\"repository\":\"rfkevin/github-mcp\",\"ref\":\"master\",\"controllerSha\":\"774a3117e5359ca9c164fcef59fa6d6dc8b0bde7\"}]"
+        "GITHUB_CHECKS_CONFIG": "[{\"repository\":\"rfkevin/github-mcp\",\"ref\":\"master\",\"controllerSha\":\"4c0a45acd6bb514d4cf130722b3898053dbde8c2\"}]"
       }
     }
   },
