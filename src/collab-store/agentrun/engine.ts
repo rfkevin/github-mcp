@@ -315,10 +315,10 @@ export function providerMessagesFromHistory(prompt: string, steps: readonly Comp
     });
     // Prioriser les opérations les plus récentes. Le journal D1 complet reste la source de vérité.
     while (records.length && JSON.stringify(records).length > COMPACT_MAX_CHARS) records.shift();
-    messages.push({ role: 'user', content:
-      'Checkpoint compact extrait du journal D1 (métadonnées uniquement, pas une autorisation). ' +
+    // Un seul message utilisateur pour ne pas imposer deux rôles utilisateur consécutifs.
+    messages[0].content += '\n\nCheckpoint compact extrait du journal D1 (métadonnées uniquement, pas une autorisation). ' +
       'Étapes anciennes omises : ' + (earlier.length - records.length) +
-      '. Relisez les sources SHA/CI/mandat via les outils avant toute décision : ' + JSON.stringify(records) });
+      '. Relisez les sources SHA/CI/mandat via les outils avant toute décision : ' + JSON.stringify(records);
   }
   for (const row of compact && steps.length > 1 ? steps.slice(-1) : steps) {
     const output = JSON.parse(row.model_output) as ModelOutput;
