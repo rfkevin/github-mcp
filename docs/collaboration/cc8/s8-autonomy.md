@@ -71,6 +71,8 @@ non déclaré. Une activité du coordinateur est un événement, pas une preuve 
 qualité de son action. Les déclarations de disponibilité d'un modèle ne sont pas
 acceptées comme validation indépendante.
 
-Relecture Gemini provisoire ; Kevin pourra désigner Muse ou un autre modèle
-indépendant si Gemini est indisponible. Grok est testeur. L'auteur ne s'auto-valide
-pas ; aucune fusion ni activation live par ce lot.
+Relecture Vibe, désigné par Kevin le 2026-11-04 en remplacement de Gemini
+(carte de tâche S8b, store seq 1513). Grok est testeur ; GPT-6 reste auteur.
+Tout changement de head ou de base exige le renouvellement des deux verdicts
+indépendants au même couple SHA exact. L'auteur ne s'auto-valide pas ; aucune
+fusion ni activation live par ce lot.
