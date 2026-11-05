@@ -296,7 +296,7 @@ function compactReceipt(entry: ResultEntry | undefined): Record<string, string |
     const value = record[key];
     // Données du fournisseur non fiables : seulement métadonnées scalaires, jamais contenu brut ni secrets.
     if (typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) receipt[key] = value;
-        else if (typeof value === 'string' && value.length <= 100 && [...value].every(ch => ch.charCodeAt(0) >= 32)) receipt[key] = value;
+            else if (typeof value === 'string' && value.length <= 100 && [...value].every(ch => ch.charCodeAt(0) >= 32)) receipt[key] = value;
   }
   return receipt;
 }
