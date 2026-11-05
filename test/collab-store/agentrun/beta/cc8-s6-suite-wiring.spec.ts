@@ -244,13 +244,13 @@ describe('CC-8 S6 suite — comptage des appels réellement routés (provider)',
 
   it('l’échec PERMANENT du maillon suivi est compté (ok=0) avant la remontée', async () => {
     const { participant, runId } = await wiredRun('2');
-    await expect(routedModel(runId, zaiFetchCandidatePermanent).complete(message)).rejects.toThrow('zai refus permanent');
+    await expect(routedModel(runId, zaiFetchCandidatePermanent().complete(message)).rejects.toThrow('zai refus permanent');
     expect(await countedRuns(participant)).toEqual([{ run_id: runId, ok: 0 }]);
   });
 
   it('une sonde en échec PERMANENT ne compte JAMAIS (diagnostic, pas exécution)', async () => {
     const { participant, runId } = await wiredRun('3');
-    await expect(routedModel(runId, zaiFetchCandidatePermanent).complete({ ...message, task_kind: 'probe' })).rejects.toThrow('zai refus permanent');
+    await expect(routedModel(runId, zaiFetchCandidatePermanent().complete({ ...message, task_kind: 'probe' })).rejects.toThrow('zai refus permanent');
     expect(await countedRuns(participant)).toEqual([]);
   });
 });
