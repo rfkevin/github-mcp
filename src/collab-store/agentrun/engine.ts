@@ -99,9 +99,13 @@ export interface EngineDeps {
   /** CC8: opt-in de compaction des anciens résultats pour le seul contexte fournisseur.
    * Les étapes et effets persistés D1 demeurent intacts (audit, reprise, fencing). */
   compactHistory?: boolean;
+  /** Mandats GitHub de réussite posés par le propriétaire, jamais par le modèle. */
+  githubCompletionGrants?: readonly GitHubCompletionGrant[];
   /** Points de crash injectables pour les tests (lever une exception = coupure). */
   probe?: (point: 'after_model' | 'before_effect' | 'after_effect' | 'after_effect_recorded') => void | Promise<void>;
 }
+
+export interface GitHubCompletionGrant { cycle: string; participant: string; task: string; branch: string }
 
 export type RunStatus = 'running' | 'completed' | 'failed' | 'halted' | 'preempted' | 'needs_reconcile'
   | 'step_limit' | 'token_limit' | 'cost_limit' | 'deadline';
@@ -109,7 +113,8 @@ export type RunStatus = 'running' | 'completed' | 'failed' | 'halted' | 'preempt
 export interface StepResult { outcome: RunStatus | 'stepped' | 'busy' | 'retry' | 'unknown_run' }
 
 interface RunRow {
-  run_id: string; lease_key: string; generation: number; task_kind: string; status: RunStatus;
+  run_id: string; cycle_id: string; participant_id: string; task_id: string;
+  lease_key: string; generation: number; task_kind: string; status: RunStatus;
   steps_done: number; prompt: string;
   /** CC-8 S1b-2 : deadline d'exécution (secondes) — borne le budget d'appels modèle de l'étape. */
   deadline_at: number;
@@ -245,7 +250,7 @@ export async function createRun(db: D1Database, input: CreateRunInput): Promise<
 // ---------------------------------------------------------------- étape
 
 async function getRun(db: D1Database, runId: string): Promise<RunRow | null> {
-  return db.prepare('SELECT run_id, lease_key, generation, task_kind, status, steps_done, prompt, deadline_at FROM agent_runs WHERE run_id = ?1')
+  return db.prepare('SELECT run_id, cycle_id, participant_id, task_id, lease_key, generation, task_kind, status, steps_done, prompt, deadline_at FROM agent_runs WHERE run_id = ?1')
     .bind(runId).first<RunRow>();
 }
 
@@ -274,6 +279,63 @@ async function stopAs(db: D1Database, runId: string, status: 'failed' | 'needs_r
 async function settled(db: D1Database, runId: string, now: number): Promise<StepResult> {
   const status = await settle(db, runId, now);
   return { outcome: status === 'running' ? 'busy' : status };
+}
+
+/** CC8 S7 : succès attesté UNIQUEMENT par les effets persistés et les résultats GitHub.
+ * Une sortie texte du modèle ou un tool refusé ne constitue pas une preuve.
+ */
+export interface GithubCompletionEffect { tool: string; status: string; result: string | null }
+const COMPLETION_SHA = /^[a-f0-9]{40}$/;
+
+function completedPayload(effect: GithubCompletionEffect): Record<string, unknown> | null {
+  if (effect.status !== 'completed' || !effect.result) return null;
+  try {
+    const value: unknown = JSON.parse(effect.result);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown> : null;
+  } catch { return null; }
+}
+
+/** Les indices respectent l'ordre D1 (n,idx), aucune preuve externe n'est simulée. */
+export function githubCompletionSatisfied(effects: readonly GithubCompletionEffect[], branch: string): boolean {
+  const entries = effects.map(e => ({ tool: e.tool, value: completedPayload(e) }));
+  const scope = entries.findIndex(e => e.tool === 'github_write_scope' && e.value?.branch === branch);
+  if (scope < 0) return false;
+  const created = entries.findIndex((e, i) => i > scope && e.tool === 'github_create_branch'
+    && e.value?.branch === branch && typeof e.value.sha === 'string' && COMPLETION_SHA.test(e.value.sha));
+  if (created < 0) return false;
+  for (let k = created + 1; k < entries.length; k++) {
+    const commit = entries[k];
+    const sha = commit.value?.commit_sha;
+    if (!['github_commit_files', 'github_replace_text'].includes(commit.tool)
+      || commit.value?.branch !== branch || typeof sha !== 'string' || !COMPLETION_SHA.test(sha)) continue;
+    const started = entries.findIndex((e, i) => i > k && e.tool === 'github_run_checks'
+      && e.value?.targetSha === sha && typeof e.value.runId === 'number'
+      && Number.isSafeInteger(e.value.runId) && e.value.runId > 0);
+    if (started < 0) continue;
+    const checked = entries.findIndex((e, i) => i > started && e.tool === 'github_check_result'
+      && e.value?.targetSha === sha && e.value?.verifiedSuccess === true
+      && e.value?.status === 'completed');
+    if (checked < 0) continue;
+    const pr = entries.findIndex((e, i) => i > checked && e.tool === 'github_open_pr'
+      && e.value?.branch === branch && e.value?.head_sha === sha
+      && typeof e.value.number === 'number' && Number.isSafeInteger(e.value.number)
+      && e.value.number > 0 && e.value?.draft === false);
+    if (pr >= 0) return true;
+  }
+  return false;
+}
+
+async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps): Promise<boolean> {
+  if (run.task_kind !== 'implement') return true;
+  const grants = (deps.githubCompletionGrants ?? []).filter(g => g.cycle === run.cycle_id
+    && g.task === run.task_id && g.participant === run.participant_id);
+  if (grants.length === 0) return true; // Hors mandat S7, comportement historique.
+  if (grants.length !== 1) return false; // Ambiguïté = pas de succès.
+  const { results } = await db.prepare(
+    'SELECT tool, status, result FROM agent_run_effects WHERE run_id = ?1 ORDER BY n, idx',
+  ).bind(run.run_id).all<GithubCompletionEffect>();
+  return githubCompletionSatisfied(results, grants[0].branch);
 }
 
 /** Compaction déterministe et opt-in du seul contexte envoyé au fournisseur.
