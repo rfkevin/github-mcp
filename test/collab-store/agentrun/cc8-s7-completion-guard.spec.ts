@@ -16,7 +16,7 @@ async function fixture(kind: string = 'implement', maxSteps = 10) {
   const id = ++counter, cycle = 's7-guard-test-' + id + '-' + Date.now(), task = 'S7-live-vibe';
   const participant = 'vibe', runId = 's7-guard-' + id + '-' + Date.now();
   expect((await createRun(db, { runId, cycleId: cycle, participantId: participant, taskId: task,
-    taskKind: kind, prompt: 'Créer la branche, commit, CI puis PR.', maxSteps: 10, maxTokens: 100000,
+    taskKind: kind, prompt: 'Créer la branche, commit, CI puis PR.', maxSteps, maxTokens: 100000,
     maxCostCents: 0, deadlineAt: NOW + 2000, now: NOW })).created).toBe(true);
   return { runId, completion: [{ cycle, task, participant, branch: BRANCH }] };
 }
