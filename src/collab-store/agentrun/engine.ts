@@ -413,7 +413,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   } else {
     let response: { output: ModelOutput; usage: ModelUsage };
     try {
-      response = await deps.model.complete({ messages: await buildMessages(db, run, deps.compactHistory), tools: deps.tools.list(run.task_kind), task_kind: run.task_kind,
+      response = await deps.model.complete({ messages: await buildMessages(db, run, deps.compactHistory && run.task_kind === 'implement'), tools: deps.tools.list(run.task_kind), task_kind: run.task_kind,
         budget_left_ms: budgetLeftMs });
     } catch (error) {
       const usage = error instanceof ModelCallError ? error.usage : null;
