@@ -557,8 +557,14 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   }
 
   // 3. Checkpoint : étape terminée et exécution avancée dans le même lot, sous la garde LIVE.
-  const final = output.tool_calls.length === 0 ? 1 : 0;
-  const verified = !final || await completionVerified(db, run, deps);
+  // Une mission S7 disposant déjà de TOUTES les preuves est complète dès l'effet
+  // github_open_pr : 6 étapes dépendantes suffisent, sans 7e appel final au modèle.
+  const guarded = run.task_kind === 'implement' && (deps.githubCompletionGrants ?? []).some(g =>
+    g.cycle === run.cycle_id && g.task === run.task_id && g.participant === run.participant_id);
+  const provenAtPr = guarded && output.tool_calls.some(call => call.name === 'github_open_pr')
+    && await completionVerified(db, run, deps);
+  const final = output.tool_calls.length === 0 || provenAtPr ? 1 : 0;
+  const verified = provenAtPr || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true);
   const completionStatus = verified ? 'completed' : 'failed';
   const completionReason = verified ? 'final' : 'incomplete_final:github_evidence_missing';
   const [done] = await db.batch([
