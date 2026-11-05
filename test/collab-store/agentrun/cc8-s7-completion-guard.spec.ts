@@ -149,7 +149,7 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
     expect((await runStep(db, f.runId, resumed)).outcome).toBe('stepped');
     expect(await drain(f.runId, resumed, 8)).toBe('completed');
     expect(writes).toBe(1);
-    expect(model.calls()).toBe(pipeline.length);
+    expect(model.calls()).toBe(pipeline.length - 1); // PR prouvee sans dernier final texte
   });
 
   it('T6/T7: review et implement sans mandat continuent à utiliser la fin historique', async () => {
