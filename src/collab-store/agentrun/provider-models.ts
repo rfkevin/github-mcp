@@ -32,6 +32,32 @@ import { GEMINI_PROTOCOL, geminiGenerateUrl } from './gemini-model';
 import { createOpenAiPaidModel } from './openai-paid-model';
 import { createPaidWorkersAiModel, parsePaidWorkersAiRef, type ParticipantEnvelope } from './paid-model';
 import { createPaidProtocolModel } from './paid-protocol';
+// CC-8 S6 (raccordement suite) : comptage bêta des appels réels du maillon suivi.
+import { recordBetaExecution } from './beta';
+
+/**
+ * CC-8 S6 (raccordement suite) : compte un appel RÉEL du maillon suivi dans son
+ * suivi de bêta (une ligne par run, idempotent). Les sondes sont exclues à
+ * l'appelant (diagnostic de ré-qualification, jamais une exécution productive —
+ * une boucle de sondes ne franchirait pas les paliers d'avance). Best-effort :
+ * une panne de ce comptage n'échoue jamais l'appel servi ; il est distinct du
+ * cumul global agent_model_calls et du coupe-circuit S1b-2, inchangés.
+ */
+export async function recordBetaExecutionForCall(db: D1Database, input: {
+  readonly participant_id: string;
+  readonly ref: string;
+  readonly run_id: string;
+  readonly at: number;
+  readonly ok: boolean;
+  readonly latency_ms: number;
+}): Promise<void> {
+  try {
+    await recordBetaExecution(db, {
+      participant_id: input.participant_id, ref: input.ref, run_id: input.run_id,
+      at: input.at, ok: input.ok, latency_ms: input.latency_ms,
+    });
+  } catch { /* comptage bêta best-effort : jamais bloquant pour l'appel servi */ }
+}
 import { createWorkersAiModel, type ToolSchema } from './workers-ai-model';
 import { effortMaxTokens, effortOptions, type Effort } from './effort';
 import { modelFailureKind } from './model-failure';
@@ -351,6 +377,9 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           } else {
             await recordModelCallWithBreaker(ctx.db, run.participant_id, candidate.ref,
               { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
+            // CC-8 S6 (suite) : exécution réelle du maillon — comptée pour son suivi de bêta.
+            await recordBetaExecutionForCall(ctx.db, { participant_id: run.participant_id, ref: candidate.ref,
+              run_id: ctx.runId, at: Math.floor(now.getTime() / 1000), ok: true, latency_ms: Date.now() - started });
           }
           return result;
         } catch (error) {
@@ -363,6 +392,14 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
             await recordModelCall(ctx.db, candidate.ref, outcome);
           } else {
             await recordModelCallWithBreaker(ctx.db, run.participant_id, candidate.ref, outcome);
+          }
+          // CC-8 S6 (suite) : l’échec réel d’un maillon compte AUSSI (taux d’échec du retour
+          // arrière) — succès, échec transitoire ET permanent ; jamais pour une sonde, déjà
+          // exclue du comptage productif. AVANT le throw permanent (relectures #265 : une
+          // bêta en panne ne doit jamais paraître saine) ; best-effort, sans avaler l’erreur.
+          if (!isProbe) {
+            await recordBetaExecutionForCall(ctx.db, { participant_id: run.participant_id, ref: candidate.ref,
+              run_id: ctx.runId, at: outcome.at, ok: false, latency_ms: outcome.latencyMs });
           }
           if (!transient) throw error;
         }

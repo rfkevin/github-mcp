@@ -10,6 +10,8 @@ import type { BudgetEnvelope } from './automation';
 import type { CapabilityRow } from '../executors/registry';
 import type { ImportedStateSummary } from './state-import';
 import { OWNER_TRIAL_INSTRUCTIONS, OWNER_TRIAL_MAX_DATA } from './trials';
+// CC-8 S6 (suite) : vue des suivis de bêta.
+import type { BetaTrackMetrics } from '../agentrun/beta';
 
 export const OWNER_PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
@@ -105,6 +107,8 @@ export interface DashboardData {
   productEnabled?: boolean;
   /** CC-Owner V2 L4 : cycles de travail ouverts et clos (bandeau de synthèse, lecture seule). */
   cycles?: { open: number; closed: number };
+  /** CC-8 S6 (suite) : suivis de bêta des chaînes de modèles (lecture seule). */
+  betaTracks?: BetaTrackMetrics[];
   /** CC-5 l7e : dernières exécutions API (lecture seule, tous participants). */
   agentRuns?: Array<{
     run_id: string; cycle_id: string; participant_id: string; task_id: string; task_kind: string;
@@ -141,6 +145,7 @@ export function dashboardPage(config: OwnerChannelConfig, data: DashboardData): 
     + classifiedSection(data.classified ?? [], secret)
     + relaySection(data.relay ?? [])
     + agentRunsSection(data.agentRuns ?? [])
+    + betaSection(data.betaTracks ?? [])
     + automationSection(data.halted ?? false, data.budget, secret)
     + coordinatorSection(data.coordinators ?? [])
     + '<h2 id="mandate">Mandat coordinateur par cycle (CC-5)</h2>'
@@ -273,7 +278,7 @@ function statusBanner(data: DashboardData): string {
 function ownerNav(): string {
   const links: Array<[string, string]> = [
     ['#pending', 'Demandes'], ['#classified', 'Classées'], ['#relay', 'Relais'],
-    ['#agent-runs', 'Exécutions API'],
+    ['#agent-runs', 'Exécutions API'], ['#beta', 'Bêta'],
     ['#automation', 'Automatisation'], ['#coordinators', 'Coordinateurs'], ['#mandate', 'Mandat'],
     ['#close', 'Clôture'], ['#executors', 'Exécuteurs'], ['#participants', 'Participants'],
     ['#families', 'Identités'], ['#clients', 'Clients'], ['#imports', 'Imports'], ['#phases', 'Phases'], ['#product', 'Nouveau produit'],
@@ -330,6 +335,23 @@ function agentRunsSection(rows: NonNullable<DashboardData['agentRuns']>): string
       ? '<table><tr><th>Run / cycle</th><th>Tâche</th><th>Statut</th><th>Étapes · jetons · coût</th><th>Bail</th><th>Résumé</th></tr>'
         + body + '</table>'
       : '<p class="note">Aucune exécution enregistrée.</p>');
+}
+
+function betaSection(rows: NonNullable<DashboardData['betaTracks']>): string {
+  const pct = (rate: number | null) => rate === null ? '—' : (rate * 100).toFixed(1) + ' % échecs';
+  const body = rows.map(row => '<tr><td><code>' + escapeHtml(row.participant_id) + '</code><br>'
+    + escapeHtml(row.candidate_ref) + '</td><td>' + escapeHtml(row.status) + ' · suivi v' + row.track_version
+    + ' · chaîne v' + row.chain_version + '</td><td>'
+    + row.secours_metrics.executions + ' ex · ' + pct(row.secours_metrics.failure_rate) + '</td><td>'
+    + row.beta_metrics.executions + ' ex · ' + pct(row.beta_metrics.failure_rate) + '</td><td>'
+    + (row.advance_ready ? 'atteints' : escapeHtml(row.advance_blockers.join(' ; ') || '—')) + '</td><td>'
+    + (row.rollback_broken ? 'SEUILS CASSÉS' : 'saine') + '</td></tr>').join('');
+  return '<h2 id="beta">Suivis de bêta (' + rows.length + ')</h2>'
+    + '<p class="note">Lecture seule (CC-8 S6). L’avance secours → bêta et le retour arrière automatique passent par le passage du planificateur ; la promotion principal reste un acte owner (fenêtre ≥ 20 exécutions et ≥ 48 h). Aucun nouveau formulaire POST.</p>'
+    + (body
+      ? '<table><tr><th>Participant / candidate</th><th>Suivi</th><th>Fenêtre secours</th><th>Fenêtre bêta</th><th>Paliers d’avance</th><th>Santé bêta</th></tr>'
+        + body + '</table>'
+      : '<p class="note">Aucun suivi de bêta ouvert.</p>');
 }
 
 function coordinatorSection(rows: Array<{ participant_id: string; display_label: string; event_seq: number | null }>): string {
