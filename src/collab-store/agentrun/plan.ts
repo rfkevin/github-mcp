@@ -439,7 +439,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           return (await createRun(db, {
             runId: ids[attempt - 1], cycleId, participantId,
             taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
-            maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens(kind), maxCostCents: taskKindCostCents(env, kind),
+            maxSteps: taskKindMaxSteps(kind), maxTokens: taskKindMaxTokens(kind), maxCostCents: taskKindCostCents(env, kind),
             deadlineAt: input.now + runDeadlineS(kind), now: input.now,
           })).created;
         } });
