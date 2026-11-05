@@ -54,6 +54,15 @@ async function fixture() {
 }
 
 describe('CC8 S7 — permissions, edits and correction loop',()=>{
+  it('exposes the current base commit SHA and refuses an unavailable or invalid base head',async()=>{
+    const f=await fixture();
+    const call={id:'scope',name:'github_write_scope',args:{}};
+    expect(await f.tools.execute(call,f.ctx())).toMatchObject({branch:f.branch,name:f.name,base_branch:BASE,base_sha:H});
+    f.options.writes.branchHead=async(_repo,branch)=>branch===BASE?null:H;
+    await expect(f.tools.execute(call,f.ctx())).rejects.toThrow('api_base_head_unavailable');
+    f.options.writes.branchHead=async()=> 'invalid';
+    await expect(f.tools.execute(call,f.ctx())).rejects.toThrow('api_base_head_unavailable');
+  });
   it('rejects either missing permission, wrong branch and changed ownership before GitHub',async()=>{
     const f=await fixture();
     await expect(authorize(db,{},f.run,f.branch)).rejects.toThrow('api_writer_not_enabled');

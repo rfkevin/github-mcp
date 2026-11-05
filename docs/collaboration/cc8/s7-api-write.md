@@ -29,7 +29,7 @@ Plan de référence : CC-PLAN-8 v0.1 seq1262, amendements v0.2 seq1270 et valida
 
 Absent, ambigu ou malformé = refus. Le modèle ne modifie jamais ces variables. Les chemins d'un commit doivent appartenir simultanément au mandat figé et aux `owned_paths` actuels de la tâche. Statut `in_progress`, propriétaire, cycle ouvert, kind implement, exécution running, HALT, pauses des identités équivalentes et génération/holder du bail sont revérifiés. Les chemins protégés et les contrôles blob/head du client existant restent appliqués.
 
-`github_write_scope` rend seulement le mandat de l'exécution courante. `github_replace_text` exige head et blob attendus, puis une occurrence littérale unique ; aucun regex ni shell. Le commit conserve le trailer d'idempotence de l'effet. Les outils d'autres kinds ne sont pas élargis. Le câblage réel `engineFor` injecte toujours S7 ; la fabrique bas niveau historique reste disponible aux harnais existants.
+`github_write_scope` rend seulement le mandat de l'exécution courante, **et maintenant** le couple `base_branch` / `base_sha` : SHA du commit de base récupéré via le serveur GitHub (jamais le SHA d'un fichier). Si le SHA est absent ou invalide, refus `api_base_head_unavailable` avant effet. Le modèle réutilise `name` et `base_sha` dans `github_create_branch` ; le CAS GitHub reste obligatoire si la base bouge entre-temps. `github_replace_text` exige head et blob attendus, puis une occurrence littérale unique ; aucun regex ni shell. Le commit conserve le trailer d'idempotence de l'effet. Les outils d'autres kinds ne sont pas élargis. Le câblage réel `engineFor` injecte toujours S7 ; la fabrique bas niveau historique reste disponible aux harnais existants.
 
 ### Boucle et reprise
 

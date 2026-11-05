@@ -16,7 +16,7 @@ export interface S7Options { policy: WritePolicy; reads: GitHubReads | null; che
 const SHA = /^[a-f0-9]{40}$/;
 const common = { name: { type: 'string' }, sha: { type: 'string', pattern: SHA.source } };
 export const S7_SCHEMAS: readonly ToolSchema[] = [
-  { name: 'github_write_scope', description: 'Lire votre mandat serveur : branche exacte, nom, chemins et limite de corrections. Appeler avant toute écriture.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'github_write_scope', description: 'Lire votre mandat serveur : branche, nom, chemins, SHA actuel de la base et corrections restantes. Utiliser base_sha pour github_create_branch, jamais un SHA de fichier.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'github_replace_text', description: 'Remplacement littéral unique au head/blob exacts, dans votre tâche. Après un commit, attendre la CI avant correction (trois maximum).',
     parameters: { type: 'object', properties: { name: common.name, expected_head_sha: common.sha, path: { type: 'string' }, expected_sha: common.sha,
       old_text: { type: 'string' }, new_text: { type: 'string' }, message: { type: 'string' } }, required: ['name','expected_head_sha','path','expected_sha','old_text','new_text','message'], additionalProperties: false } },
@@ -49,7 +49,11 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
       const grant = grants(s7.policy).find(g => g.participant === run.participant_id && g.cycle === run.cycle_id && g.task === run.task_id);
       if (!grant) throw new ToolRefused('api_task_not_enabled');
       const allowed = await authorize(options.db, s7.policy, ctx.run_id, grant.branch);
-      return { branch: allowed.branch, name: allowed.branch.split('-api-')[1], granted_paths: allowed.paths, task_paths: allowed.owned_paths, corrections_remaining: 3 - await correctionsUsed(options.db, allowed) };
+      // Expose the authoritative base commit, not a file blob SHA. The subsequent
+      // github_create_branch still applies GitHub's expected-base CAS if it moves.
+      const baseSha = await options.writes.branchHead(options.repository, options.baseBranch);
+      if (!baseSha || !SHA.test(baseSha)) throw new ToolRefused('api_base_head_unavailable');
+      return { branch: allowed.branch, name: allowed.branch.split('-api-')[1], base_branch: options.baseBranch, base_sha: baseSha, granted_paths: allowed.paths, task_paths: allowed.owned_paths, corrections_remaining: 3 - await correctionsUsed(options.db, allowed) };
     }
     const s = await scope(call, ctx);
     const args = call.args ?? {};
