@@ -36,6 +36,8 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   AGENT_RUN_DB_BINDING?: string;
   /** 7c-1 : modèle réel `workers-ai:@cf/vendor/model` ; absent = modèle simulé (défaut, rien de réel). */
   AGENT_RUN_MODEL?: string;
+  /** CC8 : activer la compaction du contexte fournisseur sur cc3-test seulement, opt-in. */
+  AGENT_RUN_CONTEXT_COMPACTION?: string;
   /** 7c-1 : dépôt unique lisible par les exécutions (ex. rfkevin/github-mcp) ; absent = aucun outil GitHub. */
   AGENT_RUN_REPOSITORY?: string;
   /** 7c-3 : « true » pour injecter les écritures GitHub (branche API de l'agent, PR brouillon) ; absent = aucune. */
