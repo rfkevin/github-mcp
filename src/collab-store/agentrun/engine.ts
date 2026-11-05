@@ -558,6 +558,9 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
 
   // 3. Checkpoint : étape terminée et exécution avancée dans le même lot, sous la garde LIVE.
   const final = output.tool_calls.length === 0 ? 1 : 0;
+  const verified = !final || await completionVerified(db, run, deps);
+  const completionStatus = verified ? 'completed' : 'failed';
+  const completionReason = verified ? 'final' : 'incomplete_final:github_evidence_missing';
   const [done] = await db.batch([
     db.prepare([
       "UPDATE agent_run_steps SET state = 'completed', results = ?4, completed_at = ?5",
@@ -565,15 +568,15 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     ].join(' ')).bind(runId, n, deps.workerId, JSON.stringify(results), now, claimed.attempts),
     db.prepare([
       'UPDATE agent_runs SET steps_done = steps_done + 1, updated_at = ?3,',
-      "  status = CASE WHEN ?4 = 1 THEN 'completed' ELSE status END,",
-      "  stop_reason = CASE WHEN ?4 = 1 THEN 'final' ELSE stop_reason END,",
+      "  status = CASE WHEN ?4 = 1 THEN ?7 ELSE status END,",
+      "  stop_reason = CASE WHEN ?4 = 1 THEN ?8 ELSE stop_reason END,",
       '  summary = CASE WHEN ?4 = 1 THEN ?5 ELSE summary END',
       'WHERE run_id = ?1 AND steps_done = ?2 AND EXISTS (SELECT 1 FROM agent_run_steps',
       "  WHERE run_id = ?1 AND n = ?2 AND state = 'completed' AND claimed_by = ?6 AND completed_at = ?3)",
-    ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId),
+    ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId, completionStatus, completionReason),
   ]);
   if (done.meta.changes !== 1) return settled(db, runId, now);
-  if (final) return { outcome: 'completed' };
+  if (final) return { outcome: completionStatus };
   const status = await settle(db, runId, now);
   return { outcome: status === 'running' ? 'stepped' : status };
 }
