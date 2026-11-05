@@ -49,7 +49,11 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
       const grant = grants(s7.policy).find(g => g.participant === run.participant_id && g.cycle === run.cycle_id && g.task === run.task_id);
       if (!grant) throw new ToolRefused('api_task_not_enabled');
       const allowed = await authorize(options.db, s7.policy, ctx.run_id, grant.branch);
-      return { branch: allowed.branch, name: allowed.branch.split('-api-')[1], granted_paths: allowed.paths, task_paths: allowed.owned_paths, corrections_remaining: 3 - await correctionsUsed(options.db, allowed) };
+      // Expose the authoritative base commit, not a file blob SHA. The subsequent
+      // github_create_branch still applies GitHub's expected-base CAS if it moves.
+      const baseSha = await options.writes.branchHead(options.repository, options.baseBranch);
+      if (!baseSha || !SHA.test(baseSha)) throw new ToolRefused('api_base_head_unavailable');
+      return { branch: allowed.branch, name: allowed.branch.split('-api-')[1], base_branch: options.baseBranch, base_sha: baseSha, granted_paths: allowed.paths, task_paths: allowed.owned_paths, corrections_remaining: 3 - await correctionsUsed(options.db, allowed) };
     }
     const s = await scope(call, ctx);
     const args = call.args ?? {};
