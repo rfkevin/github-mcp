@@ -13,6 +13,7 @@
  * HALT relu par L5 dans son lot d'écriture. Un échec du chercheur n'affecte
  * jamais le passage du contrôleur.
  */
+import { superviseCycle } from './autonomy';
 import { runResearchPass, type ResearchPassStatus } from '../research/run';
 import { ensureSchema } from '../store/schema';
 import { RESEARCH_SCOPE, recordFailure } from './failures';
@@ -41,7 +42,7 @@ export interface ScheduledRunResult {
  * `research: false` (webhook l3d 2d) : même passage du contrôleur, sans le chercheur L5 — il reste quotidien et
  * n'est lancé que par le Cron. Par défaut (Cron), le chercheur passe au plus une fois par jour UTC.
  */
-export async function runScheduledControllers(db: D1Database, options: { now?: () => Date; research?: boolean } = {}): Promise<ScheduledRunResult> {
+export async function runScheduledControllers(db: D1Database, options: { now?: () => Date; research?: boolean; salonEnabled?: boolean } = {}): Promise<ScheduledRunResult> {
   await ensureSchema(db);
   const { results } = await db.prepare("SELECT cycle_id FROM cycles WHERE status = 'open' ORDER BY cycle_id LIMIT ?1")
     .bind(SCHEDULED_CYCLE_LIMIT).all<{ cycle_id: string }>();
@@ -49,6 +50,7 @@ export async function runScheduledControllers(db: D1Database, options: { now?: (
   for (const { cycle_id } of results) {
     try {
       const result = await runController(db, cycle_id, options);
+      if (result.mode === 'active') await superviseCycle(db, cycle_id, options);
       cycles.push({ cycle_id, mode: result.mode, recorded: result.recorded,
         reminded: result.mode === 'active' ? result.reminded : 0, ...(result.mode === 'degraded' ? { error: result.error } : {}) });
     } catch {

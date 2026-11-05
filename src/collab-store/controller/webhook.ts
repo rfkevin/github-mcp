@@ -44,6 +44,7 @@ const EVENT_RE = /^[a-z_]{1,64}$/;
 
 export interface WebhookEnv {
   COLLAB_DB?: D1Database;
+  SALON_ENABLED?: string;
   COLLAB_STORE_ENABLED?: string;
   CONTROLLER_WEBHOOK_ENABLED?: string;
   GITHUB_WEBHOOK_SECRET?: string;
@@ -195,7 +196,7 @@ export async function handleGitHubWebhook(request: Request, env: WebhookEnv, ctx
   const outcome = await recordDelivery(db, deliveryId, event, at, runnable);
   if (outcome === 'accepted') {
     // Même passage que le Cron, sans le chercheur L5 (déjà quotidien et indépendant des événements GitHub).
-    ctx.waitUntil(runScheduledControllers(db, { now, research: false }).catch(() => undefined));
+    ctx.waitUntil(runScheduledControllers(db, { now, research: false, salonEnabled: env.SALON_ENABLED === 'true' }).catch(() => undefined));
     return reply(202, { outcome });
   }
   return reply(outcome === 'duplicate' || outcome === 'ignored' ? 200 : 202, { outcome });

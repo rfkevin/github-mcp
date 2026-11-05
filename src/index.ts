@@ -164,7 +164,7 @@ export default {
     if (!controllerCronEnabled(store.CONTROLLER_CRON_ENABLED)) return;
     if (!collabStoreEnabled(store.COLLAB_STORE_ENABLED) || !store.COLLAB_DB) return;
     const db = store.COLLAB_DB;
-    ctx.waitUntil(runScheduledControllers(db).then(() => integrationPass(db, env)).then(() => undefined));
+    ctx.waitUntil(runScheduledControllers(db, { salonEnabled: (env as { SALON_ENABLED?: string }).SALON_ENABLED === 'true' }).then(() => integrationPass(db, env)).then(() => undefined));
     scheduleAgentRunPass(env, ctx);
   },
 } satisfies ExportedHandler<AppEnv>;
