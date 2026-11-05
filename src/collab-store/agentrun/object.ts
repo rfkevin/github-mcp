@@ -150,7 +150,7 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   const maxOutputTokensFor = (kind: string) => resolveEffectiveMaxTokens({ task_kind: kind });
   // CC-7 L6b : store_verdict exige les contrôles CI nommés (S10 « CI 4/4 »).
   const requiredChecks = parseRequiredChecks(env.AGENT_RUN_REQUIRED_CHECKS);
-  return (_runId, stepDb) => {
+  const makeEngine: EngineFactory = (_runId, stepDb) => {
     const db = stepDb ?? fallbackDb;
     // CC-7 L5b (S10) : store_verdict proposé aux kinds review/test dès que les lectures GitHub existent.
     const tools = createReadToolHost({ db, repository, github, storeWrites: true, githubWrites: writes,
