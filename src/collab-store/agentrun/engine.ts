@@ -96,6 +96,9 @@ export interface EngineDeps {
   workerId: string;
   /** Borne d'exécution d'un outil en ms (défaut EFFECT_TIMEOUT_S), réduite par les tests. */
   effectTimeoutMs?: number;
+  /** CC8: opt-in de compaction des anciens résultats pour le seul contexte fournisseur.
+   * Les étapes et effets persistés D1 demeurent intacts (audit, reprise, fencing). */
+  compactHistory?: boolean;
   /** Points de crash injectables pour les tests (lever une exception = coupure). */
   probe?: (point: 'after_model' | 'before_effect' | 'after_effect' | 'after_effect_recorded') => void | Promise<void>;
 }
