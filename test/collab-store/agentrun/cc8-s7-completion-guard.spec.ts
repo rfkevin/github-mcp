@@ -105,8 +105,8 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
     call('github_check_result','v'),call('github_open_pr','p'),final()];
 
   it('T4: branche + commit + CI vérifiée + PR au même SHA => completed', async () => {
-    const f = await fixture(); const h = githubHost();
-    expect(await drain(f.runId, deps(pipeline, h.tools, f.completion), 9)).toBe('completed');
+    const f = await fixture('implement', 6); const h = githubHost();
+    expect(await drain(f.runId, deps(pipeline, h.tools, f.completion), 7)).toBe('completed');
     expect((await runSummary(db, f.runId))?.stop_reason).toBe('final');
     expect(h.log).toEqual(['github_write_scope','github_create_branch','github_commit_files',
       'github_run_checks','github_check_result','github_open_pr']);
