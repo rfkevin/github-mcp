@@ -222,12 +222,23 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     if (contributions && call.name === 'store_contribute') return contributions.execute(call, ctx);
     if (modelChoice && call.name === 'store_choose_model') return modelChoice.execute(call, ctx);
     if (research && RESEARCH_TOOL_SCHEMAS.some(schema => schema.name === call.name)) return research.execute(call, ctx);
-    const { cycle_id, participant_id } = await scope(ctx.run_id);
+    const { cycle_id, participant_id, task_id, task_kind } = await scope(ctx.run_id);
     const args = call.args ?? {};
     const store = new CollabStore(options.db);
     switch (call.name as ReadToolName) {
       case 'store_context': {
         const mine = await store.getContext(cycle_id, participant_id);
+        if (options.contextCompaction && task_kind === 'implement' && task_id) {
+          const current = mine.tasks.find(task => task.task_id === task_id);
+          if (!current) throw new ToolRefused('api_task_context_not_visible');
+          const last = await options.db.prepare('SELECT MAX(seq) AS latest FROM events WHERE cycle_id = ?1')
+            .bind(cycle_id).first<{ latest: number | null }>();
+          const latestSeq = last?.latest ?? 0;
+          return { cycle_id, phase: mine.phase, status: mine.status, revision: mine.revision,
+            task: current, scope: 'task-first', latest_seq: latestSeq,
+            recent_since_seq: Math.max(0, latestSeq - 50),
+            note: 'Lire store_delta avec since_seq=recent_since_seq puis next_since_seq ; full:true pour les preuves exactes.' };
+        }
         if (!options.continuity) return mine;
         // E1-E3 (l8) : le registre complet du cycle, en lecture, pas seulement les tâches où l'on a un rôle.
         const all = await store.getContext(cycle_id);
@@ -239,6 +250,15 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const since = intArg(args, 'since_seq', 0, Number.MAX_SAFE_INTEGER);
         const limit = intArg(args, 'limit', 1, 50, 50);
         const { events, hasMore } = await store.getDelta(cycle_id, since, limit, participant_id);
+        if (options.contextCompaction && task_kind === 'implement' && task_id && args.full !== true) {
+          const globalKinds = new Set(['owner.decision', 'owner.request', 'round.add', 'phase.advance', 'phase.adjust']);
+          const filtered = events.filter(event => globalKinds.has(event.type) || event.payload_json.includes(task_id));
+          return { has_more: hasMore, next_since_seq: events.length ? events[events.length - 1].seq : since,
+            filtered_for: task_id, omitted_in_page: events.length - filtered.length,
+            events: filtered.map(event => ({ seq: event.seq, type: event.type, participant_id: event.participant_id,
+              payload: event.payload_json.length <= 1400 ? event.payload_json
+                : JSON.stringify({ truncated: true, preview: event.payload_json.slice(0, 1100) }) })) };
+        }
         return { has_more: hasMore, events: events.map(event => ({ seq: event.seq, type: event.type, participant_id: event.participant_id, payload: event.payload_json })) };
       }
       case 'github_read_file': {
