@@ -11,7 +11,7 @@ let counter = 0;
 const call = (name: string, id: string): ModelOutput => ({ text: name, tool_calls: [{ id, name, args: {} }] });
 const final = (text = 'Mission terminée') : ModelOutput => ({ text, tool_calls: [] });
 
-async function fixture(kind: string = 'implement') {
+async function fixture(kind: string = 'implement', maxSteps = 10) {
   await ensureSchema(db); // createRun consulte owner_flags, créé par le schéma du store.
   const id = ++counter, cycle = 's7-guard-test-' + id + '-' + Date.now(), task = 'S7-live-vibe';
   const participant = 'vibe', runId = 's7-guard-' + id + '-' + Date.now();
