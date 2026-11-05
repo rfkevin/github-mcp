@@ -393,13 +393,15 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           } else {
             await recordModelCallWithBreaker(ctx.db, run.participant_id, candidate.ref, outcome);
           }
-          if (!transient) throw error;
-          // CC-8 S6 (suite) : l'échec réel d'un maillon compte AUSSI (taux d'échec du retour
-          // arrière) ; jamais pour une sonde, déjà exclue du comptage productif.
+          // CC-8 S6 (suite) : l’échec réel d’un maillon compte AUSSI (taux d’échec du retour
+          // arrière) — succès, échec transitoire ET permanent ; jamais pour une sonde, déjà
+          // exclue du comptage productif. AVANT le throw permanent (relectures #265 : une
+          // bêta en panne ne doit jamais paraître saine) ; best-effort, sans avaler l’erreur.
           if (!isProbe) {
             await recordBetaExecutionForCall(ctx.db, { participant_id: run.participant_id, ref: candidate.ref,
               run_id: ctx.runId, at: outcome.at, ok: false, latency_ms: outcome.latencyMs });
           }
+          if (!transient) throw error;
         }
       }
       // 2e relecture D12 #255 : zéro appel parce que chaque bail de sonde était détenu —

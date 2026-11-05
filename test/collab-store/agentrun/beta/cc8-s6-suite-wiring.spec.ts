@@ -210,6 +210,16 @@ describe('CC-8 S6 suite — comptage des appels réellement routés (provider)',
     throw executorError('EXECUTOR_TIMEOUT', 'Fournisseur sans réponse après 60000 ms. (' + String(body.model) + ')');
   }) as typeof fetch;
 
+  /** fetch zai : le primaire expire, le maillon suivi REFUSE (erreur PERMANENTE — hors
+   * sonde, l’échec doit être compté AVANT la remontée de l’erreur au caller). */
+  function zaiFetchCandidatePermanent(): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { model?: string };
+      if (body.model === 'glm-4.7-flash') throw executorError('EXECUTOR_TIMEOUT', 'Fournisseur sans réponse après 60000 ms.');
+      throw new Error('zai refus permanent du maillon suivi');
+    }) as typeof fetch;
+  }
+
   it('le repli réel sur le maillon suivi compte UNE exécution réussie', async () => {
     const { participant, runId } = await wiredRun('f');
     const result = await routedModel(runId, zaiFetch('repli bêta')).complete(message);
@@ -230,5 +240,17 @@ describe('CC-8 S6 suite — comptage des appels réellement routés (provider)',
     expect(result.output.text).toBe('sonde bêta');
     expect(await countedRuns(participant)).toEqual([]);
     expect(await countedRuns(participant, PRIMARY)).toEqual([]);
+  });
+
+  it('l’échec PERMANENT du maillon suivi est compté (ok=0) avant la remontée', async () => {
+    const { participant, runId } = await wiredRun('2');
+    await expect(routedModel(runId, zaiFetchCandidatePermanent).complete(message)).rejects.toThrow('zai refus permanent');
+    expect(await countedRuns(participant)).toEqual([{ run_id: runId, ok: 0 }]);
+  });
+
+  it('une sonde en échec PERMANENT ne compte JAMAIS (diagnostic, pas exécution)', async () => {
+    const { participant, runId } = await wiredRun('3');
+    await expect(routedModel(runId, zaiFetchCandidatePermanent).complete({ ...message, task_kind: 'probe' })).rejects.toThrow('zai refus permanent');
+    expect(await countedRuns(participant)).toEqual([]);
   });
 });
