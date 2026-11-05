@@ -200,6 +200,8 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
         schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
     return { model, tools, now };
   };
+  return (runId, stepDb) => ({ ...makeEngine(runId, stepDb),
+    compactHistory: env.AGENT_RUN_CONTEXT_COMPACTION === 'true' });
 }
 
 /** Branche de base du canal API : valeur valide, jamais main ni master, sinon le défaut figé en code. */
