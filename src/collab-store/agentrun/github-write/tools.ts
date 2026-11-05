@@ -16,7 +16,7 @@ export interface S7Options { policy: WritePolicy; reads: GitHubReads | null; che
 const SHA = /^[a-f0-9]{40}$/;
 const common = { name: { type: 'string' }, sha: { type: 'string', pattern: SHA.source } };
 export const S7_SCHEMAS: readonly ToolSchema[] = [
-  { name: 'github_write_scope', description: 'Lire votre mandat serveur : branche exacte, nom, chemins et limite de corrections. Appeler avant toute écriture.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'github_write_scope', description: 'Lire votre mandat serveur : branche, nom, chemins, SHA actuel de la base et corrections restantes. Utiliser base_sha pour github_create_branch, jamais un SHA de fichier.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'github_replace_text', description: 'Remplacement littéral unique au head/blob exacts, dans votre tâche. Après un commit, attendre la CI avant correction (trois maximum).',
     parameters: { type: 'object', properties: { name: common.name, expected_head_sha: common.sha, path: { type: 'string' }, expected_sha: common.sha,
       old_text: { type: 'string' }, new_text: { type: 'string' }, message: { type: 'string' } }, required: ['name','expected_head_sha','path','expected_sha','old_text','new_text','message'], additionalProperties: false } },
