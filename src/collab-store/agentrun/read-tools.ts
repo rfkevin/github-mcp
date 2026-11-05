@@ -142,6 +142,8 @@ export interface ReadToolHostOptions {
   githubWrites?: { writes: GitHubWrites; baseBranch: string; s7?: S7Options } | null;
   /** CC-7 L3 : lectures de continuité (store_memory, store_continuity) et registre complet dans store_context. Absent = inchangé. */
   continuity?: boolean;
+  /** CC8 : opt-in. Contexte focalisé sur la tâche pour implement seulement; tout reste accessible via full:true. */
+  contextCompaction?: boolean;
   /** CC-7 L5b (S10) : store_verdict (verdicts contrôlés serveur) pour les kinds review et test ; absent = aucun verdict. */
   verdicts?: boolean;
   /** CC-7 L6b : contrôles CI exigés par nom pour store_verdict (absent = tous les contrôles présents verts). */
