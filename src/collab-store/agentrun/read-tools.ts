@@ -209,7 +209,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   const readNames = (taskKind: string): readonly string[] =>
     [...allowed(taskKind), ...continuityNames(taskKind), ...(research ? research.reads(taskKind) : [])];
   async function scope(runId: string): Promise<RunScope> {
-    const run = await options.db.prepare('SELECT cycle_id, participant_id FROM agent_runs WHERE run_id = ?1').bind(runId).first<RunScope>();
+    const run = await options.db.prepare('SELECT cycle_id, participant_id, task_id, task_kind FROM agent_runs WHERE run_id = ?1').bind(runId).first<RunScope>();
     if (!run) throw new ToolRefused('unknown_run');
     return run;
   }
