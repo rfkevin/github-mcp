@@ -22,14 +22,14 @@ describe('CC8 S7 — compaction de la vue fournisseur, sans toucher au journal D
       makeStep('c', 'github_create_branch', { branch: 'mcp/105856986/vibe-api-s7-live', sha: base })];
     const compact = providerMessagesFromHistory('mission', steps, true);
     const full = providerMessagesFromHistory('mission', steps, false);
-    expect(compact.map(x => x.role)).toEqual(['user', 'user', 'assistant', 'tool']);
+    expect(compact.map(x => x.role)).toEqual(['user', 'assistant', 'tool']);
     expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(full).length / 2);
-    expect(compact[1].content).not.toContain('NE_PAS_EXPOSER');
-    expect(compact[1].content).not.toContain('X'.repeat(100));
-    expect(compact[1].content).toContain(base);
-    expect(compact[2].tool_calls?.[0].id).toBe('c');
-    expect(compact[3].tool_call_id).toBe('c');
-    expect(compact[3].content).toBe(JSON.parse(steps[2].results)[0].content);
+    expect(compact[0].content).not.toContain('NE_PAS_EXPOSER');
+    expect(compact[0].content).not.toContain('X'.repeat(100));
+    expect(compact[0].content).toContain(base);
+    expect(compact[1].tool_calls?.[0].id).toBe('c');
+    expect(compact[2].tool_call_id).toBe('c');
+    expect(compact[2].content).toBe(JSON.parse(steps[2].results)[0].content);
     // Reconstruction au retour d'un Worker : aucune mémoire volatile ni résumé LLM.
     expect(providerMessagesFromHistory('mission', steps, true)).toEqual(compact);
   });
@@ -39,8 +39,8 @@ describe('CC8 S7 — compaction de la vue fournisseur, sans toucher au journal D
       { branch: 'test-' + i, status: 'completed', sha: 'b'.repeat(40), next_action: 'wait' }));
     const last = makeStep('last', 'github_check_result', { verifiedSuccess: true, sha: 'c'.repeat(40) });
     const messages = providerMessagesFromHistory('mission', [...earlier, last], true);
-    expect(messages[1].content.length).toBeLessThan(3900);
-    expect(messages[1].content).toContain('Étapes anciennes omises');
+    expect(messages[0].content.length).toBeLessThan(3900);
+    expect(messages[0].content).toContain('Étapes anciennes omises');
     expect(messages.at(-1)?.tool_call_id).toBe('last');
   });
 });
