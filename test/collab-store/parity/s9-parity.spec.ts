@@ -207,10 +207,13 @@ describe('CC-8 S9 — harnais de parité (pas le live)', () => {
 
   it('refuse une collision structurée de pièces join-newline', () => {
     const row = pair('answer', 1, 'MARK');
-    const collidable = { ...row.chat, pieces: ['a\nb'] as const };
+    const collidableChat = { ...row.chat, pieces: ['a\nb'] as const };
+    const collidableApi = { ...row.api, pieces: ['a\nb'] as const };
     const inputPieces = { ...row.input, pieces: ['a', 'b'] as const };
-    expect(() => scorePair(inputPieces, collidable, { ...row.api, pieces: ['a', 'b'] }, 'judge')).toThrow('input_mismatch');
-    expect(() => scorePair(inputPieces, { ...row.chat, pieces: ['a', 'b'] }, collidable, 'judge')).toThrow('input_mismatch');
+    // Chat porte la collision, API cohérent → input_mismatch (pas same_channel).
+    expect(() => scorePair(inputPieces, collidableChat, { ...row.api, pieces: ['a', 'b'] }, 'judge')).toThrow('input_mismatch');
+    // API porte la collision, Chat cohérent → input_mismatch (channels distincts).
+    expect(() => scorePair(inputPieces, { ...row.chat, pieces: ['a', 'b'] }, collidableApi, 'judge')).toThrow('input_mismatch');
   });
 
   it('les copies PASS ne gonflent pas le taux des 80 %', () => {
