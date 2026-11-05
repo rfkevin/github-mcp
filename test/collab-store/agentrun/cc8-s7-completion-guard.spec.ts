@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { createRun, runStep, runSummary, ToolRefused, type ModelOutput, type ToolHost, type ToolCall, type EngineDeps } from '../../../src/collab-store/agentrun/engine';
+import { createRun, runStep, runSummary, ToolRefused, STEP_TIMEOUT_S, type ModelOutput, type ToolHost, type ToolCall, type EngineDeps } from '../../../src/collab-store/agentrun/engine';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const NOW = 1_990_000_000;
@@ -116,6 +116,38 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
       expect(await drain(f.runId, deps(pipeline, h.tools, f.completion), 9)).toBe('failed');
       expect((await runSummary(db, f.runId))?.stop_reason).toBe('incomplete_final:github_evidence_missing');
     }
+  });
+
+  it('T5: reprise après crash au milieu du commit : aucun commit dupliqué, preuves intactes', async () => {
+    const f = await fixture(); const h = githubHost();
+    let writes = 0; let lastTool = '';
+    const execute = h.tools.execute;
+    h.tools.execute = async (c, ctx) => {
+      lastTool = c.name;
+      if (c.name === 'github_commit_files') writes++;
+      return execute(c, ctx);
+    };
+    h.tools.lookup = async c => c.name === 'github_commit_files'
+      ? { found: true, result: { branch: BRANCH, commit_sha: COMMIT_SHA } } : { found: false };
+    const model = scripted(pipeline);
+    let crash = true;
+    const original: EngineDeps = { model, tools: h.tools, githubCompletionGrants: f.completion,
+      now: () => NOW + 1, workerId: 'worker-crash',
+      probe: point => {
+        if (point === 'after_effect' && lastTool === 'github_commit_files' && crash) {
+          crash = false; throw Error('simulated_worker_crash');
+        }
+      },
+    };
+    expect((await runStep(db, f.runId, original)).outcome).toBe('stepped');
+    expect((await runStep(db, f.runId, original)).outcome).toBe('stepped');
+    await expect(runStep(db, f.runId, original)).rejects.toThrow('simulated_worker_crash');
+    const resumed: EngineDeps = { ...original, now: () => NOW + STEP_TIMEOUT_S + 5,
+      workerId: 'worker-recovery', probe: undefined };
+    expect((await runStep(db, f.runId, resumed)).outcome).toBe('stepped');
+    expect(await drain(f.runId, resumed, 8)).toBe('completed');
+    expect(writes).toBe(1);
+    expect(model.calls()).toBe(pipeline.length);
   });
 
   it('T6/T7: review et implement sans mandat continuent à utiliser la fin historique', async () => {
