@@ -12,6 +12,7 @@ describe('CC8 S1b — identifiants de tentatives et plafonds', () => {
   });
   it('answer : nouvelle ronde et nouvelle tentative donnent un autre ID', async () => {
     const first = await answerAttemptRunId('cc8', 'gemini', 19, 'P6', 1, 1);
+    expect(await answerAttemptRunId('cc8', 'gemini', 19, 'P6', 1, 1)).toBe(first);
     expect(await answerAttemptRunId('cc8', 'gemini', 19, 'P6', 2, 1)).not.toBe(first);
     expect(await answerAttemptRunId('cc8', 'gemini', 19, 'P6', 1, 2)).not.toBe(first);
   });
