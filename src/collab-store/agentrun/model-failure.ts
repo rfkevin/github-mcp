@@ -9,7 +9,10 @@ export function modelFailureKind(error: unknown): FailureKind {
   // CC-8 S1b-2 : CIRCUIT_OPEN (tous les maillons du participant en pause coupe-circuit) et
   // STEP_MODEL_BUDGET_EXHAUSTED (budget d'appels de l'étape épuisé) = indisponibilité
   // temporaire → la relance d’exécution S1b recrée l’exécution proprement.
-  if (/\b(?:429|502|503|504)\b|timeout|timed out|network|fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|AbortError|circuit_open|step_model_budget/i.test(value)) return 'transient';
+  // CC8 S7 : Cloudflare Workers AI renvoie 8004 « Internal server error » sans statut HTTP.
+  // Seulement cette signature serveur est transitoire, jamais un 8004 inconnu ou un refus de mandat.
+  if (/workers_ai_error:\s*8004:\s*Internal server error\b/i.test(value)) return 'transient';
+  if (/\b(?:429|500|502|503|504)\b|timeout|timed out|network|fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|AbortError|circuit_open|step_model_budget/i.test(value)) return 'transient';
   // fetchWithTimeout produit ce message français ; les wrappers ModelCallError conservent le message, pas le code EXECUTOR_TIMEOUT.
   if (/Fournisseur sans réponse après \d+ ms\./i.test(value)) return 'transient';
   return 'permanent';
