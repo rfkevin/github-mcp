@@ -94,17 +94,22 @@ describe('CC8 S7 — mode guidé (planificateur pur)', () => {
     expect(planGuidedS7(s4, BRANCH, 'S7-live-vibe', 4)).toMatchObject({ kind: 'server', call: { name: 'github_check_result', args: { sha: C1, run_id: 9 } } });
     const s5 = [...s4, e('github_check_result', PASSED(C1))];
     expect(planGuidedS7(s5, BRANCH, 'S7-live-vibe', 5)).toMatchObject({ kind: 'server', call: { name: 'github_open_pr', args: { name: 's7-live' } } });
-    expect(planGuidedS7([...s5, e('github_open_pr', { branch: BRANCH, number: 1, head_sha: C1, draft: false })], BRANCH, 'S7-live-vibe', 6)).toBeNull();
+    expect(planGuidedS7([...s5, e('github_open_pr', { branch: BRANCH, number: 1, head_sha: C1, draft: false })], BRANCH, 'S7-live-vibe', 6))
+      .toEqual({ kind: 'stop', reason: 'pr_already_open' });
   });
-  it('CI rouge → correction par le modèle au SHA du dernier commit ; refus ou état inattendu → aucun guidage', () => {
+  it('CI rouge → correction par le modèle au SHA du dernier commit ; refus ou état inattendu → arrêt typé', () => {
     const base = [e('github_write_scope', SCOPE), e('github_create_branch', { branch: BRANCH, sha: HEAD }),
       e('github_commit_files', { branch: BRANCH, commit_sha: C1 }), e('github_run_checks', { targetSha: C1, runId: 9 })];
     const fix = planGuidedS7([...base, e('github_check_result', FAILED(C1))], BRANCH, 'S7-live-vibe', 5);
     expect(fix).toMatchObject({ kind: 'model', tools: ['github_commit_files'] });
     expect(fix?.kind === 'model' && fix.instruction).toContain(C1);
-    expect(planGuidedS7([...base, e('github_check_result', { next_action: 'escalate', status: 'blocked' })], BRANCH, 'S7-live-vibe', 5)).toBeNull();
-    expect(planGuidedS7([e('github_write_scope', SCOPE), e('github_create_branch', null, true)], BRANCH, 'S7-live-vibe', 2)).toBeNull();
-    expect(planGuidedS7([e('github_write_scope', null, true)], BRANCH, 'S7-live-vibe', 1)).toBeNull();
+    expect(planGuidedS7([...base, e('github_check_result', { targetSha: C1, next_action: 'escalate', status: 'blocked' })], BRANCH, 'S7-live-vibe', 5))
+      .toEqual({ kind: 'stop', reason: 'ci_escalate' });
+    expect(planGuidedS7([...base, e('github_check_result', { next_action: 'escalate', status: 'blocked' })], BRANCH, 'S7-live-vibe', 5))
+      .toEqual({ kind: 'stop', reason: 'check_unexpected' });
+    expect(planGuidedS7([e('github_write_scope', SCOPE), e('github_create_branch', null, true)], BRANCH, 'S7-live-vibe', 2))
+      .toEqual({ kind: 'stop', reason: 'branch_refused' });
+    expect(planGuidedS7([e('github_write_scope', null, true)], BRANCH, 'S7-live-vibe', 1)).toEqual({ kind: 'stop', reason: 'scope_refused' });
     expect(planGuidedS7([e('github_write_scope', { ...SCOPE, branch: 'autre' })], BRANCH, 'S7-live-vibe', 1))
       .toMatchObject({ kind: 'server', call: { name: 'github_write_scope' } });
   });
@@ -216,7 +221,7 @@ describe('CC8 S7 — mode guidé (moteur, D1)', () => {
     const outcomes = await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
     expect(outcomes.at(-1)).toBe('failed');
     expect(model.seen).toHaveLength(1);
-    expect(await row(runId)).toMatchObject({ status: 'failed', stop_reason: 'incomplete_final:github_evidence_missing' });
+    expect(await row(runId)).toMatchObject({ status: 'failed', stop_reason: 'guided_violation:no_tool_call' });
   });
 
   it('CI rouge : le modèle corrige au SHA du commit, puis le serveur relance la CI et ouvre la PR', async () => {
@@ -238,15 +243,45 @@ describe('CC8 S7 — mode guidé (moteur, D1)', () => {
     expect(await row(runId)).toMatchObject({ status: 'completed', stop_reason: 'final', tokens_used: 4_000 });
   });
 
-  it('refus serveur (branche) : plus de guidage, le modèle reprend la main avec tous ses outils ; jamais de faux succès', async () => {
+  it('refus serveur (branche) : arrêt typé guided_stop, aucun repli libre, le modèle n’est jamais rappelé', async () => {
     const { runId, grants } = await newRun('refused');
     const model = scripted([{ text: 'Je ne peux pas créer la branche.', tool_calls: [] }]);
     const { tools } = host({ github_write_scope: [SCOPE], github_create_branch: [() => { throw new ToolRefused('api_write_branch_exists'); }] });
     const outcomes = await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
     expect(outcomes.at(-1)).toBe('failed');
-    expect(model.seen).toHaveLength(1);
-    expect(model.seen[0].tools).toEqual(S7_TOOLS);
-    expect(await row(runId)).toMatchObject({ status: 'failed', stop_reason: 'incomplete_final:github_evidence_missing' });
+    expect(model.seen).toHaveLength(0);
+    expect(await row(runId)).toMatchObject({ status: 'failed', stop_reason: 'guided_stop:branch_refused' });
+  });
+
+  for (const [label, output, reason] of [
+    ['open_pr non offert', { text: '', tool_calls: [{ id: 'x', name: 'github_open_pr', args: { name: 's7-live', title: 't' } }] }, 'guided_violation:tool_not_offered:github_open_pr'],
+    ['replace_text non offert', { text: '', tool_calls: [{ id: 'x', name: 'github_replace_text', args: { name: 's7-live' } }] }, 'guided_violation:tool_not_offered:github_replace_text'],
+    ['commit + open_pr', { text: '', tool_calls: [commit(HEAD, 'a').tool_calls[0], { id: 'y', name: 'github_open_pr', args: {} }] }, 'guided_violation:tool_not_offered:github_commit_files,github_open_pr'],
+    ['deux commits', { text: '', tool_calls: [commit(HEAD, 'a').tool_calls[0], { ...commit(HEAD, 'b').tool_calls[0], id: 'm2' }] }, 'guided_violation:multiple_tool_calls:2'],
+  ] as Array<[string, ModelOutput, string]>) {
+    it('relecture D12 (2e passe) : sortie hostile à l’étape de contenu (' + label + ') → arrêt typé AVANT tout effet', async () => {
+      const { runId, grants } = await newRun('hostile');
+      const model = scripted([output]);
+      const { tools, calls } = host({ github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }],
+        github_commit_files: [{ branch: BRANCH, commit_sha: C1 }], github_open_pr: [{ branch: BRANCH, number: 9, head_sha: C1, draft: false }],
+        github_replace_text: [{ branch: BRANCH, commit_sha: C1 }] });
+      const outcomes = await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+      expect(outcomes.at(-1)).toBe('failed');
+      expect(await row(runId)).toMatchObject({ status: 'failed', stop_reason: reason });
+      // Aucun effet après les deux étapes serveur : ni commit, ni PR, ni remplacement.
+      expect(calls.map(c => c.name).filter(n => n !== 'github_read_file')).toEqual(['github_write_scope', 'github_create_branch']);
+    });
+  }
+
+  it('plafond serveur atteint : arrêt typé guided_stop:server_cap', async () => {
+    const { runId, grants } = await newRun('cap');
+    for (let k = 0; k < 24; k++) await db.prepare('INSERT INTO agent_run_server_steps (run_id, n) VALUES (?1, ?2)').bind(runId, 1000 + k).run();
+    const model = scripted([]);
+    const { tools, calls } = host({ github_write_scope: [SCOPE] });
+    expect(await runStep(db, runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true }))
+      .toEqual({ outcome: 'failed' });
+    expect(calls).toHaveLength(0);
+    expect(await row(runId)).toMatchObject({ status: 'failed', stop_reason: 'guided_stop:server_cap' });
   });
 
   it('HALT : aucune étape serveur, le run s’arrête ; sans mandat ou sans activation, comportement historique', async () => {
