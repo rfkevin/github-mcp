@@ -12,6 +12,7 @@
  * AGENT_RUNS_ENABLED n'est pas exactement « true » (en plus de HALT, vérifié par
  * le moteur à chaque écriture).
  */
+import { publishRunProof, RUN_PROOF_RETRY_S } from './run-proof';
 import { ensureCiPollSchema } from './ci-poll';
 import { planAgentRuns } from './plan';
 import { runStep, type EngineDeps, type ModelClient, type ToolHost } from './engine';
@@ -185,6 +186,38 @@ async function forget(deps: OrchestratorDeps, runId: string, leaseKey: string): 
   ].join(' ')).bind(runId, leaseKey, Math.floor(deps.nowMs() / 1000)).run();
 }
 
+/**
+ * CC8 S7 lot B R4 (#282) : preuve serveur `run.proof` d'un run terminé (publishRunProof : idempotente,
+ * gardée). true = preuve encore en attente (GitHub illisible, révision concurrente, HALT) : l'objet garde
+ * l'exécution et se réveille dans RUN_PROOF_RETRY_S, au plus RUN_PROOF_ATTEMPTS tentatives comptées.
+ * Une panne inattendue est journalisée et n'empêche jamais de libérer l'objet.
+ */
+async function proofPending(deps: OrchestratorDeps, runId: string, now: number): Promise<boolean> {
+  try {
+    const engine = deps.engine(runId, deps.db);
+    const outcome = await publishRunProof(deps.db, runId, { tools: engine.tools, githubCompletionGrants: engine.githubCompletionGrants,
+      now: () => Math.floor(deps.nowMs() / 1000) });
+    if (outcome.status === 'skipped') return false;
+    await journal(deps.db, now, 'run_proof', runId, outcome.status === 'published' ? 'published:' + outcome.event_seq
+      : outcome.status + ':' + outcome.reason);
+    return outcome.status === 'pending';
+  } catch (error) {
+    await journal(deps.db, now, 'run_proof_error', runId, error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+/** Fin d'exécution : preuve serveur en attente → nouvel essai planifié ; sinon l'objet est libéré. */
+async function finish(deps: OrchestratorDeps, runId: string, leaseKey: string, now: number, outcome: string): Promise<AlarmResult> {
+  if (await proofPending(deps, runId, now)) {
+    const next = deps.nowMs() + RUN_PROOF_RETRY_S * 1000;
+    await scheduleAt(deps, runId, leaseKey, next);
+    return { action: 'rescheduled', outcome: 'proof_pending', next_at: next };
+  }
+  await forget(deps, runId, leaseKey);
+  return { action: 'finished', outcome };
+}
+
 /** Réveil d'une exécution : idempotent (double wake = une seule alarme), refusé sans écriture si désactivé. */
 export async function objectWake(deps: OrchestratorDeps, runId: string, leaseKey: string): Promise<WakeResult> {
   if (!agentRunsEnabled(deps.env)) return { accepted: false, reason: 'disabled' };
@@ -242,10 +275,7 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
     await deps.slot.delete('busy');
     return { action: 'none' };
   }
-  if (run.status !== 'running') {
-    await forget(deps, runId, run.lease_key);
-    return { action: 'finished', outcome: run.status };
-  }
+  if (run.status !== 'running') return finish(deps, runId, run.lease_key, now, run.status);
   // Défense contre un réveil prématuré : la date D1 persiste entre évictions.
   const announced = await deps.db.prepare('SELECT next_alarm_at FROM agent_run_alarms WHERE run_id = ?1')
     .bind(runId).first<{ next_alarm_at: number | null }>();
@@ -316,9 +346,8 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
     await scheduleAt(deps, runId, run.lease_key, next);
     return { action: 'rescheduled', outcome, next_at: next };
   }
-  await forget(deps, runId, run.lease_key);
   await journal(deps.db, now, 'run_finished', runId, outcome);
-  return { action: 'finished', outcome };
+  return finish(deps, runId, run.lease_key, now, outcome);
 }
 
 // ---------------------------------------------------------------- passage (outbox + secours)
