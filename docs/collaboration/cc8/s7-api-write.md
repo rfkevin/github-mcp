@@ -61,6 +61,14 @@ Le moteur n'envoie plus systématiquement toutes les étapes anciennes au fourni
 
 Ce lot traite la répétition des résultats ; il ne garantit pas encore un plafond strict pré-appel et ne justifie aucune hausse de `TASK_KIND_MAX_TOKENS` sans mesure P95 post-optimisation. Le mode réduit exige une validation D12 indépendante et un essai piloté dans `cc3-test` avant activation.
 
+### CC8 S7 — garde de complétude GitHub (lot sans élargissement des écritures)
+
+Diagnostic Vibe des runs S7-live-vibe : seq1601/1602, après plan de tests Grok seq1603. Le run compact a terminé en 15 914 jetons avec comme **seul effet** `github_write_scope`, puis une réponse de planification sans appel d'outil. Un `final` du modèle n'est donc pas une preuve d'achèvement.
+
+Pour une tâche `implement` correspondant exactement à un mandat GitHub S7 déclaré côté propriétaire dans `AGENT_RUN_GITHUB_TASKS` et `AGENT_RUN_GITHUB_WRITERS`, le moteur vérifie dans D1 une séquence d'effets `completed` : `github_write_scope`, `github_create_branch`, `github_commit_files` (ou correction `github_replace_text`), `github_run_checks` au SHA du commit, `github_check_result` avec `verifiedSuccess=true` et `github_open_pr` prête au même SHA et à la même branche. Les résultats absents, échoués, ambigus ou contradictoires ne valent pas preuve. Le moteur persiste l'étape finale et son texte pour l'audit, mais marque le run `failed` / `incomplete_final:github_evidence_missing` au lieu de `completed/final`, sans relance automatique. La vérification n'exécute aucune écriture GitHub. Si le dernier outil appelé est `github_open_pr` et que toutes les preuves D1 sont déjà présentes, le moteur termine **sur cette même étape** : le parcours en six étapes du planificateur n'exige pas un septième appel texte au modèle.
+
+Les autres kinds et les tâches `implement` sans mandat S7 gardent leur comportement historique. Fusion par Kevin seulement ; protections HALT/fencing/CAS, idempotence, D12, budget paid=0, limite 24k, et pause Gemini inchangés. La preuve D1 n'équivaut pas à un PASS D12 ni à une fusion. Un pilote réel après déploiement est nécessaire.
+
 ### Points du plan à préserver pour la coordination
 
 S6 : secours puis bêta observée pendant >=20 exécutions ET >=48h, puis principal par /owner (rectification du cadrage ambigu1457 transmise à Vibe). S8a ne clôture pas S8 : restent escalade des blocages24h, demande de secours coordinateur et observation48h. S9 exige au moins trois tâches par type, mêmes entrées chat/API, jugement aveugle indépendant et seuil80%. S10 ne retire un chemin qu'après preuve du remplaçant. S11 reste synchronisation master/intégration, accords et promotion finale Kevin.
