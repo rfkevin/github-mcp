@@ -18,6 +18,20 @@ Ce plafond est un **maximum par run**, pas une garantie de disponibilité, ni un
 
 Les **22 166 jetons comptabilisés** au run Vibe n°3 comprennent une estimation prudente de l'entrée lors d'un appel Workers AI en erreur (aucune statistique du fournisseur sur cet échec) ; ce nombre ne constitue pas un P95 réel de jetons utilisés par appel réussi. Prévoir une mesure séparée avant d'ajuster définitivement le plafond.
 
+### CC8 S7 — relevés de CI sans appel modèle (lot distinct, sans lancement de pilote)
+
+Vote CC8 seq 1657 (option seq 1665, reprise par GPT-6 et Vibe), GO de Kevin le 06/11. Quand le **dernier effet** de la dernière étape terminée est un `github_check_result` qui rend `next_action = 'wait'`, le serveur relit lui-même la CI à l'alarme suivante (`agentrun/ci-poll.ts`, appelé en tête de `runStep`) :
+
+- **même outil, mêmes arguments, mêmes gardes** : authorize (HALT, pause, bail/fence, tâche active, mandat), head de la branche relu, cible CI corrélée ; la garde LIVE du moteur et un plancher de 30 s avant la deadline sont vérifiés avant chaque relevé ;
+- **aucun appel modèle, aucune étape, aucun jeton** : `steps_done` et `tokens_used` ne bougent pas, les 12 étapes ne comptent que les appels modèle ;
+- **au plus 20 relevés** par appel d'origine, au rythme de l'orchestrateur (60 à 120 s, dérivé du dernier relevé) ;
+- **journal append-only** `agent_run_ci_polls (run_id, n, idx, k)` ; l'effet d'origine n'est jamais réécrit ; chaque relevé a sa propre clé d'effet déterministe (reprise après coupure sans doublon) ;
+- refus certain pendant un relevé (head changé, tâche inactive...) : relevé noté, la main revient au modèle ; panne de lecture transitoire : relevé noté, l'attente continue ;
+- le modèle n'est rappelé qu'une fois la CI terminée (ou les relevés épuisés, ou un refus) ; il voit le **dernier relevé** comme résultat de son appel d'origine, avec `server_ci_polls` ;
+- la garde de complétude (#271) lit les relevés à la suite de leur effet d'origine : une CI verte constatée par relevé est une preuve valable.
+
+Aucun pilote n'est lancé par ce lot ; aucun coût payant.
+
 ## Validation et limites
 
 Au commit `2772ac54ac6b7271f6c8dc3c340d4751e73a1e25`, quatre contrôles GitHub ont réussi : `ci`, Workers Builds, SonarCloud et GitGuardian. Ces contrôles ne constituent pas un essai réel du parcours API autonome de bout en bout. Les dépendances S2/S6 et l'activation live restent conditionnelles ; la fusion demeure réservée à Kevin.
