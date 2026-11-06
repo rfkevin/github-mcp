@@ -52,12 +52,12 @@ function scripted(outputs: ModelOutput[]) {
 const commit = (head: string, content: string): ModelOutput => ({ text: '', tool_calls: [{ id: 'm-commit', name: 'github_commit_files',
   args: { name: 's7-live', expected_head_sha: head, message: 'S7 test', files: [{ path: PATH, content }] } }] });
 
-async function newRun(label: string) {
+async function newRun(label: string, maxSteps = 12) {
   await ensureSchema(db);
   const runId = 'cc8-guided-' + label + '-' + crypto.randomUUID();
   const cycleId = 'cc8-guided-' + crypto.randomUUID();
   await createRun(db, { runId, cycleId, participantId: 'vibe', taskId: 'S7-live-vibe', taskKind: 'implement', prompt: 'Écris le test S7.',
-    maxSteps: 12, maxTokens: 48_000, maxCostCents: 0, deadlineAt: T + 2_700, now: T });
+    maxSteps, maxTokens: 48_000, maxCostCents: 0, deadlineAt: T + 2_700, now: T });
   const grants = [{ cycle: cycleId, participant: 'vibe', task: 'S7-live-vibe', branch: BRANCH }];
   return { runId, grants };
 }
@@ -129,11 +129,94 @@ describe('CC8 S7 — mode guidé (moteur, D1)', () => {
     expect(instruction.role).toBe('user');
     expect(instruction.content).toContain(HEAD);
     expect(instruction.content).toContain(PATH);
-    expect(calls.map(c => c.name)).toEqual(['github_write_scope', 'github_create_branch', 'github_commit_files', 'github_run_checks',
-      'github_check_result', 'github_check_result', 'github_open_pr']);
+    expect(calls.map(c => c.name).filter(n => n !== 'github_read_file')).toEqual(['github_write_scope', 'github_create_branch',
+      'github_commit_files', 'github_run_checks', 'github_check_result', 'github_check_result', 'github_open_pr']);
     expect(await row(runId)).toMatchObject({ status: 'completed', stop_reason: 'final', tokens_used: 2_000 });
     // 6 étapes (5 serveur + 1 modèle) ; le relevé de CI n'en consomme pas.
     expect((await row(runId)).steps_done).toBe(6);
+    const server = await db.prepare('SELECT COUNT(*) AS c FROM agent_run_server_steps WHERE run_id = ?1').bind(runId).first<{ c: number }>();
+    expect(server?.c).toBe(5);
+  });
+
+  it('relecture D12 R1 : le serveur impose name, expected_head_sha et le expected_sha du fichier lu au head', async () => {
+    const { runId, grants } = await newRun('fill');
+    const BLOB = 'e'.repeat(40);
+    // Le modèle se trompe de nom et de head et invente un expected_sha : le serveur corrige.
+    const model = scripted([{ text: '', tool_calls: [{ id: 'm', name: 'github_commit_files', args: { name: 'autre', expected_head_sha: 'f'.repeat(40),
+      message: 'm', files: [{ path: PATH, content: 'x', expected_sha: '0'.repeat(40) }] } }] }]);
+    const { tools, calls } = host({
+      github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }],
+      github_read_file: [{ path: PATH, sha: BLOB, size: 7, content: 'ancien contenu' }],
+      github_commit_files: [{ branch: BRANCH, commit_sha: C1 }], github_run_checks: [{ targetSha: C1, runId: 9 }],
+      github_check_result: [PASSED(C1)], github_open_pr: [{ branch: BRANCH, number: 302, head_sha: C1, draft: false }],
+    });
+    expect((await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true })).at(-1)).toBe('completed');
+    const commitCall = calls.find(c => c.name === 'github_commit_files')!;
+    expect(commitCall.args).toMatchObject({ name: 's7-live', expected_head_sha: HEAD, files: [{ path: PATH, content: 'x', expected_sha: BLOB }] });
+    expect(calls.find(c => c.name === 'github_read_file')?.args).toEqual({ path: PATH, ref: HEAD });
+    expect(model.seen[0].messages.at(-1)!.content).toContain('ancien contenu');
+  });
+
+  it('relecture D12 R2 : trois corrections tiennent (étapes serveur hors max_steps), diagnostics injectés', async () => {
+    const { runId, grants } = await newRun('three-fixes', 4);
+    const C3 = '1'.repeat(40);
+    const C4 = '2'.repeat(40);
+    const model = scripted([commit(HEAD, 'v1'), commit(C1, 'v2'), commit(C2, 'v3'), commit(C3, 'v4')]);
+    const { tools } = host({
+      github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }],
+      github_commit_files: [C1, C2, C3, C4].map(c => ({ branch: BRANCH, commit_sha: c })),
+      github_run_checks: [C1, C2, C3, C4].map((c, i) => ({ targetSha: c, runId: 20 + i })),
+      github_check_result: [FAILED(C1), FAILED(C2), FAILED(C3), PASSED(C4)],
+      github_open_pr: [{ branch: BRANCH, number: 303, head_sha: C4, draft: false }],
+    });
+    const outcomes = await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true }, 40);
+    expect(outcomes.at(-1)).toBe('completed');
+    expect(model.seen).toHaveLength(4);
+    expect(model.seen[1].messages.at(-1)!.content).toContain('expected 1 to be 2');
+    const r = await row(runId);
+    expect(r).toMatchObject({ status: 'completed', stop_reason: 'final' });
+    // 4 étapes modèle (= max_steps 4) et 11 étapes serveur, hors plafond.
+    expect(r.steps_done).toBe(15);
+    const server = await db.prepare('SELECT COUNT(*) AS c FROM agent_run_server_steps WHERE run_id = ?1').bind(runId).first<{ c: number }>();
+    expect(server?.c).toBe(11);
+  });
+
+  it('la limite d’étapes modèle reste appliquée : une correction au-delà de max_steps → step_limit', async () => {
+    const { runId, grants } = await newRun('limit', 1);
+    const model = scripted([commit(HEAD, 'v1'), commit(C1, 'v2')]);
+    const { tools } = host({
+      github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }],
+      github_commit_files: [{ branch: BRANCH, commit_sha: C1 }], github_run_checks: [{ targetSha: C1, runId: 9 }],
+      github_check_result: [FAILED(C1)],
+    });
+    const outcomes = await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+    expect(outcomes.at(-1)).toBe('step_limit');
+    expect(model.seen).toHaveLength(1);
+  });
+
+  it('branche préexistante : reprise depuis la tête lue dans le mandat, sans création, preuve de complétude valable', async () => {
+    const { runId, grants } = await newRun('existing');
+    const model = scripted([commit(HEAD, 'v1')]);
+    const { tools, calls } = host({
+      github_write_scope: [{ ...SCOPE, branch_head: HEAD }],
+      github_commit_files: [{ branch: BRANCH, commit_sha: C1 }], github_run_checks: [{ targetSha: C1, runId: 9 }],
+      github_check_result: [PASSED(C1)], github_open_pr: [{ branch: BRANCH, number: 304, head_sha: C1, draft: false }],
+    });
+    const outcomes = await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+    expect(outcomes.at(-1)).toBe('completed');
+    expect(calls.some(c => c.name === 'github_create_branch')).toBe(false);
+    expect(calls.find(c => c.name === 'github_commit_files')?.args).toMatchObject({ expected_head_sha: HEAD });
+    expect(await row(runId)).toMatchObject({ status: 'completed', stop_reason: 'final' });
+  });
+
+  it('texte sans outil à l’étape de contenu : échec typé immédiat, jamais de faux succès ni de rafale', async () => {
+    const { runId, grants } = await newRun('no-tool');
+    const model = scripted([{ text: 'Je vais réfléchir.', tool_calls: [] }]);
+    const { tools } = host({ github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }] });
+    const outcomes = await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+    expect(outcomes.at(-1)).toBe('failed');
+    expect(model.seen).toHaveLength(1);
+    expect(await row(runId)).toMatchObject({ status: 'failed', stop_reason: 'incomplete_final:github_evidence_missing' });
   });
 
   it('CI rouge : le modèle corrige au SHA du commit, puis le serveur relance la CI et ouvre la PR', async () => {
