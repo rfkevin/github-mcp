@@ -1,0 +1,291 @@
+import { describe, expect, it } from 'vitest';
+import { createRun, leaseKeyOf, type ToolHost } from '../../../src/collab-store/agentrun';
+import { maskSecrets, redactedReceipt, redactedRunSummaryFor } from '../../../src/collab-store/agentrun/chat-continuity';
+import { objectAlarm, objectWake, type ObjectSlot, type OrchestratorDeps } from '../../../src/collab-store/agentrun/orchestrator';
+import { recordRunModelCall } from '../../../src/collab-store/agentrun/provider-models';
+import { publishRunProof, RUN_PROOF_ATTEMPTS, RUN_PROOF_RETRY_S } from '../../../src/collab-store/agentrun/run-proof';
+import { requestCorrection } from '../../../src/collab-store/controller/corrections';
+import { taskEvidence } from '../../../src/collab-store/controller/facts';
+import { previewNextActions } from '../../../src/collab-store/controller/next-actions';
+import { registerParticipant } from '../../../src/collab-store/owner/decisions';
+import { appointCycleCoordinator } from '../../../src/collab-store/owner/delegation-execution';
+import { CollabStore } from '../../../src/collab-store/store/collab-store';
+import { countEvents, insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
+import { OWNER_PROOF, uniqueIds } from '../coordinator-helpers';
+import { BASE, BRANCH, C1, commitAs, db, drive, host, PASSED, SCOPE, scripted, setHalt, T } from './s7-guided-harness';
+
+// CC8 S7 durcissement — lot B (#282, issue mère #280) : R4 preuve serveur run.proof, R5 résumé expurgé et modèle servi.
+const uniq = uniqueIds('hb');
+const PR_BASE = 'e'.repeat(40);
+const GOOD = "import { describe, expect, it } from 'vitest';\nimport { planGuidedS7 } from '../../../src/collab-store/agentrun/s7-guided';\n"
+  + "describe('s7', () => { it('plan', () => { expect(planGuidedS7([], 'a-api-b', 't', 0).kind).toBe('server'); }); });\n";
+
+interface World { cycle: string; author: string; reviewer: string; tester: string; holder: string }
+
+async function world(): Promise<World> {
+  const tag = uniq('w');
+  const [author, reviewer, tester, holder] = ['ba', 'br', 'bt', 'bh'].map(p => p + '-' + tag);
+  for (const pid of [author, reviewer, tester, holder]) {
+    await registerParticipant(db, { participant_id: pid, display_label: pid, proof: OWNER_PROOF, op: uniq('reg') });
+  }
+  const cycle = uniq('cyc');
+  await insertCycleRow(db, cycle, 'P6');
+  await insertPhaseDefinition(db, cycle, 'P6', []);
+  await insertTaskRow(db, { taskId: 't0', cycle, owner: author, reviewer, tester });
+  await appointCycleCoordinator(db, { cycleId: cycle, participantId: holder, familyId: holder, expectedEpoch: 0, proof: OWNER_PROOF, op: uniq('appoint') });
+  return { cycle, author, reviewer, tester, holder };
+}
+
+async function revision(cycle: string): Promise<number> {
+  return (await db.prepare('SELECT revision FROM cycles WHERE cycle_id = ?1').bind(cycle).first<{ revision: number }>())!.revision;
+}
+
+let corrections = 0;
+/** Demande de correction du coordinateur (horodatée maintenant, donc AVANT la création du run à T). */
+async function correct(w: World): Promise<number> {
+  const out = await requestCorrection(db, { cycle_id: w.cycle, participant_id: w.holder, task_id: 't0', items: ['Pilote guidé'],
+    expected_revision: await revision(w.cycle), op_id: w.holder + ':' + w.cycle + ':corr:' + (++corrections) });
+  return out.event_seq;
+}
+
+/** Run guidé S7 de `participant` sur t0, mené jusqu'à `completed/final` (PR #300 au SHA C1). */
+async function completedRun(w: World, participant = w.author) {
+  const runId = 'cc8-hb-' + crypto.randomUUID();
+  await createRun(db, { runId, cycleId: w.cycle, participantId: participant, taskId: 't0', taskKind: 'implement', prompt: 'Lot B.',
+    maxSteps: 12, maxTokens: 48_000, maxCostCents: 0, deadlineAt: T + 2_700, now: T });
+  const grants = [{ cycle: w.cycle, participant, task: 't0', branch: BRANCH }];
+  const h = host({ github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: BASE }],
+    github_commit_files: [{ branch: BRANCH, commit_sha: C1 }], github_run_checks: [{ targetSha: C1, runId: 9 }],
+    github_check_result: [PASSED(C1)], github_open_pr: [{ branch: BRANCH, number: 300, head_sha: C1, draft: false }] });
+  const outcomes = await drive(runId, { model: scripted([commitAs('github_commit_files', GOOD)]).client, tools: h.tools, now: () => T + 100,
+    workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+  expect(outcomes.at(-1)).toBe('completed');
+  return { runId, grants };
+}
+
+/** Banc d'outils de la preuve : relecture de la PR (file de réponses ; fonction = panne). */
+function prReads(...answers: Array<unknown | (() => never)>): ToolHost {
+  return host({ github_pull_request: answers }).tools;
+}
+const OPEN = { number: 300, state: 'open', merged: false, head: { sha: C1 }, base: { sha: PR_BASE } };
+const proofDeps = (tools: ToolHost, grants: Awaited<ReturnType<typeof completedRun>>['grants'], at = T + 200) =>
+  ({ tools, githubCompletionGrants: grants, now: () => at });
+
+async function proofEvents(cycle: string) {
+  const { results } = await db.prepare("SELECT seq, participant_id, role, payload_json FROM events WHERE cycle_id = ?1 AND type = 'run.proof'")
+    .bind(cycle).all<{ seq: number; participant_id: string; role: string; payload_json: string }>();
+  return results;
+}
+
+describe('Lot B R4 — preuve serveur run.proof', () => {
+  it('CI verte + PR ouverte : une seule preuve signée agentrun, soumission au couple réel, correction close, review/test réveillés', async () => {
+    const w = await world();
+    const corr = await correct(w);
+    expect((await previewNextActions(db, w.cycle, w.author)).mine).toMatchObject([{ action: 'address_correction', subject: 'corr#' + corr }]);
+    const { runId, grants } = await completedRun(w);
+    const rev = await revision(w.cycle);
+    const out = await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants));
+    expect(out.status).toBe('published');
+    const [event] = await proofEvents(w.cycle);
+    expect(event).toMatchObject({ participant_id: 'agentrun', role: 'server' });
+    expect(JSON.parse(event.payload_json)).toMatchObject({ task: 't0', run_id: runId, run_participant: w.author, mandate_epoch: 1, pr: 300, head: C1,
+      base: PR_BASE, verified_success: true, scope: 'pilot_e2e_pass' });
+    expect(await revision(w.cycle)).toBe(rev + 1);
+    // Plus de demande ouverte : relecteur et testeur sont réveillés au couple exact ; l'auteur n'a plus rien.
+    expect((await previewNextActions(db, w.cycle, w.author)).mine).toEqual([]);
+    expect((await previewNextActions(db, w.cycle, w.reviewer)).mine).toMatchObject([{ action: 'review', subject: C1 + '..' + PR_BASE }]);
+    expect((await previewNextActions(db, w.cycle, w.tester)).mine).toMatchObject([{ action: 'test', subject: C1 + '..' + PR_BASE }]);
+    // Rejeu, double réveil : même preuve, aucune écriture de plus (GitHub n'est même pas relu).
+    expect(await publishRunProof(db, runId, proofDeps(prReads(), grants))).toEqual({ status: 'published', event_seq: event.seq });
+    expect(await proofEvents(w.cycle)).toHaveLength(1);
+  });
+
+  it('jamais un avis : une preuve ne compte que comme soumission de l’auteur (pur)', () => {
+    const roles = { owner: 'a', reviewer: 'r', tester: 't' };
+    const proof = (participant: string, seq: number) => ({ seq, participant, evidence_ref: '', server_proof: true,
+      payload_json: JSON.stringify({ task: 't0', state: 'AGREE', verdict: 'PASS', pr: 300, head: C1, base: PR_BASE }) });
+    expect(taskEvidence('t0', roles, [proof('a', 1)])).toEqual({ submission: { head: C1, base: PR_BASE, seq: 1 }, verdicts: [] });
+    expect(taskEvidence('t0', roles, [proof('r', 2), proof('t', 3)])).toEqual({ submission: null, verdicts: [] });
+    expect(taskEvidence('t1', roles, [proof('a', 4)])).toEqual({ submission: null, verdicts: [] });
+  });
+
+  it('le type est réservé au serveur : collab_append_event refuse run.proof', async () => {
+    const w = await world();
+    const store = new CollabStore(db, { dailyWriteLimit: 100_000 });
+    await expect(store.appendEvent({ cycle_id: w.cycle, type: 'run.proof' as never, participant_id: w.author, expected_rev: await revision(w.cycle),
+      payload_json: JSON.stringify({ task: 't0', head: C1, base: PR_BASE, pr: 300 }), op_id: w.author + ':' + w.cycle + ':proof:1' }))
+      .rejects.toMatchObject({ code: 'UNKNOWN_EVENT_TYPE' });
+    expect(await countEvents(db, w.cycle, 'run.proof')).toBe(0);
+  });
+
+  for (const [label, answer, reason] of [
+    ['tête déplacée', { ...OPEN, head: { sha: 'f'.repeat(40) } }, 'pr_head_moved'],
+    ['PR fermée', { ...OPEN, state: 'closed' }, 'pr_not_open'],
+    ['PR fusionnée', { ...OPEN, merged: true }, 'pr_not_open'],
+  ] as Array<[string, unknown, string]>) {
+    it('couple GitHub réel (' + label + ') → refus définitif, aucune preuve', async () => {
+      const w = await world();
+      const { runId, grants } = await completedRun(w);
+      expect(await publishRunProof(db, runId, proofDeps(prReads(answer), grants))).toEqual({ status: 'refused', reason });
+      expect(await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants))).toEqual({ status: 'refused', reason });
+      expect(await proofEvents(w.cycle)).toHaveLength(0);
+    });
+  }
+
+  it('run d’un autre que l’auteur, correction postérieure au run, tâche terminée → refus, aucune preuve', async () => {
+    const other = await world();
+    const run = await completedRun(other, other.reviewer);
+    expect(await publishRunProof(db, run.runId, proofDeps(prReads(OPEN), run.grants))).toEqual({ status: 'refused', reason: 'not_task_owner' });
+    const later = await world();
+    const done = await completedRun(later);
+    await db.prepare([
+      'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
+      "VALUES (?1, ?2, 'correction.request', ?3, '', 'coordinator', ?4, 0, ?5, '')",
+    ].join(' ')).bind(later.cycle, T + 150, later.holder, JSON.stringify({ task: 't0', items: ['x'] }), uniq('late')).run();
+    expect(await publishRunProof(db, done.runId, proofDeps(prReads(OPEN), done.grants))).toEqual({ status: 'refused', reason: 'correction_after_run' });
+    const closed = await world();
+    const fin = await completedRun(closed);
+    await db.prepare("UPDATE tasks SET status = 'done' WHERE cycle_id = ?1").bind(closed.cycle).run();
+    expect(await publishRunProof(db, fin.runId, proofDeps(prReads(OPEN), fin.grants))).toEqual({ status: 'refused', reason: 'task_closed' });
+    for (const w of [other, later, closed]) expect(await proofEvents(w.cycle)).toHaveLength(0);
+  });
+
+  it('hors mandat S7 ou run non terminé : ignoré sans trace', async () => {
+    const w = await world();
+    const { runId } = await completedRun(w);
+    expect(await publishRunProof(db, runId, proofDeps(prReads(OPEN), []))).toEqual({ status: 'skipped', reason: 'no_s7_mandate' });
+    expect(await publishRunProof(db, 'inconnu', proofDeps(prReads(OPEN), []))).toEqual({ status: 'skipped', reason: 'not_a_completed_implement_run' });
+    expect(await db.prepare('SELECT COUNT(*) AS c FROM agent_run_proofs WHERE run_id = ?1').bind(runId).first<{ c: number }>()).toEqual({ c: 0 });
+  });
+
+  it('HALT : aucune écriture, attente sans tentative consommée ; après levée, preuve publiée', async () => {
+    const w = await world();
+    const { runId, grants } = await completedRun(w);
+    await setHalt(true);
+    try {
+      expect(await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants))).toEqual({ status: 'pending', reason: 'halted', attempts: 0 });
+      expect(await proofEvents(w.cycle)).toHaveLength(0);
+    } finally {
+      await setHalt(false);
+    }
+    expect((await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants))).status).toBe('published');
+  });
+
+  it('GitHub illisible : reprise bornée, puis refus après ' + RUN_PROOF_ATTEMPTS + ' tentatives', async () => {
+    const w = await world();
+    const { runId, grants } = await completedRun(w);
+    const down = () => { throw new Error('github_down'); };
+    for (let attempt = 1; attempt < RUN_PROOF_ATTEMPTS; attempt++) {
+      expect(await publishRunProof(db, runId, proofDeps(prReads(down), grants))).toEqual({ status: 'pending', reason: 'github_unreadable', attempts: attempt });
+    }
+    expect(await publishRunProof(db, runId, proofDeps(prReads(down), grants))).toEqual({ status: 'refused', reason: 'attempts_exhausted:github_unreadable' });
+    expect(await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants))).toMatchObject({ status: 'refused' });
+    expect(await proofEvents(w.cycle)).toHaveLength(0);
+  });
+
+  it('révision concurrente entre lecture et écriture : relecture puis une seule preuve', async () => {
+    const w = await world();
+    const { runId, grants } = await completedRun(w);
+    let raced = false;
+    const racing = new Proxy(db, { get(target, prop, receiver) {
+      if (prop === 'batch') {
+        return async (statements: D1PreparedStatement[]) => {
+          if (!raced && statements.length === 5) {
+            raced = true;
+            await target.prepare('UPDATE cycles SET revision = revision + 1 WHERE cycle_id = ?1').bind(w.cycle).run();
+          }
+          return target.batch(statements);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    expect((await publishRunProof(racing, runId, proofDeps(prReads(OPEN), grants))).status).toBe('published');
+    expect(raced).toBe(true);
+    expect(await proofEvents(w.cycle)).toHaveLength(1);
+  });
+});
+
+function slotFixture() {
+  const values = new Map<string, string | number>();
+  const state = { alarm: null as number | null };
+  const slot: ObjectSlot = {
+    get: async key => values.get(key) as never, put: async (key, value) => { values.set(key, value); },
+    delete: async key => values.delete(key), getAlarm: async () => state.alarm,
+    setAlarm: async at => { state.alarm = at; }, deleteAlarm: async () => { state.alarm = null; },
+  };
+  return { slot, state };
+}
+
+describe('Lot B R4 — orchestrateur : preuve à la fin du run, nouvel essai borné par l’alarme', () => {
+  it('GitHub illisible à la fin : l’objet garde le run et réessaie ; au succès, preuve publiée puis libération', async () => {
+    const w = await world();
+    const { runId, grants } = await completedRun(w);
+    const { slot, state } = slotFixture();
+    const answers: Array<unknown | (() => never)> = [() => { throw new Error('github_down'); }, OPEN];
+    const tools = prReads(...answers);
+    const clock = { ms: (T + 300) * 1000 };
+    const deps: OrchestratorDeps = { db, env: { AGENT_RUNS_ENABLED: 'true' }, slot, ownsLease: () => true, nowMs: () => clock.ms,
+      engine: () => ({ model: scripted([]).client, tools, now: () => Math.floor(clock.ms / 1000), githubCompletionGrants: grants }),
+      workerId: () => 'hb-worker' };
+    await slot.put('run_id', runId);
+    expect(await objectAlarm(deps)).toEqual({ action: 'rescheduled', outcome: 'proof_pending', next_at: clock.ms + RUN_PROOF_RETRY_S * 1000 });
+    expect(state.alarm).toBe(clock.ms + RUN_PROOF_RETRY_S * 1000);
+    clock.ms += RUN_PROOF_RETRY_S * 1000;
+    expect(await objectAlarm(deps)).toEqual({ action: 'finished', outcome: 'completed' });
+    expect(await proofEvents(w.cycle)).toHaveLength(1);
+    expect(await slot.get('run_id')).toBeUndefined();
+    // Réveil tardif d'un run terminé : rien à refaire.
+    expect(await objectWake(deps, runId, leaseKeyOf(w.cycle, w.author, 't0'))).toEqual({ accepted: true, reason: 'terminal' });
+  });
+});
+
+describe('Lot B R5 — résumé expurgé et modèle servi', () => {
+  it('propriétaire et coordinateur lisent le même résumé expurgé ; toute autre identité → null', async () => {
+    const w = await world();
+    const { runId, grants } = await completedRun(w);
+    await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants));
+    const mine = await redactedRunSummaryFor(db, w.author, runId);
+    expect(mine).toMatchObject({ run_id: runId, status: 'completed', stop_reason: 'final', steps_done: 6, server_steps: 5, model_steps: 1,
+      tokens_used: 2_000, proof: { status: 'published' } });
+    expect(mine!.effects.find(e => e.tool === 'github_open_pr')).toMatchObject({ receipt: { number: 300, head_sha: C1, draft: false } });
+    expect(await redactedRunSummaryFor(db, w.holder, runId)).toEqual(mine);
+    expect(await redactedRunSummaryFor(db, w.reviewer, runId)).toBeNull();
+    expect(await redactedRunSummaryFor(db, w.author, 'inconnu')).toBeNull();
+  });
+
+  it('secrets factices : ni contenu, ni argument, ni jeton dans le résumé ; stop_reason masqué', async () => {
+    const w = await world();
+    const { runId } = await completedRun(w);
+    const secret = 'ghp_' + 'A1b2C3d4'.repeat(5);
+    await db.prepare([
+      'INSERT INTO agent_run_effects (effect_key, run_id, n, idx, tool, args, status, result, updated_at)',
+      "VALUES (?1, ?2, 99, 0, 'github_read_file', ?3, 'completed', ?4, ?5)",
+    ].join(' ')).bind(uniq('fx'), runId, JSON.stringify({ token: secret }),
+      JSON.stringify({ content: 'TOKEN=' + secret, sha: 'a'.repeat(40), error: secret, branch: 'x Bearer ' + secret }), T).run();
+    await db.prepare("UPDATE agent_runs SET stop_reason = ?2 WHERE run_id = ?1").bind(runId, 'model_permanent: key ' + secret + ' refused').run();
+    const text = JSON.stringify(await redactedRunSummaryFor(db, w.holder, runId));
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain('TOKEN=');
+    expect(text).not.toContain('Lot B.'); // prompt
+    expect(text).toContain('model_permanent: key [masqué] refused');
+    expect(redactedReceipt(JSON.stringify({ sha: 'a'.repeat(40), content: 'x', error: secret, number: 3 }))).toEqual({ sha: 'a'.repeat(40), number: 3 });
+    // Formes factices construites à l'exécution (aucune chaîne au format de clé dans le source).
+    expect(maskSecrets(['sk', 'abcdefghijklmnopqrstu'].join('-') + ' et ' + 'AKIA' + 'ABCDEFGHIJKLMNOP')).toBe('[masqué] et [masqué]');
+  });
+
+  it('modèle servi : chaque essai de maillon tracé (choisi, servi, repli, échec), visible du coordinateur', async () => {
+    const w = await world();
+    const { runId } = await completedRun(w);
+    await recordRunModelCall(db, { run_id: runId, n: 2, chosen_ref: 'gemini:gemini-3.8-flash', ref: 'gemini:gemini-3.8-flash', ok: false,
+      failure: 'transient', latency_ms: 1200, at: T });
+    await recordRunModelCall(db, { run_id: runId, n: 2, chosen_ref: 'gemini:gemini-3.8-flash', ref: 'gemini:gemini-3.5-flash-lite', ok: true,
+      failure: '', latency_ms: 800, at: T });
+    const summary = await redactedRunSummaryFor(db, w.holder, runId);
+    expect(summary!.model_calls).toEqual([
+      { n: 2, k: 0, chosen_ref: 'gemini:gemini-3.8-flash', served_ref: 'gemini:gemini-3.8-flash', ok: false, fallback: false, failure: 'transient', latency_ms: 1200 },
+      { n: 2, k: 1, chosen_ref: 'gemini:gemini-3.8-flash', served_ref: 'gemini:gemini-3.5-flash-lite', ok: true, fallback: true, failure: '', latency_ms: 800 },
+    ]);
+    await expect(db.prepare('UPDATE agent_run_model_calls SET ok = 1 WHERE run_id = ?1').bind(runId).run()).rejects.toThrow();
+  });
+});
