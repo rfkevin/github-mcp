@@ -681,8 +681,25 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       // Relecture D12 GPT-6 : exactement UN github_commit_files, vérifié en code AVANT tout effet.
       const violation = guidedViolation(output);
       if (violation) {
-        await stopAs(db, runId, 'failed', 'guided_violation:' + violation, now, claim);
-        return { outcome: 'failed' };
+        // Relecture D12 GPT-6 (R3) : les jetons et le coût de l'appel sont DÉJÀ consommés. Ils sont
+        // comptabilisés (run et étape), la sortie rejetée est tracée au journal, puis l'arrêt est posé
+        // sous la réclamation exacte et la garde LIVE — dans le même lot, avant tout effet. L'étape
+        // reste 'claimed' sans model_output : une reprise ne rejoue jamais la sortie rejetée.
+        const tokens = Math.max(0, Math.floor(response.usage?.tokens ?? 0));
+        const cost = Math.max(0, Math.ceil(response.usage?.cost_cents ?? 0));
+        const reason = 'guided_violation:' + violation;
+        await db.batch([
+          db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1')
+            .bind(runId, tokens, cost, now),
+          db.prepare("UPDATE agent_run_steps SET tokens = tokens + ?5, cost_cents = cost_cents + ?6 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4 AND state = 'claimed'")
+            .bind(runId, n, deps.workerId, claimed.attempts, tokens, cost),
+          db.prepare('INSERT INTO agent_run_journal (at, kind, run_id, detail) VALUES (?1, ?2, ?3, ?4)')
+            .bind(now, 'guided_violation', runId, JSON.stringify({ n, worker: deps.workerId, attempts: claimed.attempts, violation, tokens, cost_cents: cost,
+              output: JSON.stringify(output).slice(0, GUIDED_TRACE_MAX) })),
+          db.prepare("UPDATE agent_runs SET status = 'failed', stop_reason = ?2, updated_at = ?3 WHERE run_id = ?1 AND status = 'running' AND "
+            + LIVE + ' AND ' + claimHeld('?4', '?5', '?6')).bind(runId, reason.slice(0, 500), now, n, deps.workerId, claimed.attempts),
+        ]);
+        return settled(db, runId, now);
       }
       output = applyGuidedFill(output, guide.fill);
     }
