@@ -155,6 +155,71 @@ describe('CC8 S7 — relevés de CI sans modèle', () => {
     expect(lateHost.calls).toHaveLength(1);
   });
 
+  it('relecture D12 R1 : deux réveils concurrents ne lisent jamais deux fois le même relevé', async () => {
+    const { runId } = await newRun('race');
+    const model = scripted([check()]);
+    let release: (value: unknown) => void = () => undefined;
+    let entered: () => void = () => undefined;
+    const inside = new Promise<void>(resolve => { entered = resolve; });
+    let reads = 0;
+    const tools: ToolHost = {
+      list: () => ['github_check_result'],
+      spec: (_kind, name) => name === 'github_check_result' ? { name, effect: 'write' } : null,
+      async execute() {
+        reads++;
+        if (reads === 1) return WAIT; // appel d'origine (étape modèle)
+        entered();
+        return new Promise(resolve => { release = resolve; });
+      },
+    };
+    const deps = (worker: string) => ({ model: model.client, tools, now: () => T + 100, workerId: worker });
+    await runStep(db, runId, deps('w1'));
+    const first = runStep(db, runId, deps('w1'));
+    await inside;
+    // Second réveil pendant que le relevé k=1 est en vol : refus « busy », aucune lecture.
+    expect(await runStep(db, runId, deps('w2'))).toEqual({ outcome: 'busy' });
+    expect(reads).toBe(2);
+    release(PASSED);
+    expect(await first).toEqual({ outcome: 'stepped' });
+    expect(reads).toBe(2);
+    const rows = await db.prepare('SELECT k, status, claimed_by FROM agent_run_ci_polls WHERE run_id = ?1').bind(runId).all();
+    expect(rows.results).toEqual([{ k: 1, status: 'completed', claimed_by: 'w1' }]);
+  });
+
+  it('relecture D12 R1 : réponse perdue → relevé clos ambiguous sans relecture, puis k + 1', async () => {
+    const { runId } = await newRun('lost');
+    const model = scripted([check()]);
+    const { tools, calls } = host({ github_check_result: [WAIT, PASSED] });
+    await runStep(db, runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1' });
+    // Coupure simulée : k=1 réclamé par un worker disparu, sans issue.
+    await db.prepare("INSERT INTO agent_run_ci_polls (run_id, n, idx, k, status, claimed_by, claimed_at) VALUES (?1, 0, 0, 1, 'pending', 'lost', ?2)")
+      .bind(runId, T + 100).run();
+    // Encore frais : on attend.
+    expect(await runStep(db, runId, { model: model.client, tools, now: () => T + 150, workerId: 'w2' })).toEqual({ outcome: 'busy' });
+    // Périmé : clos ambiguous, sans lecture GitHub.
+    expect(await runStep(db, runId, { model: model.client, tools, now: () => T + 400, workerId: 'w2' })).toEqual({ outcome: 'stepped' });
+    expect(calls).toHaveLength(1);
+    // Relevé suivant : k=2, une seule lecture.
+    expect(await runStep(db, runId, { model: model.client, tools, now: () => T + 460, workerId: 'w2' })).toEqual({ outcome: 'stepped' });
+    expect(calls).toHaveLength(2);
+    const rows = await db.prepare('SELECT k, status FROM agent_run_ci_polls WHERE run_id = ?1 ORDER BY k').bind(runId).all();
+    expect(rows.results).toEqual([{ k: 1, status: 'ambiguous' }, { k: 2, status: 'completed' }]);
+    expect(model.seen).toHaveLength(1);
+  });
+
+  it('relecture D12 R2 : journal append-only garanti par SQL (ni suppression, ni réécriture)', async () => {
+    const { runId } = await newRun('triggers');
+    const model = scripted([check()]);
+    const { tools } = host({ github_check_result: [WAIT, WAIT] });
+    const deps = { model: model.client, tools, now: () => T + 100, workerId: 'w1' };
+    await runStep(db, runId, deps);
+    await runStep(db, runId, deps);
+    await expect(db.prepare('DELETE FROM agent_run_ci_polls WHERE run_id = ?1').bind(runId).run()).rejects.toThrow(/append-only/);
+    await expect(db.prepare("UPDATE agent_run_ci_polls SET result = '{}' WHERE run_id = ?1").bind(runId).run()).rejects.toThrow(/append-only/);
+    await expect(db.prepare("UPDATE agent_run_ci_polls SET status = 'ambiguous' WHERE run_id = ?1").bind(runId).run()).rejects.toThrow(/append-only/);
+    expect(await pollCount(runId)).toBe(1);
+  });
+
   it('garde de complétude S7 : un succès CI constaté par relevé serveur compte comme preuve', async () => {
     const { runId, cycleId } = await newRun('completion');
     const outputs: ModelOutput[] = [
