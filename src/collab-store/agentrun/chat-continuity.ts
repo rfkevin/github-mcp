@@ -73,46 +73,60 @@ export async function runSummaryForParticipant(
 
 // ---------------------------------------------------------------- CC8 S7 lot B R5 (#282) : résumé expurgé
 
-/** Seuls champs d'un résultat d'outil repris dans le résumé expurgé (identifiants, SHA, statuts). */
-const RECEIPT_KEYS = ['branch', 'sha', 'head_sha', 'commit_sha', 'base_sha', 'targetSha', 'runId', 'run_id', 'number', 'status',
-  'conclusion', 'next_action', 'verifiedSuccess', 'draft', 'merged', 'error'] as const;
-const SAFE_VALUE = /^[A-Za-z0-9_.:/-]{1,64}$/;
-const SECRET_PATTERNS = [/gh[pousr]_[A-Za-z0-9]{16,}/g, /github_pat_[A-Za-z0-9_]{16,}/g, /sk-[A-Za-z0-9_-]{16,}/g,
-  /xox[abprs]-[A-Za-z0-9-]{10,}/g, /AKIA[0-9A-Z]{16}/g, /AIza[0-9A-Za-z_-]{20,}/g, /Bearer\s+[A-Za-z0-9._~+/=-]{12,}/gi];
+// Relecture D12 GPT-6 (PR #285, B2) : vue FAIL-CLOSED. Aucun texte libre : chaque champ repris est validé
+// par une forme stricte ou une liste fermée ; tout le reste est écarté (pas de masquage par motifs de secrets,
+// qui laisserait passer un format inconnu).
+const SHA_FIELD = /^[a-f0-9]{40}$/;
+const RECEIPT_FIELDS: Record<string, (value: unknown) => boolean> = {
+  sha: v => typeof v === 'string' && SHA_FIELD.test(v),
+  head_sha: v => typeof v === 'string' && SHA_FIELD.test(v),
+  commit_sha: v => typeof v === 'string' && SHA_FIELD.test(v),
+  base_sha: v => typeof v === 'string' && SHA_FIELD.test(v),
+  targetSha: v => typeof v === 'string' && SHA_FIELD.test(v),
+  branch: v => typeof v === 'string' && /^mcp\/\d{1,20}\/[a-z0-9][a-z0-9._-]{0,80}$/.test(v),
+  number: v => Number.isSafeInteger(v) && Number(v) > 0,
+  runId: v => Number.isSafeInteger(v) && Number(v) > 0,
+  run_id: v => Number.isSafeInteger(v) && Number(v) > 0,
+  status: v => typeof v === 'string' && ['queued', 'in_progress', 'completed', 'pending', 'requested', 'waiting', 'open', 'closed'].includes(v),
+  conclusion: v => typeof v === 'string'
+    && ['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required', 'stale'].includes(v),
+  next_action: v => typeof v === 'string' && ['wait', 'correct', 'request_D12', 'escalate'].includes(v),
+  verifiedSuccess: v => typeof v === 'boolean',
+  draft: v => typeof v === 'boolean',
+  merged: v => typeof v === 'boolean',
+};
 
-/** Masque les formes connues de secrets dans un texte borné. */
-export function maskSecrets(text: string, max = 500): string {
-  return SECRET_PATTERNS.reduce((out, pattern) => out.replace(pattern, '[masqué]'), text).slice(0, max);
-}
-
-/** Valeur scalaire sûre : booléen, nombre fini, ou court identifiant sans forme de secret. */
-function safeScalar(value: unknown): string | number | boolean | undefined {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value !== 'string' || !SAFE_VALUE.test(value) || maskSecrets(value) !== value) return undefined;
-  // Longue chaîne mêlant majuscules, minuscules et chiffres (jeton probable), sauf SHA hexadécimal : écartée.
-  if (value.length >= 20 && !/^[a-f0-9]{40}$/.test(value) && /[A-Z]/.test(value) && /[a-z]/.test(value) && /\d/.test(value)) return undefined;
-  return value;
-}
-
-/** Reçu d'un résultat JSON : liste blanche de clés et valeurs sûres, rien d'autre. */
+/** Reçu d'un résultat JSON : seuls les champs de RECEIPT_FIELDS dont la valeur a la forme attendue. */
 export function redactedReceipt(result: string | null): Record<string, string | number | boolean> {
   const receipt: Record<string, string | number | boolean> = {};
   let parsed: unknown;
   try { parsed = JSON.parse(result ?? ''); } catch { return receipt; }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return receipt;
-  for (const key of RECEIPT_KEYS) {
-    const value = safeScalar((parsed as Record<string, unknown>)[key]);
-    if (value !== undefined) receipt[key] = value;
+  for (const [key, valid] of Object.entries(RECEIPT_FIELDS)) {
+    const value = (parsed as Record<string, unknown>)[key];
+    if (valid(value)) receipt[key] = value as string | number | boolean;
   }
   return receipt;
 }
 
+/** Causes typées reprises après le code d'arrêt (arrêts guidés S7, prévalidation) ; toute autre cause est écartée. */
+const STOP_CLASSES = new Set(['no_tool_call', 'tool_not_offered', 'multiple_tool_calls', 'branch_name', 'scope_refused', 'scope_invalid',
+  'branch_refused', 'checks_refused', 'check_unexpected', 'pr_already_open', 'server_cap', 'tool_unavailable', 'precheck_failed',
+  'github_evidence_missing', 'ci_escalate', 'ci_unknown']);
+
+/** Code d'arrêt typé (préfixe identifiant) et cause connue ; jamais le texte libre de stop_reason. */
+export function typedStop(stopReason: string | null): { stop_code: string; stop_class: string | null } {
+  const [code, detail] = (stopReason ?? '').split(':').map(part => part.trim());
+  const stopCode = /^[a-z][a-z0-9_]{0,40}$/.test(code ?? '') ? code : 'other';
+  return { stop_code: stopCode, stop_class: detail && STOP_CLASSES.has(detail) ? detail : null };
+}
+
 /**
  * Résumé déterministe et EXPURGÉ d'une exécution, pour son propriétaire ou le coordinateur du cycle :
- * statut, stop_reason (secrets masqués), étapes (serveur / modèle), jetons, coût, effets réduits à leurs
- * reçus, relevés CI, appels modèle (maillon choisi, servi, repli), preuve serveur. Jamais de prompt, de
- * sortie modèle, d'arguments d'outil, de contenu de fichier ni de résumé texte du modèle.
+ * statut, code d'arrêt typé (jamais le texte libre de stop_reason), étapes (serveur / modèle), jetons, coût,
+ * effets réduits à leurs reçus validés, relevés CI, appels modèle (maillon choisi, servi, repli), preuve
+ * serveur. Jamais de prompt, de sortie modèle, d'argument d'outil, de contenu de fichier, de message
+ * d'erreur ni de résumé texte du modèle.
  */
 export async function redactedRunSummary(db: D1Database, runId: string) {
   await ensureAgentRunSchema(db);
@@ -143,15 +157,17 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
     .first<{ status: string; reason: string; attempts: number; event_seq: number | null }>();
   return {
     run_id: run.run_id, cycle_id: run.cycle_id, participant_id: run.participant_id, task_id: run.task_id, task_kind: run.task_kind,
-    status: run.status, stop_reason: maskSecrets(run.stop_reason ?? ''), steps_done: run.steps_done, server_steps: run.server_steps,
+    status: run.status, ...typedStop(run.stop_reason), steps_done: run.steps_done, server_steps: run.server_steps,
     model_steps: run.steps_done - run.server_steps, max_steps: run.max_steps, tokens_used: run.tokens_used, cost_cents: run.cost_cents,
     created_at: run.created_at, updated_at: run.updated_at,
     effects: effects.map(e => ({ n: e.n, idx: e.idx, tool: e.tool, status: e.status, receipt: redactedReceipt(e.result) })),
     ci_polls: polls.map(p => ({ n: p.n, idx: p.idx, k: p.k, status: p.status, receipt: redactedReceipt(p.result) })),
     model_choices: choices.map(c => ({ n: c.n, ref: c.ref, chosen_by: c.chosen_by, effort: c.effort })),
     model_calls: calls.map(c => ({ n: c.n, k: c.k, chosen_ref: c.chosen_ref, served_ref: c.ref, ok: c.ok === 1,
-      fallback: c.ref !== c.chosen_ref, failure: c.failure, latency_ms: c.latency_ms })),
-    proof: proof ? { status: proof.status, reason: proof.reason, attempts: proof.attempts, event_seq: proof.event_seq } : null,
+      fallback: c.ref !== c.chosen_ref, failure: c.failure === 'transient' || c.failure === 'permanent' ? c.failure : '', latency_ms: c.latency_ms })),
+    // Raisons de preuve : codes posés par run-proof.ts (identifiants), jamais de texte externe.
+    proof: proof ? { status: proof.status, reason: /^[a-z_:]{1,80}$/.test(proof.reason) ? proof.reason : 'other', attempts: proof.attempts,
+      event_seq: proof.event_seq } : null,
   };
 }
 
