@@ -42,6 +42,7 @@ import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
+import { planGuidedS7, type GuidedStep } from './s7-guided';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
 import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
 
@@ -103,6 +104,8 @@ export interface EngineDeps {
   compactHistory?: boolean;
   /** Mandats GitHub de réussite posés par le propriétaire, jamais par le modèle. */
   githubCompletionGrants?: readonly GitHubCompletionGrant[];
+  /** CC8 S7 mode guidé : étapes mécaniques émises par le serveur sous mandat S7 (activé au runtime). */
+  guidedS7?: boolean;
   /** Points de crash injectables pour les tests (lever une exception = coupure). */
   probe?: (point: 'after_model' | 'before_effect' | 'after_effect' | 'after_effect_recorded') => void | Promise<void>;
 }
@@ -334,21 +337,37 @@ async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps)
     && g.task === run.task_id && g.participant === run.participant_id);
   if (grants.length === 0) return true; // Hors mandat S7, comportement historique.
   if (grants.length !== 1) return false; // Ambiguïté = pas de succès.
+  return githubCompletionSatisfied(await runEvidence(db, run.run_id), grants[0].branch);
+}
+
+/** Effets D1 de l'exécution dans l'ordre (n, idx) ; les relevés de CI serveur suivent leur effet d'origine. */
+async function runEvidence(db: D1Database, runId: string): Promise<GithubCompletionEffect[]> {
   const { results } = await db.prepare(
     'SELECT n, idx, tool, status, result FROM agent_run_effects WHERE run_id = ?1 ORDER BY n, idx',
-  ).bind(run.run_id).all<GithubCompletionEffect & { n: number; idx: number }>();
-  // CC8 S7 : les relevés de CI faits par le serveur (sans modèle) suivent leur effet d'origine.
-  const polls = await allCiPolls(db, run.run_id);
+  ).bind(runId).all<GithubCompletionEffect & { n: number; idx: number }>();
+  const polls = await allCiPolls(db, runId);
   const merged: GithubCompletionEffect[] = [];
   for (const effect of results) {
-    merged.push(effect);
+    merged.push({ tool: effect.tool, status: effect.status, result: effect.result });
     for (const poll of polls) {
       if (poll.n === effect.n && poll.idx === effect.idx && effect.tool === CI_POLL_TOOL) {
         merged.push({ tool: CI_POLL_TOOL, status: 'completed', result: poll.result });
       }
     }
   }
-  return githubCompletionSatisfied(merged, grants[0].branch);
+  return merged;
+}
+
+/** CC8 S7 mode guidé : prochaine étape déduite des effets D1, pour une exécution sous mandat S7 seulement. */
+async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: number): Promise<GuidedStep | null> {
+  if (!deps.guidedS7 || run.task_kind !== 'implement') return null;
+  const grants = (deps.githubCompletionGrants ?? []).filter(g => g.cycle === run.cycle_id
+    && g.task === run.task_id && g.participant === run.participant_id);
+  if (grants.length !== 1) return null;
+  const entries = (await runEvidence(db, run.run_id)).map(e => ({ tool: e.tool, value: completedPayload(e), failed: e.status === 'failed' }));
+  const step = planGuidedS7(entries, grants[0].branch, run.task_id, n);
+  if (step?.kind === 'server' && !deps.tools.spec(run.task_kind, step.call.name)) return null;
+  return step;
 }
 
 /** Compaction déterministe et opt-in du seul contexte envoyé au fournisseur.
@@ -567,9 +586,21 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     output = JSON.parse(claimed.model_output) as ModelOutput;
   } else {
     let response: { output: ModelOutput; usage: ModelUsage };
+    // CC8 S7 mode guidé : étape mécanique émise par le serveur (sans modèle ni jeton), ou consigne précise
+    // et un seul outil pour l'étape de contenu. Le résultat suit ensuite le chemin commun (gardes, effets).
+    const guide = await guidedStep(db, run, deps, n);
     try {
-      response = await deps.model.complete({ messages: await buildMessages(db, run, deps.compactHistory && run.task_kind === 'implement'), tools: deps.tools.list(run.task_kind), task_kind: run.task_kind,
-        budget_left_ms: budgetLeftMs });
+      if (guide?.kind === 'server') {
+        response = { output: { text: 'Étape mécanique exécutée par le serveur (mode guidé S7) : ' + guide.call.name + '.', tool_calls: [guide.call] },
+          usage: { tokens: 0, cost_cents: 0 } };
+      } else {
+        const messages = await buildMessages(db, run, deps.compactHistory && run.task_kind === 'implement');
+        const tools = deps.tools.list(run.task_kind);
+        response = await deps.model.complete({
+          messages: guide ? [...messages, { role: 'user', content: guide.instruction }] : messages,
+          tools: guide ? tools.filter(name => guide.tools.includes(name)) : tools,
+          task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
+      }
     } catch (error) {
       const usage = error instanceof ModelCallError ? error.usage : null;
       await db.batch([

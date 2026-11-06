@@ -32,6 +32,18 @@ Vote CC8 seq 1657 (option seq 1665, reprise par GPT-6 et Vibe), GO de Kevin le 0
 
 Aucun pilote n'est lancé par ce lot ; aucun coût payant.
 
+### CC8 S7 — mode guidé pour les modèles gratuits (décision de Kevin du 06/11)
+
+Constat des pilotes réels : Vibe n° 4 (seq 1710) s'est arrêté après la lecture du mandat ; Gemini n° 1 (seq 1716) a épuisé ses 12 étapes sans créer la branche. Les modèles gratuits n'enchaînent pas seuls six appels dépendants. Kevin a choisi de réparer le circuit pour eux (cela allègera aussi un modèle payant).
+
+Pour une exécution `implement` sous mandat S7 (`agentrun/s7-guided.ts`, activé au runtime par `object.ts`), la prochaine action est déduite des seuls effets D1 :
+
+- **étapes mécaniques émises par le serveur** (aucun appel modèle, aucun jeton) : `github_write_scope`, `github_create_branch` (base lue dans le mandat), `github_run_checks` au SHA du dernier commit, `github_check_result`, puis `github_open_pr` une fois la CI verte au même SHA ;
+- **étape de contenu confiée au modèle** : premier commit, ou correction après une CI rouge. Le modèle reçoit une consigne précise (nom, `expected_head_sha`, chemins autorisés) et **un seul outil**, `github_commit_files` ;
+- **même chemin que les appels du modèle** : allow-list, gardes S7 (HALT, pause, fence, mandat, head), effets idempotents et réconciliation, garde de complétude #271, relevés de CI serveur (#277) ;
+- **aucun guidage** dans tout autre état (refus, branche préexistante, escalade, résultat inattendu) : le modèle garde la main avec tous ses outils, comme avant ;
+- budget : 5 étapes serveur et 1 étape modèle pour un parcours sans correction ; chaque correction coûte 1 étape modèle et 2 étapes serveur, dans les 12 étapes.
+
 ## Validation et limites
 
 Au commit `2772ac54ac6b7271f6c8dc3c340d4751e73a1e25`, quatre contrôles GitHub ont réussi : `ci`, Workers Builds, SonarCloud et GitGuardian. Ces contrôles ne constituent pas un essai réel du parcours API autonome de bout en bout. Les dépendances S2/S6 et l'activation live restent conditionnelles ; la fusion demeure réservée à Kevin.
