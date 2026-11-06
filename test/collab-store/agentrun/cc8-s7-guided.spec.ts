@@ -1,81 +1,13 @@
-import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { createRun, runStep, ToolRefused, type AgentMessage, type ModelOutput, type ToolCall, type ToolHost }
-  from '../../../src/collab-store/agentrun';
+import { runStep, ToolRefused, type ModelOutput } from '../../../src/collab-store/agentrun';
 import { planGuidedS7, type GuidedEntry } from '../../../src/collab-store/agentrun/s7-guided';
-import { ensureSchema } from '../../../src/collab-store/store/schema';
+import { BASE, BRANCH, C1, C2, commitAs, db, drive, FAILED, HEAD, host, newRun, PASSED, PATH, row, S7_TOOLS, SCOPE, scripted, T, WAIT }
+  from './s7-guided-harness';
 
 // CC8 S7 — mode guidé : le serveur fait les étapes mécaniques, le modèle écrit seulement le contenu.
-const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
-const T = 1_970_000_000;
-const BRANCH = 'mcp/105856986/vibe-api-s7-live';
-const PATH = 'test/collab-store/agentrun/s7-live-vibe.spec.ts';
-const BASE = 'b'.repeat(40);
-const HEAD = 'a'.repeat(40);
-const C1 = 'c'.repeat(40);
-const C2 = 'd'.repeat(40);
-const SCOPE = { branch: BRANCH, name: 's7-live', base_branch: 'mcp/105856986/cc3-integration', base_sha: BASE, granted_paths: [PATH], task_paths: [PATH], corrections_remaining: 3 };
-const WAIT = (sha: string) => ({ targetSha: sha, status: 'in_progress', conclusion: null, verifiedSuccess: false, next_action: 'wait', next_poll_seconds: 15 });
-const PASSED = (sha: string) => ({ targetSha: sha, status: 'completed', conclusion: 'success', verifiedSuccess: true, next_action: 'request_D12', next_poll_seconds: null });
-const FAILED = (sha: string) => ({ targetSha: sha, status: 'completed', conclusion: 'failure', verifiedSuccess: false, next_action: 'correct', next_poll_seconds: null, diagnostics: ['expected 1 to be 2'] });
-
-const S7_TOOLS = ['github_write_scope', 'github_create_branch', 'github_commit_files', 'github_replace_text', 'github_run_checks',
-  'github_check_result', 'github_open_pr', 'github_read_file'];
-
-function host(queues: Record<string, Array<unknown | (() => never)>>) {
-  const calls: ToolCall[] = [];
-  const tools: ToolHost = {
-    list: () => S7_TOOLS,
-    spec: (_kind, name) => S7_TOOLS.includes(name) ? { name, effect: name === 'github_read_file' ? 'read' : 'write' } : null,
-    async execute(call: ToolCall) {
-      calls.push(call);
-      const next = (queues[call.name] ?? []).shift();
-      if (typeof next === 'function') return (next as () => never)();
-      if (next === undefined) throw new ToolRefused('unexpected ' + call.name);
-      return next;
-    },
-  };
-  return { tools, calls };
-}
-
-function scripted(outputs: ModelOutput[]) {
-  const seen: Array<{ messages: AgentMessage[]; tools: string[] }> = [];
-  return {
-    seen,
-    client: { async complete(input: { messages: AgentMessage[]; tools: string[] }) {
-      seen.push({ messages: input.messages, tools: input.tools });
-      return { output: outputs[seen.length - 1] ?? { text: 'fin', tool_calls: [] }, usage: { tokens: 2_000, cost_cents: 0 } };
-    } },
-  };
-}
-
-const commit = (head: string, content: string): ModelOutput => ({ text: '', tool_calls: [{ id: 'm-commit', name: 'github_commit_files',
-  args: { name: 's7-live', expected_head_sha: head, message: 'S7 test', files: [{ path: PATH, content }] } }] });
-
-async function newRun(label: string, maxSteps = 12) {
-  await ensureSchema(db);
-  const runId = 'cc8-guided-' + label + '-' + crypto.randomUUID();
-  const cycleId = 'cc8-guided-' + crypto.randomUUID();
-  await createRun(db, { runId, cycleId, participantId: 'vibe', taskId: 'S7-live-vibe', taskKind: 'implement', prompt: 'Écris le test S7.',
-    maxSteps, maxTokens: 48_000, maxCostCents: 0, deadlineAt: T + 2_700, now: T });
-  const grants = [{ cycle: cycleId, participant: 'vibe', task: 'S7-live-vibe', branch: BRANCH }];
-  return { runId, grants };
-}
-
-async function drive(runId: string, deps: Parameters<typeof runStep>[2], max = 30) {
-  const outcomes: string[] = [];
-  for (let i = 0; i < max; i++) {
-    const { outcome } = await runStep(db, runId, deps);
-    outcomes.push(outcome);
-    if (outcome !== 'stepped') break;
-  }
-  return outcomes;
-}
-
-async function row(runId: string) {
-  return (await db.prepare('SELECT status, stop_reason, steps_done, tokens_used FROM agent_runs WHERE run_id = ?1').bind(runId)
-    .first<{ status: string; stop_reason: string; steps_done: number; tokens_used: number }>())!;
-}
+// Lot A R2 (#281) : un fichier *.spec.ts doit importer vitest pour passer la prévalidation du serveur.
+const VITEST = "import { expect, it } from 'vitest';\n";
+const commit = (head: string, content: string): ModelOutput => commitAs('github_commit_files', VITEST + content, head);
 
 describe('CC8 S7 — mode guidé (planificateur pur)', () => {
   const e = (tool: string, value: Record<string, unknown> | null, failed = false): GuidedEntry => ({ tool, value, failed });
@@ -148,7 +80,7 @@ describe('CC8 S7 — mode guidé (moteur, D1)', () => {
     const BLOB = 'e'.repeat(40);
     // Le modèle se trompe de nom et de head et invente un expected_sha : le serveur corrige.
     const model = scripted([{ text: '', tool_calls: [{ id: 'm', name: 'github_commit_files', args: { name: 'autre', expected_head_sha: 'f'.repeat(40),
-      message: 'm', files: [{ path: PATH, content: 'x', expected_sha: '0'.repeat(40) }] } }] }]);
+      message: 'm', files: [{ path: PATH, content: VITEST + 'x', expected_sha: '0'.repeat(40) }] } }] }]);
     const { tools, calls } = host({
       github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }],
       github_read_file: [{ path: PATH, sha: BLOB, size: 7, content: 'ancien contenu' }],
@@ -157,7 +89,7 @@ describe('CC8 S7 — mode guidé (moteur, D1)', () => {
     });
     expect((await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true })).at(-1)).toBe('completed');
     const commitCall = calls.find(c => c.name === 'github_commit_files')!;
-    expect(commitCall.args).toMatchObject({ name: 's7-live', expected_head_sha: HEAD, files: [{ path: PATH, content: 'x', expected_sha: BLOB }] });
+    expect(commitCall.args).toMatchObject({ name: 's7-live', expected_head_sha: HEAD, files: [{ path: PATH, content: VITEST + 'x', expected_sha: BLOB }] });
     expect(calls.find(c => c.name === 'github_read_file')?.args).toEqual({ path: PATH, ref: HEAD });
     expect(model.seen[0].messages.at(-1)!.content).toContain('ancien contenu');
   });

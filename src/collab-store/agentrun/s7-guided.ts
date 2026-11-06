@@ -22,10 +22,112 @@
  * - les étapes serveur ne comptent pas dans max_steps (table agent_run_server_steps, plafond propre) ;
  * - branche préexistante : reprise depuis la tête lue par le mandat (branch_head) ;
  * - correction : diagnostics de CI bornés et contenu actuel du fichier injectés dans la consigne.
+ *
+ * Lot A (#281, issue mère #280), après les pilotes Vibe n° 5 (seq 1731) et Gemini n° 2 (seq 1734) :
+ * - R1 : le nom d'outil est canonisé (espaces de bord seulement, String.prototype.trim) AVANT les
+ *   gardes ; casse, espace interne, caractère invisible ou homoglyphe, autre outil : refus inchangé ;
+ * - R2 : prévalidation statique du contenu, après applyGuidedFill et AVANT tout effet GitHub, sans
+ *   exécuter de code. Un refus est un effet D1 `guided_precheck` (échec, aucune écriture GitHub) :
+ *   l'étape compte dans max_steps et les jetons, pas dans les corrections CI ; une reformulation au
+ *   plus, puis arrêt typé `guided_stop:precheck_failed` ;
+ * - R3 (consigne seulement) : test Vitest du dépôt, code du dépôt importé, assertions liées à la
+ *   demande ; le contrôle automatique des tests triviaux viendra au lot C.
  */
 import type { ModelOutput, ToolCall } from './engine';
 
-export interface GuidedEntry { tool: string; value: Record<string, unknown> | null; failed: boolean }
+export interface GuidedEntry { tool: string; value: Record<string, unknown> | null; failed: boolean; detail?: string }
+
+/** Seul outil offert à une étape de contenu guidée. */
+export const GUIDED_TOOL = 'github_commit_files';
+/** Effet D1 d'un refus de prévalidation (aucune écriture GitHub). */
+export const GUIDED_PRECHECK_TOOL = 'guided_precheck';
+/** Refus de prévalidation tolérés par phase de contenu : 1 reformulation, puis arrêt typé. */
+export const GUIDED_PRECHECK_MAX = 2;
+/** Taille maximale d'un fichier proposé (octets UTF-8). */
+export const PRECHECK_MAX_BYTES = 100_000;
+const MESSAGE_MAX = 500;
+
+/**
+ * R1 (#281) : canonise le nom de l'outil de contenu. Seuls les espaces de BORD sont retirés
+ * (String.prototype.trim) ; tout autre écart (casse, espace interne, caractère invisible non blanc,
+ * homoglyphe, suffixe) laisse le nom intact et guidedViolation le refuse. Rend aussi les noms bruts
+ * normalisés (bornés, encodés JSON) pour le journal.
+ */
+export function canonicalGuidedOutput(output: ModelOutput): { output: ModelOutput; normalized: string[] } {
+  const normalized: string[] = [];
+  const tool_calls = output.tool_calls.map(call => {
+    if (call.name === GUIDED_TOOL || call.name.trim() !== GUIDED_TOOL) return call;
+    normalized.push(JSON.stringify(call.name).slice(0, 80));
+    return { ...call, name: GUIDED_TOOL };
+  });
+  return { output: { text: output.text, tool_calls }, normalized };
+}
+
+const TEST_FILE = /\.(?:spec|test)\.[cm]?[jt]sx?$/;
+const VITEST_IMPORT = /(?:\bfrom\s*|\bimport\s*|\brequire\(\s*)['"]vitest['"]/;
+const OTHER_RUNNER = /(?:\bfrom\s*|\bimport\s*|\brequire\(\s*)['"](?:@jest\/globals|jest|mocha|jasmine)['"]/;
+
+/** Explication donnée au modèle pour chaque cause de refus (reformulation). */
+export const PRECHECK_HINTS: Record<string, string> = {
+  message_missing: 'le champ message est absent ou vide',
+  message_too_long: 'le message dépasse ' + MESSAGE_MAX + ' caractères',
+  files_missing: 'files doit contenir au moins un fichier { path, content }',
+  too_many_files: 'trop de fichiers pour le mandat',
+  file_invalid: 'chaque entrée de files doit être un objet { path, content }',
+  path_not_granted: 'le chemin n’est pas dans la liste des chemins autorisés',
+  path_duplicate: 'le même chemin apparaît deux fois',
+  content_empty: 'le contenu du fichier est vide',
+  content_too_large: 'le fichier dépasse ' + PRECHECK_MAX_BYTES + ' octets',
+  test_runner_incompatible: 'le dépôt utilise Vitest : n’importe ni jest, ni @jest/globals, ni mocha, ni jasmine',
+  test_vitest_import_missing: 'un fichier de test doit importer ses fonctions depuis \'vitest\' (par ex. import { describe, it, expect } from \'vitest\')',
+};
+
+/**
+ * R2 (#281) : prévalidation statique d'un appel github_commit_files déjà rempli par le serveur.
+ * Aucune exécution de code ; règles vérifiables seulement. null = conforme, sinon cause typée.
+ */
+export function guidedPrecheck(call: ToolCall, paths: readonly string[]): string | null {
+  const args = (call.args ?? {}) as Record<string, unknown>;
+  if (typeof args.message !== 'string' || !args.message.trim()) return 'message_missing';
+  if (args.message.length > MESSAGE_MAX) return 'message_too_long';
+  const files = args.files;
+  if (!Array.isArray(files) || files.length === 0) return 'files_missing';
+  if (files.length > paths.length) return 'too_many_files';
+  const seen = new Set<string>();
+  for (const entry of files) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return 'file_invalid';
+    const { path, content } = entry as Record<string, unknown>;
+    if (typeof path !== 'string' || !paths.includes(path)) return 'path_not_granted';
+    if (seen.has(path)) return 'path_duplicate';
+    seen.add(path);
+    if (typeof content !== 'string' || !content.trim()) return 'content_empty';
+    if (new TextEncoder().encode(content).length > PRECHECK_MAX_BYTES) return 'content_too_large';
+    if (TEST_FILE.test(path)) {
+      if (OTHER_RUNNER.test(content)) return 'test_runner_incompatible';
+      if (!VITEST_IMPORT.test(content)) return 'test_vitest_import_missing';
+    }
+  }
+  return null;
+}
+
+/** Consigne commune de qualité (R2/R3, consigne seulement). */
+const CONTENT_RULES = [
+  'Règles de contenu : si le fichier est un test (*.spec.ts), importe describe/it/expect depuis \'vitest\' (jamais jest, @jest/globals ni mocha) ;',
+  'importe le code du dépôt concerné par la demande et écris des assertions liées à la demande — pas de test tautologique (expect(true)), sauf si la mission demande explicitement un test de démonstration.',
+].join('\n');
+
+/** Refus de prévalidation depuis l'indice `from` : nombre et dernière cause. */
+function prechecks(entries: readonly GuidedEntry[], from: number): { count: number; last?: string } {
+  const found = entries.slice(from).filter(e => e.tool === GUIDED_PRECHECK_TOOL);
+  return { count: found.length, last: found.at(-1)?.detail };
+}
+
+function retryNote(refused: { count: number; last?: string }): string[] {
+  if (refused.count === 0) return [];
+  const cause = refused.last ?? 'inconnue';
+  return ['', 'ATTENTION : ta proposition précédente a été REFUSÉE par la prévalidation du serveur (aucun commit créé) : '
+    + (PRECHECK_HINTS[cause] ?? cause) + ' [' + cause + ']. Dernière tentative avant arrêt : corrige ce point.'];
+}
 
 export type GuidedStep =
   | { kind: 'server'; call: ToolCall }
@@ -40,7 +142,7 @@ export type GuidedStep =
 export function guidedViolation(output: ModelOutput): string | null {
   if (output.tool_calls.length === 0) return 'no_tool_call';
   const names = output.tool_calls.map(call => call.name);
-  if (names.some(name => name !== 'github_commit_files')) return 'tool_not_offered:' + [...new Set(names)].join(',').slice(0, 120);
+  if (names.some(name => name !== GUIDED_TOOL)) return 'tool_not_offered:' + [...new Set(names)].join(',').slice(0, 120);
   if (names.length !== 1) return 'multiple_tool_calls:' + names.length;
   return null;
 }
@@ -101,13 +203,17 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
   const commitAt = lastIndex(entries, createdAt + 1, e => COMMIT_TOOLS.includes(e.tool) && e.value?.branch === branch && !!sha(e.value?.commit_sha));
   const pathList = paths.map(p => '« ' + p + ' »').join(', ');
   if (commitAt < 0) {
-    return { kind: 'model', tools: ['github_commit_files'], fill: { name, head: branchHead, paths }, instruction: [
+    const refused = prechecks(entries, createdAt + 1);
+    if (refused.count >= GUIDED_PRECHECK_MAX) return stop('precheck_failed');
+    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: branchHead, paths }, instruction: [
       'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). Le serveur a déjà lu ton mandat et préparé la branche ' + branch + ' (tête ' + branchHead + ').',
       'Ta seule action maintenant : appeler UNE FOIS l’outil github_commit_files avec :',
       '- message : un résumé d’une ligne (120 caractères au plus)',
       '- files : [{ "path": <un chemin autorisé>, "content": <le contenu COMPLET du fichier> }]',
       'Le serveur complète lui-même name, expected_head_sha et expected_sha. Chemins autorisés : ' + pathList + '. N’appelle aucun autre outil.',
       'Ensuite, le serveur lancera la CI, attendra son résultat et ouvrira la PR lui-même.',
+      CONTENT_RULES,
+      ...retryNote(refused),
     ].join('\n') };
   }
   const commitSha = sha(entries[commitAt].value!.commit_sha)!;
@@ -139,15 +245,19 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
 
   // 7. CI rouge, corrections restantes : le modèle corrige le contenu.
   if (verdict === 'correct') {
+    const refused = prechecks(entries, checkedAt + 1);
+    if (refused.count >= GUIDED_PRECHECK_MAX) return stop('precheck_failed');
     const diagnostics = checked.value.diagnostics ?? checked.value.failures ?? checked.value.summary;
     const shown = diagnostics === undefined ? '(aucun diagnostic fourni)' : JSON.stringify(diagnostics).slice(0, DIAGNOSTICS_MAX);
-    return { kind: 'model', tools: ['github_commit_files'], fill: { name, head: commitSha, paths }, instruction: [
+    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: commitSha, paths }, instruction: [
       'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). La CI a ÉCHOUÉ au SHA ' + commitSha + '.',
       'Diagnostics (bornés) : ' + shown,
       'Ta seule action maintenant : corriger le fichier en appelant UNE FOIS github_commit_files avec :',
       '- message : un résumé d’une ligne de la correction',
       '- files : [{ "path": <le chemin concerné>, "content": <le contenu COMPLET corrigé> }]',
       'Le serveur complète lui-même name, expected_head_sha et expected_sha. Chemins autorisés : ' + pathList + '. N’appelle aucun autre outil.',
+      CONTENT_RULES,
+      ...retryNote(refused),
     ].join('\n') };
   }
   // Escalade, refus, état inattendu : arrêt typé, jamais de repli libre.
@@ -163,7 +273,7 @@ export function applyGuidedFill(output: ModelOutput, fill: GuidedFill): ModelOut
   return {
     text: output.text,
     tool_calls: output.tool_calls.map(call => {
-      if (call.name !== 'github_commit_files') return call;
+      if (call.name !== GUIDED_TOOL) return call;
       const raw = Array.isArray(call.args?.files) ? call.args.files as unknown[] : [];
       const files = raw.map(entry => {
         const file = { ...((entry ?? {}) as Record<string, unknown>) };
