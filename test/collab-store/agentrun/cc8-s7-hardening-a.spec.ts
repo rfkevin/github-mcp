@@ -1,83 +1,25 @@
-import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { createRun, runStep, ToolRefused, type AgentMessage, type ModelOutput, type ToolCall, type ToolHost }
-  from '../../../src/collab-store/agentrun';
+import { runStep, type ModelOutput, type ToolCall } from '../../../src/collab-store/agentrun';
 import { canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, guidedPrecheck, guidedViolation, planGuidedS7, PRECHECK_MAX_BYTES,
   type GuidedEntry } from '../../../src/collab-store/agentrun/s7-guided';
-import { ensureSchema } from '../../../src/collab-store/store/schema';
+import { BRANCH, C1, C2, commitAs, db, drive, FAILED, HEAD, host, newRun, PASSED, PATH, row, SCOPE, scripted, setHalt, T }
+  from './s7-guided-harness';
 
 // CC8 S7 durcissement — lot A (#281, issue mère #280) : R1 nom d'outil canonique, R2 prévalidation du contenu.
-const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
-const T = 1_970_000_000;
-const BRANCH = 'mcp/105856986/vibe-api-s7-live';
-const PATH = 'test/collab-store/agentrun/s7-live-vibe.spec.ts';
-const BASE = 'b'.repeat(40);
-const HEAD = 'a'.repeat(40);
-const C1 = 'c'.repeat(40);
-const C2 = 'd'.repeat(40);
-const SCOPE = { branch: BRANCH, name: 's7-live', base_branch: 'mcp/105856986/cc3-integration', base_sha: BASE, granted_paths: [PATH], task_paths: [PATH], corrections_remaining: 3 };
-const PASSED = (sha: string) => ({ targetSha: sha, status: 'completed', conclusion: 'success', verifiedSuccess: true, next_action: 'request_D12', next_poll_seconds: null });
-const FAILED = (sha: string) => ({ targetSha: sha, status: 'completed', conclusion: 'failure', verifiedSuccess: false, next_action: 'correct', next_poll_seconds: null, diagnostics: ['x'] });
 const GOOD = "import { describe, expect, it } from 'vitest';\nimport { planGuidedS7 } from '../../../src/collab-store/agentrun/s7-guided';\n"
   + "describe('s7', () => { it('plan', () => { expect(planGuidedS7([], 'a-api-b', 't', 0).kind).toBe('server'); }); });\n";
 const JEST = "import { describe, expect, it } from '@jest/globals';\ndescribe('s7', () => { it('x', () => { expect(1).toBe(1); }); });\n";
-
-const S7_TOOLS = ['github_write_scope', 'github_create_branch', 'github_commit_files', 'github_replace_text', 'github_run_checks',
-  'github_check_result', 'github_open_pr', 'github_read_file'];
-
-function host(queues: Record<string, Array<unknown | (() => never)>>) {
-  const calls: ToolCall[] = [];
-  const tools: ToolHost = {
-    list: () => S7_TOOLS,
-    spec: (_kind, name) => S7_TOOLS.includes(name) ? { name, effect: name === 'github_read_file' ? 'read' : 'write' } : null,
-    async execute(call: ToolCall) {
-      calls.push(call);
-      const next = (queues[call.name] ?? []).shift();
-      if (typeof next === 'function') return (next as () => never)();
-      if (next === undefined) throw new ToolRefused('unexpected ' + call.name);
-      return next;
-    },
-  };
-  return { tools, calls, writes: () => calls.map(c => c.name).filter(n => n !== 'github_read_file') };
-}
-
-function scripted(outputs: ModelOutput[], tokens = 2_000) {
-  const seen: Array<{ messages: AgentMessage[]; tools: string[] }> = [];
-  return {
-    seen,
-    client: { async complete(input: { messages: AgentMessage[]; tools: string[] }) {
-      seen.push({ messages: input.messages, tools: input.tools });
-      return { output: outputs[seen.length - 1] ?? { text: 'fin', tool_calls: [] }, usage: { tokens, cost_cents: 0 } };
-    } },
-  };
-}
-
-const commitAs = (name: string, content: string, head = HEAD): ModelOutput => ({ text: '', tool_calls: [{ id: 'm-commit', name,
-  args: { name: 's7-live', expected_head_sha: head, message: 'S7 test', files: [{ path: PATH, content }] } }] });
 const commit = (content: string, head = HEAD) => commitAs('github_commit_files', content, head);
 
-async function newRun(label: string, maxSteps = 12) {
-  await ensureSchema(db);
-  const runId = 'cc8-hardening-a-' + label + '-' + crypto.randomUUID();
-  const cycleId = 'cc8-hardening-a-' + crypto.randomUUID();
-  await createRun(db, { runId, cycleId, participantId: 'vibe', taskId: 'S7-live-vibe', taskKind: 'implement', prompt: 'Écris le test S7.',
-    maxSteps, maxTokens: 48_000, maxCostCents: 0, deadlineAt: T + 2_700, now: T });
-  return { runId, grants: [{ cycle: cycleId, participant: 'vibe', task: 'S7-live-vibe', branch: BRANCH }] };
+/** Dépendances moteur d'un run guidé (worker, horloge et sonde surchargeables). */
+function guided(model: ReturnType<typeof scripted>, h: ReturnType<typeof host>, grants: Awaited<ReturnType<typeof newRun>>['grants'],
+  extra: Partial<Parameters<typeof runStep>[2]> = {}): Parameters<typeof runStep>[2] {
+  return { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true, ...extra };
 }
 
-async function drive(runId: string, deps: Parameters<typeof runStep>[2], max = 30) {
-  const outcomes: string[] = [];
-  for (let i = 0; i < max; i++) {
-    const { outcome } = await runStep(db, runId, deps);
-    outcomes.push(outcome);
-    if (outcome !== 'stepped') break;
-  }
-  return outcomes;
-}
-
-async function row(runId: string) {
-  return (await db.prepare('SELECT status, stop_reason, steps_done, tokens_used FROM agent_runs WHERE run_id = ?1').bind(runId)
-    .first<{ status: string; stop_reason: string; steps_done: number; tokens_used: number }>())!;
+async function precheckRows(runId: string): Promise<number> {
+  return (await db.prepare('SELECT COUNT(*) AS c FROM agent_run_effects WHERE run_id = ?1 AND tool = ?2').bind(runId, GUIDED_PRECHECK_TOOL)
+    .first<{ c: number }>())?.c ?? 0;
 }
 
 async function journal(runId: string, kind: string) {
@@ -184,7 +126,7 @@ describe('Lot A — moteur (D1)', () => {
     const { runId, grants } = await newRun('r1-ok');
     const model = scripted([commitAs(' github_commit_files ', GOOD)]);
     const h = host(happyQueues());
-    const outcomes = await drive(runId, { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+    const outcomes = await drive(runId, guided(model, h, grants));
     expect(outcomes.at(-1)).toBe('completed');
     expect(h.writes()).toEqual(['github_write_scope', 'github_create_branch', 'github_commit_files', 'github_run_checks', 'github_check_result', 'github_open_pr']);
     expect(await journal(runId, 'guided_tool_normalized')).toEqual([{ n: 2, worker: 'w1', raw_names: [JSON.stringify(' github_commit_files ')] }]);
@@ -195,7 +137,7 @@ describe('Lot A — moteur (D1)', () => {
       const { runId, grants } = await newRun('r1-bad');
       const model = scripted([commitAs(name, GOOD)]);
       const h = host(happyQueues());
-      const outcomes = await drive(runId, { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+      const outcomes = await drive(runId, guided(model, h, grants));
       expect(outcomes.at(-1)).toBe('failed');
       expect((await row(runId)).stop_reason).toMatch(/^guided_violation:tool_not_offered:/);
       expect(h.writes()).toEqual(['github_write_scope', 'github_create_branch']);
@@ -209,7 +151,7 @@ describe('Lot A — moteur (D1)', () => {
     const { runId, grants } = await newRun('r2-retry');
     const model = scripted([commit(JEST), commit(GOOD)]);
     const h = host(happyQueues());
-    const outcomes = await drive(runId, { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+    const outcomes = await drive(runId, guided(model, h, grants));
     expect(outcomes.at(-1)).toBe('completed');
     expect(model.seen).toHaveLength(2);
     expect(model.seen[1].tools).toEqual(['github_commit_files']);
@@ -233,7 +175,7 @@ describe('Lot A — moteur (D1)', () => {
     const { runId, grants } = await newRun('r2-stop');
     const model = scripted([commit(JEST), commit("describe('x', () => {});\n"), commit(GOOD)]);
     const h = host(happyQueues());
-    const outcomes = await drive(runId, { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+    const outcomes = await drive(runId, guided(model, h, grants));
     expect(outcomes.at(-1)).toBe('failed');
     expect(model.seen).toHaveLength(2);
     expect(h.writes()).toEqual(['github_write_scope', 'github_create_branch']);
@@ -244,7 +186,7 @@ describe('Lot A — moteur (D1)', () => {
     const { runId, grants } = await newRun('r2-limit', 1);
     const model = scripted([commit(JEST), commit(GOOD)]);
     const h = host(happyQueues());
-    const outcomes = await drive(runId, { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+    const outcomes = await drive(runId, guided(model, h, grants));
     expect(outcomes.at(-1)).toBe('step_limit');
     expect(model.seen).toHaveLength(1);
     expect(h.writes()).toEqual(['github_write_scope', 'github_create_branch']);
@@ -259,7 +201,7 @@ describe('Lot A — moteur (D1)', () => {
       github_run_checks: [{ targetSha: C1, runId: 9 }, { targetSha: C2, runId: 10 }],
       github_check_result: [FAILED(C1), PASSED(C2)], github_open_pr: [{ branch: BRANCH, number: 301, head_sha: C2, draft: false }],
     });
-    const outcomes = await drive(runId, { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+    const outcomes = await drive(runId, guided(model, h, grants));
     expect(outcomes.at(-1)).toBe('completed');
     expect(model.seen).toHaveLength(3);
     expect(model.seen[2].messages.at(-1)!.content).toContain('ÉCHOUÉ');
@@ -272,22 +214,16 @@ describe('Lot A — moteur (D1)', () => {
     const { runId, grants } = await newRun('r2-halt');
     const model = scripted([commit(JEST)]);
     const h = host(happyQueues());
-    const probe = async (point: string) => {
-      if (point === 'after_model') {
-        await db.prepare("INSERT INTO owner_flags (name, value, event_seq, updated_at) VALUES ('halt', '1', NULL, ?1) ON CONFLICT(name) DO UPDATE SET value = excluded.value").bind(T).run();
-      }
-    };
+    const probe = async (point: string) => { if (point === 'after_model') await setHalt(true); };
     try {
-      const deps = { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true };
-      expect(await runStep(db, runId, deps)).toEqual({ outcome: 'stepped' });
-      expect(await runStep(db, runId, deps)).toEqual({ outcome: 'stepped' });
-      expect(await runStep(db, runId, { ...deps, probe })).toEqual({ outcome: 'halted' });
+      expect(await runStep(db, runId, guided(model, h, grants))).toEqual({ outcome: 'stepped' });
+      expect(await runStep(db, runId, guided(model, h, grants))).toEqual({ outcome: 'stepped' });
+      expect(await runStep(db, runId, guided(model, h, grants, { probe }))).toEqual({ outcome: 'halted' });
       expect(await row(runId)).toMatchObject({ status: 'halted' });
-      const refusedRows = await db.prepare('SELECT COUNT(*) AS c FROM agent_run_effects WHERE run_id = ?1 AND tool = ?2').bind(runId, GUIDED_PRECHECK_TOOL).first<{ c: number }>();
-      expect(refusedRows?.c).toBe(0);
+      expect(await precheckRows(runId)).toBe(0);
       expect(h.writes()).toEqual(['github_write_scope', 'github_create_branch']);
     } finally {
-      await db.prepare("UPDATE owner_flags SET value = '0' WHERE name = 'halt'").run();
+      await setHalt(false);
     }
   });
 
@@ -295,15 +231,14 @@ describe('Lot A — moteur (D1)', () => {
     const { runId, grants } = await newRun('r2-replay');
     const model = scripted([commit(JEST), commit(GOOD)]);
     const h = host(happyQueues());
-    const deps = { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true };
-    expect(await runStep(db, runId, deps)).toEqual({ outcome: 'stepped' });
-    expect(await runStep(db, runId, deps)).toEqual({ outcome: 'stepped' });
-    await expect(runStep(db, runId, { ...deps, probe: async (p: string) => { if (p === 'after_model') throw new Error('coupure'); } })).rejects.toThrow('coupure');
+    expect(await runStep(db, runId, guided(model, h, grants))).toEqual({ outcome: 'stepped' });
+    expect(await runStep(db, runId, guided(model, h, grants))).toEqual({ outcome: 'stepped' });
+    const cut = async (p: string) => { if (p === 'after_model') throw new Error('coupure'); };
+    await expect(runStep(db, runId, guided(model, h, grants, { probe: cut }))).rejects.toThrow('coupure');
     // Reprise par un autre worker après péremption de la réclamation.
-    const outcomes = await drive(runId, { ...deps, workerId: 'w2', now: () => T + 1_000 });
+    const outcomes = await drive(runId, guided(model, h, grants, { workerId: 'w2', now: () => T + 1_000 }));
     expect(outcomes.at(-1)).toBe('completed');
-    const refusedRows = await db.prepare('SELECT COUNT(*) AS c FROM agent_run_effects WHERE run_id = ?1 AND tool = ?2').bind(runId, GUIDED_PRECHECK_TOOL).first<{ c: number }>();
-    expect(refusedRows?.c).toBe(1);
+    expect(await precheckRows(runId)).toBe(1);
     expect(model.seen).toHaveLength(2);
     expect(h.writes().filter(n => n === 'github_commit_files')).toHaveLength(1);
   });
