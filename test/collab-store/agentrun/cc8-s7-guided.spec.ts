@@ -273,6 +273,91 @@ describe('CC8 S7 — mode guidé (moteur, D1)', () => {
     });
   }
 
+  it('relecture D12 R3 : sortie hostile avec jetons > 0 → usage comptabilisé (run + étape), trace au journal, aucun effet', async () => {
+    const { runId, grants } = await newRun('r3-usage');
+    const hostile: ModelOutput = { text: '', tool_calls: [{ id: 'x', name: 'github_open_pr', args: { name: 's7-live', title: 't' } }] };
+    const model = { async complete() { return { output: hostile, usage: { tokens: 1_234, cost_cents: 7 } }; } };
+    const { tools, calls } = host({ github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }],
+      github_open_pr: [{ branch: BRANCH, number: 9, head_sha: C1, draft: false }] });
+    const outcomes = await drive(runId, { model, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+    expect(outcomes.at(-1)).toBe('failed');
+    const run = await db.prepare('SELECT status, stop_reason, tokens_used, cost_cents FROM agent_runs WHERE run_id = ?1').bind(runId).first();
+    expect(run).toMatchObject({ status: 'failed', stop_reason: 'guided_violation:tool_not_offered:github_open_pr', tokens_used: 1_234, cost_cents: 7 });
+    // L'étape porte l'usage mais AUCUNE sortie : une reprise ne rejoue jamais la sortie rejetée.
+    expect(await db.prepare('SELECT state, model_output, tokens, cost_cents FROM agent_run_steps WHERE run_id = ?1 AND n = 2').bind(runId).first())
+      .toMatchObject({ state: 'claimed', model_output: null, tokens: 1_234, cost_cents: 7 });
+    const journal = await db.prepare("SELECT detail FROM agent_run_journal WHERE run_id = ?1 AND kind = 'guided_violation'").bind(runId).all<{ detail: string }>();
+    expect(journal.results).toHaveLength(1);
+    expect(JSON.parse(journal.results[0].detail)).toMatchObject({ n: 2, worker: 'w1', violation: 'tool_not_offered:github_open_pr', tokens: 1_234, cost_cents: 7 });
+    expect(JSON.parse(journal.results[0].detail).output).toContain('github_open_pr');
+    expect(calls.map(c => c.name).filter(n => n !== 'github_read_file')).toEqual(['github_write_scope', 'github_create_branch']);
+    // Rappel après l'arrêt : rien de plus (ni appel, ni effet, ni double comptage).
+    expect(await runStep(db, runId, { model, tools, now: () => T + 200, workerId: 'w2', githubCompletionGrants: grants, guidedS7: true })).toEqual({ outcome: 'failed' });
+    expect(await row(runId)).toMatchObject({ tokens_used: 1_234 });
+  });
+
+  it('relecture D12 R3 : HALT posé pendant l’appel modèle → usage comptabilisé, run halted (pas guided_violation)', async () => {
+    const { runId, grants } = await newRun('r3-halt');
+    const model = { async complete() {
+      await db.prepare("INSERT INTO owner_flags (name, value, event_seq, updated_at) VALUES ('halt', '1', NULL, ?1) ON CONFLICT(name) DO UPDATE SET value = excluded.value").bind(T).run();
+      return { output: { text: 'non', tool_calls: [] }, usage: { tokens: 500, cost_cents: 0 } };
+    } };
+    const { tools, calls } = host({ github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }] });
+    try {
+      const outcomes = await drive(runId, { model, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
+      expect(outcomes.at(-1)).toBe('halted');
+      expect(await row(runId)).toMatchObject({ status: 'halted', stop_reason: 'halted', tokens_used: 500 });
+      expect(calls.map(c => c.name).filter(n => n !== 'github_read_file')).toEqual(['github_write_scope', 'github_create_branch']);
+    } finally {
+      await db.prepare("UPDATE owner_flags SET value = '0' WHERE name = 'halt'").run();
+    }
+  });
+
+  // Relecture D12 R4 : l'arrêt typé n'écrit jamais sur un run halté, préempté ou dont l'étape est tenue par un autre.
+  async function atRefusedStop(label: string) {
+    const { runId, grants } = await newRun(label);
+    const model = scripted([]);
+    const { tools } = host({ github_write_scope: [SCOPE], github_create_branch: [() => { throw new ToolRefused('api_write_branch_exists'); }] });
+    const deps = (worker: string) => ({ model: model.client, tools, now: () => T + 100, workerId: worker, githubCompletionGrants: grants, guidedS7: true });
+    expect(await runStep(db, runId, deps('w1'))).toEqual({ outcome: 'stepped' });
+    expect(await runStep(db, runId, deps('w1'))).toEqual({ outcome: 'stepped' });
+    expect(await row(runId)).toMatchObject({ status: 'running', steps_done: 2 });
+    return { runId, deps, model };
+  }
+
+  it('relecture D12 R4 : HALT avant l’arrêt typé → halted, jamais guided_stop', async () => {
+    const { runId, deps, model } = await atRefusedStop('r4-halt');
+    await db.prepare("INSERT INTO owner_flags (name, value, event_seq, updated_at) VALUES ('halt', '1', NULL, ?1) ON CONFLICT(name) DO UPDATE SET value = excluded.value").bind(T).run();
+    try {
+      expect(await runStep(db, runId, deps('w2'))).toEqual({ outcome: 'halted' });
+      expect(await row(runId)).toMatchObject({ status: 'halted', stop_reason: 'halted' });
+      expect(model.seen).toHaveLength(0);
+    } finally {
+      await db.prepare("UPDATE owner_flags SET value = '0' WHERE name = 'halt'").run();
+    }
+  });
+
+  it('relecture D12 R4 : préemption chat (fence) avant l’arrêt typé → preempted, jamais guided_stop', async () => {
+    const { runId, deps } = await atRefusedStop('r4-preempt');
+    await db.prepare("UPDATE agent_fences SET holder = 'chat', generation = generation + 1 WHERE lease_key = (SELECT lease_key FROM agent_runs WHERE run_id = ?1)")
+      .bind(runId).run();
+    expect(await runStep(db, runId, deps('w2'))).toEqual({ outcome: 'preempted' });
+    expect(await row(runId)).toMatchObject({ status: 'preempted', stop_reason: 'preempted' });
+  });
+
+  it('relecture D12 R4 : double réveil — étape n tenue (réclamation vivante) par un autre worker → busy, run intact ; puis arrêt typé', async () => {
+    const { runId, deps } = await atRefusedStop('r4-double');
+    await db.prepare("INSERT INTO agent_run_steps (run_id, n, state, claimed_by, claimed_at, attempts) VALUES (?1, 2, 'claimed', 'w-autre', ?2, 1)")
+      .bind(runId, T + 90).run();
+    expect(await runStep(db, runId, deps('w2'))).toEqual({ outcome: 'busy' });
+    expect(await row(runId)).toMatchObject({ status: 'running', steps_done: 2 });
+    // Réclamation périmée (au-delà du délai d'étape) : l'arrêt typé s'applique alors, gardé et au même steps_done.
+    const later = { ...deps('w3'), now: () => T + 1_000 };
+    await db.prepare("UPDATE agent_run_steps SET claimed_at = ?2 WHERE run_id = ?1 AND n = 2").bind(runId, T).run();
+    expect(await runStep(db, runId, later)).toEqual({ outcome: 'failed' });
+    expect(await row(runId)).toMatchObject({ status: 'failed', stop_reason: 'guided_stop:branch_refused', steps_done: 2 });
+  });
+
   it('plafond serveur atteint : arrêt typé guided_stop:server_cap', async () => {
     const { runId, grants } = await newRun('cap');
     for (let k = 0; k < 24; k++) await db.prepare('INSERT INTO agent_run_server_steps (run_id, n) VALUES (?1, ?2)').bind(runId, 1000 + k).run();
