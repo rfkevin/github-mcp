@@ -226,6 +226,7 @@ export function taskPrompt(kind: TaskWakeKind, cycleId: string, taskId: string, 
       'Appelez github_write_scope pour connaître le mandat exact, son nom de branche et base_sha (SHA de commit de la base, PAS SHA de blob). Utilisez le name et le base_sha fournis pour github_create_branch ; ne devinez aucun SHA. Après chaque commit, github_run_checks puis github_check_result au SHA courant ; attendez si pending, corrigez si rouge, trois corrections maximum puis escalade. CI verte ne remplace pas D12.',
       'Travaillez sur VOTRE branche API : github_create_branch au besoin, github_commit_files avec expected_head_sha lu avant chaque commit.',
       'Ouvrez ensuite la PR prête à la revue avec github_open_pr : jamais de fusion, d’approbation ni de résolution de conflit.',
+      'IMPORTANT : une réponse finale qui PLANIFIE une lecture ou une écriture SANS invoquer les outils n est PAS une mission terminée. Continuez effectivement les appels d outils jusqu aux preuves branche, commit, CI vérifiée et PR. Si vous ne pouvez pas exécuter, décrivez le blocage factuel : le serveur marquera la mission incomplete_final, jamais success.',
       'Votre message final est votre note de passation, en trois rubriques courtes : Fait / Reste / Appris (300 mots au plus).',
     ].join(' ');
   }

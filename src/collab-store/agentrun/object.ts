@@ -13,6 +13,7 @@ import {
 } from './orchestrator';
 import type { ApiChecks } from './github-write/tools';
 import type { EngineDeps } from './engine';
+import { grants } from './github-write/authorization';
 import { createWorkersAiModel } from './workers-ai-model';
 import { createPaidWorkersAiModel, parseParticipantEnvelope } from './paid-model';
 import { createZaiModel } from './zai-model';
@@ -201,8 +202,13 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
         schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
     return { model, tools, now };
   };
+  // S7 : seules les tâches explicitement autorisées par l'owner ont une condition
+  // de complétude GitHub. Le modèle ne peut pas fournir ni élargir ce mandat.
+  const githubCompletionGrants = writes ? grants(writes.s7.policy).filter(g =>
+    (writes.s7.policy.writers ?? '').split(',').map(pid => pid.trim()).includes(g.participant)) : [];
   return (runId, stepDb) => ({ ...makeEngine(runId, stepDb),
-    compactHistory: env.AGENT_RUN_CONTEXT_COMPACTION === 'true' });
+    compactHistory: env.AGENT_RUN_CONTEXT_COMPACTION === 'true',
+    githubCompletionGrants });
 }
 
 /** Branche de base du canal API : valeur valide, jamais main ni master, sinon le défaut figé en code. */
