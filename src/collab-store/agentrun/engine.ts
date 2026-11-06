@@ -42,6 +42,7 @@ import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
+import { verifyContext } from './verify-guided';
 import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
   planGuidedS7, PRECHECK_HINTS, type GuidedStep } from './s7-guided';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
@@ -107,6 +108,11 @@ export interface EngineDeps {
   githubCompletionGrants?: readonly GitHubCompletionGrant[];
   /** CC8 S7 mode guidé : étapes mécaniques émises par le serveur sous mandat S7 (activé au runtime). */
   guidedS7?: boolean;
+  /**
+   * CC8 S7 vérification guidée (décision de Kevin, 07/11) : runs review/test avec contexte préparé par le
+   * serveur (PR, CI au head, diff borné) réinjecté à chaque étape, outils libres. Activé au runtime.
+   */
+  guidedVerify?: boolean;
   /** Points de crash injectables pour les tests (lever une exception = coupure). */
   probe?: (point: 'after_model' | 'before_effect' | 'after_effect' | 'after_effect_recorded') => void | Promise<void>;
 }
@@ -442,6 +448,8 @@ async function enrichGuided(run: RunRow, deps: EngineDeps, n: number, step: Extr
 }
 
 const GUIDED_FILE_PREVIEW = 8_000;
+/** Types d'exécution dont l'historique est compacté (opt-in AGENT_RUN_CONTEXT_COMPACTION). */
+const COMPACTED_KINDS: readonly string[] = ['implement', 'review', 'test'];
 
 /** Compaction déterministe et opt-in du seul contexte envoyé au fournisseur.
  * D1 conserve chaque réponse, argument, résultat et effet sans aucune modification.
@@ -681,15 +689,23 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // CC8 S7 mode guidé : étape mécanique émise par le serveur (sans modèle ni jeton), ou consigne précise
     // et un seul outil pour l'étape de contenu. Le résultat suit ensuite le chemin commun (gardes, effets).
     const guide = plan?.kind === 'model' ? await enrichGuided(run, deps, n, plan) : plan;
+    // CC8 S7 vérification guidée : contexte serveur pour review/test (préparé une fois, relu ensuite), outils libres.
+    const verify = !guide && deps.guidedVerify ? await verifyContext(db, run, {
+      execute: (call, ctx) => deps.tools.execute(call, ctx),
+      has: name => deps.tools.spec(run.task_kind, name)?.effect === 'read',
+      now: deps.now,
+    }) : null;
     try {
       if (guide?.kind === 'server') {
         response = { output: { text: 'Étape mécanique exécutée par le serveur (mode guidé S7) : ' + guide.call.name + '.', tool_calls: [guide.call] },
           usage: { tokens: 0, cost_cents: 0 } };
       } else {
-        const messages = await buildMessages(db, run, deps.compactHistory && run.task_kind === 'implement');
+        // Compaction de l'historique : implémentation, et depuis la vérification guidée, relecture et test.
+        const messages = await buildMessages(db, run, deps.compactHistory === true && COMPACTED_KINDS.includes(run.task_kind));
         const tools = deps.tools.list(run.task_kind);
+        const extra = guide?.kind === 'model' ? guide.instruction : verify ? verify.context + '\n\n' + verify.instruction : null;
         response = await deps.model.complete({
-          messages: guide?.kind === 'model' ? [...messages, { role: 'user', content: guide.instruction }] : messages,
+          messages: extra ? [...messages, { role: 'user', content: extra }] : messages,
           tools: guide?.kind === 'model' ? tools.filter(name => guide.tools.includes(name)) : tools,
           task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
       }
