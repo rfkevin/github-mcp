@@ -151,6 +151,14 @@ const withinLimits = (server: boolean) => [
   '  AND tokens_used < max_tokens AND cost_cents <= max_cost_cents AND ?4 < deadline_at)',
 ].join(' ');
 const WITHIN_LIMITS = withinLimits(false);
+/** CC8 S7 mode guidé : empreinte des effets et relevés de CI d'une exécution (?1 = run_id), pour un arrêt CAS. */
+const GUIDED_STATE = [
+  "((SELECT COUNT(*) || ':' || COALESCE(SUM(status = 'completed'), 0) || ':' || COALESCE(SUM(status = 'failed'), 0)",
+  '  FROM agent_run_effects WHERE run_id = ?1)',
+  "  || '/' || (SELECT COUNT(*) || ':' || COALESCE(SUM(status = 'pending'), 0) FROM agent_run_ci_polls WHERE run_id = ?1))",
+].join(' ');
+/** Trace bornée d'une sortie modèle rejetée en mode guidé (journal). */
+const GUIDED_TRACE_MAX = 2_000;
 
 /** Réclamation exacte : ?1 = run_id ; les trois autres paramètres sont fournis par l'appelant. */
 function claimHeld(n: string, worker: string, attempts: string): string {
@@ -602,12 +610,22 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     if (polled) return polled;
   }
   // CC8 S7 mode guidé : prochaine étape décidée sur l'état D1 AVANT la réclamation (même état, même décision).
+  // Empreinte de l'état lu (effets + relevés), prise AVANT la lecture du plan (relecture D12 GPT-6, R4).
+  const seen = deps.guidedS7 ? (await db.prepare('SELECT ' + GUIDED_STATE + ' AS fp').bind(runId).first<{ fp: string }>())?.fp ?? '' : '';
   const plan = await guidedStep(db, run, deps, run.steps_done);
   if (plan?.kind === 'stop') {
     // Arrêt typé et auditable d'un run guidé (aucun repli vers l'orchestration libre du modèle).
-    await db.prepare("UPDATE agent_runs SET status = 'failed', stop_reason = ?2, updated_at = ?3 WHERE run_id = ?1 AND status = 'running'")
-      .bind(runId, 'guided_stop:' + plan.reason, now).run();
-    return { outcome: (await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ status: RunStatus }>())!.status };
+    // Relecture D12 GPT-6 (R4) : l'arrêt n'écrit que si le run est toujours le nôtre (garde LIVE : HALT,
+    // fence api, génération), au même steps_done, sans étape n réclamée et vivante, et sur l'état exact lu
+    // pour décider (empreinte). Sinon rien n'est écrit et settle donne halted / preempted / busy.
+    const stopped = await db.prepare([
+      "UPDATE agent_runs SET status = 'failed', stop_reason = ?2, updated_at = ?3 WHERE run_id = ?1 AND status = 'running'",
+      '  AND steps_done = ?4 AND ' + LIVE,
+      "  AND NOT EXISTS (SELECT 1 FROM agent_run_steps s WHERE s.run_id = ?1 AND s.n = ?4 AND s.state <> 'completed' AND s.claimed_at + ?6 > ?3)",
+      '  AND ' + GUIDED_STATE + ' = ?5',
+    ].join(' ')).bind(runId, ('guided_stop:' + plan.reason).slice(0, 500), now, run.steps_done, seen, STEP_TIMEOUT_S).run();
+    if (stopped.meta.changes !== 1) return settled(db, runId, now);
+    return { outcome: 'failed' };
   }
   const claimed = await claimStep(db, run, deps, now, plan?.kind === 'server');
   if ('outcome' in claimed) return claimed;
