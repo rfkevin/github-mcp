@@ -103,6 +103,16 @@ function dependenciesFromState(content: string | null): Map<string, string[]> {
   return out;
 }
 
+/** Participant du run d'une preuve serveur (`run_participant`) ; vide si illisible (ne correspond à aucun auteur). */
+function proofParticipant(payloadJson: string): string {
+  try {
+    const value = JSON.parse(payloadJson) as { run_participant?: unknown };
+    return typeof value.run_participant === 'string' ? value.run_participant : '';
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Lit cycle, HALT, définition de phase, tâches, familles, dernier import et
  * événements evidence.add et clarify du cycle dans un seul lot ; `outputsSatisfied`
@@ -121,8 +131,11 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
     db.prepare('SELECT task_id, status, revision, owner_pid, reviewer_pid, tester_pid FROM tasks WHERE cycle_id = ?1 ORDER BY task_id').bind(cycleId),
     db.prepare('SELECT participant_id, family_id FROM participant_identity_families'),
     db.prepare('SELECT payload_json FROM events WHERE seq = ' + importSeq).bind(cycleId, importKey),
-    db.prepare("SELECT seq, participant_id, payload_json, evidence_ref FROM events WHERE cycle_id = ?1 AND type = 'evidence.add' ORDER BY seq")
-      .bind(cycleId),
+    // CC8 S7 lot B R4 (#282) : preuves serveur `run.proof` (type réservé, signées 'agentrun') avec les evidence.add.
+    db.prepare([
+      'SELECT seq, type, participant_id, payload_json, evidence_ref FROM events WHERE cycle_id = ?1',
+      "AND (type = 'evidence.add' OR (type = 'run.proof' AND participant_id = 'agentrun')) ORDER BY seq",
+    ].join(' ')).bind(cycleId),
     db.prepare("SELECT seq, type, participant_id, payload_json, expected_rev FROM events WHERE cycle_id = ?1 AND type IN ('clarify.ask', 'clarify.answer') ORDER BY seq DESC LIMIT " + CLARIFY_SCAN_LIMIT)
       .bind(cycleId),
     // Dernière demande PAR TÂCHE (une ligne par tâche, sans plafond global : revue GPT-6 #179 — une limite sur les
@@ -146,8 +159,10 @@ export async function readControllerSnapshot(db: D1Database, cycleId: string,
   const content = importPayload ? (JSON.parse(importPayload) as { content?: string }).content ?? null : null;
   const deps = dependenciesFromState(content);
   const correctionByTask = latestCorrections(corrections.results as Array<{ seq: number; payload_json: string }>);
-  const events: EvidenceEvent[] = (evidence.results as Array<{ seq: number; participant_id: string; payload_json: string; evidence_ref: string }>)
-    .map(row => ({ seq: row.seq, participant: logical(row.participant_id), payload_json: row.payload_json, evidence_ref: row.evidence_ref ?? '' }));
+  const events: EvidenceEvent[] = (evidence.results as Array<{ seq: number; type: string; participant_id: string; payload_json: string;
+    evidence_ref: string }>).map(row => row.type === 'run.proof'
+    ? { seq: row.seq, participant: logical(proofParticipant(row.payload_json)), payload_json: row.payload_json, evidence_ref: '', server_proof: true }
+    : { seq: row.seq, participant: logical(row.participant_id), payload_json: row.payload_json, evidence_ref: row.evidence_ref ?? '' });
   const proposals: ProposalEvent[] = (proposalRows.results as Array<{ seq: number; participant_id: string; payload_json: string }>)
     .map(row => ({ seq: row.seq, participant: logical(row.participant_id), payload_json: row.payload_json }));
   const taskFacts: TaskFacts[] = (tasks.results as TaskRow[]).map(row => {
