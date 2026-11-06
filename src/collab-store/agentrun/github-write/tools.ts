@@ -53,7 +53,11 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
       // github_create_branch still applies GitHub's expected-base CAS if it moves.
       const baseSha = await options.writes.branchHead(options.repository, options.baseBranch);
       if (!baseSha || !SHA.test(baseSha)) throw new ToolRefused('api_base_head_unavailable');
-      return { branch: allowed.branch, name: allowed.branch.split('-api-')[1], base_branch: options.baseBranch, base_sha: baseSha, granted_paths: allowed.paths, task_paths: allowed.owned_paths, corrections_remaining: 3 - await correctionsUsed(options.db, allowed) };
+      // CC8 S7 mode guidé : tête actuelle de la branche du mandat (null si elle n'existe pas encore), lue par le serveur.
+      const branchHead = await options.writes.branchHead(options.repository, allowed.branch);
+      return { branch: allowed.branch, name: allowed.branch.split('-api-')[1], base_branch: options.baseBranch, base_sha: baseSha,
+        branch_head: branchHead && SHA.test(branchHead) ? branchHead : null,
+        granted_paths: allowed.paths, task_paths: allowed.owned_paths, corrections_remaining: 3 - await correctionsUsed(options.db, allowed) };
     }
     const s = await scope(call, ctx);
     const args = call.args ?? {};
