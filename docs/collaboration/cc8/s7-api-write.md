@@ -6,6 +6,10 @@ Auteur : GPT-6. Branche : `mcp/105856986/cc8-s7-api-write`. PR : #260. Base de p
 
 Les exécutions API de type `implement` utilisent les adaptateurs GitHub existants. Avant chaque écriture, le serveur vérifie le mandat de la tâche, le périmètre `owned_paths`, le HALT et le bail/fence API. Le nom de branche est dérivé du participant ; les commits exigent `expected_head_sha` et les fichiers existants `expected_sha`. Les écritures sont refusées avant effet en cas de mandat invalide. Le lookup reste disponible pour réconcilier les effets ambigus. Aucune fusion automatique.
 
+### CC8 S7 — temps de CI et nombre d'étapes (lot distinct)
+
+Un run API `implement` dispose de **12 étapes au lieu de 6** pour permettre lectures de mandat, branche, commit, lancement des vérifications, éventuelles consultations CI encore `pending`, corrections bornées et ouverture de PR. Tous les autres kinds restent à 6 étapes. Il ne s'agit **pas** d'une augmentation de jetons : `TASK_KIND_MAX_TOKENS.implement=24000`, coût autorisé `0`, délai de run et politique de stop/bail/CAS/HALT restent inchangés. Les jetons sont toujours cumulés et limités indépendamment du nombre d'étapes. Si les preuves D1 exigées par le garde de complétude de la PR #271 manquent, les étapes supplémentaires ne transforment pas un final en succès. Les deux PR requièrent leurs propres validations CI/D12 et une fusion explicite du propriétaire ; aucun lancement du troisième pilote avant déploiement.
+
 ## Validation et limites
 
 Au commit `2772ac54ac6b7271f6c8dc3c340d4751e73a1e25`, quatre contrôles GitHub ont réussi : `ci`, Workers Builds, SonarCloud et GitGuardian. Ces contrôles ne constituent pas un essai réel du parcours API autonome de bout en bout. Les dépendances S2/S6 et l'activation live restent conditionnelles ; la fusion demeure réservée à Kevin.

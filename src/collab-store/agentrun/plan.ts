@@ -42,6 +42,12 @@ export const PLAN_MAX_PARTICIPANTS = 8;
 export const PLAN_MAX_CYCLES = 20;
 export const PLAN_LIMIT = 5;
 export const PLAN_MAX_STEPS = 6;
+/** S7: implement GitHub doit pouvoir consulter, committer et attendre la CI asynchrone. */
+export const PLAN_IMPLEMENT_MAX_STEPS = 12;
+/** Le plafond de jetons reste indépendant du nombre d'étapes. */
+export function taskKindMaxSteps(kind: PlannedTaskKind): number {
+  return kind === 'implement' ? PLAN_IMPLEMENT_MAX_STEPS : PLAN_MAX_STEPS;
+}
 export const PLAN_MAX_TOKENS = 24_000;
 /** S1b : enveloppe totale de jetons par type d'exécution (jamais supérieure au plafond historique). */
 export const TASK_KIND_MAX_TOKENS = Object.freeze({ answer: 8_000, review: 16_000, test: 16_000, implement: 24_000, design: 12_000 });
@@ -434,7 +440,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           return (await createRun(db, {
             runId: ids[attempt - 1], cycleId, participantId,
             taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
-            maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens(kind), maxCostCents: taskKindCostCents(env, kind),
+            maxSteps: taskKindMaxSteps(kind), maxTokens: taskKindMaxTokens(kind), maxCostCents: taskKindCostCents(env, kind),
             deadlineAt: input.now + runDeadlineS(kind), now: input.now,
           })).created;
         } });
