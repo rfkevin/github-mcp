@@ -62,14 +62,17 @@ export function providerTimeoutMs(provider: string, value?: number, taskKind?: s
 }
 
 /**
- * Deadline d'exécution PAR TYPE DE TÂCHE (v2 point 5) : 900 s partout à la fusion
- * (le compromis seq 1372/1374) ; S7 : review/test 30 min, implement/design 45 min,
- * après P95 et preuve des alarmes Durable Objects.
+ * Deadline PAR TYPE, conservatrice pour les runs historiques et financés.
+ * Décision CC8 S7 du 2026-11-06 : 45 min uniquement pour les NOUVEAUX
+ * runs implement gratuits. Le compteur de jetons, le coût et maxSteps
+ * demeurent indépendants de la deadline (ne pas réarmer un run D1 existant).
  */
 export const TASK_KIND_DEADLINE_S: Readonly<Record<string, number>> = Object.freeze({
   answer: 900, design: 900, implement: 900, review: 900, test: 900, default: 900,
 });
-export function runDeadlineS(kind: string | null | undefined): number {
+export const FREE_IMPLEMENT_DEADLINE_S = 2_700;
+export function runDeadlineS(kind: string | null | undefined, maxCostCents?: number): number {
+  if (kind === 'implement' && maxCostCents === 0) return FREE_IMPLEMENT_DEADLINE_S;
   return TASK_KIND_DEADLINE_S[kind ?? 'default'] ?? TASK_KIND_DEADLINE_S.default;
 }
 
