@@ -20,9 +20,14 @@ describe('CC8 S1b — identifiants de tentatives et plafonds', () => {
     await expect(attemptRunId('review', 'cc8', 'gemini', 'S3', 'sha', 'P6', 1, 4)).rejects.toThrow('INVALID_RUN_ATTEMPT');
   });
   it('conserve les plafonds historiques sauf implement gratuit explicitement borné', () => {
-    for (const kind of ['answer', 'review', 'test', 'design'] as const) {
+    for (const kind of ['answer', 'design'] as const) {
       expect(taskKindMaxTokens(kind)).toBeGreaterThan(0);
       expect(taskKindMaxTokens(kind)).toBeLessThanOrEqual(24_000);
+    }
+    // CC8 S7 vérification guidée : review/test gratuits à 48k ; payants, plafond historique.
+    for (const kind of ['review', 'test'] as const) {
+      expect(taskKindMaxTokens(kind)).toBe(48_000);
+      expect(taskKindMaxTokens(kind, { ['AGENT_RUN_COST_CENTS_' + kind.toUpperCase()]: '1' })).toBeLessThanOrEqual(24_000);
     }
     expect(taskKindMaxTokens('implement')).toBe(48_000);
     expect(taskKindMaxTokens('implement', { AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS: '120000' })).toBe(120_000);
