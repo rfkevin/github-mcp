@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createRun, leaseKeyOf, type ToolHost } from '../../../src/collab-store/agentrun';
-import { maskSecrets, redactedReceipt, redactedRunSummaryFor } from '../../../src/collab-store/agentrun/chat-continuity';
+import { redactedReceipt, redactedRunSummaryFor, typedStop } from '../../../src/collab-store/agentrun/chat-continuity';
 import { objectAlarm, objectWake, type ObjectSlot, type OrchestratorDeps } from '../../../src/collab-store/agentrun/orchestrator';
 import { recordRunModelCall } from '../../../src/collab-store/agentrun/provider-models';
 import { publishRunProof, RUN_PROOF_ATTEMPTS, RUN_PROOF_RETRY_S } from '../../../src/collab-store/agentrun/run-proof';
@@ -150,6 +150,45 @@ describe('Lot B R4 — preuve serveur run.proof', () => {
     for (const w of [other, later, closed]) expect(await proofEvents(w.cycle)).toHaveLength(0);
   });
 
+  it('relecture D12 B1 : correction déposée dans la MÊME seconde que la création du run → traitée comme postérieure, aucune preuve', async () => {
+    const w = await world();
+    const { runId, grants } = await completedRun(w);
+    await db.prepare([
+      'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
+      "VALUES (?1, ?2, 'correction.request', ?3, '', 'coordinator', ?4, 0, ?5, '')",
+    ].join(' ')).bind(w.cycle, T, w.holder, JSON.stringify({ task: 't0', items: ['même seconde'] }), uniq('same')).run();
+    expect(await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants))).toEqual({ status: 'refused', reason: 'correction_after_run' });
+    expect(await proofEvents(w.cycle)).toHaveLength(0);
+  });
+
+  it('relecture D12 B1 : correction même seconde arrivée entre la vérification et l’écriture → garde SQL, aucune preuve', async () => {
+    const w = await world();
+    const { runId, grants } = await completedRun(w);
+    let raced = false;
+    const racing = new Proxy(db, { get(target, prop, receiver) {
+      if (prop === 'batch') {
+        return async (statements: D1PreparedStatement[]) => {
+          if (!raced && statements.length === 5) {
+            raced = true;
+            await target.prepare([
+              'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
+              "VALUES (?1, ?2, 'correction.request', ?3, '', 'coordinator', ?4, 0, ?5, '')",
+            ].join(' ')).bind(w.cycle, T, w.holder, JSON.stringify({ task: 't0', items: ['course'] }), uniq('race')).run();
+          }
+          return target.batch(statements);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    const out = await publishRunProof(racing, runId, proofDeps(prReads(OPEN), grants));
+    expect(raced).toBe(true);
+    expect(out.status).not.toBe('published');
+    expect(await proofEvents(w.cycle)).toHaveLength(0);
+    // Relecture suivante : la correction est vue avant toute écriture, refus définitif.
+    expect(await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants))).toEqual({ status: 'refused', reason: 'correction_after_run' });
+  });
+
   it('hors mandat S7 ou run non terminé : ignoré sans trace', async () => {
     const w = await world();
     const { runId } = await completedRun(w);
@@ -246,7 +285,7 @@ describe('Lot B R5 — résumé expurgé et modèle servi', () => {
     const { runId, grants } = await completedRun(w);
     await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants));
     const mine = await redactedRunSummaryFor(db, w.author, runId);
-    expect(mine).toMatchObject({ run_id: runId, status: 'completed', stop_reason: 'final', steps_done: 6, server_steps: 5, model_steps: 1,
+    expect(mine).toMatchObject({ run_id: runId, status: 'completed', stop_code: 'final', stop_class: null, steps_done: 6, server_steps: 5, model_steps: 1,
       tokens_used: 2_000, proof: { status: 'published' } });
     expect(mine!.effects.find(e => e.tool === 'github_open_pr')).toMatchObject({ receipt: { number: 300, head_sha: C1, draft: false } });
     expect(await redactedRunSummaryFor(db, w.holder, runId)).toEqual(mine);
@@ -254,24 +293,36 @@ describe('Lot B R5 — résumé expurgé et modèle servi', () => {
     expect(await redactedRunSummaryFor(db, w.author, 'inconnu')).toBeNull();
   });
 
-  it('secrets factices : ni contenu, ni argument, ni jeton dans le résumé ; stop_reason masqué', async () => {
+  it('relecture D12 B2 : vue fail-closed — secrets factices connus ET inconnus, courts, jamais exposés ; aucun texte libre', async () => {
     const w = await world();
     const { runId } = await completedRun(w);
-    const secret = 'ghp_' + 'A1b2C3d4'.repeat(5);
+    const known = 'ghp_' + 'A1b2C3d4'.repeat(5);
+    const unknown = ['zq7', 'hush'].join('-'); // format inconnu de toute regex de secrets, court
     await db.prepare([
       'INSERT INTO agent_run_effects (effect_key, run_id, n, idx, tool, args, status, result, updated_at)',
       "VALUES (?1, ?2, 99, 0, 'github_read_file', ?3, 'completed', ?4, ?5)",
-    ].join(' ')).bind(uniq('fx'), runId, JSON.stringify({ token: secret }),
-      JSON.stringify({ content: 'TOKEN=' + secret, sha: 'a'.repeat(40), error: secret, branch: 'x Bearer ' + secret }), T).run();
-    await db.prepare("UPDATE agent_runs SET stop_reason = ?2 WHERE run_id = ?1").bind(runId, 'model_permanent: key ' + secret + ' refused').run();
-    const text = JSON.stringify(await redactedRunSummaryFor(db, w.holder, runId));
-    expect(text).not.toContain(secret);
-    expect(text).not.toContain('TOKEN=');
-    expect(text).not.toContain('Lot B.'); // prompt
-    expect(text).toContain('model_permanent: key [masqué] refused');
-    expect(redactedReceipt(JSON.stringify({ sha: 'a'.repeat(40), content: 'x', error: secret, number: 3 }))).toEqual({ sha: 'a'.repeat(40), number: 3 });
-    // Formes factices construites à l'exécution (aucune chaîne au format de clé dans le source).
-    expect(maskSecrets(['sk', 'abcdefghijklmnopqrstu'].join('-') + ' et ' + 'AKIA' + 'ABCDEFGHIJKLMNOP')).toBe('[masqué] et [masqué]');
+    ].join(' ')).bind(uniq('fx'), runId, JSON.stringify({ token: known, other: unknown }),
+      JSON.stringify({ content: 'TOKEN=' + known, sha: 'a'.repeat(40), error: unknown, status: unknown, conclusion: unknown,
+        next_action: unknown, branch: unknown, number: unknown, draft: unknown }), T).run();
+    await db.prepare("UPDATE agent_runs SET stop_reason = ?2 WHERE run_id = ?1").bind(runId, 'model_permanent: key ' + unknown + ' ' + known).run();
+    const summary = await redactedRunSummaryFor(db, w.holder, runId);
+    const text = JSON.stringify(summary);
+    for (const leak of [known, unknown, 'TOKEN=', 'Lot B.']) expect(text).not.toContain(leak);
+    expect(summary).toMatchObject({ stop_code: 'model_permanent', stop_class: null });
+    expect(summary!.effects.find(e => e.n === 99)).toMatchObject({ receipt: { sha: 'a'.repeat(40) } });
+    expect(Object.keys(summary!.effects.find(e => e.n === 99)!.receipt)).toEqual(['sha']);
+  });
+
+  it('relecture D12 B2 : reçus et codes d’arrêt par listes fermées (pur)', () => {
+    expect(redactedReceipt(JSON.stringify({ sha: 'a'.repeat(40), error: 'abc', number: 3, status: 'completed', conclusion: 'success',
+      next_action: 'request_D12', branch: 'mcp/105856986/vibe-api-s7-live', verifiedSuccess: true, content: 'x', head_sha: 'A'.repeat(40) })))
+      .toEqual({ sha: 'a'.repeat(40), branch: 'mcp/105856986/vibe-api-s7-live', number: 3, status: 'completed', conclusion: 'success',
+        next_action: 'request_D12', verifiedSuccess: true });
+    expect(typedStop('guided_violation:tool_not_offered:github_open_pr')).toEqual({ stop_code: 'guided_violation', stop_class: 'tool_not_offered' });
+    expect(typedStop('guided_stop:precheck_failed')).toEqual({ stop_code: 'guided_stop', stop_class: 'precheck_failed' });
+    expect(typedStop('model_permanent: clé zq7 refusée')).toEqual({ stop_code: 'model_permanent', stop_class: null });
+    expect(typedStop('Erreur libre ' + 'x'.repeat(10))).toEqual({ stop_code: 'other', stop_class: null });
+    expect(typedStop(null)).toEqual({ stop_code: 'other', stop_class: null });
   });
 
   it('modèle servi : chaque essai de maillon tracé (choisi, servi, repli, échec), visible du coordinateur', async () => {
