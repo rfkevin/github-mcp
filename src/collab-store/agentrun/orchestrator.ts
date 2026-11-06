@@ -26,6 +26,28 @@ export const BUSY_BACKOFF_BASE_S = 5;
 export const BUSY_BACKOFF_MAX_S = 300;
 export const RETRY_DELAY_S = 30;
 export const ERROR_DELAY_S = 60;
+/** CC8 S7 : pas de rafale d'appels sur les paliers gratuits. Le run reste borné par sa deadline. */
+export const IMPLEMENT_MIN_INTERVAL_S = 15;
+/** Une CI pending ne doit pas consommer les étapes de façon rapprochée. */
+export const IMPLEMENT_CI_PENDING_MIN_S = 60;
+export const IMPLEMENT_CI_PENDING_MAX_S = 120;
+
+/** Délai déterministe, borné, dérivé uniquement de la dernière preuve d'effet CI enregistrée. */
+export function nextStepIntervalS(taskKind: string, lastCheckResult: string | null): number {
+  if (taskKind !== 'implement') return 0;
+  if (!lastCheckResult) return IMPLEMENT_MIN_INTERVAL_S;
+  try {
+    const result: unknown = JSON.parse(lastCheckResult);
+    if (result && typeof result === 'object' && !Array.isArray(result)) {
+      const record = result as Record<string, unknown>;
+      const poll = record.next_poll_seconds;
+      if (record.next_action === 'wait' && typeof poll === 'number' && Number.isFinite(poll) && poll > 0) {
+        return Math.min(IMPLEMENT_CI_PENDING_MAX_S, Math.max(IMPLEMENT_CI_PENDING_MIN_S, Math.ceil(poll)));
+      }
+    }
+  } catch { /* un résultat malformé ne peut imposer d'attente arbitraire */ }
+  return IMPLEMENT_MIN_INTERVAL_S;
+}
 /** Quota du jour épuisé : nouvel essai dans une heure (jamais d'étape hors quota). */
 export const QUOTA_RETRY_S = 3600;
 /** Une alarme annoncée et dépassée de plus que cela est considérée perdue (scan de secours). */
@@ -181,6 +203,19 @@ export async function objectWake(deps: OrchestratorDeps, runId: string, leaseKey
     await deps.slot.put('run_id', runId);
     await deps.slot.put('busy', 0);
   }
+  // Un réveil en doublon (ou après éviction de l'objet) ne doit pas court-circuiter
+  // une attente CI/429 déjà publiée dans D1. Le scan peut relancer une alarme perdue
+  // dès que son échéance est dépassée.
+  const announced = await deps.db.prepare('SELECT next_alarm_at FROM agent_run_alarms WHERE run_id = ?1')
+    .bind(runId).first<{ next_alarm_at: number | null }>();
+  const waitingUntil = (announced?.next_alarm_at ?? 0) * 1000;
+  if (waitingUntil > deps.nowMs()) {
+    const existing = await deps.slot.getAlarm();
+    if (current !== runId || existing === null || Math.abs(existing - waitingUntil) > 1000) {
+      await deps.slot.setAlarm(waitingUntil);
+    }
+    return { accepted: true };
+  }
   await scheduleAt(deps, runId, leaseKey, deps.nowMs());
   return { accepted: true };
 }
@@ -209,6 +244,14 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
   if (run.status !== 'running') {
     await forget(deps, runId, run.lease_key);
     return { action: 'finished', outcome: run.status };
+  }
+  // Défense contre un réveil prématuré : la date D1 persiste entre évictions.
+  const announced = await deps.db.prepare('SELECT next_alarm_at FROM agent_run_alarms WHERE run_id = ?1')
+    .bind(runId).first<{ next_alarm_at: number | null }>();
+  const waitingUntil = (announced?.next_alarm_at ?? 0) * 1000;
+  if (waitingUntil > nowMs + 1000) {
+    await deps.slot.setAlarm(waitingUntil);
+    return { action: 'rescheduled', outcome: 'early_alarm', next_at: waitingUntil };
   }
   const requestsOk = await consumeQuota(deps.db, 'do_requests', 1, dailyLimit(deps.env.AGENT_RUN_DAILY_REQUESTS, DEFAULT_DAILY_REQUESTS), now);
   const rowsOk = requestsOk && await consumeQuota(deps.db, 'rows_written', ROWS_PER_STEP, dailyLimit(deps.env.AGENT_RUN_DAILY_ROWS, DEFAULT_DAILY_ROWS), now);
@@ -244,8 +287,21 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
   await settleStep();
   if (outcome === 'stepped') {
     await deps.slot.put('busy', 0);
-    await scheduleAt(deps, runId, run.lease_key, deps.nowMs());
-    return { action: 'stepped', outcome };
+    // L'étape a été commitée dans D1 par runStep. Son dernier effet, s'il s'agit
+    // d'une CI pending, fixe le prochain réveil sans nouvel appel modèle.
+    const state = await deps.db.prepare([
+      'SELECT r.task_kind, r.deadline_at,',
+      "(SELECT e.result FROM agent_run_effects e WHERE e.run_id = r.run_id",
+      " AND e.n = r.steps_done - 1 AND e.tool = 'github_check_result'",
+      " AND e.status = 'completed' ORDER BY e.idx DESC LIMIT 1) AS last_ci",
+      'FROM agent_runs r WHERE r.run_id = ?1',
+    ].join(' ')).bind(runId).first<{ task_kind: string; deadline_at: number; last_ci: string | null }>();
+    const currentMs = deps.nowMs();
+    const delayS = nextStepIntervalS(state?.task_kind ?? '', state?.last_ci ?? null);
+    const deadlineMs = (state?.deadline_at ?? Math.ceil(currentMs / 1000)) * 1000;
+    const next = Math.max(currentMs, Math.min(deadlineMs, currentMs + delayS * 1000));
+    await scheduleAt(deps, runId, run.lease_key, next);
+    return { action: 'stepped', outcome, next_at: next };
   }
   if (outcome === 'busy' || outcome === 'retry') {
     const busy = (await deps.slot.get('busy')) ?? 0;
