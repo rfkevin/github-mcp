@@ -39,8 +39,8 @@
 import { sha256Hex } from '../store/hash';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
-import { allCiPolls, ciPollKey, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema, latestCiPolls, pendingCiPoll, recordCiPoll,
-  type PendingCiPoll } from './ci-poll';
+import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
+  latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
 import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
@@ -447,11 +447,21 @@ export function withCiPolls(row: CompletedHistoryStep & { n: number },
  * mêmes gardes que l'appel d'origine. null = pas de relevé possible ici (le flux normal décide).
  */
 async function runCiPoll(db: D1Database, run: RunRow, pending: PendingCiPoll, deps: EngineDeps, now: number): Promise<StepResult | null> {
-  const live = await db.prepare('SELECT 1 AS ok WHERE ' + LIVE
-    + ' AND EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1 AND ?2 + ?3 < deadline_at)')
-    .bind(run.run_id, now, CI_POLL_FLOOR_S).first();
-  if (!live) return null;
+  if (pending.inflight) {
+    // Relevé k en vol chez un autre worker : attendre. Périmé (réponse perdue, coupure) : le clore
+    // `ambiguous` sans relire ; le relevé suivant prendra k + 1. Jamais deux lectures du même k.
+    if (pending.inflight.claimed_at + CI_POLL_CLAIM_S > now) return { outcome: 'busy' };
+    await completeCiPoll(db, run.run_id, pending, pending.inflight.k, pending.inflight, 'ambiguous',
+      JSON.stringify({ error: 'poll_outcome_unknown', next_action: 'wait', transient: true }), now);
+    return { outcome: 'stepped' };
+  }
   const k = pending.polls + 1;
+  // Réclamation de k AVANT toute lecture externe, sous la garde LIVE et le plancher de deadline.
+  const guard = LIVE + ' AND EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1 AND ?6 + ' + CI_POLL_FLOOR_S + ' < deadline_at)';
+  const live = await db.prepare('SELECT 1 AS ok WHERE ' + guard.replaceAll('?6', '?2')).bind(run.run_id, now).first();
+  if (!live) return null;
+  const claim = { claimed_by: deps.workerId, claimed_at: now };
+  if (!await claimCiPoll(db, run.run_id, pending, k, claim.claimed_by, claim.claimed_at, guard)) return { outcome: 'busy' };
   const key = await ciPollKey(run.run_id, pending, k);
   let content: string;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -470,7 +480,7 @@ async function runCiPoll(db: D1Database, run: RunRow, pending: PendingCiPoll, de
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-  await recordCiPoll(db, run.run_id, pending, k, content, deps.now());
+  await completeCiPoll(db, run.run_id, pending, k, claim, 'completed', content, deps.now());
   return { outcome: 'stepped' };
 }
 

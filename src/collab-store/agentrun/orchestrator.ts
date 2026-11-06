@@ -294,7 +294,7 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
     await ensureCiPollSchema(deps.db);
     const state = await deps.db.prepare([
       'SELECT r.task_kind, r.deadline_at, COALESCE(',
-      "(SELECT p.result FROM agent_run_ci_polls p WHERE p.run_id = r.run_id AND p.n = r.steps_done - 1",
+      "(SELECT p.result FROM agent_run_ci_polls p WHERE p.run_id = r.run_id AND p.n = r.steps_done - 1 AND p.status <> 'pending'",
       " ORDER BY p.idx DESC, p.k DESC LIMIT 1),",
       "(SELECT e.result FROM agent_run_effects e WHERE e.run_id = r.run_id",
       " AND e.n = r.steps_done - 1 AND e.tool = 'github_check_result'",
