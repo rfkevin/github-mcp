@@ -71,6 +71,33 @@ const OPEN = { number: 300, state: 'open', merged: false, head: { sha: C1 }, bas
 const proofDeps = (tools: ToolHost, grants: Awaited<ReturnType<typeof completedRun>>['grants'], at = T + 200) =>
   ({ tools, githubCompletionGrants: grants, now: () => at });
 
+/** Demande de correction posée directement en SQL (horodatage choisi), comme un coordinateur l'aurait déposée. */
+async function insertCorrection(target: D1Database, w: World, at: number, label: string): Promise<void> {
+  await target.prepare([
+    'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
+    "VALUES (?1, ?2, 'correction.request', ?3, '', 'coordinator', ?4, 0, ?5, '')",
+  ].join(' ')).bind(w.cycle, at, w.holder, JSON.stringify({ task: 't0', items: [label] }), uniq(label)).run();
+}
+
+/** Base qui exécute `mutate` une seule fois, juste avant le lot d'écriture de la preuve (5 instructions). */
+function racingOnce(mutate: (target: D1Database) => Promise<unknown>): { db: D1Database; raced: () => boolean } {
+  let raced = false;
+  const proxy = new Proxy(db, { get(target, prop, receiver) {
+    if (prop === 'batch') {
+      return async (statements: D1PreparedStatement[]) => {
+        if (!raced && statements.length === 5) {
+          raced = true;
+          await mutate(target);
+        }
+        return target.batch(statements);
+      };
+    }
+    const value = Reflect.get(target, prop, receiver);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  return { db: proxy, raced: () => raced };
+}
+
 async function proofEvents(cycle: string) {
   const { results } = await db.prepare("SELECT seq, participant_id, role, payload_json FROM events WHERE cycle_id = ?1 AND type = 'run.proof'")
     .bind(cycle).all<{ seq: number; participant_id: string; role: string; payload_json: string }>();
@@ -138,10 +165,7 @@ describe('Lot B R4 — preuve serveur run.proof', () => {
     expect(await publishRunProof(db, run.runId, proofDeps(prReads(OPEN), run.grants))).toEqual({ status: 'refused', reason: 'not_task_owner' });
     const later = await world();
     const done = await completedRun(later);
-    await db.prepare([
-      'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
-      "VALUES (?1, ?2, 'correction.request', ?3, '', 'coordinator', ?4, 0, ?5, '')",
-    ].join(' ')).bind(later.cycle, T + 150, later.holder, JSON.stringify({ task: 't0', items: ['x'] }), uniq('late')).run();
+    await insertCorrection(db, later, T + 150, 'late');
     expect(await publishRunProof(db, done.runId, proofDeps(prReads(OPEN), done.grants))).toEqual({ status: 'refused', reason: 'correction_after_run' });
     const closed = await world();
     const fin = await completedRun(closed);
@@ -153,10 +177,7 @@ describe('Lot B R4 — preuve serveur run.proof', () => {
   it('relecture D12 B1 : correction déposée dans la MÊME seconde que la création du run → traitée comme postérieure, aucune preuve', async () => {
     const w = await world();
     const { runId, grants } = await completedRun(w);
-    await db.prepare([
-      'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
-      "VALUES (?1, ?2, 'correction.request', ?3, '', 'coordinator', ?4, 0, ?5, '')",
-    ].join(' ')).bind(w.cycle, T, w.holder, JSON.stringify({ task: 't0', items: ['même seconde'] }), uniq('same')).run();
+    await insertCorrection(db, w, T, 'same');
     expect(await publishRunProof(db, runId, proofDeps(prReads(OPEN), grants))).toEqual({ status: 'refused', reason: 'correction_after_run' });
     expect(await proofEvents(w.cycle)).toHaveLength(0);
   });
@@ -164,25 +185,9 @@ describe('Lot B R4 — preuve serveur run.proof', () => {
   it('relecture D12 B1 : correction même seconde arrivée entre la vérification et l’écriture → garde SQL, aucune preuve', async () => {
     const w = await world();
     const { runId, grants } = await completedRun(w);
-    let raced = false;
-    const racing = new Proxy(db, { get(target, prop, receiver) {
-      if (prop === 'batch') {
-        return async (statements: D1PreparedStatement[]) => {
-          if (!raced && statements.length === 5) {
-            raced = true;
-            await target.prepare([
-              'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
-              "VALUES (?1, ?2, 'correction.request', ?3, '', 'coordinator', ?4, 0, ?5, '')",
-            ].join(' ')).bind(w.cycle, T, w.holder, JSON.stringify({ task: 't0', items: ['course'] }), uniq('race')).run();
-          }
-          return target.batch(statements);
-        };
-      }
-      const value = Reflect.get(target, prop, receiver);
-      return typeof value === 'function' ? value.bind(target) : value;
-    } });
-    const out = await publishRunProof(racing, runId, proofDeps(prReads(OPEN), grants));
-    expect(raced).toBe(true);
+    const racing = racingOnce(target => insertCorrection(target, w, T, 'race'));
+    const out = await publishRunProof(racing.db, runId, proofDeps(prReads(OPEN), grants));
+    expect(racing.raced()).toBe(true);
     expect(out.status).not.toBe('published');
     expect(await proofEvents(w.cycle)).toHaveLength(0);
     // Relecture suivante : la correction est vue avant toute écriture, refus définitif.
@@ -225,22 +230,9 @@ describe('Lot B R4 — preuve serveur run.proof', () => {
   it('révision concurrente entre lecture et écriture : relecture puis une seule preuve', async () => {
     const w = await world();
     const { runId, grants } = await completedRun(w);
-    let raced = false;
-    const racing = new Proxy(db, { get(target, prop, receiver) {
-      if (prop === 'batch') {
-        return async (statements: D1PreparedStatement[]) => {
-          if (!raced && statements.length === 5) {
-            raced = true;
-            await target.prepare('UPDATE cycles SET revision = revision + 1 WHERE cycle_id = ?1').bind(w.cycle).run();
-          }
-          return target.batch(statements);
-        };
-      }
-      const value = Reflect.get(target, prop, receiver);
-      return typeof value === 'function' ? value.bind(target) : value;
-    } });
-    expect((await publishRunProof(racing, runId, proofDeps(prReads(OPEN), grants))).status).toBe('published');
-    expect(raced).toBe(true);
+    const racing = racingOnce(target => target.prepare('UPDATE cycles SET revision = revision + 1 WHERE cycle_id = ?1').bind(w.cycle).run());
+    expect((await publishRunProof(racing.db, runId, proofDeps(prReads(OPEN), grants))).status).toBe('published');
+    expect(racing.raced()).toBe(true);
     expect(await proofEvents(w.cycle)).toHaveLength(1);
   });
 });
