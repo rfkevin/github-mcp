@@ -13,7 +13,8 @@
  * les appels du modèle : allow-list, gardes S7 (HALT, pause, fence, mandat, head), effets idempotents,
  * réconciliation, garde de complétude #271. Si l'action demande du contenu (premier commit, correction
  * après CI rouge), le modèle est appelé avec une consigne précise et un seul outil, github_commit_files.
- * Dans tout autre état (refus, ambiguïté, escalade), aucun guidage : flux historique.
+ * Dans tout autre état (refus, ambiguïté, escalade), ARRÊT TYPÉ `guided_stop:<cause>` : un run guidé ne
+ * revient jamais à l'orchestration libre par le modèle (relecture D12 GPT-6, 2e passe).
  *
  * Relecture D12 (GPT-6, PR #278) et avis Vibe / Grok (salon) :
  * - le serveur remplit lui-même name, expected_head_sha et le expected_sha du fichier (lu au head) :
@@ -28,7 +29,21 @@ export interface GuidedEntry { tool: string; value: Record<string, unknown> | nu
 
 export type GuidedStep =
   | { kind: 'server'; call: ToolCall }
-  | { kind: 'model'; tools: string[]; instruction: string; fill: GuidedFill };
+  | { kind: 'model'; tools: string[]; instruction: string; fill: GuidedFill }
+  | { kind: 'stop'; reason: string };
+
+/**
+ * Sortie d'une étape de contenu guidée : exactement UN appel github_commit_files, rien d'autre.
+ * null = conforme ; sinon cause typée (aucun appel, appel non offert, plusieurs appels). Vérifié par
+ * le moteur AVANT tout effet ; en cas de violation l'exécution s'arrête (aucun repli libre).
+ */
+export function guidedViolation(output: ModelOutput): string | null {
+  if (output.tool_calls.length === 0) return 'no_tool_call';
+  const names = output.tool_calls.map(call => call.name);
+  if (names.some(name => name !== 'github_commit_files')) return 'tool_not_offered:' + [...new Set(names)].join(',').slice(0, 120);
+  if (names.length !== 1) return 'multiple_tool_calls:' + names.length;
+  return null;
+}
 
 /** Valeurs autoritaires du serveur, appliquées à l'appel github_commit_files du modèle. */
 export interface GuidedFill { name: string; head: string; paths: string[]; blobs?: Record<string, string | null> }
@@ -50,24 +65,25 @@ function lastIndex(entries: readonly GuidedEntry[], from: number, test: (e: Guid
 }
 
 /**
- * Prochaine étape guidée, ou null (aucun guidage : le modèle garde la main avec tous ses outils).
+ * Prochaine étape guidée : serveur, contenu (modèle) ou arrêt typé.
  * `entries` : effets D1 dans l'ordre (n, idx), relevés de CI serveur insérés après leur effet d'origine.
  */
-export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, taskId: string, step: number): GuidedStep | null {
+export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, taskId: string, step: number): GuidedStep {
+  const stop = (reason: string): GuidedStep => ({ kind: 'stop', reason });
   const name = branch.split('-api-')[1];
-  if (!name) return null;
+  if (!name) return stop('branch_name');
   const server = (tool: string, args: Record<string, unknown>): GuidedStep =>
     ({ kind: 'server', call: { id: 'srv-' + step + '-' + tool, name: tool, args } });
 
   // 1. Mandat.
   const scopeAt = lastIndex(entries, 0, e => e.tool === 'github_write_scope' && e.value?.branch === branch);
   if (scopeAt < 0) {
-    return entries.some(e => e.tool === 'github_write_scope' && e.failed) ? null : server('github_write_scope', {});
+    return entries.some(e => e.tool === 'github_write_scope' && e.failed) ? stop('scope_refused') : server('github_write_scope', {});
   }
   const scope = entries[scopeAt].value!;
   const baseSha = sha(scope.base_sha);
   const paths = Array.isArray(scope.granted_paths) ? scope.granted_paths.filter((p): p is string => typeof p === 'string') : [];
-  if (!baseSha || paths.length === 0) return null;
+  if (!baseSha || paths.length === 0) return stop('scope_invalid');
 
   // 2. Branche : créée dans cette exécution, ou préexistante (tête lue par le serveur dans le mandat).
   let createdAt = lastIndex(entries, 0, e => e.tool === 'github_create_branch' && e.value?.branch === branch && !!sha(e.value?.sha));
@@ -77,7 +93,7 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
     branchHead = sha(scope.branch_head);
   }
   if (createdAt < 0 || !branchHead) {
-    return entries.some(e => e.tool === 'github_create_branch' && e.failed) ? null
+    return entries.some(e => e.tool === 'github_create_branch' && e.failed) ? stop('branch_refused')
       : server('github_create_branch', { name, base_sha: baseSha });
   }
 
@@ -100,7 +116,7 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
   const startedAt = lastIndex(entries, commitAt + 1, e => e.tool === 'github_run_checks' && e.value?.targetSha === commitSha
     && Number.isSafeInteger(e.value?.runId) && Number(e.value?.runId) > 0);
   if (startedAt < 0) {
-    return entries.slice(commitAt + 1).some(e => e.tool === 'github_run_checks' && e.failed) ? null
+    return entries.slice(commitAt + 1).some(e => e.tool === 'github_run_checks' && e.failed) ? stop('checks_refused')
       : server('github_run_checks', { name, sha: commitSha });
   }
   const runId = Number(entries[startedAt].value!.runId);
@@ -111,12 +127,12 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
   if (!checked || (checked.value?.targetSha === commitSha && checked.value?.next_action === 'wait')) {
     return server('github_check_result', { name, sha: commitSha, run_id: runId });
   }
-  if (checked.failed || checked.value?.targetSha !== commitSha) return null;
+  if (checked.failed || checked.value?.targetSha !== commitSha) return stop('check_unexpected');
   const verdict = checked.value.next_action;
 
   // 6. CI verte : PR prête, une seule fois.
   if (checked.value.verifiedSuccess === true && checked.value.status === 'completed') {
-    if (lastIndex(entries, checkedAt + 1, e => e.tool === 'github_open_pr') >= 0) return null;
+    if (lastIndex(entries, checkedAt + 1, e => e.tool === 'github_open_pr') >= 0) return stop('pr_already_open');
     return server('github_open_pr', { name, title: ('CC8 ' + taskId + ' — ' + paths.join(', ')).slice(0, 200),
       body: 'PR ouverte en mode guidé S7 : branche, commit, CI et PR exécutés par le serveur ; contenu écrit par le modèle de l’agent. CI vérifiée au SHA ' + commitSha + '.' });
   }
@@ -134,7 +150,8 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
       'Le serveur complète lui-même name, expected_head_sha et expected_sha. Chemins autorisés : ' + pathList + '. N’appelle aucun autre outil.',
     ].join('\n') };
   }
-  return null; // escalade, refus, état inattendu : flux historique
+  // Escalade, refus, état inattendu : arrêt typé, jamais de repli libre.
+  return stop('ci_' + String(verdict ?? 'unknown').replace(/[^a-z0-9_]/gi, '').slice(0, 40));
 }
 
 /**

@@ -42,7 +42,7 @@ import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
-import { applyGuidedFill, GUIDED_SERVER_MAX, planGuidedS7, type GuidedStep } from './s7-guided';
+import { applyGuidedFill, GUIDED_SERVER_MAX, guidedViolation, planGuidedS7, type GuidedStep } from './s7-guided';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
 import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
 
@@ -373,11 +373,13 @@ async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: numb
   const grants = (deps.githubCompletionGrants ?? []).filter(g => g.cycle === run.cycle_id
     && g.task === run.task_id && g.participant === run.participant_id);
   if (grants.length !== 1) return null;
+  // Run guidé : jamais de repli libre. Plafond serveur, outil absent ou état non prévu = arrêt typé.
   const used = await db.prepare('SELECT COUNT(*) AS c FROM agent_run_server_steps WHERE run_id = ?1').bind(run.run_id).first<{ c: number }>();
-  if ((used?.c ?? 0) >= GUIDED_SERVER_MAX) return null; // plafond propre atteint : flux historique
+  if ((used?.c ?? 0) >= GUIDED_SERVER_MAX) return { kind: 'stop', reason: 'server_cap' };
   const entries = (await runEvidence(db, run.run_id)).map(e => ({ tool: e.tool, value: completedPayload(e), failed: e.status === 'failed' }));
   const step = planGuidedS7(entries, grants[0].branch, run.task_id, n);
-  if (step?.kind === 'server' && !deps.tools.spec(run.task_kind, step.call.name)) return null;
+  if (step.kind === 'server' && !deps.tools.spec(run.task_kind, step.call.name)) return { kind: 'stop', reason: 'tool_unavailable:' + step.call.name };
+  if (step.kind === 'model' && !deps.tools.spec(run.task_kind, 'github_commit_files')) return { kind: 'stop', reason: 'tool_unavailable:github_commit_files' };
   return step;
 }
 
@@ -601,6 +603,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   }
   // CC8 S7 mode guidé : prochaine étape décidée sur l'état D1 AVANT la réclamation (même état, même décision).
   const plan = await guidedStep(db, run, deps, run.steps_done);
+  if (plan?.kind === 'stop') {
+    // Arrêt typé et auditable d'un run guidé (aucun repli vers l'orchestration libre du modèle).
+    await db.prepare("UPDATE agent_runs SET status = 'failed', stop_reason = ?2, updated_at = ?3 WHERE run_id = ?1 AND status = 'running'")
+      .bind(runId, 'guided_stop:' + plan.reason, now).run();
+    return { outcome: (await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ status: RunStatus }>())!.status };
+  }
   const claimed = await claimStep(db, run, deps, now, plan?.kind === 'server');
   if ('outcome' in claimed) return claimed;
   const n = run.steps_done;
@@ -634,8 +642,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         const messages = await buildMessages(db, run, deps.compactHistory && run.task_kind === 'implement');
         const tools = deps.tools.list(run.task_kind);
         response = await deps.model.complete({
-          messages: guide ? [...messages, { role: 'user', content: guide.instruction }] : messages,
-          tools: guide ? tools.filter(name => guide.tools.includes(name)) : tools,
+          messages: guide?.kind === 'model' ? [...messages, { role: 'user', content: guide.instruction }] : messages,
+          tools: guide?.kind === 'model' ? tools.filter(name => guide.tools.includes(name)) : tools,
           task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
       }
     } catch (error) {
@@ -651,7 +659,15 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       return { outcome: 'failed' };
     }
     output = normalizeOutput(response.output);
-    if (guide?.kind === 'model') output = applyGuidedFill(output, guide.fill);
+    if (guide?.kind === 'model') {
+      // Relecture D12 GPT-6 : exactement UN github_commit_files, vérifié en code AVANT tout effet.
+      const violation = guidedViolation(output);
+      if (violation) {
+        await stopAs(db, runId, 'failed', 'guided_violation:' + violation, now, claim);
+        return { outcome: 'failed' };
+      }
+      output = applyGuidedFill(output, guide.fill);
+    }
     const tokens = Math.max(0, Math.floor(response.usage?.tokens ?? 0));
     const cost = Math.max(0, Math.ceil(response.usage?.cost_cents ?? 0));
     const [, saved] = await db.batch([
