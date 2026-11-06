@@ -13,15 +13,29 @@
  * les appels du modèle : allow-list, gardes S7 (HALT, pause, fence, mandat, head), effets idempotents,
  * réconciliation, garde de complétude #271. Si l'action demande du contenu (premier commit, correction
  * après CI rouge), le modèle est appelé avec une consigne précise et un seul outil, github_commit_files.
- * Dans tout autre état (refus, ambiguïté, branche préexistante, escalade), aucun guidage : flux historique.
+ * Dans tout autre état (refus, ambiguïté, escalade), aucun guidage : flux historique.
+ *
+ * Relecture D12 (GPT-6, PR #278) et avis Vibe / Grok (salon) :
+ * - le serveur remplit lui-même name, expected_head_sha et le expected_sha du fichier (lu au head) :
+ *   le modèle ne fournit que chemin et contenu (applyGuidedFill) ;
+ * - les étapes serveur ne comptent pas dans max_steps (table agent_run_server_steps, plafond propre) ;
+ * - branche préexistante : reprise depuis la tête lue par le mandat (branch_head) ;
+ * - correction : diagnostics de CI bornés et contenu actuel du fichier injectés dans la consigne.
  */
-import type { ToolCall } from './engine';
+import type { ModelOutput, ToolCall } from './engine';
 
 export interface GuidedEntry { tool: string; value: Record<string, unknown> | null; failed: boolean }
 
 export type GuidedStep =
   | { kind: 'server'; call: ToolCall }
-  | { kind: 'model'; tools: string[]; instruction: string };
+  | { kind: 'model'; tools: string[]; instruction: string; fill: GuidedFill };
+
+/** Valeurs autoritaires du serveur, appliquées à l'appel github_commit_files du modèle. */
+export interface GuidedFill { name: string; head: string; paths: string[]; blobs?: Record<string, string | null> }
+
+/** Plafond propre des étapes serveur d'une exécution guidée (au-delà : flux historique). */
+export const GUIDED_SERVER_MAX = 24;
+const DIAGNOSTICS_MAX = 1_500;
 
 const SHA = /^[a-f0-9]{40}$/;
 const COMMIT_TOOLS = ['github_commit_files', 'github_replace_text'];
@@ -55,26 +69,28 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
   const paths = Array.isArray(scope.granted_paths) ? scope.granted_paths.filter((p): p is string => typeof p === 'string') : [];
   if (!baseSha || paths.length === 0) return null;
 
-  // 2. Branche (créée dans cette exécution ; une branche préexistante n'est pas guidée).
-  const createdAt = lastIndex(entries, 0, e => e.tool === 'github_create_branch' && e.value?.branch === branch && !!sha(e.value?.sha));
-  if (createdAt < 0) {
+  // 2. Branche : créée dans cette exécution, ou préexistante (tête lue par le serveur dans le mandat).
+  let createdAt = lastIndex(entries, 0, e => e.tool === 'github_create_branch' && e.value?.branch === branch && !!sha(e.value?.sha));
+  let branchHead = createdAt < 0 ? null : sha(entries[createdAt].value!.sha);
+  if (createdAt < 0 && sha(scope.branch_head)) {
+    createdAt = scopeAt;
+    branchHead = sha(scope.branch_head);
+  }
+  if (createdAt < 0 || !branchHead) {
     return entries.some(e => e.tool === 'github_create_branch' && e.failed) ? null
       : server('github_create_branch', { name, base_sha: baseSha });
   }
-  const branchHead = sha(entries[createdAt].value!.sha)!;
 
   // 3. Dernier commit de la branche après sa création.
   const commitAt = lastIndex(entries, createdAt + 1, e => COMMIT_TOOLS.includes(e.tool) && e.value?.branch === branch && !!sha(e.value?.commit_sha));
   const pathList = paths.map(p => '« ' + p + ' »').join(', ');
   if (commitAt < 0) {
-    return { kind: 'model', tools: ['github_commit_files'], instruction: [
-      'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). Le serveur a déjà lu ton mandat et créé la branche ' + branch + ' (tête ' + branchHead + ').',
-      'Ta seule action maintenant : appeler UNE FOIS l’outil github_commit_files avec exactement :',
-      '- name : "' + name + '"',
-      '- expected_head_sha : "' + branchHead + '"',
+    return { kind: 'model', tools: ['github_commit_files'], fill: { name, head: branchHead, paths }, instruction: [
+      'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). Le serveur a déjà lu ton mandat et préparé la branche ' + branch + ' (tête ' + branchHead + ').',
+      'Ta seule action maintenant : appeler UNE FOIS l’outil github_commit_files avec :',
       '- message : un résumé d’une ligne (120 caractères au plus)',
       '- files : [{ "path": <un chemin autorisé>, "content": <le contenu COMPLET du fichier> }]',
-      'Chemins autorisés : ' + pathList + '. N’appelle aucun autre outil.',
+      'Le serveur complète lui-même name, expected_head_sha et expected_sha. Chemins autorisés : ' + pathList + '. N’appelle aucun autre outil.',
       'Ensuite, le serveur lancera la CI, attendra son résultat et ouvrira la PR lui-même.',
     ].join('\n') };
   }
@@ -107,15 +123,40 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
 
   // 7. CI rouge, corrections restantes : le modèle corrige le contenu.
   if (verdict === 'correct') {
-    return { kind: 'model', tools: ['github_commit_files'], instruction: [
-      'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). La CI a ÉCHOUÉ au SHA ' + commitSha + ' (diagnostics dans le dernier résultat github_check_result).',
-      'Ta seule action maintenant : corriger le fichier en appelant UNE FOIS github_commit_files avec exactement :',
-      '- name : "' + name + '"',
-      '- expected_head_sha : "' + commitSha + '"',
+    const diagnostics = checked.value.diagnostics ?? checked.value.failures ?? checked.value.summary;
+    const shown = diagnostics === undefined ? '(aucun diagnostic fourni)' : JSON.stringify(diagnostics).slice(0, DIAGNOSTICS_MAX);
+    return { kind: 'model', tools: ['github_commit_files'], fill: { name, head: commitSha, paths }, instruction: [
+      'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). La CI a ÉCHOUÉ au SHA ' + commitSha + '.',
+      'Diagnostics (bornés) : ' + shown,
+      'Ta seule action maintenant : corriger le fichier en appelant UNE FOIS github_commit_files avec :',
       '- message : un résumé d’une ligne de la correction',
       '- files : [{ "path": <le chemin concerné>, "content": <le contenu COMPLET corrigé> }]',
-      'Chemins autorisés : ' + pathList + '. N’appelle aucun autre outil.',
+      'Le serveur complète lui-même name, expected_head_sha et expected_sha. Chemins autorisés : ' + pathList + '. N’appelle aucun autre outil.',
     ].join('\n') };
   }
   return null; // escalade, refus, état inattendu : flux historique
+}
+
+/**
+ * Applique les valeurs autoritaires du serveur à la sortie du modèle (étape de contenu guidée) :
+ * name et expected_head_sha imposés, expected_sha du fichier imposé quand le serveur l'a lu (fichier
+ * existant au head) et retiré sinon. Les chemins restent ceux du modèle : la garde S7 les vérifie.
+ */
+export function applyGuidedFill(output: ModelOutput, fill: GuidedFill): ModelOutput {
+  return {
+    text: output.text,
+    tool_calls: output.tool_calls.map(call => {
+      if (call.name !== 'github_commit_files') return call;
+      const raw = Array.isArray(call.args?.files) ? call.args.files as unknown[] : [];
+      const files = raw.map(entry => {
+        const file = { ...((entry ?? {}) as Record<string, unknown>) };
+        const path = typeof file.path === 'string' ? file.path : '';
+        delete file.expected_sha;
+        const blob = fill.blobs?.[path];
+        if (blob) file.expected_sha = blob;
+        return file;
+      });
+      return { ...call, args: { ...(call.args ?? {}), name: fill.name, expected_head_sha: fill.head, files } };
+    }),
+  };
 }

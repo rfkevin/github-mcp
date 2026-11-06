@@ -39,10 +39,11 @@ Constat des pilotes réels : Vibe n° 4 (seq 1710) s'est arrêté après la lect
 Pour une exécution `implement` sous mandat S7 (`agentrun/s7-guided.ts`, activé au runtime par `object.ts`), la prochaine action est déduite des seuls effets D1 :
 
 - **étapes mécaniques émises par le serveur** (aucun appel modèle, aucun jeton) : `github_write_scope`, `github_create_branch` (base lue dans le mandat), `github_run_checks` au SHA du dernier commit, `github_check_result`, puis `github_open_pr` une fois la CI verte au même SHA ;
-- **étape de contenu confiée au modèle** : premier commit, ou correction après une CI rouge. Le modèle reçoit une consigne précise (nom, `expected_head_sha`, chemins autorisés) et **un seul outil**, `github_commit_files` ;
+- **étape de contenu confiée au modèle** : premier commit, ou correction après une CI rouge. Le modèle reçoit une consigne précise et **un seul outil**, `github_commit_files` ; il ne fournit que chemin et contenu. Le serveur lit le fichier au head et **impose** `name`, `expected_head_sha` et le `expected_sha` du blob (relecture D12 GPT-6) ; les diagnostics de CI (bornés) et le contenu actuel du fichier (borné) sont joints à la consigne ;
+- **branche préexistante** : `github_write_scope` rend `branch_head` (lu par le serveur) ; le guidage repart de cette tête et la garde #271 l'accepte comme preuve de branche ;
 - **même chemin que les appels du modèle** : allow-list, gardes S7 (HALT, pause, fence, mandat, head), effets idempotents et réconciliation, garde de complétude #271, relevés de CI serveur (#277) ;
-- **aucun guidage** dans tout autre état (refus, branche préexistante, escalade, résultat inattendu) : le modèle garde la main avec tous ses outils, comme avant ;
-- budget : 5 étapes serveur et 1 étape modèle pour un parcours sans correction ; chaque correction coûte 1 étape modèle et 2 étapes serveur, dans les 12 étapes.
+- **aucun guidage** dans tout autre état (refus, escalade, résultat inattendu) : le modèle garde la main avec tous ses outils, comme avant ; un texte sans outil à l'étape de contenu termine le run en échec typé (`incomplete_final`) ;
+- **budget** : les étapes serveur sont tracées dans `agent_run_server_steps` (append-only) et **ne comptent pas** dans `max_steps`, qui ne borne que les étapes modèle ; plafond propre de 24 étapes serveur ; jetons, coût et deadline restent communs. Un parcours sans correction : 1 étape modèle ; 1 commit initial + 3 corrections : 4 étapes modèle.
 
 ## Validation et limites
 
