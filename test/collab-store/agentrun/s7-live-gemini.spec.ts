@@ -1,7 +1,5 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from 'vitest';
 
-test.describe('corr#1732 s7-live gemini verification', () => {
-  test('should pass live check', async () => {
-    expect(true).toBe(true);
-  });
+test('corr#1732 s7-live gemini verification', () => {
+  expect(true).toBe(true);
 });
