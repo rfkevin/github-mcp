@@ -49,9 +49,20 @@ export function taskKindMaxSteps(kind: PlannedTaskKind): number {
   return kind === 'implement' ? PLAN_IMPLEMENT_MAX_STEPS : PLAN_MAX_STEPS;
 }
 export const PLAN_MAX_TOKENS = 24_000;
-/** S1b : enveloppe totale de jetons par type d'exécution (jamais supérieure au plafond historique). */
+/** S1b : plafonds historiques ; les runs implement financés (si autorisés par Kevin) restent à 24k. */
 export const TASK_KIND_MAX_TOKENS = Object.freeze({ answer: 8_000, review: 16_000, test: 16_000, implement: 24_000, design: 12_000 });
-export function taskKindMaxTokens(kind: PlannedTaskKind): number { return TASK_KIND_MAX_TOKENS[kind]; }
+/** CC8 S7 : doublement minimal autorisé par Kevin, et expérimentation gratuite bornée à 120k. */
+export const FREE_IMPLEMENT_DEFAULT_TOKENS = 48_000;
+export const FREE_IMPLEMENT_EXPERIMENT_MAX_TOKENS = 120_000;
+/** Le plafond supérieur n'est activé que par une variable propriétaire explicite, pour un run à coût payant 0. */
+export function taskKindMaxTokens(kind: PlannedTaskKind, env: PlanEnv = {}): number {
+  if (kind !== 'implement' || taskKindCostCents(env, kind) !== 0) return TASK_KIND_MAX_TOKENS[kind];
+  const raw = env.AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS;
+  if (raw === undefined || !/^[1-9][0-9]{0,5}$/.test(raw)) return FREE_IMPLEMENT_DEFAULT_TOKENS;
+  const value = Number(raw);
+  return value >= FREE_IMPLEMENT_DEFAULT_TOKENS && value <= FREE_IMPLEMENT_EXPERIMENT_MAX_TOKENS
+    ? value : FREE_IMPLEMENT_DEFAULT_TOKENS;
+}
 /** CC-8 S1b-2 : dérivé de la politique unique (run-policy) — 900 s partout à la fusion, montée S7 après P95. */
 export const PLAN_DEADLINE_S = runDeadlineS('answer');
 
@@ -97,6 +108,8 @@ export type TaskWakeKind = Exclude<PlannedTaskKind, 'answer'>;
 
 export interface PlanEnv {
   AGENT_RUN_PARTICIPANTS?: string;
+  /** Plafond optionnel pour implement à coût payant nul (48 000–120 000, défaut 48 000). */
+  AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS?: string;
   AGENT_RUN_CONTINUITY?: string;
   /** CC-7 L6b : plafonds de coût par exécution et par type (cents US, 0 à 1 000) ; absents = 0. */
   AGENT_RUN_COST_CENTS_ANSWER?: string;
@@ -440,7 +453,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           return (await createRun(db, {
             runId: ids[attempt - 1], cycleId, participantId,
             taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
-            maxSteps: taskKindMaxSteps(kind), maxTokens: taskKindMaxTokens(kind), maxCostCents: taskKindCostCents(env, kind),
+            maxSteps: taskKindMaxSteps(kind), maxTokens: taskKindMaxTokens(kind, env), maxCostCents: taskKindCostCents(env, kind),
             deadlineAt: input.now + runDeadlineS(kind), now: input.now,
           })).created;
         } });
