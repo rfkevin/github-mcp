@@ -39,6 +39,8 @@
 import { sha256Hex } from '../store/hash';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
+import { allCiPolls, ciPollKey, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema, latestCiPolls, pendingCiPoll, recordCiPoll,
+  type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
 import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
@@ -333,9 +335,20 @@ async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps)
   if (grants.length === 0) return true; // Hors mandat S7, comportement historique.
   if (grants.length !== 1) return false; // Ambiguïté = pas de succès.
   const { results } = await db.prepare(
-    'SELECT tool, status, result FROM agent_run_effects WHERE run_id = ?1 ORDER BY n, idx',
-  ).bind(run.run_id).all<GithubCompletionEffect>();
-  return githubCompletionSatisfied(results, grants[0].branch);
+    'SELECT n, idx, tool, status, result FROM agent_run_effects WHERE run_id = ?1 ORDER BY n, idx',
+  ).bind(run.run_id).all<GithubCompletionEffect & { n: number; idx: number }>();
+  // CC8 S7 : les relevés de CI faits par le serveur (sans modèle) suivent leur effet d'origine.
+  const polls = await allCiPolls(db, run.run_id);
+  const merged: GithubCompletionEffect[] = [];
+  for (const effect of results) {
+    merged.push(effect);
+    for (const poll of polls) {
+      if (poll.n === effect.n && poll.idx === effect.idx && effect.tool === CI_POLL_TOOL) {
+        merged.push({ tool: CI_POLL_TOOL, status: 'completed', result: poll.result });
+      }
+    }
+  }
+  return githubCompletionSatisfied(merged, grants[0].branch);
 }
 
 /** Compaction déterministe et opt-in du seul contexte envoyé au fournisseur.
@@ -393,9 +406,72 @@ export function providerMessagesFromHistory(prompt: string, steps: readonly Comp
 }
 
 async function buildMessages(db: D1Database, run: RunRow, compact = false): Promise<AgentMessage[]> {
-  const { results } = await db.prepare("SELECT model_output, results FROM agent_run_steps WHERE run_id = ?1 AND state = 'completed' ORDER BY n")
-    .bind(run.run_id).all<CompletedHistoryStep>();
-  return providerMessagesFromHistory(run.prompt, results, compact);
+  const { results } = await db.prepare("SELECT n, model_output, results FROM agent_run_steps WHERE run_id = ?1 AND state = 'completed' ORDER BY n")
+    .bind(run.run_id).all<CompletedHistoryStep & { n: number }>();
+  const polls = await latestCiPolls(db, run.run_id);
+  return providerMessagesFromHistory(run.prompt, polls.size ? results.map(row => withCiPolls(row, polls)) : results, compact);
+}
+
+/** CC8 S7 : le modèle voit le dernier relevé serveur comme résultat de son appel github_check_result
+ * d'origine (couple tool_calls / tool_call_id préservé). Le journal D1 n'est pas réécrit. */
+export function withCiPolls(row: CompletedHistoryStep & { n: number },
+  polls: ReadonlyMap<string, { k: number; result: string }>): CompletedHistoryStep {
+  let calls: ToolCall[];
+  let entries: ResultEntry[];
+  try {
+    calls = (JSON.parse(row.model_output) as ModelOutput).tool_calls ?? [];
+    entries = JSON.parse(row.results) as ResultEntry[];
+  } catch {
+    return row;
+  }
+  let changed = false;
+  const next = entries.map(entry => {
+    const idx = calls.findIndex(call => call.id === entry.id);
+    const poll = idx >= 0 && calls[idx].name === CI_POLL_TOOL ? polls.get(row.n + ':' + idx) : undefined;
+    if (!poll) return entry;
+    changed = true;
+    let content = poll.result;
+    try {
+      const value: unknown = JSON.parse(poll.result);
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        content = JSON.stringify({ ...(value as Record<string, unknown>), server_ci_polls: poll.k });
+      }
+    } catch { /* résultat brut conservé */ }
+    return { id: entry.id, content };
+  });
+  return changed ? { model_output: row.model_output, results: JSON.stringify(next) } : row;
+}
+
+/**
+ * CC8 S7 : relevé de CI fait par le serveur, sans modèle ni étape. Même outil, mêmes arguments,
+ * mêmes gardes que l'appel d'origine. null = pas de relevé possible ici (le flux normal décide).
+ */
+async function runCiPoll(db: D1Database, run: RunRow, pending: PendingCiPoll, deps: EngineDeps, now: number): Promise<StepResult | null> {
+  const live = await db.prepare('SELECT 1 AS ok WHERE ' + LIVE
+    + ' AND EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1 AND ?2 + ?3 < deadline_at)')
+    .bind(run.run_id, now, CI_POLL_FLOOR_S).first();
+  if (!live) return null;
+  const k = pending.polls + 1;
+  const key = await ciPollKey(run.run_id, pending, k);
+  let content: string;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const limit = Math.max(1, deps.effectTimeoutMs ?? EFFECT_TIMEOUT_S * 1000);
+    const value = await Promise.race([
+      deps.tools.execute(pending.call, { run_id: run.run_id, effect_key: key }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('effect_timeout')), limit); }),
+    ]);
+    content = asContent(value);
+  } catch (error) {
+    // Refus certain (HALT, fence, tâche, head changé...) : rendre la main ; panne de lecture : réessayer.
+    content = JSON.stringify(error instanceof ToolRefused
+      ? { error: errorText(error), next_action: 'model' }
+      : { error: errorText(error), next_action: 'wait', transient: true });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  await recordCiPoll(db, run.run_id, pending, k, content, deps.now());
+  return { outcome: 'stepped' };
 }
 
 function normalizeOutput(output: ModelOutput): ModelOutput {
@@ -452,6 +528,13 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const run = await getRun(db, runId);
   if (!run) return { outcome: 'unknown_run' };
   if (run.status !== 'running') return { outcome: run.status };
+  // CC8 S7 : CI pending → relevé serveur, sans modèle ni étape (au plus CI_POLL_MAX, dans la deadline).
+  await ensureCiPollSchema(db);
+  const pendingPoll = await pendingCiPoll(db, runId, run.steps_done);
+  if (pendingPoll) {
+    const polled = await runCiPoll(db, run, pendingPoll, deps, now);
+    if (polled) return polled;
+  }
   const claimed = await claimStep(db, run, deps, now);
   if ('outcome' in claimed) return claimed;
   const n = run.steps_done;

@@ -12,6 +12,7 @@
  * AGENT_RUNS_ENABLED n'est pas exactement « true » (en plus de HALT, vérifié par
  * le moteur à chaque écriture).
  */
+import { ensureCiPollSchema } from './ci-poll';
 import { planAgentRuns } from './plan';
 import { runStep, type EngineDeps, type ModelClient, type ToolHost } from './engine';
 import { meteredDb } from './metered-db';
@@ -289,11 +290,15 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
     await deps.slot.put('busy', 0);
     // L'étape a été commitée dans D1 par runStep. Son dernier effet, s'il s'agit
     // d'une CI pending, fixe le prochain réveil sans nouvel appel modèle.
+    // CC8 S7 : un relevé serveur (sans modèle) plus récent prime sur l'effet d'origine.
+    await ensureCiPollSchema(deps.db);
     const state = await deps.db.prepare([
-      'SELECT r.task_kind, r.deadline_at,',
+      'SELECT r.task_kind, r.deadline_at, COALESCE(',
+      "(SELECT p.result FROM agent_run_ci_polls p WHERE p.run_id = r.run_id AND p.n = r.steps_done - 1",
+      " ORDER BY p.idx DESC, p.k DESC LIMIT 1),",
       "(SELECT e.result FROM agent_run_effects e WHERE e.run_id = r.run_id",
       " AND e.n = r.steps_done - 1 AND e.tool = 'github_check_result'",
-      " AND e.status = 'completed' ORDER BY e.idx DESC LIMIT 1) AS last_ci",
+      " AND e.status = 'completed' ORDER BY e.idx DESC LIMIT 1)) AS last_ci",
       'FROM agent_runs r WHERE r.run_id = ?1',
     ].join(' ')).bind(runId).first<{ task_kind: string; deadline_at: number; last_ci: string | null }>();
     const currentMs = deps.nowMs();
