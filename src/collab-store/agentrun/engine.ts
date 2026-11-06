@@ -42,7 +42,8 @@ import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
-import { applyGuidedFill, GUIDED_SERVER_MAX, guidedViolation, planGuidedS7, type GuidedStep } from './s7-guided';
+import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
+  planGuidedS7, PRECHECK_HINTS, type GuidedStep } from './s7-guided';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
 import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
 
@@ -384,11 +385,38 @@ async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: numb
   // Run guidé : jamais de repli libre. Plafond serveur, outil absent ou état non prévu = arrêt typé.
   const used = await db.prepare('SELECT COUNT(*) AS c FROM agent_run_server_steps WHERE run_id = ?1').bind(run.run_id).first<{ c: number }>();
   if ((used?.c ?? 0) >= GUIDED_SERVER_MAX) return { kind: 'stop', reason: 'server_cap' };
-  const entries = (await runEvidence(db, run.run_id)).map(e => ({ tool: e.tool, value: completedPayload(e), failed: e.status === 'failed' }));
+  const entries = (await runEvidence(db, run.run_id)).map(e => ({ tool: e.tool, value: completedPayload(e), failed: e.status === 'failed',
+    ...(e.tool === GUIDED_PRECHECK_TOOL ? { detail: precheckCause(e.result) } : {}) }));
   const step = planGuidedS7(entries, grants[0].branch, run.task_id, n);
   if (step.kind === 'server' && !deps.tools.spec(run.task_kind, step.call.name)) return { kind: 'stop', reason: 'tool_unavailable:' + step.call.name };
   if (step.kind === 'model' && !deps.tools.spec(run.task_kind, 'github_commit_files')) return { kind: 'stop', reason: 'tool_unavailable:github_commit_files' };
   return step;
+}
+
+/** Cause d'un refus de prévalidation persisté (effet guided_precheck). */
+function precheckCause(result: string | null): string {
+  try {
+    const value = JSON.parse(result ?? '') as { cause?: unknown };
+    return typeof value?.cause === 'string' ? value.cause.slice(0, 60) : 'unknown';
+  } catch { return 'unknown'; }
+}
+
+/**
+ * Lot A R2 (#281) : refus de prévalidation enregistré comme effet D1 `guided_precheck` en échec,
+ * sous la garde LIVE et la réclamation exacte, SANS aucune écriture GitHub. Clé déterministe : une
+ * reprise retrouve le même refus. null = refus enregistré (ou déjà présent) ; sinon arrêt / busy.
+ */
+async function recordPrecheck(db: D1Database, runId: string, claim: Claim, idx: number, call: ToolCall, cause: string,
+  now: number): Promise<StepResult | null> {
+  const key = await sha256Hex(canonical({ run_id: runId, n: claim.n, idx, tool: GUIDED_PRECHECK_TOOL }));
+  const inserted = await db.prepare([
+    'INSERT OR IGNORE INTO agent_run_effects (effect_key, run_id, n, idx, tool, args, status, result, updated_at)',
+    "SELECT ?2, ?1, ?3, ?4, ?5, ?6, 'failed', ?7, ?8 WHERE " + LIVE + ' AND ' + claimHeld('?3', '?9', '?10'),
+  ].join(' ')).bind(runId, key, claim.n, idx, GUIDED_PRECHECK_TOOL, canonical({ name: call.name, args: call.args }),
+    JSON.stringify({ error: 'guided_precheck', cause }), now, claim.worker, claim.attempts).run();
+  if (inserted.meta.changes === 1) return null;
+  const existing = await db.prepare('SELECT 1 AS x FROM agent_run_effects WHERE effect_key = ?1').bind(key).first();
+  return existing ? null : settled(db, runId, now);
 }
 
 async function enrichGuided(run: RunRow, deps: EngineDeps, n: number, step: Extract<GuidedStep, { kind: 'model' }>): Promise<GuidedStep> {
@@ -649,6 +677,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     output = JSON.parse(claimed.model_output) as ModelOutput;
   } else {
     let response: { output: ModelOutput; usage: ModelUsage };
+    let normalized: string[] = [];
     // CC8 S7 mode guidé : étape mécanique émise par le serveur (sans modèle ni jeton), ou consigne précise
     // et un seul outil pour l'étape de contenu. Le résultat suit ensuite le chemin commun (gardes, effets).
     const guide = plan?.kind === 'model' ? await enrichGuided(run, deps, n, plan) : plan;
@@ -678,6 +707,11 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     }
     output = normalizeOutput(response.output);
     if (guide?.kind === 'model') {
+      // Lot A R1 (#281) : nom canonisé (espaces de bord seulement) AVANT toute garde ; le reste inchangé.
+      const raw = output;
+      const canon = canonicalGuidedOutput(output);
+      output = canon.output;
+      normalized = canon.normalized;
       // Relecture D12 GPT-6 : exactement UN github_commit_files, vérifié en code AVANT tout effet.
       const violation = guidedViolation(output);
       if (violation) {
@@ -695,7 +729,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
             .bind(runId, n, deps.workerId, claimed.attempts, tokens, cost),
           db.prepare('INSERT INTO agent_run_journal (at, kind, run_id, detail) VALUES (?1, ?2, ?3, ?4)')
             .bind(now, 'guided_violation', runId, JSON.stringify({ n, worker: deps.workerId, attempts: claimed.attempts, violation, tokens, cost_cents: cost,
-              output: JSON.stringify(output).slice(0, GUIDED_TRACE_MAX) })),
+              raw_names: raw.tool_calls.slice(0, 8).map(call => JSON.stringify(call.name).slice(0, 80)),
+              output: JSON.stringify(raw).slice(0, GUIDED_TRACE_MAX) })),
           db.prepare("UPDATE agent_runs SET status = 'failed', stop_reason = ?2, updated_at = ?3 WHERE run_id = ?1 AND status = 'running' AND "
             + LIVE + ' AND ' + claimHeld('?4', '?5', '?6')).bind(runId, reason.slice(0, 500), now, n, deps.workerId, claimed.attempts),
         ]);
@@ -717,6 +752,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         'INSERT OR IGNORE INTO agent_run_server_steps (run_id, n) SELECT ?1, ?2 WHERE ?4 = 1 AND EXISTS (SELECT 1 FROM agent_run_steps',
         "  WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND state = 'model_done')",
       ].join(' ')).bind(runId, n, deps.workerId, guide?.kind === 'server' ? 1 : 0),
+      // Lot A R1 : trace bornée d'une normalisation de nom d'outil, seulement si l'étape est bien la nôtre.
+      db.prepare([
+        'INSERT INTO agent_run_journal (at, kind, run_id, detail) SELECT ?1, ?2, ?3, ?4 WHERE ?7 = 1 AND EXISTS (SELECT 1 FROM agent_run_steps',
+        "  WHERE run_id = ?3 AND n = ?5 AND claimed_by = ?6 AND state = 'model_done')",
+      ].join(' ')).bind(now, 'guided_tool_normalized', runId, JSON.stringify({ n, worker: deps.workerId, raw_names: normalized.slice(0, 8) }),
+        n, deps.workerId, normalized.length > 0 ? 1 : 0),
     ]);
     if (saved.meta.changes !== 1) return settled(db, runId, now);
     await deps.probe?.('after_model');
@@ -768,6 +809,17 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       await stopAs(db, runId, 'failed', 'model_transient: temps insuffisant avant l’effet ' + call.name
         + ' (il faut ' + EFFECT_LAUNCH_FLOOR_S + ' s devant le plafond d’étape et la deadline, relecture D12 #255) ; relance d’exécution S1b.', deps.now(), claim);
       return { outcome: 'failed' };
+    }
+    // Lot A R2 (#281) : prévalidation statique de l'étape de contenu guidée, AVANT tout effet GitHub.
+    // Le plan est recalculé à chaque passage : une reprise rejoue la même décision (clé déterministe).
+    if (plan?.kind === 'model' && call.name === GUIDED_TOOL) {
+      const cause = guidedPrecheck(call, plan.fill.paths);
+      if (cause) {
+        const stopped = await recordPrecheck(db, runId, claim, idx, call, cause, deps.now());
+        if (stopped) return stopped;
+        refused('guided_precheck:' + cause + ' — ' + (PRECHECK_HINTS[cause] ?? cause));
+        continue;
+      }
     }
     const effect = await runEffect(db, runId, claim, idx, call, deps);
     if ('outcome' in effect) return effect;
