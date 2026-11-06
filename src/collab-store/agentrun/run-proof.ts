@@ -11,7 +11,9 @@
  * - seulement si : run implement `completed/final` sous mandat S7 ; garde de complétude #271 satisfaite
  *   sur les effets D1 et relevés serveur ; PR relue sur GitHub ouverte, non fusionnée, tête = SHA prouvé
  *   (base lue ici) ; participant du run = auteur (owner) de la tâche ; tâche non terminée ; aucune
- *   `correction.request` de la tâche postérieure à la création du run ; pas de HALT ;
+ *   `correction.request` de la tâche horodatée à la seconde de création du run ou après (relecture D12
+ *   GPT-6 B1 : les horodatages sont à la seconde, une égalité est traitée comme postérieure — fail-closed) ;
+ *   pas de HALT ;
  * - idempotent (`runproof:<run_id>`), sous CAS de révision du cycle, reprise bornée (agent_run_proofs).
  * Le contrôleur la compte comme SOUMISSION de l'auteur au couple head/base, jamais comme avis :
  * relecture et test restent des écritures indépendantes ; `merge_ready` exige leurs deux verdicts.
@@ -155,7 +157,8 @@ export async function publishRunProof(db: D1Database, runId: string, deps: RunPr
   if (typeof base.sha !== 'string' || !SHA.test(base.sha)) return retryLater(db, runId, 'pr_base_unreadable', now);
   const baseSha = base.sha;
 
-  // 3. Tâche : existante, non terminée, auteur = participant du run ; aucune demande de correction postérieure.
+  // 3. Tâche : existante, non terminée, auteur = participant du run ; aucune demande de correction à la seconde
+  //    de création du run ou après (égalité = postérieure : on ne sait pas ordonner deux faits de la même seconde).
   const task = await db.prepare('SELECT owner_pid, status FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
     .bind(run.cycle_id, run.task_id).first<{ owner_pid: string; status: string }>();
   if (!task) return refuse(db, runId, 'task_unknown', now);
@@ -163,13 +166,13 @@ export async function publishRunProof(db: D1Database, runId: string, deps: RunPr
   if (await logical(db, task.owner_pid) !== await logical(db, run.participant_id)) return refuse(db, runId, 'not_task_owner', now);
   const later = await db.prepare([
     "SELECT 1 AS x FROM events WHERE cycle_id = ?1 AND type = 'correction.request' AND json_valid(payload_json)",
-    "AND json_extract(payload_json, '$.task') = ?2 AND at > ?3 LIMIT 1",
+    "AND json_extract(payload_json, '$.task') = ?2 AND at >= ?3 LIMIT 1",
   ].join(' ')).bind(run.cycle_id, run.task_id, run.created_at).first();
   if (later) return refuse(db, runId, 'correction_after_run', now);
   // Époque du mandat de la demande à laquelle ce run répond (null : run sans demande de correction).
   const answered = await db.prepare([
     "SELECT json_extract(payload_json, '$.mandate_epoch') AS epoch FROM events WHERE cycle_id = ?1 AND type = 'correction.request'",
-    "AND json_valid(payload_json) AND json_extract(payload_json, '$.task') = ?2 AND at <= ?3 ORDER BY seq DESC LIMIT 1",
+    "AND json_valid(payload_json) AND json_extract(payload_json, '$.task') = ?2 AND at < ?3 ORDER BY seq DESC LIMIT 1",
   ].join(' ')).bind(run.cycle_id, run.task_id, run.created_at).first<{ epoch: number | null }>();
   const mandateEpoch = Number.isSafeInteger(answered?.epoch) ? Number(answered!.epoch) : null;
 
@@ -202,7 +205,7 @@ export async function publishRunProof(db: D1Database, runId: string, deps: RunPr
       'AND NOT ' + HALT_ACTIVE_SQL,
       "AND EXISTS (SELECT 1 FROM tasks WHERE cycle_id = ?1 AND task_id = ?4 AND owner_pid = ?5 AND status NOT IN ('done', 'verified'))",
       "AND NOT EXISTS (SELECT 1 FROM events WHERE cycle_id = ?1 AND type = 'correction.request' AND json_valid(payload_json)",
-      "  AND json_extract(payload_json, '$.task') = ?4 AND at > ?6)",
+      "  AND json_extract(payload_json, '$.task') = ?4 AND at >= ?6)",
       'THEN 1 ELSE 0 END',
     ].join(' ');
     try {
