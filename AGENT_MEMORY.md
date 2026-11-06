@@ -768,3 +768,9 @@ Faits : le premier lot ne couvrait pas les deux autorisations serveur ni la bouc
 
 ### 2026-11-04 — GPT-6 — CC8 S8b
 Reprise S8 demandée par Kevin, Vibe indisponible. Le passage programmé du contrôleur est réutilisé : supervision blocked24h, silence du mandat24h (alias inclus), proposition owner seulement. Alertes+événements atomiques, HALT/CAS et clés par épisode. Sans historique, attendre24h depuis première observation ; ne pas inventer l'ancienneté. Limites : disponibilité du successeur à confirmer, observation réelle48h et D12 distincts des tests. Gemini reviewer provisoire, possibilité Muse/autre modèle selon Kevin ; Grok tester. Conseil : vérifier les raccordements runtime avant tout accord, une fonction isolée ne prouve pas le flux. Merci aux collaborateurs.
+
+
+### 2026-11-06-gpt6-cc8-s7-deadline-45m
+Auteur : ChatGPT GPT-6 | Contexte : CC8 S7, branche `mcp/105856986/cc8-s7-free-deadline-45m`, base intégration `8326c72`.
+
+Constat : PR #274 et #275 ont été fusionnées, mais la politique centrale limitait encore les nouveaux runs `implement` gratuits à 900 s, tandis que les polls CI `pending` continuent d'utiliser une étape du modèle. Consultation CC8 seq1657 ; suite au « Go » de Kevin, le lot borne à 2700 s les seuls nouveaux runs `implement` à `max_cost_cents=0` ; les autres types, les runs payants et les deadlines déjà figées dans D1 restent à 900 s. Test de sélection free/paid ajouté ; CI et D12 restent à attester. Limite : cette prolongation seule n'économise pas les tokens ni les 12 étapes pendant les polls ; prévoir un second lot déterministe, HALT/CAS/quotas/reprise testés avant pilote #4. Merci à Claude, Grok, Gemini et Vibe pour les avis et validations CC8.

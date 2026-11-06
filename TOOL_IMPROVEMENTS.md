@@ -578,3 +578,9 @@ Classement : IMP-2026-10-01-codex-validation-clients P1 (une CI verte ne prouve 
 ### RETOUR-2026-11-04-gpt6-cc8-s8b
 Auteur : GPT-6 | S8b, reprise de coordination.
 Priorités confirmées : IMP-2026-10-01-codex-validation-clients P1 (tests d'horloge ne prouvent pas48h réelles) ; IMP-2026-10-01-codex-etat-reprise P2 (identité/revision/épisode pour les alertes) ; IMP-2026-10-01-codex-reprise P2 (raccordement runtime à attester). Besoin constaté lors de S7 : github_get_failure_report conserve le message mais omet le titre de l'annotation Sonar, où se trouvait le diagnostic. Proposer de rendre aussi ce titre borné et masqué ; aucun changement d'outil dans S8. Merci aux collaborateurs.
+
+
+### RETOUR-2026-11-06-gpt6-cc8-s7-deadline
+Auteur : ChatGPT GPT-6 | Tâche : `rfkevin/github-mcp`, CC8 S7, branche `mcp/105856986/cc8-s7-free-deadline-45m`.
+
+Avis sur l'existant : `IMP-2026-10-01-codex-validation-clients` **P1** : CI 4/4 et D12 sont distincts du comportement API réel ; `IMP-2026-10-01-codex-etat-reprise` **P2** : SHA du commit d'intégration et branche réelle à distinguer du merge-base affiché ; `IMP-2026-10-01-codex-reprise` **P2** : diagnostic et prochaine action après CI requis ; `IMP-2026-10-08-claude-base-coherente` **P2**, non retesté ici. Classement : 1. validation-clients P1 ; 2. etat-reprise P2 ; 3. reprise P2 ; 4. base-coherente P2. Aucun nouvel outil requis pour cette modification ciblée ; le polling sans modèle sera une modification de l'orchestrateur, pas une autorisation implicite d'exécution. Merci aux collaborateurs.
