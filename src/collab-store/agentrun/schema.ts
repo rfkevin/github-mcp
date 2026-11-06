@@ -141,16 +141,25 @@ const TABLES = [
     '  holder TEXT NOT NULL,',
     '  expires_at INTEGER NOT NULL',
     ')'].join(' '),
+  // CC8 S7 mode guidé : étapes émises par le serveur (sans modèle). Elles ne comptent pas dans max_steps.
+  ['CREATE TABLE IF NOT EXISTS agent_run_server_steps (',
+    '  run_id TEXT NOT NULL,',
+    '  n INTEGER NOT NULL,',
+    '  PRIMARY KEY (run_id, n)',
+    ')'].join(' '),
 ];
 
 const NO_DELETE = ['agent_fences', 'agent_runs', 'agent_run_steps', 'agent_run_effects', 'agent_run_wakeups',
-  'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal', 'agent_run_reads'].map(table =>
+  'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal', 'agent_run_reads', 'agent_run_server_steps'].map(table =>
   'CREATE TRIGGER IF NOT EXISTS ' + table + '_no_delete BEFORE DELETE ON ' + table
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END");
 
 const JOURNAL_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_journal_no_update BEFORE UPDATE ON agent_run_journal"
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END";
 
+const SERVER_STEPS_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_server_steps_no_update BEFORE UPDATE ON agent_run_server_steps"
+  + " BEGIN SELECT RAISE(ABORT, 'append-only'); END";
+
 export async function ensureAgentRunSchema(db: D1Database): Promise<void> {
-  await db.batch([...TABLES, ...NO_DELETE, JOURNAL_APPEND_ONLY].map(sql => db.prepare(sql)));
+  await db.batch([...TABLES, ...NO_DELETE, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY].map(sql => db.prepare(sql)));
 }

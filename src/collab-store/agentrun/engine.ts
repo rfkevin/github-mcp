@@ -42,6 +42,7 @@ import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
+import { applyGuidedFill, GUIDED_SERVER_MAX, guidedViolation, planGuidedS7, type GuidedStep } from './s7-guided';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
 import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
 
@@ -103,6 +104,8 @@ export interface EngineDeps {
   compactHistory?: boolean;
   /** Mandats GitHub de réussite posés par le propriétaire, jamais par le modèle. */
   githubCompletionGrants?: readonly GitHubCompletionGrant[];
+  /** CC8 S7 mode guidé : étapes mécaniques émises par le serveur sous mandat S7 (activé au runtime). */
+  guidedS7?: boolean;
   /** Points de crash injectables pour les tests (lever une exception = coupure). */
   probe?: (point: 'after_model' | 'before_effect' | 'after_effect' | 'after_effect_recorded') => void | Promise<void>;
 }
@@ -139,10 +142,23 @@ const LIVE = [
   'AND NOT ' + HALTED,
 ].join(' ');
 /** Plafonds par exécution : ?1 = run_id, ?4 = maintenant. */
-const WITHIN_LIMITS = [
-  'EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1 AND steps_done < max_steps',
+// CC8 S7 mode guidé : max_steps ne compte que les étapes modèle ; une étape serveur est bornée
+// par son plafond propre (GUIDED_SERVER_MAX), les jetons, le coût et la deadline restant communs.
+const SERVER_STEPS = '(SELECT COUNT(*) FROM agent_run_server_steps ss WHERE ss.run_id = ?1)';
+const withinLimits = (server: boolean) => [
+  'EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1',
+  server ? '  AND ' + SERVER_STEPS + ' < ' + GUIDED_SERVER_MAX : '  AND steps_done - ' + SERVER_STEPS + ' < max_steps',
   '  AND tokens_used < max_tokens AND cost_cents <= max_cost_cents AND ?4 < deadline_at)',
 ].join(' ');
+const WITHIN_LIMITS = withinLimits(false);
+/** CC8 S7 mode guidé : empreinte des effets et relevés de CI d'une exécution (?1 = run_id), pour un arrêt CAS. */
+const GUIDED_STATE = [
+  "((SELECT COUNT(*) || ':' || COALESCE(SUM(status = 'completed'), 0) || ':' || COALESCE(SUM(status = 'failed'), 0)",
+  '  FROM agent_run_effects WHERE run_id = ?1)',
+  "  || '/' || (SELECT COUNT(*) || ':' || COALESCE(SUM(status = 'pending'), 0) FROM agent_run_ci_polls WHERE run_id = ?1))",
+].join(' ');
+/** Trace bornée d'une sortie modèle rejetée en mode guidé (journal). */
+const GUIDED_TRACE_MAX = 2_000;
 
 /** Réclamation exacte : ?1 = run_id ; les trois autres paramètres sont fournis par l'appelant. */
 function claimHeld(n: string, worker: string, attempts: string): string {
@@ -257,19 +273,20 @@ async function getRun(db: D1Database, runId: string): Promise<RunRow | null> {
 }
 
 /** Arrête l'exécution si une condition d'arrêt est vraie ; rend le statut courant. */
-export async function settle(db: D1Database, runId: string, now: number): Promise<RunStatus> {
+export async function settle(db: D1Database, runId: string, now: number, deferStepLimit = false): Promise<RunStatus> {
   const reason = [
     'CASE WHEN ' + HALTED + " THEN 'halted'",
     '  WHEN NOT EXISTS (SELECT 1 FROM agent_fences f WHERE f.lease_key = agent_runs.lease_key',
     "    AND f.generation = agent_runs.generation AND f.holder = 'api') THEN 'preempted'",
-    "  WHEN steps_done >= max_steps THEN 'step_limit'",
+    // CC8 S7 mode guidé : étapes modèle seulement ; reportable quand la suite peut être une étape serveur.
+    "  WHEN ?3 = 0 AND steps_done - (SELECT COUNT(*) FROM agent_run_server_steps ss WHERE ss.run_id = agent_runs.run_id) >= max_steps THEN 'step_limit'",
     "  WHEN tokens_used >= max_tokens THEN 'token_limit'",
     "  WHEN cost_cents > max_cost_cents THEN 'cost_limit'",
     "  WHEN ?2 >= deadline_at THEN 'deadline'",
     "  ELSE 'running' END",
   ].join(' ');
   await db.prepare('UPDATE agent_runs SET status = ' + reason + ', stop_reason = ' + reason
-    + ", updated_at = ?2 WHERE run_id = ?1 AND status = 'running'").bind(runId, now).run();
+    + ", updated_at = ?2 WHERE run_id = ?1 AND status = 'running'").bind(runId, now, deferStepLimit ? 1 : 0).run();
   return (await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ status: RunStatus }>())!.status;
 }
 
@@ -303,8 +320,11 @@ export function githubCompletionSatisfied(effects: readonly GithubCompletionEffe
   const entries = effects.map(e => ({ tool: e.tool, value: completedPayload(e) }));
   const scope = entries.findIndex(e => e.tool === 'github_write_scope' && e.value?.branch === branch);
   if (scope < 0) return false;
-  const created = entries.findIndex((e, i) => i > scope && e.tool === 'github_create_branch'
+  const createdAt = entries.findIndex((e, i) => i > scope && e.tool === 'github_create_branch'
     && e.value?.branch === branch && typeof e.value.sha === 'string' && COMPLETION_SHA.test(e.value.sha));
+  // CC8 S7 mode guidé : une branche préexistante est prouvée par la tête lue par le serveur dans le mandat.
+  const head = entries[scope].value?.branch_head;
+  const created = createdAt >= 0 ? createdAt : typeof head === 'string' && COMPLETION_SHA.test(head) ? scope : -1;
   if (created < 0) return false;
   for (let k = created + 1; k < entries.length; k++) {
     const commit = entries[k];
@@ -334,22 +354,66 @@ async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps)
     && g.task === run.task_id && g.participant === run.participant_id);
   if (grants.length === 0) return true; // Hors mandat S7, comportement historique.
   if (grants.length !== 1) return false; // Ambiguïté = pas de succès.
+  return githubCompletionSatisfied(await runEvidence(db, run.run_id), grants[0].branch);
+}
+
+/** Effets D1 de l'exécution dans l'ordre (n, idx) ; les relevés de CI serveur suivent leur effet d'origine. */
+async function runEvidence(db: D1Database, runId: string): Promise<GithubCompletionEffect[]> {
   const { results } = await db.prepare(
     'SELECT n, idx, tool, status, result FROM agent_run_effects WHERE run_id = ?1 ORDER BY n, idx',
-  ).bind(run.run_id).all<GithubCompletionEffect & { n: number; idx: number }>();
-  // CC8 S7 : les relevés de CI faits par le serveur (sans modèle) suivent leur effet d'origine.
-  const polls = await allCiPolls(db, run.run_id);
+  ).bind(runId).all<GithubCompletionEffect & { n: number; idx: number }>();
+  const polls = await allCiPolls(db, runId);
   const merged: GithubCompletionEffect[] = [];
   for (const effect of results) {
-    merged.push(effect);
+    merged.push({ tool: effect.tool, status: effect.status, result: effect.result });
     for (const poll of polls) {
       if (poll.n === effect.n && poll.idx === effect.idx && effect.tool === CI_POLL_TOOL) {
         merged.push({ tool: CI_POLL_TOOL, status: 'completed', result: poll.result });
       }
     }
   }
-  return githubCompletionSatisfied(merged, grants[0].branch);
+  return merged;
 }
+
+/** CC8 S7 mode guidé : prochaine étape déduite des effets D1, pour une exécution sous mandat S7 seulement. */
+async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: number): Promise<GuidedStep | null> {
+  if (!deps.guidedS7 || run.task_kind !== 'implement') return null;
+  const grants = (deps.githubCompletionGrants ?? []).filter(g => g.cycle === run.cycle_id
+    && g.task === run.task_id && g.participant === run.participant_id);
+  if (grants.length !== 1) return null;
+  // Run guidé : jamais de repli libre. Plafond serveur, outil absent ou état non prévu = arrêt typé.
+  const used = await db.prepare('SELECT COUNT(*) AS c FROM agent_run_server_steps WHERE run_id = ?1').bind(run.run_id).first<{ c: number }>();
+  if ((used?.c ?? 0) >= GUIDED_SERVER_MAX) return { kind: 'stop', reason: 'server_cap' };
+  const entries = (await runEvidence(db, run.run_id)).map(e => ({ tool: e.tool, value: completedPayload(e), failed: e.status === 'failed' }));
+  const step = planGuidedS7(entries, grants[0].branch, run.task_id, n);
+  if (step.kind === 'server' && !deps.tools.spec(run.task_kind, step.call.name)) return { kind: 'stop', reason: 'tool_unavailable:' + step.call.name };
+  if (step.kind === 'model' && !deps.tools.spec(run.task_kind, 'github_commit_files')) return { kind: 'stop', reason: 'tool_unavailable:github_commit_files' };
+  return step;
+}
+
+async function enrichGuided(run: RunRow, deps: EngineDeps, n: number, step: Extract<GuidedStep, { kind: 'model' }>): Promise<GuidedStep> {
+  // Étape de contenu : le serveur lit chaque fichier autorisé au head (blob SHA et contenu borné).
+  // Le SHA du blob est imposé par applyGuidedFill ; le contenu actuel aide une correction.
+  const blobs: Record<string, string | null> = {};
+  const shown: string[] = [];
+  if (deps.tools.spec(run.task_kind, 'github_read_file')?.effect === 'read') {
+    for (const path of step.fill.paths.slice(0, 2)) {
+      try {
+        const file = await deps.tools.execute({ id: 'srv-read-' + n, name: 'github_read_file', args: { path, ref: step.fill.head } },
+          { run_id: run.run_id }) as { sha?: unknown; content?: unknown };
+        blobs[path] = typeof file?.sha === 'string' && COMPLETION_SHA.test(file.sha) ? file.sha : null;
+        if (typeof file?.content === 'string') {
+          shown.push('Contenu actuel de « ' + path + ' » au SHA ' + step.fill.head + ' (borné) :\n' + file.content.slice(0, GUIDED_FILE_PREVIEW));
+        }
+      } catch {
+        blobs[path] = null; // fichier absent (nouveau) ou illisible : pas d'expected_sha
+      }
+    }
+  }
+  return { ...step, fill: { ...step.fill, blobs }, instruction: shown.length ? step.instruction + '\n\n' + shown.join('\n\n') : step.instruction };
+}
+
+const GUIDED_FILE_PREVIEW = 8_000;
 
 /** Compaction déterministe et opt-in du seul contexte envoyé au fournisseur.
  * D1 conserve chaque réponse, argument, résultat et effet sans aucune modification.
@@ -497,11 +561,11 @@ function normalizeOutput(output: ModelOutput): ModelOutput {
 }
 
 /** Réclame l'étape n (nouvelle, ou périmée après coupure) ; null = rien à faire pour ce worker. */
-async function claimStep(db: D1Database, run: RunRow, deps: EngineDeps, now: number): Promise<StepRow | StepResult> {
+async function claimStep(db: D1Database, run: RunRow, deps: EngineDeps, now: number, server = false): Promise<StepRow | StepResult> {
   const n = run.steps_done;
   const fresh = await db.prepare([
     'INSERT OR IGNORE INTO agent_run_steps (run_id, n, state, claimed_by, claimed_at, attempts)',
-    "SELECT ?1, ?2, 'claimed', ?3, ?4, 1 WHERE " + LIVE + ' AND ' + WITHIN_LIMITS,
+    "SELECT ?1, ?2, 'claimed', ?3, ?4, 1 WHERE " + LIVE + ' AND ' + withinLimits(server),
     '  AND EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1 AND steps_done = ?2)',
   ].join(' ')).bind(run.run_id, n, deps.workerId, now).run();
   if (fresh.meta.changes === 1) return { state: 'claimed', claimed_by: deps.workerId, claimed_at: now, attempts: 1, model_output: null };
@@ -522,7 +586,7 @@ async function claimStep(db: D1Database, run: RunRow, deps: EngineDeps, now: num
   const retaken = await db.prepare([
     'UPDATE agent_run_steps SET claimed_by = ?3, claimed_at = ?4, attempts = attempts + 1',
     "WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?5 AND claimed_at = ?6 AND state <> 'completed'",
-    '  AND ' + LIVE + ' AND ' + WITHIN_LIMITS,
+    '  AND ' + LIVE + ' AND ' + withinLimits(server),
   ].join(' ')).bind(run.run_id, n, deps.workerId, now, step.claimed_by, step.claimed_at).run();
   if (retaken.meta.changes !== 1) return settled(db, run.run_id, now);
   return { ...step, claimed_by: deps.workerId, claimed_at: now, attempts: step.attempts + 1 };
@@ -545,7 +609,25 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     const polled = await runCiPoll(db, run, pendingPoll, deps, now);
     if (polled) return polled;
   }
-  const claimed = await claimStep(db, run, deps, now);
+  // CC8 S7 mode guidé : prochaine étape décidée sur l'état D1 AVANT la réclamation (même état, même décision).
+  // Empreinte de l'état lu (effets + relevés), prise AVANT la lecture du plan (relecture D12 GPT-6, R4).
+  const seen = deps.guidedS7 ? (await db.prepare('SELECT ' + GUIDED_STATE + ' AS fp').bind(runId).first<{ fp: string }>())?.fp ?? '' : '';
+  const plan = await guidedStep(db, run, deps, run.steps_done);
+  if (plan?.kind === 'stop') {
+    // Arrêt typé et auditable d'un run guidé (aucun repli vers l'orchestration libre du modèle).
+    // Relecture D12 GPT-6 (R4) : l'arrêt n'écrit que si le run est toujours le nôtre (garde LIVE : HALT,
+    // fence api, génération), au même steps_done, sans étape n réclamée et vivante, et sur l'état exact lu
+    // pour décider (empreinte). Sinon rien n'est écrit et settle donne halted / preempted / busy.
+    const stopped = await db.prepare([
+      "UPDATE agent_runs SET status = 'failed', stop_reason = ?2, updated_at = ?3 WHERE run_id = ?1 AND status = 'running'",
+      '  AND steps_done = ?4 AND ' + LIVE,
+      "  AND NOT EXISTS (SELECT 1 FROM agent_run_steps s WHERE s.run_id = ?1 AND s.n = ?4 AND s.state <> 'completed' AND s.claimed_at + ?6 > ?3)",
+      '  AND ' + GUIDED_STATE + ' = ?5',
+    ].join(' ')).bind(runId, ('guided_stop:' + plan.reason).slice(0, 500), now, run.steps_done, seen, STEP_TIMEOUT_S).run();
+    if (stopped.meta.changes !== 1) return settled(db, runId, now);
+    return { outcome: 'failed' };
+  }
+  const claimed = await claimStep(db, run, deps, now, plan?.kind === 'server');
   if ('outcome' in claimed) return claimed;
   const n = run.steps_done;
   const claim: Claim = { n, worker: deps.workerId, attempts: claimed.attempts };
@@ -567,9 +649,21 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     output = JSON.parse(claimed.model_output) as ModelOutput;
   } else {
     let response: { output: ModelOutput; usage: ModelUsage };
+    // CC8 S7 mode guidé : étape mécanique émise par le serveur (sans modèle ni jeton), ou consigne précise
+    // et un seul outil pour l'étape de contenu. Le résultat suit ensuite le chemin commun (gardes, effets).
+    const guide = plan?.kind === 'model' ? await enrichGuided(run, deps, n, plan) : plan;
     try {
-      response = await deps.model.complete({ messages: await buildMessages(db, run, deps.compactHistory && run.task_kind === 'implement'), tools: deps.tools.list(run.task_kind), task_kind: run.task_kind,
-        budget_left_ms: budgetLeftMs });
+      if (guide?.kind === 'server') {
+        response = { output: { text: 'Étape mécanique exécutée par le serveur (mode guidé S7) : ' + guide.call.name + '.', tool_calls: [guide.call] },
+          usage: { tokens: 0, cost_cents: 0 } };
+      } else {
+        const messages = await buildMessages(db, run, deps.compactHistory && run.task_kind === 'implement');
+        const tools = deps.tools.list(run.task_kind);
+        response = await deps.model.complete({
+          messages: guide?.kind === 'model' ? [...messages, { role: 'user', content: guide.instruction }] : messages,
+          tools: guide?.kind === 'model' ? tools.filter(name => guide.tools.includes(name)) : tools,
+          task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
+      }
     } catch (error) {
       const usage = error instanceof ModelCallError ? error.usage : null;
       await db.batch([
@@ -583,6 +677,32 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       return { outcome: 'failed' };
     }
     output = normalizeOutput(response.output);
+    if (guide?.kind === 'model') {
+      // Relecture D12 GPT-6 : exactement UN github_commit_files, vérifié en code AVANT tout effet.
+      const violation = guidedViolation(output);
+      if (violation) {
+        // Relecture D12 GPT-6 (R3) : les jetons et le coût de l'appel sont DÉJÀ consommés. Ils sont
+        // comptabilisés (run et étape), la sortie rejetée est tracée au journal, puis l'arrêt est posé
+        // sous la réclamation exacte et la garde LIVE — dans le même lot, avant tout effet. L'étape
+        // reste 'claimed' sans model_output : une reprise ne rejoue jamais la sortie rejetée.
+        const tokens = Math.max(0, Math.floor(response.usage?.tokens ?? 0));
+        const cost = Math.max(0, Math.ceil(response.usage?.cost_cents ?? 0));
+        const reason = 'guided_violation:' + violation;
+        await db.batch([
+          db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1')
+            .bind(runId, tokens, cost, now),
+          db.prepare("UPDATE agent_run_steps SET tokens = tokens + ?5, cost_cents = cost_cents + ?6 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4 AND state = 'claimed'")
+            .bind(runId, n, deps.workerId, claimed.attempts, tokens, cost),
+          db.prepare('INSERT INTO agent_run_journal (at, kind, run_id, detail) VALUES (?1, ?2, ?3, ?4)')
+            .bind(now, 'guided_violation', runId, JSON.stringify({ n, worker: deps.workerId, attempts: claimed.attempts, violation, tokens, cost_cents: cost,
+              output: JSON.stringify(output).slice(0, GUIDED_TRACE_MAX) })),
+          db.prepare("UPDATE agent_runs SET status = 'failed', stop_reason = ?2, updated_at = ?3 WHERE run_id = ?1 AND status = 'running' AND "
+            + LIVE + ' AND ' + claimHeld('?4', '?5', '?6')).bind(runId, reason.slice(0, 500), now, n, deps.workerId, claimed.attempts),
+        ]);
+        return settled(db, runId, now);
+      }
+      output = applyGuidedFill(output, guide.fill);
+    }
     const tokens = Math.max(0, Math.floor(response.usage?.tokens ?? 0));
     const cost = Math.max(0, Math.ceil(response.usage?.cost_cents ?? 0));
     const [, saved] = await db.batch([
@@ -592,6 +712,11 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         "UPDATE agent_run_steps SET state = 'model_done', model_output = ?4, tokens = ?5, cost_cents = ?6",
         "WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?7 AND state = 'claimed' AND " + LIVE,
       ].join(' ')).bind(runId, n, deps.workerId, JSON.stringify(output), tokens, cost, claimed.attempts),
+      // CC8 S7 : marque l'étape serveur (hors max_steps), dans le même lot et seulement si l'étape est bien la nôtre.
+      db.prepare([
+        'INSERT OR IGNORE INTO agent_run_server_steps (run_id, n) SELECT ?1, ?2 WHERE ?4 = 1 AND EXISTS (SELECT 1 FROM agent_run_steps',
+        "  WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND state = 'model_done')",
+      ].join(' ')).bind(runId, n, deps.workerId, guide?.kind === 'server' ? 1 : 0),
     ]);
     if (saved.meta.changes !== 1) return settled(db, runId, now);
     await deps.probe?.('after_model');
@@ -676,7 +801,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   ]);
   if (done.meta.changes !== 1) return settled(db, runId, now);
   if (final) return { outcome: completionStatus };
-  const status = await settle(db, runId, now);
+  // Mode guidé : la limite d'étapes modèle se juge à la prochaine réclamation (une étape serveur peut suivre).
+  const status = await settle(db, runId, now, guarded && deps.guidedS7 === true);
   return { outcome: status === 'running' ? 'stepped' : status };
 }
 
