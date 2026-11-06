@@ -94,3 +94,10 @@ Les autres kinds et les tâches `implement` sans mandat S7 gardent leur comporte
 ### Points du plan à préserver pour la coordination
 
 S6 : secours puis bêta observée pendant >=20 exécutions ET >=48h, puis principal par /owner (rectification du cadrage ambigu1457 transmise à Vibe). S8a ne clôture pas S8 : restent escalade des blocages24h, demande de secours coordinateur et observation48h. S9 exige au moins trois tâches par type, mêmes entrées chat/API, jugement aveugle indépendant et seuil80%. S10 ne retire un chemin qu'après preuve du remplaçant. S11 reste synchronisation master/intégration, accords et promotion finale Kevin.
+
+
+### CC8 S7 — décision owner après vote : 45 min sur implement gratuit (2026-11-06)
+
+Consultation CC8 seq 1657, voix GPT-6 1662, Grok 1664, Claude 1665 et Gemini 1666, Vibe abstention contextuelle 1667 ; arbitrage « Go » de Kevin le 06/11. Le planificateur attribue **2700 secondes** aux seules **nouvelles** exécutions `implement` dont `max_cost_cents=0`. Les exécutions `implement` avec coût payant autorisé, les autres types de tâches et l'API historique `runDeadlineS(kind)` demeurent à **900 secondes**. L'échéance déjà enregistrée dans D1 n'est jamais prolongée rétroactivement. Aucun montant payant n'est ouvert ; 48k tokens par défaut, 12 étapes et cadence 15s / CI pending 60–120s restent indépendants.
+
+Le point **CI pending sans rappel du modèle** est une tâche distincte : un simple allongement du délai ne supprime pas le coût en tokens ni le décompte d'étapes des relevés. Avant pilote #4, intégrer et tester ce traitement déterministe, ses garde-fous HALT/CAS/quotas, le nombre maximal de relevés et la reprise D1 ; aucun déploiement ni essai live n'est autorisé par ce correctif de politique seul. Les votes ne valent pas D12 : nouvelle PR, relecture Claude et test Vibe requis.

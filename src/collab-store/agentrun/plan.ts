@@ -454,7 +454,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
             runId: ids[attempt - 1], cycleId, participantId,
             taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
             maxSteps: taskKindMaxSteps(kind), maxTokens: taskKindMaxTokens(kind, env), maxCostCents: taskKindCostCents(env, kind),
-            deadlineAt: input.now + runDeadlineS(kind), now: input.now,
+            deadlineAt: input.now + runDeadlineS(kind, taskKindCostCents(env, kind)), now: input.now,
           })).created;
         } });
       }
