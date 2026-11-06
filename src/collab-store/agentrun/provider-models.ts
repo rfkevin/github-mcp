@@ -249,6 +249,24 @@ export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderM
 }
 
 /**
+ * CC8 S7 lot B R5 (#282) : trace append-only de chaque essai de maillon d'un appel modèle — maillon choisi,
+ * maillon réellement appelé (repli compris), issue, classe d'échec et latence. Aucun prompt, aucune sortie.
+ * Best-effort : une trace manquante ne bloque jamais l'appel.
+ */
+export async function recordRunModelCall(db: D1Database, input: { run_id: string; n: number; chosen_ref: string; ref: string;
+  ok: boolean; failure: string; latency_ms: number; at: number }): Promise<void> {
+  try {
+    await db.prepare([
+      'INSERT OR IGNORE INTO agent_run_model_calls (run_id, n, k, chosen_ref, ref, ok, failure, latency_ms, at)',
+      'SELECT ?1, ?2, COALESCE((SELECT MAX(k) + 1 FROM agent_run_model_calls WHERE run_id = ?1 AND n = ?2), 0), ?3, ?4, ?5, ?6, ?7, ?8',
+    ].join(' ')).bind(input.run_id, input.n, input.chosen_ref, input.ref, input.ok ? 1 : 0, input.failure.slice(0, 40),
+      Math.max(0, Math.round(input.latency_ms)), input.at).run();
+  } catch {
+    // Table absente (schéma non initialisé) ou D1 indisponible : la trace est perdue, l'appel continue.
+  }
+}
+
+/**
  * Modèle aiguillé à l'exécution : participant relu dans agent_runs à CHAQUE étape. Sans politique
  * (CC-7 L8) : sa référence unique ; avec politique (CC-7 L9a, AGENT_RUN_FAMILY_<P> + AGENT_RUN_MODELS_<P>) :
  * choix serveur par étape dans sa famille et sous son budget, journalisé. Un refus fait échouer l'étape
@@ -372,6 +390,8 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         const started = Date.now();
         try {
           const result = await candidate.model().complete(budgetLeftMs === undefined ? input : { ...input, budget_left_ms: budgetLeftMs });
+          await recordRunModelCall(ctx.db, { run_id: ctx.runId, n: run.steps_done, chosen_ref: ref, ref: candidate.ref, ok: true, failure: '',
+            latency_ms: Date.now() - started, at: Math.floor(now.getTime() / 1000) });
           if (isProbe) {
             await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
           } else {
@@ -385,6 +405,8 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         } catch (error) {
           lastError = error;
           const transient = modelFailureKind(error) === 'transient';
+          await recordRunModelCall(ctx.db, { run_id: ctx.runId, n: run.steps_done, chosen_ref: ref, ref: candidate.ref, ok: false,
+            failure: transient ? 'transient' : 'permanent', latency_ms: Date.now() - started, at: Math.floor(now.getTime() / 1000) });
           const outcome = { ok: false, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started,
             error: error instanceof Error ? error.message : String(error) };
           // Échec PERMANENT : cumul seul — le coupe-circuit ne compte que le transitoire.
