@@ -49,8 +49,10 @@ function scripted(outputs: ModelOutput[]) {
   };
 }
 
+// Lot A R2 (#281) : un fichier *.spec.ts doit importer vitest pour passer la prévalidation du serveur.
+const VITEST = "import { expect, it } from 'vitest';\n";
 const commit = (head: string, content: string): ModelOutput => ({ text: '', tool_calls: [{ id: 'm-commit', name: 'github_commit_files',
-  args: { name: 's7-live', expected_head_sha: head, message: 'S7 test', files: [{ path: PATH, content }] } }] });
+  args: { name: 's7-live', expected_head_sha: head, message: 'S7 test', files: [{ path: PATH, content: VITEST + content }] } }] });
 
 async function newRun(label: string, maxSteps = 12) {
   await ensureSchema(db);
@@ -148,7 +150,7 @@ describe('CC8 S7 — mode guidé (moteur, D1)', () => {
     const BLOB = 'e'.repeat(40);
     // Le modèle se trompe de nom et de head et invente un expected_sha : le serveur corrige.
     const model = scripted([{ text: '', tool_calls: [{ id: 'm', name: 'github_commit_files', args: { name: 'autre', expected_head_sha: 'f'.repeat(40),
-      message: 'm', files: [{ path: PATH, content: 'x', expected_sha: '0'.repeat(40) }] } }] }]);
+      message: 'm', files: [{ path: PATH, content: VITEST + 'x', expected_sha: '0'.repeat(40) }] } }] }]);
     const { tools, calls } = host({
       github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }],
       github_read_file: [{ path: PATH, sha: BLOB, size: 7, content: 'ancien contenu' }],
@@ -157,7 +159,7 @@ describe('CC8 S7 — mode guidé (moteur, D1)', () => {
     });
     expect((await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true })).at(-1)).toBe('completed');
     const commitCall = calls.find(c => c.name === 'github_commit_files')!;
-    expect(commitCall.args).toMatchObject({ name: 's7-live', expected_head_sha: HEAD, files: [{ path: PATH, content: 'x', expected_sha: BLOB }] });
+    expect(commitCall.args).toMatchObject({ name: 's7-live', expected_head_sha: HEAD, files: [{ path: PATH, content: VITEST + 'x', expected_sha: BLOB }] });
     expect(calls.find(c => c.name === 'github_read_file')?.args).toEqual({ path: PATH, ref: HEAD });
     expect(model.seen[0].messages.at(-1)!.content).toContain('ancien contenu');
   });
