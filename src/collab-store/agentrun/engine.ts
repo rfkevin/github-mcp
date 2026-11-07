@@ -89,7 +89,8 @@ export interface ToolHost {
   /** Allowlist deny-by-default par type de tâche : null = outil refusé. */
   spec(taskKind: string, name: string): ToolSpec | null;
   list(taskKind: string): string[];
-  execute(call: ToolCall, ctx: { run_id: string; effect_key?: string }): Promise<unknown>;
+  /** prefetch : lecture préparée par le SERVEUR (vérification guidée), jamais posée par un appel modèle. */
+  execute(call: ToolCall, ctx: { run_id: string; effect_key?: string; prefetch?: boolean }): Promise<unknown>;
   /** Après un effet incertain : l'effet a-t-il eu lieu ? null = impossible de savoir. */
   lookup?(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult>;
 }
