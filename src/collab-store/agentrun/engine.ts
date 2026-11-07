@@ -43,6 +43,7 @@ import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
 import { verifyContext } from './verify-guided';
+import { missionOf, type MissionKind } from './mission-quality';
 import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
   planGuidedS7, PRECHECK_HINTS, type GuidedStep } from './s7-guided';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
@@ -118,7 +119,9 @@ export interface EngineDeps {
   probe?: (point: 'after_model' | 'before_effect' | 'after_effect' | 'after_effect_recorded') => void | Promise<void>;
 }
 
-export interface GitHubCompletionGrant { cycle: string; participant: string; task: string; branch: string }
+export interface GitHubCompletionGrant { cycle: string; participant: string; task: string; branch: string;
+  /** Lot C R3 (#283) : mission déclarée par le propriétaire ; absent = pilote technique. */
+  mission?: MissionKind; acceptance?: readonly string[] }
 
 export type RunStatus = 'running' | 'completed' | 'failed' | 'halted' | 'preempted' | 'needs_reconcile'
   | 'step_limit' | 'token_limit' | 'cost_limit' | 'deadline';
@@ -394,7 +397,7 @@ async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: numb
   if ((used?.c ?? 0) >= GUIDED_SERVER_MAX) return { kind: 'stop', reason: 'server_cap' };
   const entries = (await runEvidence(db, run.run_id)).map(e => ({ tool: e.tool, value: completedPayload(e), failed: e.status === 'failed',
     ...(e.tool === GUIDED_PRECHECK_TOOL ? { detail: precheckCause(e.result) } : {}) }));
-  const step = planGuidedS7(entries, grants[0].branch, run.task_id, n);
+  const step = planGuidedS7(entries, grants[0].branch, run.task_id, n, missionOf(grants[0]));
   if (step.kind === 'server' && !deps.tools.spec(run.task_kind, step.call.name)) return { kind: 'stop', reason: 'tool_unavailable:' + step.call.name };
   if (step.kind === 'model' && !deps.tools.spec(run.task_kind, 'github_commit_files')) return { kind: 'stop', reason: 'tool_unavailable:github_commit_files' };
   return step;
@@ -830,7 +833,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // Lot A R2 (#281) : prévalidation statique de l'étape de contenu guidée, AVANT tout effet GitHub.
     // Le plan est recalculé à chaque passage : une reprise rejoue la même décision (clé déterministe).
     if (plan?.kind === 'model' && call.name === GUIDED_TOOL) {
-      const cause = guidedPrecheck(call, plan.fill.paths);
+      const cause = guidedPrecheck(call, plan.fill.paths, plan.fill.mission);
       if (cause) {
         const stopped = await recordPrecheck(db, runId, claim, idx, call, cause, deps.now());
         if (stopped) return stopped;
