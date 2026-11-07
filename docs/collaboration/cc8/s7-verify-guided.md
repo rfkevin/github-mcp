@@ -45,11 +45,14 @@ pas valoir, à elle seule, inspection du diff pour un verdict positif.
 
 - La prélecture serveur passe le drapeau `prefetch` (posé par le serveur seulement, jamais par un appel
   modèle) ; `github_diff` la journalise sous `github_diff_prefetch`, distincte de `github_diff`.
-- `agent_run_verify_contexts.complete` = 1 seulement si le texte injecté contient toute la sortie de
-  `github_diff` (tous les fichiers listés, tous les extraits, rien coupé par le budget).
-- Contrôle ⑦ de `store_verdict` (`verifyReadProof`) : une lecture `github_diff` du modèle suffit toujours ;
-  la prélecture suffit pour un verdict négatif (retarder) et, pour AGREE/PASS, seulement si le contexte
-  au même head était complet. Sinon `VERDICT_READ_PROOF_MISSING`.
+- `agent_run_verify_contexts.complete` = 1 seulement si le texte injecté contient le diff ENTIER : tous les
+  fichiers listés, tous les extraits, rien coupé par le budget, et aucune troncature ni absence côté outil
+  (`files_truncated`, `patch_truncated`, patch absent ou vide → partiel ; relecture GPT-6, V1a).
+- La lecture est journalisée au **couple** lu (`ref_sha` = `head:base`, `diffReadRef`) : un diff lu avec une
+  autre base ne prouve rien pour le couple de la PR (relecture GPT-6, V1b). La base doit être le SHA exact.
+- Contrôle ⑦ de `store_verdict` (`verifyReadProof`) : une lecture `github_diff` du modèle au couple exact
+  suffit toujours ; la prélecture au couple exact suffit pour un verdict négatif (retarder) et, pour
+  AGREE/PASS, seulement si le contexte au même couple était complet. Sinon `VERDICT_READ_PROOF_MISSING`.
 - La consigne le dit au modèle : « Contexte PARTIEL … lisez vous-même le diff avec github_diff ».
 
 ### Hors périmètre (aucun effet)
@@ -65,7 +68,8 @@ au diff maximal ; CI filtrée au head ; ordre source → tests → doc ; lecture
 relecture D1 ; arguments au couple exact ; tous les outils offerts ; panne de lecture signalée ; compaction
 à la 3e étape ; aucun effet hors périmètre ; couverture complète ou partielle ; lectures serveur marquées
 `prefetch`. `cc7-l5b-store-verdict.spec.ts` : diff complet → AGREE immédiat accepté ; diff tronqué → AGREE
-immédiat refusé, CHANGES_REQUESTED accepté, AGREE accepté après `github_diff` du modèle.
+immédiat refusé, CHANGES_REQUESTED accepté, AGREE accepté après `github_diff` du modèle ; un seul patch
+tronqué (3 000 → 2 000) → AGREE immédiat refusé ; diff lu avec une autre base → tout verdict refusé.
 `cc8-s7-implement-steps.spec.ts` et `cc8-s1b-attempts.spec.ts` : budget gratuit 48 000, payant 16 000.
 
 ## Suite

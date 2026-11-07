@@ -359,5 +359,25 @@ describe('CC8 S7 — prélecture serveur et preuve de lecture ⑦', () => {
     await second.host.execute(verdictCall(), { run_id: second.runId, effect_key: '4'.repeat(64) });
     expect(await countEvents(db, second.q.cycle, 'evidence.add')).toBe(2);
   });
+
+  it('V1a : un seul patch tronqué par l’outil (3 000 → 2 000 caractères) rend le contexte partiel : AGREE immédiat refusé', async () => {
+    const oneLong: GitHubReads = { ...fakeReads(), async compareRefs() {
+      return { status: 'ahead', total_commits: 1, files: [{ filename: 'src/a.ts', status: 'modified', additions: 1, deletions: 0, patch: 'y'.repeat(3_000) }] };
+    } };
+    const { runId, host, prepared } = await prefetched('verify-patch-truncated', oneLong);
+    expect(prepared.context).toContain('[… patch tronqué]');
+    expect(prepared.instruction).toContain('Contexte PARTIEL');
+    expect(await refusal(host.execute(verdictCall(), { run_id: runId, effect_key: '5'.repeat(64) }))).toBe('VERDICT_READ_PROOF_MISSING');
+  });
+
+  it('V1b : un diff lu par le modèle avec une AUTRE base ne prouve rien pour le couple de la PR', async () => {
+    const q = await seedTask('verify-wrong-base');
+    const runId = await newRun(q.cycle, q.reviewer, 'review');
+    const host = createReadToolHost({ db, repository: REPO, github: fakeReads(), verdicts: true });
+    await host.execute({ id: 'd', name: 'github_diff', args: { base: OTHER, head: HEAD } }, { run_id: runId });
+    expect(await refusal(host.execute(verdictCall(), { run_id: runId, effect_key: '6'.repeat(64) }))).toBe('VERDICT_READ_PROOF_MISSING');
+    expect(await refusal(host.execute(verdictCall({ state: 'CHANGES_REQUESTED' }), { run_id: runId, effect_key: '7'.repeat(64) })))
+      .toBe('VERDICT_READ_PROOF_MISSING');
+    expect(await countEvents(db, q.cycle, 'evidence.add')).toBe(1);
+  });
 });
-PLACEHOLDER

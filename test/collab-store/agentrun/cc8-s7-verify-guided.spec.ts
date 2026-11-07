@@ -110,6 +110,13 @@ describe('Vérification guidée — contexte (pur)', () => {
     expect(buildVerifyContext({ ...base, diff: { files: many } }).complete).toBe(false);
     const big = Array.from({ length: 10 }, (_, i) => ({ filename: 'src/f' + i + '.ts', status: 'modified', additions: 1, deletions: 0, patch: 'x'.repeat(2_000) }));
     expect(buildVerifyContext({ ...base, diff: { files: big } }).complete).toBe(false);
+    // V1a : toute troncature de l'outil (patch, liste) ou patch absent → partiel.
+    const one = { filename: 'src/a.ts', status: 'modified', additions: 1, deletions: 0, patch: 'y'.repeat(2_000) };
+    expect(buildVerifyContext({ ...base, diff: { files: [one] } }).complete).toBe(true);
+    expect(buildVerifyContext({ ...base, diff: { files: [{ ...one, patch_truncated: true }] } }).complete).toBe(false);
+    expect(buildVerifyContext({ ...base, diff: { files: [one], files_truncated: true } }).complete).toBe(false);
+    expect(buildVerifyContext({ ...base, diff: { files: [{ ...one, patch: undefined }] } }).complete).toBe(false);
+    expect(buildVerifyContext({ ...base, diff: { files: [{ ...one, patch: '' }] } }).complete).toBe(false);
     expect(verifyInstruction('test', 285, false)).toContain('avant un verdict PASS, lisez vous-même le diff avec github_diff');
     expect(verifyInstruction('review', 285, true)).toContain('sa lecture vaut preuve');
   });
