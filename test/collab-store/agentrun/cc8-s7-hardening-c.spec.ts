@@ -7,6 +7,8 @@ import { grants } from '../../../src/collab-store/agentrun/github-write/authoriz
 import { assertionSignal, functionalTestCause, literalOnly, missionOf, stripComments, summarizeCommittedTests }
   from '../../../src/collab-store/agentrun/mission-quality';
 import { publishRunProof } from '../../../src/collab-store/agentrun/run-proof';
+import { answerPrompt, answerTaskDossier, planAgentRuns } from '../../../src/collab-store/agentrun/plan';
+import { PLAN_MODEL } from './plan-model';
 import { guidedPrecheck, PRECHECK_HINTS, planGuidedS7 } from '../../../src/collab-store/agentrun/s7-guided';
 import { registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
@@ -280,5 +282,43 @@ describe('Lot C R6 — comparaison équitable', () => {
       .toMatchObject({ conclusive: false, reason: 'taux de réussite égaux' });
     const verdict = compareModels([...many('m1', ['completed', 'completed', 'failed']), ...many('m2', ['failed', 'failed', 'completed']), run('autre', 'm1', 'completed', 'AUTRE')], 'T');
     expect(verdict).toMatchObject({ conclusive: true, best: 'm1', basis: ['m10', 'm11', 'm12', 'm20', 'm21', 'm22'] });
+  });
+});
+
+describe('Lot C R6 — dossier intégré au planificateur API answer', () => {
+  it('C2 : URL seule est signalée comme insuffisante dans la consigne du run', async () => {
+    const cycle = '0000-0000-' + uniq('api-url'), pid = uniq('agent');
+    await insertCycleRow(db, cycle, 'P6');
+    await insertPhaseDefinition(db, cycle, 'P6', []);
+    await insertEventRow(db, { cycle, type: 'clarify.ask', participant: uniq('asker'), role: 'owner',
+      payload: { to: pid, question: 'https://github.com/rfkevin/github-mcp/issues/280' },
+      key: cycle + ':ask', expectedRev: 1 });
+    const row = await db.prepare("SELECT seq FROM events WHERE cycle_id = ?1 AND type = 'clarify.ask'")
+      .bind(cycle).first<{ seq: number }>();
+    const dossier = (await answerTaskDossier(db, cycle, row!.seq))!;
+    expect(dossier).toContain('Dossier insuffisant');
+    expect(dossier).toContain('clarify.ask #' + row!.seq);
+    expect(answerPrompt(cycle, row!.seq, false, dossier)).toContain('Un URL cité n’est pas une page lue');
+    const planned = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: pid }, { now: T + 300 });
+    expect(planned.created).toBe(1);
+    const actual = await db.prepare("SELECT prompt FROM agent_runs WHERE cycle_id = ?1 AND task_kind = 'answer'")
+      .bind(cycle).first<{ prompt: string }>();
+    expect(actual!.prompt).toContain('Dossier insuffisant');
+    expect(actual!.prompt).toContain('Un URL cité n’est pas une page lue');
+  });
+
+  it('C2 : question complète conservée et bornée avec référence réellement vérifiée dans D1', async () => {
+    const cycle = '0000-0000-' + uniq('api-full');
+    await insertCycleRow(db, cycle, 'P6');
+    const question = ('Évaluer la qualité fonctionnelle, les trois contrôles D12 et les critères de réception. ').repeat(3);
+    await insertEventRow(db, { cycle, type: 'clarify.ask', participant: uniq('asker'), role: 'owner',
+      payload: { question }, key: cycle + ':ask', expectedRev: 1 });
+    const row = await db.prepare("SELECT seq FROM events WHERE cycle_id = ?1 AND type = 'clarify.ask'")
+      .bind(cycle).first<{ seq: number }>();
+    const dossier = (await answerTaskDossier(db, cycle, row!.seq))!;
+    expect(dossier).toContain(question);
+    expect(dossier.indexOf('RÉFÉRENCES VÉRIFIÉES')).toBeLessThan(dossier.indexOf('CONTENU NON FIABLE'));
+    expect(dossier.length).toBeLessThanOrEqual(DOSSIER_MAX_CHARS);
+    expect(await answerTaskDossier(db, cycle, row!.seq + 1)).toBeNull();
   });
 });
