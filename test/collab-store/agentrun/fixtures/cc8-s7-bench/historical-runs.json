@@ -1,0 +1,35 @@
+{
+ "source": "salon et store CC8 : Vibe n°4 seq 1710 (failed/incomplete_final, 7/12 étapes, 31351/48k jetons, effets D1 = 2 github_write_scope), Gemini n°1 seq 1716 (step_limit 12/12, 41789/48k jetons, aucune branche ni PR prouvée). Valeurs inconnues = null, jamais estimées. Le modèle servi n'est pas relevé dans ces deux messages : model_served null.",
+ "runs": [
+  {
+   "run_id": "vibe-pilot-4",
+   "task": "s7-guided-pilot",
+   "model_served": null,
+   "fallback_used": null,
+   "outcome": "failed",
+   "first_commit": false,
+   "ci_corrections": null,
+   "tool_errors": null,
+   "pr_opened": false,
+   "tokens": 31351,
+   "duration_s": null,
+   "cost_cents": 0,
+   "sha": null
+  },
+  {
+   "run_id": "gemini-pilot-1",
+   "task": "s7-guided-pilot",
+   "model_served": null,
+   "fallback_used": null,
+   "outcome": "step_limit",
+   "first_commit": null,
+   "ci_corrections": null,
+   "tool_errors": null,
+   "pr_opened": false,
+   "tokens": 41789,
+   "duration_s": null,
+   "cost_cents": 0,
+   "sha": null
+  }
+ ]
+}

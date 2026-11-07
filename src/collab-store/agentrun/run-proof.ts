@@ -18,6 +18,9 @@
  * Le contrôleur la compte comme SOUMISSION de l'auteur au couple head/base, jamais comme avis :
  * relecture et test restent des écritures indépendantes ; `merge_ready` exige leurs deux verdicts.
  * R3 : `scope: 'pilot_e2e_pass'` — parcours technique prouvé, pas acceptation fonctionnelle.
+ * Lot C R3 (#283) : sous un mandat `mission: 'functional'`, la preuve exige en plus au moins une assertion non
+ * tautologique dans les tests réellement commités (sinon refus `functional_assertions_missing`) et porte
+ * `scope: 'e2e_pass_review_required'` : signal statique borné, la revue D12 juge toujours le fond.
  */
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 import { assertAutomationRunning, HALT_ACTIVE_SQL } from '../owner/automation';
@@ -25,6 +28,7 @@ import { CollabStoreError } from '../store/collab-store';
 import { sha256Hex } from '../store/hash';
 import { ensureSchema } from '../store/schema';
 import { allCiPolls } from './ci-poll';
+import { missionOf, summarizeCommittedTests, type MissionKind } from './mission-quality';
 import { githubCompletionSatisfied, type GithubCompletionEffect, type ToolHost } from './engine';
 import { ensureAgentRunSchema } from './schema';
 
@@ -40,7 +44,7 @@ const SHA = /^[a-f0-9]{40}$/;
 
 export interface RunProofDeps {
   tools: ToolHost;
-  githubCompletionGrants?: readonly { cycle: string; participant: string; task: string; branch: string }[];
+  githubCompletionGrants?: readonly { cycle: string; participant: string; task: string; branch: string; mission?: MissionKind; acceptance?: readonly string[] }[];
   now: () => number;
 }
 
@@ -141,6 +145,15 @@ export async function publishRunProof(db: D1Database, runId: string, deps: RunPr
   if (!githubCompletionSatisfied(effects, grant.branch)) return refuse(db, runId, 'completion_evidence_missing', now);
   const pr = lastOpenPr(effects);
   if (!pr) return refuse(db, runId, 'pr_missing', now);
+  // Lot C R3 : mission fonctionnelle — un parcours vert sans assertion réelle n'est pas une réussite à prouver.
+  const mission = missionOf(grant);
+  let quality: { test_files: number; meaningful: number; tautological: number } | null = null;
+  if (mission.kind === 'functional') {
+    const { results } = await db.prepare('SELECT tool, status, args, result FROM agent_run_effects WHERE run_id = ?1 AND tool = ?2 ORDER BY n, idx')
+      .bind(runId, 'github_commit_files').all<{ tool: string; status: string; args: string | null; result: string | null }>();
+    quality = summarizeCommittedTests(results);
+    if (quality.meaningful === 0) return refuse(db, runId, 'functional_assertions_missing', now);
+  }
 
   // 2. Couple GitHub réel : PR relue maintenant (ouverte, non fusionnée, tête inchangée, base lue).
   let read: Record<string, unknown>;
@@ -179,7 +192,9 @@ export async function publishRunProof(db: D1Database, runId: string, deps: RunPr
   // 4. Écriture gardée : HALT, révision, tâche toujours ouverte et du même auteur, pas de correction plus récente.
   const effectsHash = await sha256Hex(JSON.stringify(effects.map(e => [e.tool, e.status, e.result ?? ''])));
   const payload = { task: run.task_id, state: 'RUN_PROVEN', run_id: runId, run_participant: run.participant_id, mandate_epoch: mandateEpoch, pr: pr.number,
-    head: pr.head_sha, base: baseSha, verified_success: true, effects_hash: effectsHash, scope: 'pilot_e2e_pass' };
+    head: pr.head_sha, base: baseSha, verified_success: true, effects_hash: effectsHash,
+    scope: mission.kind === 'functional' ? 'e2e_pass_review_required' : 'pilot_e2e_pass',
+    ...(quality ? { mission: 'functional', quality } : {}) };
   const key = 'runproof:' + runId;
   for (let attempt = 0; attempt < STALE_RETRIES; attempt++) {
     const existing = await db.prepare('SELECT seq FROM events WHERE idempotency_key = ?1').bind(key).first<{ seq: number }>();
