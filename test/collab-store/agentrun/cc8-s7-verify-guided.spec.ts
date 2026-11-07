@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createRun, runStep, ToolRefused, type AgentMessage, type ModelOutput, type ToolCall, type ToolHost }
   from '../../../src/collab-store/agentrun';
-import { formatVerifyContext, VERIFY_CONTEXT_MAX, verifyPair } from '../../../src/collab-store/agentrun/verify-guided';
+import { buildVerifyContext, formatVerifyContext, VERIFY_CONTEXT_MAX, verifyInstruction, verifyPair } from '../../../src/collab-store/agentrun/verify-guided';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { db, T } from './s7-guided-harness';
 
@@ -22,18 +22,20 @@ const PR = { number: 285, state: 'open', draft: false, merged: false, head: { sh
 
 function host(answers: Record<string, Array<unknown | (() => never)>>) {
   const calls: ToolCall[] = [];
+  const contexts: unknown[] = [];
   const tools: ToolHost = {
     list: () => TOOLS,
     spec: (_kind, name) => TOOLS.includes(name) ? { name, effect: READS.includes(name) ? 'read' : 'write' } : null,
-    async execute(call: ToolCall) {
+    async execute(call: ToolCall, ctx) {
       calls.push(call);
+      contexts.push(ctx);
       const next = (answers[call.name] ?? []).shift();
       if (typeof next === 'function') return (next as () => never)();
       if (next === undefined) throw new ToolRefused('unexpected ' + call.name);
       return next;
     },
   };
-  return { tools, calls, count: (name: string) => calls.filter(c => c.name === name).length };
+  return { tools, calls, contexts, count: (name: string) => calls.filter(c => c.name === name).length };
 }
 
 function model(outputs: ModelOutput[]) {
@@ -99,6 +101,18 @@ describe('Vérification guidée — contexte (pur)', () => {
     expect(text.length).toBeLessThanOrEqual(VERIFY_CONTEXT_MAX);
     expect(text).toContain('[… autres extraits omis : budget du contexte atteint]');
   });
+
+  it('couverture (relecture GPT-6, V1) : complet seulement si toute la sortie de github_diff est dans le contexte', () => {
+    const base = { head: HEAD, base: BASE, pr: 285, prRead: PR, checks: CHECKS, errors: [] };
+    expect(buildVerifyContext({ ...base, diff: DIFF }).complete).toBe(true);
+    expect(buildVerifyContext({ ...base, diff: null }).complete).toBe(false);
+    const many = Array.from({ length: 41 }, (_, i) => ({ filename: 'src/f' + i + '.ts', status: 'modified', additions: 1, deletions: 0, patch: '+' }));
+    expect(buildVerifyContext({ ...base, diff: { files: many } }).complete).toBe(false);
+    const big = Array.from({ length: 10 }, (_, i) => ({ filename: 'src/f' + i + '.ts', status: 'modified', additions: 1, deletions: 0, patch: 'x'.repeat(2_000) }));
+    expect(buildVerifyContext({ ...base, diff: { files: big } }).complete).toBe(false);
+    expect(verifyInstruction('test', 285, false)).toContain('avant un verdict PASS, lisez vous-même le diff avec github_diff');
+    expect(verifyInstruction('review', 285, true)).toContain('sa lecture vaut preuve');
+  });
 });
 
 describe('Vérification guidée — moteur (D1)', () => {
@@ -122,6 +136,9 @@ describe('Vérification guidée — moteur (D1)', () => {
     expect(h.count('github_pull_request')).toBe(1);
     expect(h.calls.find(c => c.name === 'github_diff')!.args).toEqual({ head: HEAD, base: BASE });
     expect(h.calls.find(c => c.name === 'github_pull_request')!.args).toEqual({ number: 285 });
+    // Lectures serveur marquées prefetch (journal distinct, relecture GPT-6 V1) ; l'appel du modèle ne l'est jamais.
+    expect(h.contexts.slice(0, 3)).toEqual([0, 1, 2].map(() => ({ run_id: runId, prefetch: true })));
+    expect(h.contexts[3]).not.toHaveProperty('prefetch');
     expect(h.count('store_verdict')).toBe(1);
   });
 

@@ -6,6 +6,7 @@ import {
   ToolRefused, type GitHubReads, type ModelClient,
 } from '../../../src/collab-store/agentrun';
 import { engineFor } from '../../../src/collab-store/agentrun/object';
+import { verifyContext } from '../../../src/collab-store/agentrun/verify-guided';
 import { TASK_KIND_BOUNDS, normalizeTaskKind, resolveEffectiveMaxTokens } from '../../../src/collab-store/executors/task-profiles';
 import { countEvents, insertCycleRow, insertEventRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
 
@@ -314,5 +315,47 @@ describe('CC-7 L5b — N2 : plafond de coût par type de tâche', () => {
       expect(row.max_cost_cents).toBe(0);
       expect(row.max_cost_cents).toBe(TASK_KIND_COST_CENTS[row.task_kind as 'review' | 'test']);
     }
+  });
+});
+
+// CC8 S7 vérification guidée (relecture D12 GPT-6 #286, V1) : la prélecture serveur du diff ne prouve un verdict
+// positif que si le contexte injecté couvre tout le diff ; sinon le modèle doit lire github_diff lui-même.
+describe('CC8 S7 — prélecture serveur et preuve de lecture ⑦', () => {
+  const bigDiff: GitHubReads = { ...fakeReads(), async compareRefs() {
+    return { status: 'ahead', total_commits: 1, files: Array.from({ length: 50 }, (_, i) => ({
+      filename: 'src/f' + i + '.ts', status: 'modified', additions: 1, deletions: 1, patch: 'x'.repeat(2_000) })) };
+  } };
+  async function prefetched(label: string, github: GitHubReads) {
+    const q = await seedTask(label);
+    const runId = await newRun(q.cycle, q.reviewer, 'review');
+    const host = createReadToolHost({ db, repository: REPO, github, verdicts: true });
+    const prepared = await verifyContext(db, { run_id: runId, cycle_id: q.cycle, task_id: 'l5', task_kind: 'review',
+      prompt: 'Couple exact à vérifier : head ' + HEAD + ', base ' + BASE + '.' },
+    { execute: (call, ctx) => host.execute(call, ctx), has: () => true, now: () => T });
+    const reads = (await db.prepare('SELECT tool FROM agent_run_reads WHERE run_id = ?1 ORDER BY tool').bind(runId).all<{ tool: string }>()).results;
+    return { q, runId, host, prepared: prepared!, reads: reads.map(r => r.tool) };
+  }
+
+  it('diff entièrement dans le contexte : prélecture journalisée à part, verdict AGREE immédiat accepté', async () => {
+    const { q, runId, host, prepared, reads } = await prefetched('verify-full', fakeReads());
+    expect(reads).toEqual(['github_check_runs', 'github_diff_prefetch', 'github_pull_request']);
+    expect(prepared.instruction).toContain('le contexte ci-dessus le contient en entier');
+    await host.execute(verdictCall(), { run_id: runId, effect_key: '1'.repeat(64) });
+    expect(await countEvents(db, q.cycle, 'evidence.add')).toBe(2);
+  });
+
+  it('diff tronqué dans le contexte : AGREE immédiat refusé, négatif accepté ; après github_diff du modèle, AGREE accepté', async () => {
+    const first = await prefetched('verify-partial', bigDiff);
+    expect(first.reads).not.toContain('github_diff');
+    expect(first.prepared.instruction).toContain('Contexte PARTIEL');
+    expect(await refusal(first.host.execute(verdictCall(), { run_id: first.runId, effect_key: '2'.repeat(64) })))
+      .toBe('VERDICT_READ_PROOF_MISSING');
+    await first.host.execute(verdictCall({ state: 'CHANGES_REQUESTED' }), { run_id: first.runId, effect_key: '3'.repeat(64) });
+    expect(await countEvents(db, first.q.cycle, 'evidence.add')).toBe(2);
+
+    const second = await prefetched('verify-partial-read', bigDiff);
+    await withProof(second.host, second.runId); // lecture par le modèle (sans drapeau serveur)
+    await second.host.execute(verdictCall(), { run_id: second.runId, effect_key: '4'.repeat(64) });
+    expect(await countEvents(db, second.q.cycle, 'evidence.add')).toBe(2);
   });
 });

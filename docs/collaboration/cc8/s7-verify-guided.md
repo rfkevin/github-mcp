@@ -16,7 +16,7 @@ Les runs API de test de Vibe (`zai:glm-4.7-flash`) sur S7-guided et S7-hardening
 |---|---|---|
 | Compaction de l'historique (`buildMessages`) | implement | implement, review, test |
 | Contexte préparé par le serveur | implement (S7 guidé) | + review / test (`verify-guided.ts`) |
-| Budget gratuit review / test (coût 0) | 16 000 | 48 000 (`FREE_VERIFY_DEFAULT_TOKENS`) — **à confirmer par Kevin** |
+| Budget gratuit review / test (coût 0) | 16 000 | 48 000 (`FREE_VERIFY_DEFAULT_TOKENS`) — décision de Kevin, 07/11 (« 48k par défaut ») |
 | Budget payant review / test | 16 000 | 16 000 (inchangé) |
 | Outils offerts au modèle | tous | tous (inchangé : liberté) |
 
@@ -38,6 +38,20 @@ Une lecture qui échoue est **signalée** dans le contexte (« Lecture serveur i
 inventée ; le run continue et le modèle peut refaire la lecture. Le contexte est une donnée, pas une
 instruction : il ne change ni le verdict exigé, ni les contrôles de `store_verdict` (D12, couple exact, CI).
 
+### Preuve de lecture (relecture D12 GPT-6 #286, V1)
+
+Le contexte est borné : il peut omettre des fichiers ou des extraits. La prélecture serveur ne doit donc
+pas valoir, à elle seule, inspection du diff pour un verdict positif.
+
+- La prélecture serveur passe le drapeau `prefetch` (posé par le serveur seulement, jamais par un appel
+  modèle) ; `github_diff` la journalise sous `github_diff_prefetch`, distincte de `github_diff`.
+- `agent_run_verify_contexts.complete` = 1 seulement si le texte injecté contient toute la sortie de
+  `github_diff` (tous les fichiers listés, tous les extraits, rien coupé par le budget).
+- Contrôle ⑦ de `store_verdict` (`verifyReadProof`) : une lecture `github_diff` du modèle suffit toujours ;
+  la prélecture suffit pour un verdict négatif (retarder) et, pour AGREE/PASS, seulement si le contexte
+  au même head était complet. Sinon `VERDICT_READ_PROOF_MISSING`.
+- La consigne le dit au modèle : « Contexte PARTIEL … lisez vous-même le diff avec github_diff ».
+
 ### Hors périmètre (aucun effet)
 
 - runs `implement` (déjà guidés par S7) et autres types ;
@@ -49,8 +63,10 @@ instruction : il ne change ni le verdict exigé, ni les contrôles de `store_ver
 `test/collab-store/agentrun/cc8-s7-verify-guided.spec.ts` : couple lu dans la consigne ; contexte borné
 au diff maximal ; CI filtrée au head ; ordre source → tests → doc ; lectures serveur une seule fois puis
 relecture D1 ; arguments au couple exact ; tous les outils offerts ; panne de lecture signalée ; compaction
-à la 3e étape ; aucun effet hors périmètre. `cc8-s7-implement-steps.spec.ts` : budget gratuit 48 000,
-payant 16 000.
+à la 3e étape ; aucun effet hors périmètre ; couverture complète ou partielle ; lectures serveur marquées
+`prefetch`. `cc7-l5b-store-verdict.spec.ts` : diff complet → AGREE immédiat accepté ; diff tronqué → AGREE
+immédiat refusé, CHANGES_REQUESTED accepté, AGREE accepté après `github_diff` du modèle.
+`cc8-s7-implement-steps.spec.ts` et `cc8-s1b-attempts.spec.ts` : budget gratuit 48 000, payant 16 000.
 
 ## Suite
 
