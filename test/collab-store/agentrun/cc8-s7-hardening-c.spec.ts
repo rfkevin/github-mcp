@@ -11,7 +11,7 @@ import { answerPrompt, answerTaskDossier, planAgentRuns } from '../../../src/col
 import { PLAN_MODEL } from './plan-model';
 import { guidedPrecheck, PRECHECK_HINTS, planGuidedS7 } from '../../../src/collab-store/agentrun/s7-guided';
 import { registerParticipant } from '../../../src/collab-store/owner/decisions';
-import { insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
+import { insertCycleRow, insertEventRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
 import { OWNER_PROOF, uniqueIds } from '../coordinator-helpers';
 import historical from './fixtures/cc8-s7-bench/historical-runs.json';
 import { BASE, BRANCH, C1, commitAs, db, drive, host, newRun, PASSED, PATH, SCOPE, scripted, T } from './s7-guided-harness';
