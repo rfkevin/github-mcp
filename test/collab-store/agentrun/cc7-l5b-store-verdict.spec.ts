@@ -115,7 +115,8 @@ describe('CC-7 L5b — store_verdict contrôlé serveur', () => {
     await withProof(host, runId);
     const read = (await db.prepare('SELECT tool, ref_sha, status FROM agent_run_reads WHERE run_id = ?1')
       .bind(runId).first<{ tool: string; ref_sha: string; status: string }>())!;
-    expect(read).toEqual({ tool: 'github_diff', ref_sha: HEAD, status: 'completed' });
+    // CC8 S7 (relecture GPT-6 #286, V1b) : la preuve porte sur le couple lu, head puis base.
+    expect(read).toEqual({ tool: 'github_diff', ref_sha: HEAD + ':' + BASE, status: 'completed' });
     const out = await host.execute(verdictCall(), { run_id: runId, effect_key: 'f'.repeat(64) }) as { seq: number };
     expect(typeof out.seq).toBe('number');
     expect(await countEvents(db, q.cycle, 'evidence.add')).toBe(2);
@@ -359,3 +360,4 @@ describe('CC8 S7 — prélecture serveur et preuve de lecture ⑦', () => {
     expect(await countEvents(db, second.q.cycle, 'evidence.add')).toBe(2);
   });
 });
+PLACEHOLDER
