@@ -175,24 +175,24 @@ function appendAnswerDossier(prompt: string, dossier?: string): string {
  * élargie (registre, mémoire, passation, 20 événements) et message final au format de passation
  * Fait / Reste / Appris, consigné par le moteur dans agent_runs.summary (note de passation de l'API, S5).
  */
-export function answerPrompt(cycleId: string, askSeq: number, continuity: boolean): string {
+export function answerPrompt(cycleId: string, askSeq: number, continuity: boolean, dossier?: string): string {
   if (!continuity) {
-    return [
+    return appendAnswerDossier([
       'Question #' + askSeq + ' du cycle ' + cycleId + ' adressée à votre participant.',
       'Lisez-la avec store_delta (since_seq ' + (askSeq - 1) + ', limit 1) et le contexte avec store_context si utile,',
       'puis répondez une seule fois avec store_answer (ask_seq ' + askSeq + ').',
       'Sans réponse sûre, dites-le dans la réponse plutôt que d’inventer.',
-    ].join(' ');
+    ].join(' '), dossier);
   }
   const since = Math.max(0, askSeq - ANSWER_READ_WINDOW);
-  return [
+  return appendAnswerDossier([
     'Question #' + askSeq + ' du cycle ' + cycleId + ' adressée à votre participant.',
     'Avant de répondre, lisez : store_context (registre complet des tâches), store_continuity (notes de passation de',
     'votre chat et vos exécutions précédentes), store_memory (mémoire visible) et store_delta (since_seq ' + since + ', limit ' + ANSWER_READ_WINDOW + ')',
     'pour la question et son contexte récent. Répondez une seule fois avec store_answer (ask_seq ' + askSeq + ').',
     'Sans réponse sûre, dites-le plutôt que d’inventer.',
     'Votre message final est votre note de passation, en trois rubriques courtes : Fait / Reste / Appris (300 mots au plus).',
-  ].join(' ');
+  ].join(' '), dossier);
 }
 
 /** Participants serveur volontaires ; entrée invalide ignorée, doublons retirés, au plus PLAN_MAX_PARTICIPANTS. */
