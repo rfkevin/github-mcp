@@ -33,6 +33,7 @@ import { sha256Hex } from '../store/hash';
 import { createRun } from './engine';
 import { ensureAgentRunSchema } from './schema';
 import { recordCapacity, runCapacity, type RunCapacity } from './capacity';
+import { buildDossier } from './task-dossier';
 // CC-8 S1b-2 : deadline d'exécution PAR TYPE DE TÂCHE — politique unique (v2 point 5).
 import { runDeadlineS } from './run-policy';
 import { decisionKey } from '../controller/journal';
