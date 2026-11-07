@@ -244,6 +244,7 @@ describe('Lot C R6 — dossier de tâche autonome', () => {
 
 describe('Lot C R6 — comparaison équitable', () => {
   const run = (id: string, model: string, outcome: BenchRun['outcome'], task = 'T'): BenchRun => ({ run_id: id, task, model_served: model, fallback_used: false,
+    scenario_sha: 'a'.repeat(64), functional_pass: outcome === 'completed',
     outcome, first_commit: null, ci_corrections: null, tool_errors: null, pr_opened: null, tokens: null, duration_s: null, cost_cents: 0, sha: null });
   const many = (model: string, outcomes: BenchRun['outcome'][]) => outcomes.map((o, i) => run(model + i, model, o));
 
@@ -252,6 +253,25 @@ describe('Lot C R6 — comparaison équitable', () => {
     expect(file.runs).toHaveLength(2);
     expect(file.runs.every(r => r.model_served === null && r.cost_cents === 0)).toBe(true);
     expect(compareModels(file.runs, 's7-guided-pilot')).toMatchObject({ conclusive: false, reason: expect.stringMatching(/un seul modèle/) });
+  });
+
+  it('C3 : trois copies du même run ne sont pas trois essais indépendants', () => {
+    const a = run('same-A', 'modelA', 'completed');
+    const b = run('same-B', 'modelB', 'failed');
+    expect(compareModels([a, a, a, b, b, b], 'T')).toMatchObject({
+      conclusive: false, reason: expect.stringMatching(/dupliqué/),
+    });
+  });
+
+  it('C3 : protocole divergent ou résultat fonctionnel non établi empêche une conclusion', () => {
+    const a = many('m1', ['completed', 'completed', 'failed']);
+    const b = many('m2', ['failed', 'failed', 'completed']).map(r => ({ ...r, scenario_sha: 'b'.repeat(64) }));
+    expect(compareModels([...a, ...b], 'T')).toMatchObject({
+      conclusive: false, reason: expect.stringMatching(/appariés/),
+    });
+    expect(compareModels([...a, ...b.map(r => ({ ...r, scenario_sha: null }))], 'T').conclusive).toBe(false);
+    expect(compareModels([...a, ...b.map(r => ({ ...r, scenario_sha: 'a'.repeat(64), functional_pass: null }))], 'T'))
+      .toMatchObject({ conclusive: false, reason: expect.stringMatching(/fonctionnel/) });
   });
 
   it('pas de conclusion sous trois runs par modèle ni à égalité ; sinon conclusion sourcée', () => {
