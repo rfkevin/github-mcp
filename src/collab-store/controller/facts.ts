@@ -13,6 +13,12 @@ export interface EvidenceEvent {
   participant: string;
   payload_json: string;
   evidence_ref: string;
+  /**
+   * CC8 S7 lot B R4 (#282) : preuve serveur `run.proof` (type réservé au serveur). `participant` y est
+   * l'identité logique du PARTICIPANT DU RUN ; elle ne compte que comme soumission de l'auteur, jamais
+   * comme verdict.
+   */
+  server_proof?: boolean;
 }
 
 const SHA = '([0-9a-f]{40})';
@@ -72,8 +78,9 @@ export interface TaskEvidence {
 
 /**
  * Faits d'une tâche : soumission = dernier evidence.add de l'AUTEUR citant une
- * PR avec head et base exacts ; verdicts = evidence.add du relecteur ou du
- * testeur sur cette tâche. Les autres participants ne comptent jamais (D12).
+ * PR avec head et base exacts, ou dernière preuve serveur `run.proof` d'un run de l'auteur (lot B #282) ;
+ * verdicts = evidence.add du relecteur ou du testeur sur cette tâche. Les autres participants ne
+ * comptent jamais (D12) ; une preuve serveur n'est jamais un verdict.
  */
 export function taskEvidence(taskId: string, roles: { owner: string; reviewer: string; tester: string },
   events: EvidenceEvent[]): TaskEvidence {
@@ -85,6 +92,12 @@ export function taskEvidence(taskId: string, roles: { owner: string; reviewer: s
     const haystack = [text(payload.source), text(payload.state), text(payload.review)].join('\n');
     const head = sha(text(payload.head) || nested(payload.pr, 'head_sha'), HEAD_RE, haystack);
     const base = sha(text(payload.base) || nested(payload.pr, 'base_sha'), BASE_RE, haystack);
+    if (event.server_proof) {
+      // Soumission prouvée par le serveur pour un run de l'auteur : PR numérotée, head et base exacts.
+      const prNumber = typeof payload.pr === 'number' && Number.isSafeInteger(payload.pr) && payload.pr > 0;
+      if (event.participant === roles.owner && prNumber && head && base) submission = { head, base, seq: event.seq };
+      continue;
+    }
     if (event.participant === roles.owner) {
       const prNumber = typeof payload.pr === 'number' && Number.isSafeInteger(payload.pr) && payload.pr > 0;
       const citesPr = prNumber || PR_RE.test(event.evidence_ref) || PR_RE.test(haystack) || PR_RE.test(nested(payload.pr, 'url'));

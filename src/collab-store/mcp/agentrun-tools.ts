@@ -10,6 +10,7 @@ import { CollabStoreError } from '../store/collab-store';
 import {
   listRunsForParticipant,
   runSummaryForParticipant,
+  redactedRunSummaryFor,
   preemptOwnRun,
   releaseOwnRun,
   CHAT_HOLD_SECONDS_DEFAULT,
@@ -78,7 +79,7 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
 
   server.registerTool('collab_agent_run_summary', {
     title: 'Résumé d’une exécution API (CC-5 l7e)',
-    description: 'Lecture seule : résumé d’une exécution qui vous appartient (statut, étapes, jetons, effets). run_id inconnu ou d’un autre participant → null.',
+    description: 'Lecture seule : résumé d’une exécution. Propriétaire du run : résumé complet (summary) et résumé expurgé (redacted). Coordinateur au mandat actif du cycle du run (CC8 lot B #282) : résumé expurgé seulement — statut, stop_reason masqué, étapes serveur/modèle, jetons, coût, reçus d’effets (SHA, PR, CI), relevés CI, appels modèle (maillon choisi, servi, repli), preuve serveur run.proof ; jamais de prompt, sortie modèle, argument ni contenu. Toute autre identité ou run inconnu → null.',
     inputSchema: {
       run_id: z.string().min(1).max(128),
     },
@@ -87,7 +88,8 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
     try {
       const participantId = await registered(context, 'collab_agent_run_summary');
       const summary = await runSummaryForParticipant(context.db, participantId, input.run_id);
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ summary }) }] };
+      const redacted = await redactedRunSummaryFor(context.db, participantId, input.run_id);
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ summary, redacted }) }] };
     } catch (error) {
       return collabFailure(error, 'Résumé d’exécution impossible.', {}, context.fallback);
     }

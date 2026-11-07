@@ -147,10 +147,33 @@ const TABLES = [
     '  n INTEGER NOT NULL,',
     '  PRIMARY KEY (run_id, n)',
     ')'].join(' '),
+  // CC8 S7 lot B R4 (#282) : publication de la preuve serveur `run.proof` d'un run terminé (reprise bornée).
+  ['CREATE TABLE IF NOT EXISTS agent_run_proofs (',
+    '  run_id TEXT PRIMARY KEY,',
+    "  status TEXT NOT NULL CHECK (status IN ('pending','published','refused')),",
+    '  attempts INTEGER NOT NULL DEFAULT 0,',
+    "  reason TEXT NOT NULL DEFAULT '',",
+    '  event_seq INTEGER,',
+    '  updated_at INTEGER NOT NULL',
+    ')'].join(' '),
+  // CC8 S7 lot B R5 (#282) : chaque essai de maillon d'un appel modèle — maillon choisi, maillon servi, repli.
+  ['CREATE TABLE IF NOT EXISTS agent_run_model_calls (',
+    '  run_id TEXT NOT NULL,',
+    '  n INTEGER NOT NULL,',
+    '  k INTEGER NOT NULL,',
+    '  chosen_ref TEXT NOT NULL,',
+    '  ref TEXT NOT NULL,',
+    '  ok INTEGER NOT NULL,',
+    "  failure TEXT NOT NULL DEFAULT '',",
+    '  latency_ms INTEGER NOT NULL,',
+    '  at INTEGER NOT NULL,',
+    '  PRIMARY KEY (run_id, n, k)',
+    ')'].join(' '),
 ];
 
 const NO_DELETE = ['agent_fences', 'agent_runs', 'agent_run_steps', 'agent_run_effects', 'agent_run_wakeups',
-  'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal', 'agent_run_reads', 'agent_run_server_steps'].map(table =>
+  'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal', 'agent_run_reads', 'agent_run_server_steps',
+  'agent_run_proofs', 'agent_run_model_calls'].map(table =>
   'CREATE TRIGGER IF NOT EXISTS ' + table + '_no_delete BEFORE DELETE ON ' + table
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END");
 
@@ -160,6 +183,13 @@ const JOURNAL_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_journal_no_u
 const SERVER_STEPS_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_server_steps_no_update BEFORE UPDATE ON agent_run_server_steps"
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END";
 
+const MODEL_CALLS_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_model_calls_no_update BEFORE UPDATE ON agent_run_model_calls"
+  + " BEGIN SELECT RAISE(ABORT, 'append-only'); END";
+
+// Une preuve publiée ou refusée est définitive ; seule une ligne `pending` évolue.
+const PROOFS_FINAL = "CREATE TRIGGER IF NOT EXISTS agent_run_proofs_final BEFORE UPDATE ON agent_run_proofs"
+  + " WHEN OLD.status <> 'pending' OR NEW.run_id <> OLD.run_id BEGIN SELECT RAISE(ABORT, 'append-only'); END";
+
 export async function ensureAgentRunSchema(db: D1Database): Promise<void> {
-  await db.batch([...TABLES, ...NO_DELETE, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY].map(sql => db.prepare(sql)));
+  await db.batch([...TABLES, ...NO_DELETE, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY, MODEL_CALLS_APPEND_ONLY, PROOFS_FINAL].map(sql => db.prepare(sql)));
 }
