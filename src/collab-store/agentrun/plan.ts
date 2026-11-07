@@ -448,9 +448,11 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
               answerAttemptRunId(cycleId, participantId, askSeq, phase, round, attempt)));
             const attempt = await retryAttempt(ids);
             if (attempt === null) return false;
+            const dossier = await answerTaskDossier(db, cycleId, askSeq);
+            if (dossier === null) return false;
             return (await createRun(db, {
               runId: ids[attempt - 1], cycleId, participantId, taskId: '', taskKind: 'answer',
-            prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env)),
+            prompt: answerPrompt(cycleId, askSeq, continuityEnabled(env), dossier),
             maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens('answer'), maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + runDeadlineS('answer'), now: input.now,
             })).created;
           } });
