@@ -1,4 +1,5 @@
 import { ToolRefused } from '../engine';
+import { ACCEPTANCE_MAX_CHARS, ACCEPTANCE_MAX_ITEMS, MISSION_KINDS, type MissionKind } from '../mission-quality';
 import { equivalentParticipantIds } from '../../identity/families';
 import { agentRunPaused } from '../../owner/agent-run-status';
 import { isAutomationHalted } from '../../owner/automation';
@@ -7,6 +8,8 @@ import { isAutomationHalted } from '../../owner/automation';
 export interface WritePolicy { writers?: string; tasks?: string }
 export interface WriteGrant {
   cycle: string; task: string; participant: string; branch: string; paths: string[];
+  /** Lot C R3 (#283) : `functional` déclaré par le propriétaire ; absent = pilote technique (inchangé). */
+  mission?: MissionKind; acceptance?: string[];
 }
 export interface WriteScope extends WriteGrant { run_id: string; owned_paths: string[] }
 
@@ -17,12 +20,26 @@ function validGrantPath(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   return validPath(value.endsWith('/') ? value.slice(0, -1) : value);
 }
+/** Lot C R3 : mission fonctionnelle = critères d'acceptation obligatoires ; pilote = aucun critère. */
+function parseMission(item: Record<string, unknown>): void {
+  const mission = item.mission ?? 'pilot';
+  if (!(MISSION_KINDS as readonly unknown[]).includes(mission)) throw new Error();
+  if (mission === 'pilot') {
+    if (item.acceptance !== undefined) throw new Error();
+    return;
+  }
+  const list = item.acceptance;
+  if (!Array.isArray(list) || list.length === 0 || list.length > ACCEPTANCE_MAX_ITEMS) throw new Error();
+  if (!list.every(c => typeof c === 'string' && c.trim().length > 0 && c.length <= ACCEPTANCE_MAX_CHARS)) throw new Error();
+}
 function parseGrant(value: unknown): WriteGrant {
   if (!value || typeof value !== 'object') throw new Error();
   const keys = Object.keys(value);
   const expectedKeys = ['branch', 'cycle', 'participant', 'paths', 'task'];
-  if (keys.length !== expectedKeys.length || !expectedKeys.every(key => keys.includes(key))) throw new Error();
+  const optionalKeys = ['mission', 'acceptance'];
+  if (!expectedKeys.every(key => keys.includes(key)) || keys.some(key => !expectedKeys.includes(key) && !optionalKeys.includes(key))) throw new Error();
   const item = value as Record<string, unknown>;
+  parseMission(item);
   if (!['cycle', 'task', 'participant', 'branch'].every(key => validIdentifier(item[key]))) throw new Error();
   if (!Array.isArray(item.paths) || item.paths.length === 0 || item.paths.length > 50) throw new Error();
   if (!item.paths.every(validGrantPath)) throw new Error();

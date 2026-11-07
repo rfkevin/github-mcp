@@ -34,6 +34,7 @@
  *   demande ; le contrôle automatique des tests triviaux viendra au lot C.
  */
 import type { ModelOutput, ToolCall } from './engine';
+import { functionalTestCause, type MissionSpec } from './mission-quality';
 
 export interface GuidedEntry { tool: string; value: Record<string, unknown> | null; failed: boolean; detail?: string }
 
@@ -80,13 +81,17 @@ export const PRECHECK_HINTS: Record<string, string> = {
   content_too_large: 'le fichier dépasse ' + PRECHECK_MAX_BYTES + ' octets',
   test_runner_incompatible: 'le dépôt utilise Vitest : n’importe ni jest, ni @jest/globals, ni mocha, ni jasmine',
   test_vitest_import_missing: 'un fichier de test doit importer ses fonctions depuis \'vitest\' (par ex. import { describe, it, expect } from \'vitest\')',
+  // Lot C R3 (#283) : mission fonctionnelle seulement.
+  test_disabled: 'mission fonctionnelle : aucun test ne doit être désactivé (skip, todo, xit)',
+  test_no_project_import: 'mission fonctionnelle : le test doit importer du code du dépôt (chemin relatif ou src/)',
+  test_tautological: 'mission fonctionnelle : le test doit contenir au moins une assertion non tautologique sur le comportement du code importé',
 };
 
 /**
  * R2 (#281) : prévalidation statique d'un appel github_commit_files déjà rempli par le serveur.
  * Aucune exécution de code ; règles vérifiables seulement. null = conforme, sinon cause typée.
  */
-export function guidedPrecheck(call: ToolCall, paths: readonly string[]): string | null {
+export function guidedPrecheck(call: ToolCall, paths: readonly string[], mission?: MissionSpec): string | null {
   const args = (call.args ?? {}) as Record<string, unknown>;
   if (typeof args.message !== 'string' || !args.message.trim()) return 'message_missing';
   if (args.message.length > MESSAGE_MAX) return 'message_too_long';
@@ -107,14 +112,26 @@ export function guidedPrecheck(call: ToolCall, paths: readonly string[]): string
       if (!VITEST_IMPORT.test(content)) return 'test_vitest_import_missing';
     }
   }
+  // Lot C R3 : contrôle propre aux missions fonctionnelles ; un pilote technique n'est jamais concerné.
+  if (mission?.kind === 'functional') {
+    return functionalTestCause((files as { path: string; content: string }[]).map(f => ({ path: f.path, content: f.content })));
+  }
   return null;
 }
 
 /** Consigne commune de qualité (R2/R3, consigne seulement). */
-const CONTENT_RULES = [
+const PILOT_RULES = [
   'Règles de contenu : si le fichier est un test (*.spec.ts), importe describe/it/expect depuis \'vitest\' (jamais jest, @jest/globals ni mocha) ;',
   'importe le code du dépôt concerné par la demande et écris des assertions liées à la demande — pas de test tautologique (expect(true)), sauf si la mission demande explicitement un test de démonstration.',
 ].join('\n');
+
+/** Consigne de contenu : règles communes, plus les critères d'acceptation d'une mission fonctionnelle (lot C R3). */
+function contentRules(mission?: MissionSpec): string {
+  if (mission?.kind !== 'functional') return PILOT_RULES;
+  return [PILOT_RULES, 'MISSION FONCTIONNELLE : un test de démonstration est refusé par le serveur. Chaque fichier de test doit importer du code',
+    'du dépôt, ne rien désactiver (skip, todo) et contenir au moins une assertion non tautologique sur le comportement de ce code.',
+    'Critères d’acceptation de la mission (posés par le propriétaire) :', ...mission.acceptance.map((c, i) => (i + 1) + '. ' + c)].join('\n');
+}
 
 /** Refus de prévalidation depuis l'indice `from` : nombre et dernière cause. */
 function prechecks(entries: readonly GuidedEntry[], from: number): { count: number; last?: string } {
@@ -148,7 +165,7 @@ export function guidedViolation(output: ModelOutput): string | null {
 }
 
 /** Valeurs autoritaires du serveur, appliquées à l'appel github_commit_files du modèle. */
-export interface GuidedFill { name: string; head: string; paths: string[]; blobs?: Record<string, string | null> }
+export interface GuidedFill { name: string; head: string; paths: string[]; blobs?: Record<string, string | null>; mission?: MissionSpec }
 
 /** Plafond propre des étapes serveur d'une exécution guidée (au-delà : flux historique). */
 export const GUIDED_SERVER_MAX = 24;
@@ -170,7 +187,7 @@ function lastIndex(entries: readonly GuidedEntry[], from: number, test: (e: Guid
  * Prochaine étape guidée : serveur, contenu (modèle) ou arrêt typé.
  * `entries` : effets D1 dans l'ordre (n, idx), relevés de CI serveur insérés après leur effet d'origine.
  */
-export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, taskId: string, step: number): GuidedStep {
+export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, taskId: string, step: number, mission?: MissionSpec): GuidedStep {
   const stop = (reason: string): GuidedStep => ({ kind: 'stop', reason });
   const name = branch.split('-api-')[1];
   if (!name) return stop('branch_name');
@@ -205,14 +222,14 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
   if (commitAt < 0) {
     const refused = prechecks(entries, createdAt + 1);
     if (refused.count >= GUIDED_PRECHECK_MAX) return stop('precheck_failed');
-    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: branchHead, paths }, instruction: [
+    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: branchHead, paths, mission }, instruction: [
       'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). Le serveur a déjà lu ton mandat et préparé la branche ' + branch + ' (tête ' + branchHead + ').',
       'Ta seule action maintenant : appeler UNE FOIS l’outil github_commit_files avec :',
       '- message : un résumé d’une ligne (120 caractères au plus)',
       '- files : [{ "path": <un chemin autorisé>, "content": <le contenu COMPLET du fichier> }]',
       'Le serveur complète lui-même name, expected_head_sha et expected_sha. Chemins autorisés : ' + pathList + '. N’appelle aucun autre outil.',
       'Ensuite, le serveur lancera la CI, attendra son résultat et ouvrira la PR lui-même.',
-      CONTENT_RULES,
+      contentRules(mission),
       ...retryNote(refused),
     ].join('\n') };
   }
@@ -249,14 +266,14 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
     if (refused.count >= GUIDED_PRECHECK_MAX) return stop('precheck_failed');
     const diagnostics = checked.value.diagnostics ?? checked.value.failures ?? checked.value.summary;
     const shown = diagnostics === undefined ? '(aucun diagnostic fourni)' : JSON.stringify(diagnostics).slice(0, DIAGNOSTICS_MAX);
-    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: commitSha, paths }, instruction: [
+    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: commitSha, paths, mission }, instruction: [
       'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). La CI a ÉCHOUÉ au SHA ' + commitSha + '.',
       'Diagnostics (bornés) : ' + shown,
       'Ta seule action maintenant : corriger le fichier en appelant UNE FOIS github_commit_files avec :',
       '- message : un résumé d’une ligne de la correction',
       '- files : [{ "path": <le chemin concerné>, "content": <le contenu COMPLET corrigé> }]',
       'Le serveur complète lui-même name, expected_head_sha et expected_sha. Chemins autorisés : ' + pathList + '. N’appelle aucun autre outil.',
-      CONTENT_RULES,
+      contentRules(mission),
       ...retryNote(refused),
     ].join('\n') };
   }
