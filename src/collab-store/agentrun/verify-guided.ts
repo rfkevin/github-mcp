@@ -35,6 +35,11 @@ const SHA = /^[a-f0-9]{40}$/;
 
 const ensured = new WeakSet<D1Database>();
 
+/** Référence journalisée d'une lecture github_diff : le couple exact lu, head puis base (relecture GPT-6 #286, V1b). */
+export function diffReadRef(head: string, base: string): string {
+  return head + ':' + base;
+}
+
 /** Contexte préparé, une ligne par run (jamais réécrite : un rejeu relit la même). */
 export async function ensureVerifySchema(db: D1Database): Promise<void> {
   if (ensured.has(db)) return;
@@ -114,7 +119,9 @@ export function buildVerifyContext(input: VerifyInput): { text: string; complete
   const diff = input.diff as { files?: DiffFile[]; files_truncated?: unknown; total_commits?: unknown } | null;
   if (diff && Array.isArray(diff.files)) {
     const files = diff.files.filter(file => typeof file.filename === 'string');
-    complete = files.length === diff.files.length && files.length <= VERIFY_FILES_MAX;
+    // V1a (relecture GPT-6 #286) : partiel dès que l'outil a tronqué (liste ou patch) ou qu'un patch manque.
+    complete = diff.files_truncated !== true && files.length === diff.files.length && files.length <= VERIFY_FILES_MAX
+      && files.every(file => typeof file.patch === 'string' && file.patch !== '' && file.patch_truncated !== true);
     const plus = files.reduce((sum, file) => sum + (Number(file.additions) || 0), 0);
     const minus = files.reduce((sum, file) => sum + (Number(file.deletions) || 0), 0);
     lines.push('Diff : ' + files.length + ' fichier(s)' + (diff.files_truncated ? ' (liste tronquée par l’outil)' : '') + ', +' + plus + ' / -' + minus
@@ -202,19 +209,19 @@ function storedContext(db: D1Database, runId: string) {
 }
 
 /**
- * Contrôle ⑦ de store_verdict : lecture du diff au head par cette exécution. Une lecture du modèle
+ * Contrôle ⑦ de store_verdict : lecture du diff au COUPLE head/base exact par cette exécution. Une lecture du modèle
  * (`github_diff`) suffit toujours ; la prélecture serveur (`github_diff_prefetch`) suffit pour un verdict
  * négatif, et pour un verdict positif seulement si le contexte injecté au même head était complet.
  */
-export async function verifyReadProof(db: D1Database, runId: string, head: string, positive: boolean): Promise<boolean> {
+export async function verifyReadProof(db: D1Database, runId: string, head: string, base: string, positive: boolean): Promise<boolean> {
   const read = (tool: string) => db.prepare(
     "SELECT 1 AS ok FROM agent_run_reads WHERE run_id = ?1 AND tool = ?2 AND ref_sha = ?3 AND status = 'completed'",
-  ).bind(runId, tool, head).first<{ ok: number }>();
+  ).bind(runId, tool, diffReadRef(head, base)).first<{ ok: number }>();
   if (await read('github_diff')) return true;
   if (!await read('github_diff_prefetch')) return false;
   if (!positive) return true;
   await ensureVerifySchema(db);
-  const ctx = await db.prepare('SELECT complete FROM agent_run_verify_contexts WHERE run_id = ?1 AND head = ?2')
-    .bind(runId, head).first<{ complete: number }>();
+  const ctx = await db.prepare('SELECT complete FROM agent_run_verify_contexts WHERE run_id = ?1 AND head = ?2 AND base = ?3')
+    .bind(runId, head, base).first<{ complete: number }>();
   return ctx?.complete === 1;
 }

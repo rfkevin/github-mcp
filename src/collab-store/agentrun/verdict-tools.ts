@@ -13,7 +13,7 @@
  * ⑥ CI du head entièrement verte (listCheckRuns) ; CC-7 L6b : avec `requiredChecks`
  *    (production : les 4 contrôles du dépôt, AGENT_RUN_REQUIRED_CHECKS), chaque contrôle
  *    nommé doit avoir réussi et aucun ne doit être en cours ;
- * ⑦ preuve de lecture `github_diff` au head dans agent_run_reads.
+ * ⑦ preuve de lecture `github_diff` au couple head/base exact dans agent_run_reads.
  *
  * L'événement evidence.add est écrit par le SERVEUR (appendEvent, rôle reviewer
  * ou tester), jamais repris depuis les arguments du modèle ; `evidence.add`
@@ -189,9 +189,9 @@ export function createVerdictTools(options: VerdictToolHostOptions): VerdictTool
     if (!ciGreen(checks, options.requiredChecks ?? [])) {
       throw new ToolRefused('VERDICT_CI_NOT_GREEN');
     }
-    // ⑦ Preuve de lecture : github_diff au head par CETTE exécution (journal S10). CC8 S7 (relecture GPT-6 #286,
-    // V1) : une prélecture serveur ne prouve un verdict positif que si le contexte injecté couvrait tout le diff.
-    if (!await verifyReadProof(options.db, runId, args.head, args.state === 'AGREE' || args.state === 'PASS')) {
+    // ⑦ Preuve de lecture : github_diff au COUPLE exact head/base par CETTE exécution (journal S10). CC8 S7 (relecture
+    // GPT-6 #286, V1) : une prélecture serveur ne prouve un verdict positif que si le contexte injecté couvrait tout le diff.
+    if (!await verifyReadProof(options.db, runId, args.head, args.base, args.state === 'AGREE' || args.state === 'PASS')) {
       throw new ToolRefused('VERDICT_READ_PROOF_MISSING');
     }
     // Écriture serveur : evidence.add avec rôle reviewer/tester, idempotence déterministe, boucle STALE bornée.
