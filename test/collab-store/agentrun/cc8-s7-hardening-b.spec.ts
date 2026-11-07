@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createRun, leaseKeyOf, type ToolHost } from '../../../src/collab-store/agentrun';
-import { redactedReceipt, redactedRunSummaryFor, typedStop } from '../../../src/collab-store/agentrun/chat-continuity';
+import { redactedReceipt, redactedRunSummaryFor, STOP_CODES, typedStop } from '../../../src/collab-store/agentrun/chat-continuity';
 import { objectAlarm, objectWake, type ObjectSlot, type OrchestratorDeps } from '../../../src/collab-store/agentrun/orchestrator';
 import { recordRunModelCall } from '../../../src/collab-store/agentrun/provider-models';
 import { publishRunProof, RUN_PROOF_ATTEMPTS, RUN_PROOF_RETRY_S } from '../../../src/collab-store/agentrun/run-proof';
@@ -315,6 +315,12 @@ describe('Lot B R5 — résumé expurgé et modèle servi', () => {
     expect(typedStop('model_permanent: clé zq7 refusée')).toEqual({ stop_code: 'model_permanent', stop_class: null });
     expect(typedStop('Erreur libre ' + 'x'.repeat(10))).toEqual({ stop_code: 'other', stop_class: null });
     expect(typedStop(null)).toEqual({ stop_code: 'other', stop_class: null });
+    // Relecture GPT-6 (B2) : préfixe syntaxiquement valide mais inconnu → other (jamais repris).
+    expect(typedStop('zq7hush: erreur')).toEqual({ stop_code: 'other', stop_class: null });
+    expect(typedStop('zq7hush:precheck_failed')).toEqual({ stop_code: 'other', stop_class: 'precheck_failed' });
+    for (const code of STOP_CODES) expect(typedStop(code + ': détail libre zq7').stop_code).toBe(code);
+    expect([...STOP_CODES].sort()).toEqual(['cost_limit', 'deadline', 'effect_outcome_unknown', 'final', 'guided_stop', 'guided_violation',
+      'halted', 'incomplete_final', 'model_permanent', 'model_transient', 'preempted', 'step_attempts_exhausted', 'step_limit', 'token_limit']);
   });
 
   it('modèle servi : chaque essai de maillon tracé (choisi, servi, repli, échec), visible du coordinateur', async () => {

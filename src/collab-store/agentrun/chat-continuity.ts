@@ -114,10 +114,19 @@ const STOP_CLASSES = new Set(['no_tool_call', 'tool_not_offered', 'multiple_tool
   'branch_refused', 'checks_refused', 'check_unexpected', 'pr_already_open', 'server_cap', 'tool_unavailable', 'precheck_failed',
   'github_evidence_missing', 'ci_escalate', 'ci_unknown']);
 
-/** Code d'arrêt typé (préfixe identifiant) et cause connue ; jamais le texte libre de stop_reason. */
+/**
+ * Ensemble FERMÉ des codes d'arrêt écrits par le moteur (settle, stopAs, arrêts guidés, fin d'exécution).
+ * Relecture D12 GPT-6 #285 (B2) : un préfixe syntaxiquement valide mais inconnu (« zq7hush: … ») peut
+ * venir d'un texte libre ; il n'est jamais repris, seul « other » l'est.
+ */
+export const STOP_CODES: ReadonlySet<string> = new Set(['final', 'halted', 'preempted', 'step_limit', 'token_limit', 'cost_limit',
+  'deadline', 'step_attempts_exhausted', 'model_transient', 'model_permanent', 'effect_outcome_unknown', 'guided_stop',
+  'guided_violation', 'incomplete_final']);
+
+/** Code d'arrêt typé (ensemble fermé) et cause connue ; jamais le texte libre de stop_reason. */
 export function typedStop(stopReason: string | null): { stop_code: string; stop_class: string | null } {
   const [code, detail] = (stopReason ?? '').split(':').map(part => part.trim());
-  const stopCode = /^[a-z][a-z0-9_]{0,40}$/.test(code ?? '') ? code : 'other';
+  const stopCode = STOP_CODES.has(code ?? '') ? code : 'other';
   return { stop_code: stopCode, stop_class: detail && STOP_CLASSES.has(detail) ? detail : null };
 }
 
