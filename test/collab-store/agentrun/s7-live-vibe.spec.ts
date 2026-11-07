@@ -1,14 +1,14 @@
-import { describe, it } from "@jest/globals";
+import { describe, it } from "vitest";
 import { v4 as uuidv4 } from "uuid";
 
 /**
- * Spécification S7 live vibe - Corrige la référence corr#1728.
- * Scénario SC2 : Publicagneur (YouTube) -> Inactif après la publication.
+ * Spécification S7 live vibe (corr#1807).
+ * Scénario SC2 : Publicagneur (YouTube) live après publication – contrôler la promotion partout.
  */
 
-describe("S7-live-vibe / corr#1728 (SC2: Live après publication)", () => {
+describe("S7-live-vibe / corr#1807 (SC2: promo partout après la publication)", () => {
 
-  it("doit maintenir les vues après la publication (SC2)", async () => {
+  it("doit supprimer la promo partout après la publication (SC2)", async () => {
     const inviterId = uuidv4();
     const liveId = uuidv4();
     const viewer = {
