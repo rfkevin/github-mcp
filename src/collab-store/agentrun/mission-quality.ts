@@ -82,16 +82,43 @@ export function literalOnly(expression: string): boolean {
   return /^[\s\d.+\-*/%()!<>=&|?:,[\]{}"]*$/.test(bare) && bare.trim() !== '';
 }
 
+/**
+ * Scanner conservateur : les indices sont gardés, les chaînes/templates et les
+ * commentaires sont masqués. Un expect cité ne peut prouver un test fonctionnel.
+ */
+function activeCode(src: string): string {
+  let out = '', quote = '';
+  let mode: 'code' | 'line' | 'block' = 'code';
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i], next = src[i + 1];
+    if (mode === 'line') {
+      if (ch === '\n') { out += '\n'; mode = 'code'; } else out += ' ';
+    } else if (mode === 'block') {
+      if (ch === '*' && next === '/') { out += '  '; i++; mode = 'code'; }
+      else out += ch === '\n' ? '\n' : ' ';
+    } else if (quote) {
+      if (ch === '\\') { out += ' '; if (i + 1 < src.length) { i++; out += src[i] === '\n' ? '\n' : ' '; } }
+      else if (ch === quote) { out += ' '; quote = ''; }
+      else out += ch === '\n' ? '\n' : ' ';
+    } else if (ch === '/' && next === '/') { out += '  '; i++; mode = 'line'; }
+    else if (ch === '/' && next === '*') { out += '  '; i++; mode = 'block'; }
+    else if (ch === "'" || ch === '"' || ch.charCodeAt(0) === 96) { quote = ch; out += ' '; }
+    else out += ch;
+  }
+  return out;
+}
+
 export interface AssertionSignal {
   expects: number; tautological: number; meaningful: number; imports_project: boolean; disabled: boolean;
 }
 
 /** Signal statique d'un fichier de test : assertions, tautologies, import de code du dépôt, tests désactivés. */
 export function assertionSignal(content: string): AssertionSignal {
-  const src = stripComments(content);
+  const src = content;
+  const code = activeCode(src);
   let expects = 0;
   let tautological = 0;
-  for (const found of src.matchAll(/\bexpect\s*\(/g)) {
+  for (const found of code.matchAll(/\bexpect\s*\(/g)) {
     const arg = balanced(src, found.index! + found[0].length - 1);
     if (!arg) continue;
     expects++;
@@ -99,12 +126,17 @@ export function assertionSignal(content: string): AssertionSignal {
     const matcher = chain ? chain[1].split('.').pop()!.trim() : '';
     const rhs = chain ? balanced(src, arg.end + chain[0].length - 1)?.text.trim() ?? '' : '';
     const left = arg.text.trim();
-    if (literalOnly(left) || (SAME_SIDE_MATCHERS.has(matcher) && PATH_EXPRESSION.test(left) && left === rhs)) tautological++;
+    if (!matcher || literalOnly(left) || (SAME_SIDE_MATCHERS.has(matcher) && PATH_EXPRESSION.test(left) && left === rhs)) tautological++;
   }
+  const importSyntax = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\(\s*)['"](?:\.{1,2}\/|\/?src\/|@\/)/g;
+  const importsProject = [...src.matchAll(importSyntax)].some(found => {
+    const word = /^(?:from|import|require)\b/.exec(found[0])?.[0] ?? '';
+    return word.length > 0 && code.slice(found.index!, found.index! + word.length) === word;
+  });
   return {
     expects, tautological, meaningful: expects - tautological,
-    imports_project: /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\(\s*)['"](?:\.{1,2}\/|\/?src\/|@\/)/.test(src),
-    disabled: /\b(?:it|test|describe)\s*\.\s*(?:skip|todo)\b|\b(?:xit|xtest|xdescribe)\b/.test(src),
+    imports_project: importsProject,
+    disabled: /\b(?:it|test|describe)\s*\.\s*(?:skip|todo)\b|\b(?:xit|xtest|xdescribe)\b/.test(code),
   };
 }
 

@@ -70,6 +70,30 @@ describe('Lot C R3 — signal statique d’assertions', () => {
   });
 });
 
+  it('C1 : une assertion citée dans une chaîne ou template ne constitue pas un vrai test', () => {
+    const fake = IMPORT + [
+      'const x = "expect(fakeResult()).toBe(42)";',
+      'const y = ' + String.fromCharCode(96) + 'expect(fake2()).toEqual(42)' + String.fromCharCode(96) + ';',
+      "it('demo', () => { expect(true).toBe(true); });",
+    ].join('\n');
+    expect(assertionSignal(fake)).toMatchObject({ expects: 1, tautological: 1, meaningful: 0, imports_project: true });
+    expect(functionalTestCause([{ path: PATH, content: fake }])).toBe('test_tautological');
+    expect(assertionSignal(REAL)).toMatchObject({ expects: 1, meaningful: 1, imports_project: true });
+  });
+
+  it('C1 : les imports ou skip seulement cités ne sont pas du code', () => {
+    const fake = "const imported = \"import x from '../src/a'\";\n"
+      + "const skipped = \"it.skip('a', () => {})\";\n"
+      + "it('a', () => { expect(fn()).toBe(1); });";
+    expect(assertionSignal(fake)).toMatchObject({ imports_project: false, disabled: false, meaningful: 1 });
+    expect(functionalTestCause([{ path: PATH, content: fake }])).toBe('test_no_project_import');
+  });
+
+  it('C1 : un expect sans matcher ne constitue pas une assertion fonctionnelle', () => {
+    const fake = IMPORT + "it('a', () => { expect(fn()); expect(true).toBe(true); });";
+    expect(assertionSignal(fake)).toMatchObject({ expects: 2, meaningful: 0, tautological: 2 });
+  });
+
 describe('Lot C R3 — prévalidation par mission', () => {
   it('pilote (ou mission absente) : le test de démonstration reste accepté, comme avant', () => {
     expect(guidedPrecheck(call(PATH, DEMO), [PATH])).toBeNull();
