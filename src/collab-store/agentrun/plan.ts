@@ -54,8 +54,15 @@ export const TASK_KIND_MAX_TOKENS = Object.freeze({ answer: 8_000, review: 16_00
 /** CC8 S7 : doublement minimal autorisé par Kevin, et expérimentation gratuite bornée à 120k. */
 export const FREE_IMPLEMENT_DEFAULT_TOKENS = 48_000;
 export const FREE_IMPLEMENT_EXPERIMENT_MAX_TOKENS = 120_000;
+/**
+ * CC8 S7 vérification guidée (décision de Kevin, 07/11) : un run gratuit de relecture ou de test reçoit
+ * le même plafond que l'implémentation gratuite par défaut (contexte serveur réinjecté à chaque étape) ;
+ * un run payant garde son plafond historique.
+ */
+export const FREE_VERIFY_DEFAULT_TOKENS = 48_000;
 /** Le plafond supérieur n'est activé que par une variable propriétaire explicite, pour un run à coût payant 0. */
 export function taskKindMaxTokens(kind: PlannedTaskKind, env: PlanEnv = {}): number {
+  if ((kind === 'review' || kind === 'test') && taskKindCostCents(env, kind) === 0) return FREE_VERIFY_DEFAULT_TOKENS;
   if (kind !== 'implement' || taskKindCostCents(env, kind) !== 0) return TASK_KIND_MAX_TOKENS[kind];
   const raw = env.AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS;
   if (raw === undefined || !/^[1-9][0-9]{0,5}$/.test(raw)) return FREE_IMPLEMENT_DEFAULT_TOKENS;
@@ -255,7 +262,7 @@ export function taskPrompt(kind: TaskWakeKind, cycleId: string, taskId: string, 
   return [
     'Tâche ' + taskId + ' du cycle ' + cycleId + ' : une soumission attend votre ' + label + '.',
     couple,
-    'Lisez le diff avec github_diff (head et base exacts), les fichiers concernés avec github_read_file et la CI du head avec github_check_runs.',
+    'Le serveur prépare le diff borné, la CI du head et la PR (vérification guidée) ; relisez au besoin avec github_diff (head et base exacts), github_read_file et github_check_runs.',
     'Consignez votre conclusion dans votre message final : constats, risques et prochaine action proposée.',
     'Votre verdict ne se dépose QUE par store_verdict (task, pr, head, base exacts, state '
     + (kind === 'review' ? 'AGREE ou CHANGES_REQUESTED' : 'PASS ou FAIL') + ', review) :',

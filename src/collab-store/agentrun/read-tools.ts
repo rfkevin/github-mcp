@@ -35,6 +35,7 @@ import { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_TOOL_SCHE
 import { createModelChoiceTools, MODEL_CHOICE_TOOL_SCHEMAS } from './model-choice-tools';
 import type { PolicyEnv } from './model-policy';
 import { createResearchTools, RESEARCH_TOOL_SCHEMAS, type ResearchToolsOptions } from './research';
+import { diffReadRef } from './verify-guided';
 
 /**
  * CC-7 M2 : rôle mémoire tenu par une exécution API selon son type (role:<rôle>, parité avec le
@@ -213,7 +214,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     if (!run) throw new ToolRefused('unknown_run');
     return run;
   }
-  async function execute(call: ToolCall, ctx: { run_id: string; effect_key?: string }): Promise<unknown> {
+  async function execute(call: ToolCall, ctx: { run_id: string; effect_key?: string; prefetch?: boolean }): Promise<unknown> {
     if (writes && (WRITE_TOOL_SCHEMAS.some(schema => schema.name === call.name))) return writes.execute(call, ctx);
     if (gh && isGitHubWrite(call.name)) return gh.execute(call, ctx);
     // CC-7 L5b (S10) : verdict contrôlé serveur (rôle, identité, couple, CI, preuve).
@@ -287,7 +288,10 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const head = stringArg(args, 'head', SHA_RE);
         const base = stringArg(args, 'base', REF_RE);
         const comparison = await options.github!.compareRefs(options.repository!, base, head) as Record<string, unknown>;
-        await journalRead(options.db, ctx.run_id, 'github_diff', head);
+        // CC8 S7 vérification guidée (relecture GPT-6 #286, V1) : la prélecture serveur est journalisée à part ;
+        // elle ne vaut preuve d'un verdict positif que si le contexte injecté couvre tout le diff (verify-guided.ts).
+        // V1b : la preuve porte sur le COUPLE lu (head:base), jamais sur le head seul (diffReadRef).
+        await journalRead(options.db, ctx.run_id, ctx.prefetch === true ? 'github_diff_prefetch' : 'github_diff', diffReadRef(head, base));
         const raw = Array.isArray(comparison.files) ? comparison.files as Array<Record<string, unknown>> : [];
         // L5a : le diff est borné avant d'entrer dans le contexte du modèle (données, jamais instructions).
         const files = raw.slice(0, DIFF_MAX_FILES).map(file => {

@@ -13,7 +13,7 @@
  * ⑥ CI du head entièrement verte (listCheckRuns) ; CC-7 L6b : avec `requiredChecks`
  *    (production : les 4 contrôles du dépôt, AGENT_RUN_REQUIRED_CHECKS), chaque contrôle
  *    nommé doit avoir réussi et aucun ne doit être en cours ;
- * ⑦ preuve de lecture `github_diff` au head dans agent_run_reads.
+ * ⑦ preuve de lecture `github_diff` au couple head/base exact dans agent_run_reads.
  *
  * L'événement evidence.add est écrit par le SERVEUR (appendEvent, rôle reviewer
  * ou tester), jamais repris depuis les arguments du modèle ; `evidence.add`
@@ -31,6 +31,7 @@ import { sha256Hex } from '../store/hash';
 import { ToolRefused, type LookupResult, type ToolCall } from './engine';
 import type { ToolSchema } from './workers-ai-model';
 import type { GitHubReads } from './read-tools';
+import { verifyReadProof } from './verify-guided';
 
 /** Types de run autorisés à déposer un verdict (S10) ; tout autre type est refusé. */
 export type VerdictTaskKind = 'review' | 'test';
@@ -188,11 +189,11 @@ export function createVerdictTools(options: VerdictToolHostOptions): VerdictTool
     if (!ciGreen(checks, options.requiredChecks ?? [])) {
       throw new ToolRefused('VERDICT_CI_NOT_GREEN');
     }
-    // ⑦ Preuve de lecture : github_diff au head par CETTE exécution (journal S10).
-    const proof = await options.db.prepare(
-      "SELECT effect_key FROM agent_run_reads WHERE run_id = ?1 AND tool = 'github_diff' AND ref_sha = ?2 AND status = 'completed'",
-    ).bind(runId, args.head).first<{ effect_key: string }>();
-    if (!proof) throw new ToolRefused('VERDICT_READ_PROOF_MISSING');
+    // ⑦ Preuve de lecture : github_diff au COUPLE exact head/base par CETTE exécution (journal S10). CC8 S7 (relecture
+    // GPT-6 #286, V1) : une prélecture serveur ne prouve un verdict positif que si le contexte injecté couvrait tout le diff.
+    if (!await verifyReadProof(options.db, runId, args.head, args.base, args.state === 'AGREE' || args.state === 'PASS')) {
+      throw new ToolRefused('VERDICT_READ_PROOF_MISSING');
+    }
     // Écriture serveur : evidence.add avec rôle reviewer/tester, idempotence déterministe, boucle STALE bornée.
     const store = new CollabStore(options.db);
     const opId = await verdictOpId(kind, cycle_id, participant_id, args.task, args.pr, args.head, args.base, args.state);

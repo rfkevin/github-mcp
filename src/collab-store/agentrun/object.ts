@@ -209,7 +209,7 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   return (runId, stepDb) => ({ ...makeEngine(runId, stepDb),
     compactHistory: env.AGENT_RUN_CONTEXT_COMPACTION === 'true',
     // CC8 S7 (Kevin, 2026-11-06) : mode guidé pour toute exécution sous mandat S7 ; sans mandat, sans effet.
-    githubCompletionGrants, guidedS7: true });
+    githubCompletionGrants, guidedS7: true, guidedVerify: true });
 }
 
 /** Branche de base du canal API : valeur valide, jamais main ni master, sinon le défaut figé en code. */
