@@ -24,9 +24,6 @@ export interface ScheduledRunResult {
 }
 
 /**
- * `research: false` (webhook l3d 2d) : même passage du contrôleur, sans le chercheur L5 — il reste quotidien et
- * n'est lancé que par le Cron. Par défaut (Cron), le chercheur passe au plus une fois par jour UTC.
- * 
  * CC-8 S8c : Le cron */15 agit uniquement comme un moniteur (audit, journalisation, détection d'incidents).
  * Il ne déclenche aucun run d'agent, retry ou appel de modèle de langage.
  */
@@ -57,7 +54,6 @@ export async function runScheduledControllers(db: D1Database, options: { now?: (
       status = 'failed';
     }
   }
-  // l3d 2b-2b : file des échecs (une ligne par heure et par portée/code) ; jamais bloquant.
   const at = Math.floor(now().getTime() / 1000);
   let failuresRecorded = 0;
   const failed = [
@@ -68,7 +64,6 @@ export async function runScheduledControllers(db: D1Database, options: { now?: (
     try {
       if (await recordFailure(db, { ...failure, now: at })) failuresRecorded += 1;
     } catch {
-      // la file est une aide à la visibilité : son indisponibilité n'interrompt pas le passage
     }
   }
   return { cycles, research: { pass_id: passId, status }, failures_recorded: failuresRecorded };
