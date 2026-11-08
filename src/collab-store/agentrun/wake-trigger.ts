@@ -5,7 +5,7 @@
  * ou si le passage échoue. Le cron reste le filet de secours.
  */
 import { agentRunPass, type WakeFn } from './orchestrator';
-import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './object';
+import { agentRunDb, wakeViaNamespace, type AgentRunObject, type AgentRunObjectEnv } from './object';
 import { ensureAgentRunSchema } from './schema';
 import { durableWakeWorthy, DURABLE_WAKE_EVENT_TYPES } from '../store/collab-store';
 import { ensureSchema } from '../store/schema';
@@ -108,7 +108,7 @@ export async function drainDurableEventWakes(db: D1Database, env: AgentRunObject
 }
 
 /** Le Durable Object de service n'est pas un run modèle : uniquement une alarme de livraison. */
-export async function armDurableEventWake(namespace: DurableObjectNamespace, atMs: number): Promise<void> {
+export async function armDurableEventWake(namespace: DurableObjectNamespace<AgentRunObject>, atMs: number): Promise<void> {
   const object = namespace.get(namespace.idFromName(EVENT_WAKE_OBJECT_NAME)) as unknown as {
     armEventPass(atMs: number): Promise<void>;
   };
