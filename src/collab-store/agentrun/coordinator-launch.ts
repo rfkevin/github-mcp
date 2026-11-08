@@ -47,7 +47,7 @@ async function event(i: LaunchInput, type: 'task.claim'|'task.handoff'|'checkpoi
   const rev = await i.store.currentRevision(i.cycle);
   const out = await i.store.appendEvent({cycle_id:i.cycle, participant_id:i.coordinator, expected_rev:rev,
     type, role:'coordinator', payload_json:JSON.stringify(payload),
-    op_id:opIdClientFor(i.coordinator) + ':' + i.cycle + ':' + suffix + ':1'});
+    op_id:type === 'checkpoint' ? i.opId : opIdClientFor(i.coordinator) + ':' + i.cycle + ':' + suffix + ':1'});
   if (out.status === 'stale') deny('STALE', 'Cycle changed; retry after reading its delta.');
   if (out.status === 'quota_exhausted') deny('QUOTA_EXHAUSTED', 'Store daily quota exhausted.');
 }

@@ -95,7 +95,8 @@ describe('CC8 S7 direct launch — real D1 handoff, run and lease',()=>{
     await preemptByChat(db,{cycleId:s.cycle,participantId:s.vibe,taskId:s.task,now:s.input.now,holdSeconds:3600});
     const target={...s.input,participant:s.vibe};
     await expect(launchCoordinatorImplement(target)).rejects.toMatchObject({code:'RUN_NOT_CREATED'});
-    const answer=await launchCoordinatorImplement({...target,takeoverChat:true});
+    const answer=await launchCoordinatorImplement({...target,takeoverChat:true,
+      opId:s.coordinator+':'+s.cycle+':launch:2'});
     expect(answer.status).toBe('started');
     expect(s.wakeIds).toEqual([answer.run_id]);
     const fence=await db.prepare('SELECT holder FROM agent_fences WHERE lease_key=?1')
