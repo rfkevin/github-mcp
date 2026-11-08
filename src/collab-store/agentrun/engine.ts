@@ -403,7 +403,8 @@ export async function storeCompletionVerified(db: D1Database, run: Pick<RunRow,
 }
 
 async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps): Promise<boolean> {
-  if (run.task_kind !== 'implement') return storeCompletionVerified(db, run);
+  if (['answer', 'review', 'test', 'design'].includes(run.task_kind)) return storeCompletionVerified(db, run);
+  if (run.task_kind !== 'implement') return true; // Historical synthetic kinds only.
   const grants = (deps.githubCompletionGrants ?? []).filter(g => g.cycle === run.cycle_id
     && g.task === run.task_id && g.participant === run.participant_id);
   if (grants.length === 0) return true; // Implement hors mandat S7 inchangé.
