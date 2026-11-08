@@ -14,3 +14,15 @@
 **NE PAS FUSIONNER S8c avant le lot B `S8-wake-durable` (PR #291) fusionné et déployé sur cc3-test.** Le cron fournissait un secours pour les réveils perdus ; avant la mise en service de l'outbox CAS D1 et de son alarme Durable Object, retirer le passage agent du cron pourrait faire attendre un run jusqu'au prochain événement. Après B, les nouveaux runs proviennent des événements, jamais du cron.
 
 CI4/4 et D12 Vibe/Grok au couple HEAD/BASE final requis, puis fusion Kevin sur intégration uniquement. Aucune activation master, aucun merge automatique, aucun run Gemini supplémentaire et aucun coût payant.
+
+## Ne pas couper la fusion automatique existante
+
+Contrôle de non-régression sur `cc3-test` : `AUTO_MERGE_INTEGRATION="true"`.
+Avant S8c, le passage `integrationPass` (D12 + CI + paths + bail + HEAD/BASE) était appelé **uniquement depuis le cron**. En le supprimant, S8c rendrait la fusion automatique silencieusement inopérante malgré l'indicateur actif.
+
+Le relais déplace donc ce passage sous un déclenchement **événementiel autorisé**, sans élargir ses gardes :
+- suite à `evidence.add` APPLIED avec état `SUBMITTED`, `AGREED` ou `PASS`, `task.status` APPLIED (`done`/`verified`), ou `owner.decision` APPLIED, par le canal /collab/mcp ou /owner ;
+- suite à un webhook GitHub dont la signature et l'issue `202 accepted` ont déjà été vérifiées ;
+- jamais depuis le cron de 15 minutes, ni sur un événement duplicate/STALE/quiet.
+
+Le seul exécuteur reste `runAutoMergePass`, avec la politique existante et le bail de fusion existant. Ce déplacement n'autorise aucune nouvelle fusion, notamment vers `master`. Si aucun événement/webhook n'arrive, un nouveau candidat peut attendre : la robustesse de l'événement/alarme du lot B reste donc prérequise, et l'intégration événementielle doit être revue indépendamment en D12.

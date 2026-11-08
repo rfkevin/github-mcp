@@ -16,8 +16,7 @@ import { agentRunPass } from './collab-store/agentrun/orchestrator';
 // CC-8 S8a : réveil événementiel des canaux (même passage que le webhook, bail anti-rafale D1).
 import { eventWake } from './collab-store/agentrun/wake-trigger';
 import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './collab-store/agentrun/object';
-import { announceReadyToPromote, runAutoMergePass } from './collab-store/gates/auto-merge';
-import { autoMergeGitHubFrom, type AutoMergeRootEnv } from './auto-merge-root';
+import { scheduleEventIntegration, scheduleIntegrationPass, type EventIntegrationEnv } from './collab-store/gates/event-integration';
 
 // CC-5 l7 7b — orchestrateur des exécutions d'agents (binding AGENT_RUN, env cc3-test seulement ; inactif par défaut).
 export { AgentRunObject } from './agent-run-object';
@@ -29,18 +28,6 @@ function scheduleAgentRunPass(env: unknown, ctx: ExecutionContext): void {
   ctx.waitUntil(agentRunPass(agentRunDb(agentEnv), agentEnv, {
     now: Math.floor(Date.now() / 1000), deliverer: 'pass:' + crypto.randomUUID(), wake: wakeViaNamespace(agentEnv.AGENT_RUN),
   }).catch(() => undefined));
-}
-
-/**
- * CC-7 L6b-3 — après le passage du contrôleur : fusion automatique vers l'intégration (éteinte sauf
- * AUTO_MERGE_INTEGRATION="true" + dépôt et branche d'intégration + secrets de l'App) puis annonce
- * « prêt à promouvoir » au salon (éteinte sauf SALON_ENABLED="true"). Une erreur n'arrête rien d'autre.
- */
-async function integrationPass(db: D1Database, env: unknown): Promise<void> {
-  const rootEnv = env as AutoMergeRootEnv;
-  const github = autoMergeGitHubFrom(rootEnv);
-  if (github) await runAutoMergePass(db, rootEnv, github).catch(() => undefined);
-  await announceReadyToPromote(db, rootEnv).catch(() => undefined);
 }
 
 export default {
@@ -65,7 +52,11 @@ export default {
     if (new URL(request.url).pathname === WEBHOOK_PATH) {
       const webhook = await handleGitHubWebhook(request, env as unknown as WebhookEnv, ctx);
       // Même cadence que le contrôleur : seulement quand la livraison lance un passage (202 accepted).
-      if (webhook?.status === 202 && (await webhook.clone().json() as { outcome?: string }).outcome === 'accepted') scheduleAgentRunPass(env, ctx);
+      if (webhook?.status === 202 && (await webhook.clone().json() as { outcome?: string }).outcome === 'accepted') {
+        scheduleAgentRunPass(env, ctx);
+        // An accepted signed webhook, not the cron, may advance a gated integration merge.
+        scheduleIntegrationPass(env as EventIntegrationEnv, ctx);
+      }
       if (webhook) return webhook;
     }
     const writes = writesEnabled(env.GITHUB_WRITES_ENABLED);
@@ -121,8 +112,12 @@ export default {
     // Owner remains out of OAuth and never delegates owner rights to an MCP token.
     if (pathname === OWNER_PATH) {
       // CC-8 S8a : les décisions owner appliquées réveillent le planificateur (waitUntil, jamais bloquant).
+      const wake = eventWake(env as unknown as AgentRunObjectEnv, ctx);
       const owner = await handleOwnerRequest(request, env as unknown as OwnerRouteEnv, origin, undefined,
-        () => listOAuthClientIds(oauth), eventWake(env as unknown as AgentRunObjectEnv, ctx));
+        () => listOAuthClientIds(oauth), event => {
+          wake(event);
+          scheduleEventIntegration(env as EventIntegrationEnv, ctx, event);
+        });
       if (owner) return owner;
     }
     // CC-7 L4b — salon d'équipe : même preuve owner que /owner, hors OAuth MCP.
