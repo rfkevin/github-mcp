@@ -40,9 +40,11 @@ async function seedQuestion(label: string, to: string, asker = 'p-ask') {
   return { cycle, askSeq, owner: 'p-own-' + n, reviewer: 'p-rev-' + n };
 }
 
-async function newRun(cycle: string, participant: string, kind: string, at = T) {
+async function newRun(cycle: string, participant: string, kind: string, at = T, askSeq?: number) {
   const runId = 'l7c2-run-' + (++n) + '-' + Date.now().toString(36);
-  const created = await createRun(db, { runId, cycleId: cycle, participantId: participant, taskId: 'l7', taskKind: kind, prompt: 'p',
+  // Mission answer: le prompt réel du planificateur est lié au clarify.ask exact.
+  const prompt = kind === 'answer' && askSeq ? `Question #${askSeq} du cycle ${cycle}.` : 'p';
+  const created = await createRun(db, { runId, cycleId: cycle, participantId: participant, taskId: 'l7', taskKind: kind, prompt,
     maxSteps: 10, maxTokens: 1_000_000, maxCostCents: 0, deadlineAt: at + 86_400, now: at });
   expect(created.created).toBe(true);
   return runId;
@@ -101,14 +103,15 @@ describe('CC-5 l7c-2 — hôte : écritures figées par type de tâche', () => {
 describe('CC-5 l7c-2 — écritures store', () => {
   it('parcours moteur réel : la réponse est écrite une fois, par le participant de l’exécution, et ferme la question', async () => {
     const q = await seedQuestion('engine', 'p-resp');
-    const runId = await newRun(q.cycle, 'p-resp', 'answer');
+    const runId = await newRun(q.cycle, 'p-resp', 'answer', T, q.askSeq);
     const host = createReadToolHost({ db, repository: null, github: null, storeWrites: true });
     const model = scripted([
       { text: '', tool_calls: [{ id: 'a', name: 'store_answer', args: { ask_seq: q.askSeq, answer: 'Le SHA est bc58d886.' } }] },
       { text: 'Réponse déposée.', tool_calls: [] },
     ]);
     const deps = { model, tools: host, now: () => T, workerId: 'w1' };
-    expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    // Le dépôt est vérifié dans D1 : terminé immédiatement, sans second appel au modèle.
+    expect((await runStep(db, runId, deps)).outcome).toBe('completed');
     expect((await runStep(db, runId, deps)).outcome).toBe('completed');
     const answers = await eventsOf(q.cycle, 'clarify.answer');
     expect(answers).toHaveLength(1);
