@@ -1,52 +1,22 @@
 /**
- * CC-8 S8a (CC-PLAN-8, consultation S8a — AGREE seq 1402/1403, AMEND seq 1404,
- * GO de Kevin) — réveil événementiel du planificateur d'exécutions API.
- *
- * Constat (2026-11-02, cc8-systeme-unique) : un réveil ne partait qu'au passage
- * du contrôleur (webhook GitHub ou passage programmé quart d'heure) ; une
- * question posée à un agent, un claim ou une preuve déposée attendaient le
- * prochain passage avant qu'une exécution soit créée pour y répondre.
- *
- * Principe : après une écriture APPLIQUÉE (jamais duplicate, STALE ni refusée)
- * d'un type réveil, le canal /collab/mcp (et le canal /owner pour les décisions)
- * programme le MÊME passage que le webhook via ctx.waitUntil — jamais bloquant
- * pour la réponse du canal. Garde-fous S1a/S1b-2 inchangés : le passage appelle
- * le planificateur existant (capacité, AGENT_PAUSED, politique unique) et les
- * étapes restent des alarmes du Durable Object, jamais du waitUntil.
- *
- * Anti-rafale : un bail D1 atomique (agent_run_pass_lease, singleton mutable)
- * limite à UN passage événementiel par PASS_LEASE_TTL_S ; le webhook et le
- * passage programmé quart d'heure restent inchangés — ce dernier demeure le
- * filet de sécurité si un réveil événementiel est perdu.
+ * CC8 S8 B — réveil durable, transactionnel et borné.
+ * CollabStore insère les intentions et wake_queued dans le même batch CAS qu'un event APPLIED.
+ * eventWake tente une livraison immédiate, une alarme DO indépendante reprend si bail occupé
+ * ou si le passage échoue. Le cron reste le filet de secours.
  */
 import { agentRunPass, type WakeFn } from './orchestrator';
 import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './object';
 import { ensureAgentRunSchema } from './schema';
+import { durableWakeWorthy, DURABLE_WAKE_EVENT_TYPES } from '../store/collab-store';
+import { ensureSchema } from '../store/schema';
 
-/** Types d'événement dont l'application déclenche un passage (mission S8a, AMEND seq 1404). */
-export const WAKE_EVENT_TYPES = ['clarify.ask', 'evidence.add', 'task.claim', 'task.status', 'task.handoff',
-  'owner.decision', 'round.add'] as const;
-
-/** Un événement mérite-t-il un passage ? clarify.ask ne réveille que si la question est adressée (to non vide). */
-export function wakeWorthy(type: string, payloadJson: string): boolean {
-  if (type === 'clarify.ask') {
-    try {
-      const payload = JSON.parse(payloadJson) as { to?: unknown };
-      return typeof payload.to === 'string' && payload.to.length > 0;
-    } catch {
-      return false; // payload illisible : pas de réveil (l'écriture reste appliquée ; cron = filet)
-    }
-  }
-  return (WAKE_EVENT_TYPES as readonly string[]).includes(type);
-}
-
-/** Durée du bail anti-rafale : au plus un passage événementiel par minute (D1 fait foi). */
+export const WAKE_EVENT_TYPES = DURABLE_WAKE_EVENT_TYPES;
+export const wakeWorthy = durableWakeWorthy;
 export const PASS_LEASE_TTL_S = 60;
+export const WAKE_BATCH_LIMIT = 20;
+export const WAKE_MAX_FAILURES = 6;
+export const EVENT_WAKE_OBJECT_NAME = 'cc8-agent-event-pass-v1';
 
-/**
- * Bail du passage événementiel : INSERT…ON CONFLICT…WHERE expiré (CAS D1, une
- * seule instruction). true = bail acquis, ce passage est le seul de la fenêtre.
- */
 export async function acquireEventPassLease(db: D1Database, now: number, holder: string): Promise<boolean> {
   await ensureAgentRunSchema(db);
   const result = await db.prepare([
@@ -57,35 +27,121 @@ export async function acquireEventPassLease(db: D1Database, now: number, holder:
   return result.meta.changes === 1;
 }
 
-/** Événement appliqué présenté au réveil (champs minimaux du journal). */
 export type WakeEvent = { type: string; payload_json: string };
+interface Intent { event_key: string; attempts: number; next_at: number }
+export interface EventWakeDrain { delivered: number; deferred: number; errors: number; next_at: number | null }
 
-/**
- * Fabrique le hook de réveil d'un canal. Inerte (fonction vide) hors service :
- * AGENT_RUNS_ENABLED n'est pas « true », binding AGENT_RUN ou base absents —
- * la réponse du canal ne dépend jamais de l'orchestrateur.
+async function markIntent(db: D1Database, row: Intent, now: number, status: 'delivered' | 'deferred' | 'error',
+  nextAt: number, reason: string): Promise<void> {
+  const nextAttempts = row.attempts + (reason === 'PASS_FAILED' || reason === 'DISABLED' ? 1 : 0);
+  const audit = status === 'delivered' ? 'wake_delivered' : status === 'error' ? 'wake_error' : 'wake_deferred';
+  await db.batch([
+    db.prepare([
+      'UPDATE agent_event_wake_intents',
+      'SET status=?1,attempts=?2,next_at=?3,updated_at=?4,last_error=?5',
+      "WHERE event_key=?6 AND status IN ('queued','deferred')",
+    ].join(' ')).bind(status, nextAttempts, nextAt, now, reason, row.event_key),
+    db.prepare('INSERT INTO agent_event_wake_audit(event_key,at,kind,detail) VALUES(?1,?2,?3,?4)')
+      .bind(row.event_key, now, audit, reason),
+  ]);
+}
+
+function backoff(attempt: number): number {
+  return Math.min(60, 5 * 2 ** Math.min(attempt, 4));
+}
+
+/** À chaque appel : une seule décision de planification, jamais de modèle/outil directement ici.
+ * Le bail D1 garantit qu'un seul drain livre les événements concurrents. Les reprises se font
+ * via l'alarme du DO et non dans waitUntil. Les erreurs restent typées et auditables.
+ */
+export async function drainDurableEventWakes(db: D1Database, env: AgentRunObjectEnv,
+  opts: { now: number; deliverer: string; wake: WakeFn }): Promise<EventWakeDrain> {
+  await ensureSchema(db);
+  await ensureAgentRunSchema(db);
+  const now = opts.now;
+  const queued = (await db.prepare([
+    'SELECT event_key,attempts,next_at FROM agent_event_wake_intents',
+    "WHERE status IN ('queued','deferred') AND next_at <= ?1",
+    'ORDER BY next_at,event_key LIMIT ?2',
+  ].join(' ')).bind(now, WAKE_BATCH_LIMIT).all<Intent>()).results;
+  const nextDue = async (): Promise<number | null> => {
+    const due = await db.prepare([
+      'SELECT MIN(next_at) AS at FROM agent_event_wake_intents',
+      "WHERE status IN ('queued','deferred')",
+    ].join(' ')).first<{ at: number | null }>();
+    return due?.at ?? null;
+  };
+  if (!queued.length) return { delivered: 0, deferred: 0, errors: 0, next_at: await nextDue() };
+  if (env.AGENT_RUNS_ENABLED !== 'true' || !env.AGENT_RUN) {
+    return { delivered: 0, deferred: queued.length, errors: 0, next_at: null };
+  }
+  const halt = await db.prepare("SELECT value FROM owner_flags WHERE name='halt'").first<{value:string}>();
+  if (halt?.value === '1') {
+    for (const item of queued) await markIntent(db, item, now, 'deferred', now + PASS_LEASE_TTL_S, 'HALT');
+    return { delivered: 0, deferred: queued.length, errors: 0, next_at: await nextDue() };
+  }
+  if (!await acquireEventPassLease(db, now, opts.deliverer)) {
+    const lease = await db.prepare('SELECT expires_at FROM agent_run_pass_lease WHERE id=1')
+      .first<{ expires_at: number }>();
+    const retryAt = Math.max(now + 1, lease?.expires_at ?? now + PASS_LEASE_TTL_S);
+    for (const item of queued) await markIntent(db, item, now, 'deferred', retryAt, 'LEASE_BUSY');
+    return { delivered: 0, deferred: queued.length, errors: 0, next_at: await nextDue() };
+  }
+  try {
+    const result = await agentRunPass(db, env, { now, deliverer: opts.deliverer, wake: opts.wake });
+    if (result.skipped === 'disabled') throw new Error('DISABLED');
+    for (const item of queued) await markIntent(db, item, now, 'delivered', now, 'PASS_APPLIED');
+    const next = await nextDue();
+    return { delivered: queued.length, deferred: 0, errors: 0,
+      next_at: next === null ? null : Math.max(next, now + PASS_LEASE_TTL_S) };
+  } catch {
+    for (const item of queued) {
+      const attempts = item.attempts + 1;
+      const dead = attempts >= WAKE_MAX_FAILURES;
+      await markIntent(db, item, now, dead ? 'error' : 'deferred',
+        dead ? now : now + backoff(attempts), 'PASS_FAILED');
+    }
+    const next = await nextDue();
+    return { delivered: 0, deferred: queued.length, errors: queued.length,
+      next_at: next === null ? null : Math.max(next, now + PASS_LEASE_TTL_S) };
+  }
+}
+
+/** Le Durable Object de service n'est pas un run modèle : uniquement une alarme de livraison. */
+export async function armDurableEventWake(namespace: DurableObjectNamespace, atMs: number): Promise<void> {
+  const object = namespace.get(namespace.idFromName(EVENT_WAKE_OBJECT_NAME)) as unknown as {
+    armEventPass(atMs: number): Promise<void>;
+  };
+  await object.armEventPass(atMs);
+}
+
+/** Hook fail-soft ; le canal répond sans attendre la planification.
+ * Il conserve le pipeline de S8a et arme avant le drain une alarme DO indépendante,
+ * afin qu'une interruption de waitUntil ne supprime pas une intention D1.
  */
 export function eventWake(env: AgentRunObjectEnv, ctx: Pick<ExecutionContext, 'waitUntil'>,
   wake?: WakeFn): (event: WakeEvent) => void {
-  // Même garde que scheduleAgentRunPass (src/index.ts) : hors cc3-test, rien n'est programmé.
   if (env.AGENT_RUNS_ENABLED !== 'true' || !env.AGENT_RUN) return () => undefined;
   const db = agentRunDb(env);
   if (!db) return () => undefined;
   const wakeFn = wake ?? wakeViaNamespace(env.AGENT_RUN);
+  const supportsAlarm = typeof env.AGENT_RUN.get === 'function' && typeof env.AGENT_RUN.idFromName === 'function';
   return event => {
+    if (!wakeWorthy(event.type, event.payload_json)) return;
     try {
-      // Seule une écriture APPLIQUÉE d'un type réveil programme un passage : le hook
-      // n'est jamais appelé sur duplicate, STALE ni refusé (appendWithWake, collab-store.ts).
-      if (!wakeWorthy(event.type, event.payload_json)) return;
       ctx.waitUntil((async () => {
         const now = Math.floor(Date.now() / 1000);
-        const holder = 'event-pass:' + crypto.randomUUID();
-        // Anti-rafale : sans le bail, rien ne part (le passage programmé reprend).
-        if (!await acquireEventPassLease(db, now, holder)) return;
-        await agentRunPass(db, env, { now, deliverer: holder, wake: wakeFn }).catch(() => undefined);
+        // Une panne d'armement n'empêche pas le passage direct ; l'intention reste durable.
+        if (supportsAlarm) await armDurableEventWake(env.AGENT_RUN!, now * 1000).catch(() => undefined);
+        const result = await drainDurableEventWakes(db, env, {
+          now, deliverer: 'event-pass:' + crypto.randomUUID(), wake: wakeFn,
+        });
+        if (supportsAlarm && result.next_at !== null) {
+          await armDurableEventWake(env.AGENT_RUN!, result.next_at * 1000).catch(() => undefined);
+        }
       })());
     } catch {
-      // Jamais bloquant : une erreur de programmation ne remonte pas au canal.
+      // Impossible de programmer waitUntil : l'outbox CAS conserve le réveil.
     }
   };
 }
