@@ -28,7 +28,7 @@ const ACCEPTANCE = [
 ] as const;
 const GRANT = {
   cycle: 'cc8-systeme-unique', task: TASK, participant: 'gemini', branch: BRANCH,
-  paths: [...PATHS], mission: 'functional', acceptance: [...ACCEPTANCE],
+  paths: [...PATHS], mission: 'functional' as const, acceptance: [...ACCEPTANCE],
 };
 const LEGACY = { cycle: 'cc8-systeme-unique', task: 'S7-live-gemini',
   participant: 'gemini', branch: 'mcp/105856986/gemini-api-s7-live',
