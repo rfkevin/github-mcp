@@ -896,8 +896,14 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     g.cycle === run.cycle_id && g.task === run.task_id && g.participant === run.participant_id);
   const provenAtPr = guarded && output.tool_calls.some(call => call.name === 'github_open_pr')
     && await completionVerified(db, run, deps);
-  const final = output.tool_calls.length === 0 || provenAtPr ? 1 : 0;
-  const verified = provenAtPr || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true);
+  // Un effet métier persistant peut terminer le run sans forcer un tour modèle « final » supplémentaire.
+  // Si l'outil est refusé, échoué ou n'a rien écrit, le test D1 ci-dessous reste négatif.
+  const provenAtStore = run.task_kind !== 'implement' && output.tool_calls.some(call =>
+    ['store_answer', 'store_verdict', 'store_contribute'].includes(call.name))
+    && await completionVerified(db, run, deps);
+  const final = output.tool_calls.length === 0 || provenAtPr || provenAtStore ? 1 : 0;
+  const verified = provenAtPr || provenAtStore
+    || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true);
   const completionStatus = verified ? 'completed' : 'failed';
   const completionReason = verified ? 'final'
     : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
