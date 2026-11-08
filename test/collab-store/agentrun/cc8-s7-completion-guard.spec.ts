@@ -152,11 +152,15 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
     expect(model.calls()).toBe(pipeline.length - 1); // PR prouvee sans dernier final texte
   });
 
-  it('T6/T7: review et implement sans mandat continuent à utiliser la fin historique', async () => {
-    for (const kind of ['review','test','answer','implement']) {
+  it('T6: answer/review/test/design sans effet métier ne réussissent pas sur une simple sortie finale', async () => {
+    for (const kind of ['answer', 'review', 'test', 'design']) {
       const f = await fixture(kind); const h = githubHost();
-      const grants = kind === 'implement' ? [] : f.completion;
-      expect(await drain(f.runId, deps([final('Fini')], h.tools, grants), 2)).toBe('completed');
+      expect(await drain(f.runId, deps([final('Fini')], h.tools, f.completion), 2)).toBe('failed');
+      expect((await runSummary(db, f.runId))?.stop_reason).toBe('incomplete_final:store_effect_missing');
     }
+  });
+  it('T7: implement sans mandat GitHub S7 conserve son comportement historique', async () => {
+    const f = await fixture('implement'); const h = githubHost();
+    expect(await drain(f.runId, deps([final('Fini')], h.tools, []), 2)).toBe('completed');
   });
 });

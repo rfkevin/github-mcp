@@ -87,7 +87,8 @@ describe('CC-7 L3b — store_memory_propose : écriture', () => {
     let i = 0;
     const deps = { model: { async complete() { return { output: outputs[i++], usage: { tokens: 10, cost_cents: 0 } }; } }, tools: host, now: () => T, workerId: 'w' };
     expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
-    expect((await runStep(db, runId, deps)).outcome).toBe('completed');
+    // Une proposition de mémoire n'est pas la réponse métier d'un run answer.
+    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
     const rows = (await memoryRows(role)).results;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ kind: 'fact', status: 'candidate', confidence: 'observed' });

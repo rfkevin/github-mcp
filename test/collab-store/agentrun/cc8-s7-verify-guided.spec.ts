@@ -128,7 +128,8 @@ describe('Vérification guidée — moteur (D1)', () => {
     const m = model([verdict]);
     const h = host({ github_diff: [DIFF], github_check_runs: [CHECKS], github_pull_request: [PR], store_verdict: [{ status: 'applied' }] });
     const outcomes = await drive(runId, { model: m.client, tools: h.tools, now: () => T + 10, workerId: 'w1', guidedVerify: true });
-    expect(outcomes.at(-1)).toBe('completed');
+    // Le host est simulé : aucun verdict dans D1. L'injection fonctionne mais ne prouve pas une mission réussie.
+    expect(outcomes.at(-1)).toBe('failed');
     expect(m.seen).toHaveLength(2);
     for (const seen of m.seen) {
       expect(injected(seen).role).toBe('user');
