@@ -5,6 +5,7 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { CollabToolContext } from './context';
+import { outputSchemas } from './schemas';
 import { collabFailure } from './result';
 import { CollabStoreError } from '../store/collab-store';
 import {
