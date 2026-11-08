@@ -103,6 +103,14 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Idempotence** : le premier appel dispatch l’invocation avec tous les garde-fous A3. Rejouer exactement le même `op_id` renvoie l’état durable de l’invocation avec `replayed=true`, sans second appel fournisseur ; depuis L0 (X14), si l’invocation avait réussi, la sortie conservée (bornée à 65 536 caractères) est restituée. Une intention différente sous le même `op_id` reste un conflit d’idempotence.
 - **Sortie** : `invocation_id`, état/statut, usage A1, provenance, latence observée et la sortie : éphémère sur l’appel frais qui la produit ; au rejeu, restituée depuis la copie conservée si l’invocation avait réussi (L0, X14).
 
+### `collab_launch_implement`
+- **Qui** : coordinateur enregistré et approuvé par Kevin (`COORDINATOR_REQUIRED` sinon). Démarre le moteur S7 EXISTANT : `createRun` crée un run et son outbox D1, puis réveille son Durable Object. Renvoie le vrai `run_id` et `started`, `wake_pending` ou `existing` ; ce résultat ne prouve pas encore la réussite de la CI ou de la PR.
+- **Paramètres** : `cycle`, `task`, `participant`, `op_id`, `takeover_chat` (défaut `false`), et `reviewer`/`tester` si la tâche n'existe pas. Les grants propriétaire `AGENT_RUN_GITHUB_TASKS` déterminent la branche et les fichiers autorisés ; la dépense IA payante doit rester à 0.
+- **Gemini sans chat** : le coordinateur utilise temporairement `task.claim` sous sa propre identité, puis `task.handoff` vers Gemini en conservant trois rôles D12 distincts, avant de créer le run. Aucun événement ne se fait passer pour Gemini.
+- **Vibe avec chat** : `takeover_chat=true` après GO explicite et journal checkpoint libère le bail de chat pour la seule tâche concernée ; sans cette option le moteur respecte la priorité du chat.
+- **Codes de refus** : `AGENT_RUN_UNAVAILABLE`, `AGENT_RUN_DISABLED`, `INVALID_RUN_TARGET`, `WRITER_NOT_GRANTED`, `PAID_RUN_FORBIDDEN`, `TASK_NOT_GRANTED`, `D12_ASSIGNMENT_REQUIRED`, `TASK_SCOPE_MISMATCH`, `CYCLE_NOT_OPEN`, `AGENT_NOT_CAPABLE`, `RUN_NOT_CREATED`, `INVALID_OP_ID`, `COORDINATOR_REQUIRED`, `STALE`, `QUOTA_EXHAUSTED`. Pas de réinitialisation D1, pas de fusion automatique, pas d'écriture sur `master`.
+- **Suivi** : envoyer Vibe puis Gemini immédiatement après, sans attendre la fin de Vibe, et vérifier indépendamment les deux `run_id` avec `collab_agent_runs_overview` et les preuves GitHub au SHA exact. Voir `docs/collaboration/cc8/s7-coordinator-launch.md`.
+
 ### `collab_list_executors`
 - **Qui** : coordinateur owner-approved actif (`COORDINATOR_REQUIRED` sinon). Lecture seule.
 - **Sortie** : une fiche par endpoint avec principal, provider/modèle, statut, capacités et plafond de jetons ; quota d’appels du jour restant et, pour Workers AI, budget neurons restant ; statistiques des invocations A1 des 7 derniers jours (nombre, succès/échecs, codes d’erreur, latence moyenne/p95) ; notes owner points forts/faibles.
