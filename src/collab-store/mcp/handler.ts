@@ -10,6 +10,7 @@ import { isAllowedUser, publicOrigin, type AuthEnv } from '../../config';
 import { createCollabToolContext, type CollabExecutionEnv } from './context';
 // CC-8 S8a : réveil événementiel — programmé par ctx.waitUntil après une écriture appliquée, jamais bloquant.
 import { eventWake } from '../agentrun/wake-trigger';
+import { scheduleEventIntegration, type EventIntegrationEnv } from '../gates/event-integration';
 import type { AgentRunObjectEnv } from '../agentrun/object';
 import { createCollabServer } from './tools';
 import { acceptsCollabOrigin } from './origin';
@@ -38,8 +39,12 @@ export const collabMcpHandler = {
         headers: { 'Cache-Control': 'no-store', 'Retry-After': '15' } });
     }
     try {
+      const wake = eventWake(env as unknown as AgentRunObjectEnv, context);
       const tools = createCollabToolContext(env as AuthEnv & CollabExecutionEnv, userId, ctx.auth.scope,
-        { onApplied: eventWake(env as unknown as AgentRunObjectEnv, context) }, ctx.auth.clientId);
+        { onApplied: event => {
+          wake(event);
+          scheduleEventIntegration(env as AuthEnv & EventIntegrationEnv, context, event);
+        } }, ctx.auth.clientId);
       return createMcpHandler(() => createCollabServer(tools), {
         // Le wrapper stateless du SDK agents ne traite que ce chemin exact
         // (défaut '/mcp') et répond 404 'Not Found' à tout autre pathname.

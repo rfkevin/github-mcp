@@ -1,18 +1,3 @@
-/**
- * CC-5 L3d — passage programmé du contrôleur (Cron Trigger).
- *
- * Désactivé par défaut : il ne tourne que si CONTROLLER_CRON_ENABLED vaut
- * exactement « true » et que le store est monté. Un passage parcourt au plus
- * SCHEDULED_CYCLE_LIMIT cycles ouverts, l'un après l'autre ; chaque cycle est
- * isolé (une erreur sur l'un n'arrête pas les autres). Le contrôleur ne fait
- * que journaliser ses décisions (idempotent par épisode) et leurs rappels
- * bornés (2b-1) : aucun réveil réel, aucune dépense.
- *
- * 2b-1 — passage du chercheur L5 : au plus un par jour UTC pour tout le store
- * (passId déterministe, idempotent côté L5), en lecture seule sur le registre ;
- * HALT relu par L5 dans son lot d'écriture. Un échec du chercheur n'affecte
- * jamais le passage du contrôleur.
- */
 import { superviseCycle } from './autonomy';
 import { runResearchPass, type ResearchPassStatus } from '../research/run';
 import { ensureSchema } from '../store/schema';
@@ -39,8 +24,10 @@ export interface ScheduledRunResult {
 }
 
 /**
- * `research: false` (webhook l3d 2d) : même passage du contrôleur, sans le chercheur L5 — il reste quotidien et
- * n'est lancé que par le Cron. Par défaut (Cron), le chercheur passe au plus une fois par jour UTC.
+ * CC-8 S8c : le cron de quart d'heure est un MONITEUR.
+ * Il journalise les décisions et les incidents D1, sans déclencher de run,
+ * retry d'agent ou appel de modèle. Le réveil métier passe par les événements
+ * et le lot S8 B (outbox durable, intégration préalable obligatoire).
  */
 export async function runScheduledControllers(db: D1Database, options: { now?: () => Date; research?: boolean; salonEnabled?: boolean } = {}): Promise<ScheduledRunResult> {
   await ensureSchema(db);
@@ -69,7 +56,6 @@ export async function runScheduledControllers(db: D1Database, options: { now?: (
       status = 'failed';
     }
   }
-  // l3d 2b-2b : file des échecs (une ligne par heure et par portée/code) ; jamais bloquant.
   const at = Math.floor(now().getTime() / 1000);
   let failuresRecorded = 0;
   const failed = [
@@ -80,7 +66,8 @@ export async function runScheduledControllers(db: D1Database, options: { now?: (
     try {
       if (await recordFailure(db, { ...failure, now: at })) failuresRecorded += 1;
     } catch {
-      // la file est une aide à la visibilité : son indisponibilité n'interrompt pas le passage
+      // Une indisponibilité de la file est sans effet sur le passage de contrôle.
+      // Le prochain passage réévalue l'incident, sans relancer de tâche d'agent.
     }
   }
   return { cycles, research: { pass_id: passId, status }, failures_recorded: failuresRecorded };
