@@ -359,11 +359,54 @@ export function githubCompletionSatisfied(effects: readonly GithubCompletionEffe
   return false;
 }
 
+/** CC8 S8 : un final d'agent API ne prouve pas une réponse, un verdict ou une contribution. */
+export async function storeCompletionVerified(db: D1Database, run: Pick<RunRow,
+  'run_id' | 'cycle_id' | 'participant_id' | 'task_id' | 'task_kind' | 'prompt'>): Promise<boolean> {
+  const tool = ({ answer: 'store_answer', review: 'store_verdict', test: 'store_verdict',
+    design: 'store_contribute' } as Record<string, string>)[run.task_kind];
+  if (!tool) return false;
+  const ask = /^Question #([1-9][0-9]*) du cycle /.exec(run.prompt);
+  const pair = /Couple exact à vérifier : head ([a-f0-9]{40}), base ([a-f0-9]{40})/.exec(run.prompt);
+  if (run.task_kind === 'answer' && !ask) return false;
+  if (['review', 'test'].includes(run.task_kind) && !pair) return false;
+  const { results } = await db.prepare(
+    "SELECT args, result FROM agent_run_effects WHERE run_id = ?1 AND tool = ?2 AND status = 'completed' ORDER BY n DESC, idx DESC LIMIT 32",
+  ).bind(run.run_id, tool).all<{ args: string; result: string | null }>();
+  for (const row of results ?? []) {
+    let args: Record<string, unknown>, receipt: Record<string, unknown>;
+    try {
+      args = JSON.parse(row.args) as Record<string, unknown>;
+      receipt = JSON.parse(row.result ?? '') as Record<string, unknown>;
+    } catch { continue; }
+    if (!args || !receipt || typeof args !== 'object' || typeof receipt !== 'object'
+      || !Number.isSafeInteger(receipt.seq) || Number(receipt.seq) < 1
+      || !['applied', 'duplicate'].includes(String(receipt.status))) continue;
+    if (run.task_kind === 'answer' && args.ask_seq !== Number(ask![1])) continue;
+    if (run.task_kind !== 'answer' && args.task !== run.task_id) continue;
+    if (pair && (args.head !== pair[1] || args.base !== pair[2])) continue;
+    const event = await db.prepare('SELECT type, participant_id, payload_json FROM events WHERE seq = ?1 AND cycle_id = ?2')
+      .bind(receipt.seq, run.cycle_id).first<{ type: string; participant_id: string; payload_json: string }>();
+    if (!event || event.participant_id !== run.participant_id || event.type !== receipt.type) continue;
+    if (run.task_kind === 'answer' && event.type !== 'clarify.answer') continue;
+    if (['review', 'test'].includes(run.task_kind) && event.type !== 'evidence.add') continue;
+    if (run.task_kind === 'design' && !['proposal.submit', 'evidence.add'].includes(event.type)) continue;
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(event.payload_json) as Record<string, unknown>; }
+    catch { continue; }
+    if (!payload || typeof payload !== 'object') continue;
+    if (run.task_kind === 'answer' && payload.ask_seq !== Number(ask![1])) continue;
+    if (run.task_kind !== 'answer' && payload.task !== run.task_id) continue;
+    if (pair && (payload.head !== pair[1] || payload.base !== pair[2])) continue;
+    return true;
+  }
+  return false;
+}
+
 async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps): Promise<boolean> {
-  if (run.task_kind !== 'implement') return true;
+  if (run.task_kind !== 'implement') return storeCompletionVerified(db, run);
   const grants = (deps.githubCompletionGrants ?? []).filter(g => g.cycle === run.cycle_id
     && g.task === run.task_id && g.participant === run.participant_id);
-  if (grants.length === 0) return true; // Hors mandat S7, comportement historique.
+  if (grants.length === 0) return true; // Implement hors mandat S7 inchangé.
   if (grants.length !== 1) return false; // Ambiguïté = pas de succès.
   return githubCompletionSatisfied(await runEvidence(db, run.run_id), grants[0].branch);
 }
