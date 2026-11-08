@@ -81,17 +81,79 @@ export const PRECHECK_HINTS: Record<string, string> = {
   content_too_large: 'le fichier dépasse ' + PRECHECK_MAX_BYTES + ' octets',
   test_runner_incompatible: 'le dépôt utilise Vitest : n’importe ni jest, ni @jest/globals, ni mocha, ni jasmine',
   test_vitest_import_missing: 'un fichier de test doit importer ses fonctions depuis \'vitest\' (par ex. import { describe, it, expect } from \'vitest\')',
+  test_vitest_symbol_missing: 'une fonction Vitest appelée (expect, describe, it, test, vi ou hook) manque dans les imports nommés',
+  dependency_manifest_unavailable: 'package.json inaccessible : impossible de vérifier les modules npm',
+  dependency_not_declared: 'un module npm importé par le test est absent de package.json',
+  correction_no_diff: 'la correction ne change aucun fichier, propose un diff réel après la CI rouge',
   // Lot C R3 (#283) : mission fonctionnelle seulement.
   test_disabled: 'mission fonctionnelle : aucun test ne doit être désactivé (skip, todo, xit)',
   test_no_project_import: 'mission fonctionnelle : le test doit importer du code du dépôt (chemin relatif ou src/)',
   test_tautological: 'mission fonctionnelle : le test doit contenir au moins une assertion non tautologique sur le comportement du code importé',
 };
 
+
+/** U1 : masquer commentaires et littéraux pour repérer uniquement les appels exécutables. */
+function activeSource(src: string): string {
+  let out = '', quote = '', mode: 'code' | 'line' | 'block' = 'code';
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i], next = src[i + 1];
+    if (mode === 'line') { if (ch === '\n') { mode = 'code'; out += '\n'; } else out += ' '; }
+    else if (mode === 'block') {
+      if (ch === '*' && next === '/') { mode = 'code'; out += '  '; i++; }
+      else out += ch === '\n' ? '\n' : ' ';
+    } else if (quote) {
+      if (ch === '\\') { out += ' '; if (i + 1 < src.length) { i++; out += src[i] === '\n' ? '\n' : ' '; } }
+      else if (ch === quote) { quote = ''; out += ' '; }
+      else out += ch === '\n' ? '\n' : ' ';
+    } else if (ch === '/' && next === '/') { mode = 'line'; out += '  '; i++; }
+    else if (ch === '/' && next === '*') { mode = 'block'; out += '  '; i++; }
+    else if (ch === "'" || ch === '"' || ch === String.fromCharCode(96)) { quote = ch; out += ' '; }
+    else out += ch;
+  }
+  return out;
+}
+const VITEST_DIRECT = ['expect', 'describe', 'it', 'test', 'vi', 'beforeEach', 'afterEach', 'beforeAll', 'afterAll'];
+function missingVitestImport(src: string): boolean {
+  const active = activeSource(src), imported = new Set<string>();
+  for (const m of src.matchAll(/\bimport\s*{([^}]+)}\s*from\s*['"]vitest['"]/g)) {
+    if (active.slice(m.index, m.index + 6) !== 'import') continue;
+    for (const item of m[1].split(',')) {
+      const parts = item.trim().replace(/^type\s+/, '').split(/\s+as\s+/);
+      if (parts[0]) imported.add((parts[1] ?? parts[0]).trim());
+    }
+  }
+  return VITEST_DIRECT.some(name => !imported.has(name)
+    && new RegExp('(?<![\\w$.])' + name + '\\s*(?:\\(|\\.)').test(active));
+}
+/** U2 : modules npm externes utilisés par un fichier de test. */
+export function guidedBareDependencies(call: ToolCall): string[] {
+  const packages = new Set<string>(), files = (call.args ?? {}).files;
+  if (!Array.isArray(files)) return [];
+  for (const file of files) {
+    if (!file || typeof file.path !== 'string' || !TEST_FILE.test(file.path) || typeof file.content !== 'string') continue;
+    const src = file.content as string, active = activeSource(src);
+    for (const m of src.matchAll(/(?:\bfrom\s*|\bimport\s*(?:\(\s*)?|\brequire\s*\(\s*)['"]([^'"]+)['"]/g)) {
+      if (!/^(?:from|import|require)\b/.test(active.slice(m.index))) continue;
+      const spec = m[1];
+      if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('node:')
+        || spec === 'vitest' || spec.startsWith('vitest/') || spec === 'cloudflare:test') continue;
+      const pkg = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+      if (pkg) packages.add(pkg);
+    }
+  }
+  return [...packages].sort((a, b) => a.localeCompare(b));
+}
+export interface GuidedPrecheckContext {
+  declaredDependencies?: ReadonlySet<string>;
+  currentFiles?: Readonly<Record<string, string>>;
+  correction?: boolean;
+}
+
 /**
  * R2 (#281) : prévalidation statique d'un appel github_commit_files déjà rempli par le serveur.
  * Aucune exécution de code ; règles vérifiables seulement. null = conforme, sinon cause typée.
  */
-export function guidedPrecheck(call: ToolCall, paths: readonly string[], mission?: MissionSpec): string | null {
+export function guidedPrecheck(call: ToolCall, paths: readonly string[], mission?: MissionSpec, context: GuidedPrecheckContext = {}): string | null {
   const args = (call.args ?? {}) as Record<string, unknown>;
   if (typeof args.message !== 'string' || !args.message.trim()) return 'message_missing';
   if (args.message.length > MESSAGE_MAX) return 'message_too_long';
@@ -110,8 +172,17 @@ export function guidedPrecheck(call: ToolCall, paths: readonly string[], mission
     if (TEST_FILE.test(path)) {
       if (OTHER_RUNNER.test(content)) return 'test_runner_incompatible';
       if (!VITEST_IMPORT.test(content)) return 'test_vitest_import_missing';
+      if (missingVitestImport(content)) return 'test_vitest_symbol_missing';
     }
   }
+  const bare = guidedBareDependencies(call);
+  if (bare.length && !context.declaredDependencies) return 'dependency_manifest_unavailable';
+  if (bare.some(pkg => !context.declaredDependencies?.has(pkg))) return 'dependency_not_declared';
+  if (context.correction && context.currentFiles && files.every(file => {
+    const f = file as { path: string; content: string };
+    return Object.prototype.hasOwnProperty.call(context.currentFiles, f.path)
+      && context.currentFiles![f.path] === f.content;
+  })) return 'correction_no_diff';
   // Lot C R3 : contrôle propre aux missions fonctionnelles ; un pilote technique n'est jamais concerné.
   if (mission?.kind === 'functional') {
     return functionalTestCause((files as { path: string; content: string }[]).map(f => ({ path: f.path, content: f.content })));
@@ -123,6 +194,7 @@ export function guidedPrecheck(call: ToolCall, paths: readonly string[], mission
 const PILOT_RULES = [
   'Règles de contenu : si le fichier est un test (*.spec.ts), importe describe/it/expect depuis \'vitest\' (jamais jest, @jest/globals ni mocha) ;',
   'importe le code du dépôt concerné par la demande et écris des assertions liées à la demande — pas de test tautologique (expect(true)), sauf si la mission demande explicitement un test de démonstration.',
+  'Importe chaque fonction Vitest utilisée et seulement des modules déclarés dans package.json. Après CI rouge, fournis un vrai changement de contenu.',
 ].join('\n');
 
 /** Consigne de contenu : règles communes, plus les critères d'acceptation d'une mission fonctionnelle (lot C R3). */
@@ -165,7 +237,7 @@ export function guidedViolation(output: ModelOutput): string | null {
 }
 
 /** Valeurs autoritaires du serveur, appliquées à l'appel github_commit_files du modèle. */
-export interface GuidedFill { name: string; head: string; paths: string[]; blobs?: Record<string, string | null>; mission?: MissionSpec }
+export interface GuidedFill { name: string; head: string; paths: string[]; blobs?: Record<string, string | null>; currentFiles?: Record<string, string>; correction?: boolean; mission?: MissionSpec }
 
 /** Plafond propre des étapes serveur d'une exécution guidée (au-delà : flux historique). */
 export const GUIDED_SERVER_MAX = 24;
@@ -222,7 +294,7 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
   if (commitAt < 0) {
     const refused = prechecks(entries, createdAt + 1);
     if (refused.count >= GUIDED_PRECHECK_MAX) return stop('precheck_failed');
-    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: branchHead, paths, mission }, instruction: [
+    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: branchHead, paths, correction: false, mission }, instruction: [
       'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). Le serveur a déjà lu ton mandat et préparé la branche ' + branch + ' (tête ' + branchHead + ').',
       'Ta seule action maintenant : appeler UNE FOIS l’outil github_commit_files avec :',
       '- message : un résumé d’une ligne (120 caractères au plus)',
@@ -266,7 +338,7 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
     if (refused.count >= GUIDED_PRECHECK_MAX) return stop('precheck_failed');
     const diagnostics = checked.value.diagnostics ?? checked.value.failures ?? checked.value.summary;
     const shown = diagnostics === undefined ? '(aucun diagnostic fourni)' : JSON.stringify(diagnostics).slice(0, DIAGNOSTICS_MAX);
-    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: commitSha, paths, mission }, instruction: [
+    return { kind: 'model', tools: [GUIDED_TOOL], fill: { name, head: commitSha, paths, correction: true, mission }, instruction: [
       'ÉTAPE GUIDÉE PAR LE SERVEUR (S7). La CI a ÉCHOUÉ au SHA ' + commitSha + '.',
       'Diagnostics (bornés) : ' + shown,
       'Ta seule action maintenant : corriger le fichier en appelant UNE FOIS github_commit_files avec :',
