@@ -5,6 +5,7 @@ import { ensureAgentRunSchema } from '../../../src/collab-store/agentrun/schema'
 import { acquireEventPassLease, drainDurableEventWakes, PASS_LEASE_TTL_S, WAKE_MAX_FAILURES,
   type EventWakeDrain } from '../../../src/collab-store/agentrun/wake-trigger';
 import type { AgentRunObjectEnv } from '../../../src/collab-store/agentrun/object';
+import type { WakeFn } from '../../../src/collab-store/agentrun/orchestrator';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const T = 2_020_000_000;
@@ -28,7 +29,7 @@ async function stateOf(key: string) {
   return db.prepare('SELECT status,attempts,next_at,last_error FROM agent_event_wake_intents WHERE event_key=?1')
     .bind(key).first<{ status: string; attempts: number; next_at: number; last_error: string }>();
 }
-const wake = async () => ({ accepted: false, reason: 'not_a_real_run' as const });
+const wake: WakeFn = async () => ({ accepted: false, reason: 'not_a_real_run' });
 const drain = (now: number): Promise<EventWakeDrain> =>
   drainDurableEventWakes(db, environment, { now, deliverer: 'event-pass:test-' + count, wake });
 
