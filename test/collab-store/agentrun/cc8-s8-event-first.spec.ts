@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { storeCompletionVerified } from '../../../src/collab-store/agentrun/engine';
+import { storeCompletionVerified, createRun, runStep, runSummary, type EngineDeps, type ToolHost } from '../../../src/collab-store/agentrun/engine';
 import { ensureAgentRunSchema } from '../../../src/collab-store/agentrun/schema';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
@@ -76,5 +76,31 @@ describe('CC8 S8 — preuve d effet métier D1', () => {
     await writeEffect(ok.run.run_id, 'store_contribute', { task: 'proof-task', state: 'AMEND' },
       { seq: ok.seq, type: 'evidence.add', status: 'duplicate' });
     expect(await storeCompletionVerified(db, ok.run)).toBe(true);
+  });
+
+  it('runStep clôt immédiatement answer après store_answer persistant, sans tour modèle supplémentaire', async () => {
+    const f = await fixture('answer', 'clarify.answer', { ask_seq: 1812, answer: 'preuve D1' });
+    expect((await createRun(db, { runId: f.run.run_id, cycleId: f.run.cycle_id,
+      participantId: f.run.participant_id, taskId: '', taskKind: 'answer', prompt: f.run.prompt,
+      maxSteps: 3, maxTokens: 8_000, maxCostCents: 0, now: 1_990_000_000,
+      deadlineAt: 1_990_001_000 })).created).toBe(true);
+    const host: ToolHost = {
+      spec: (_kind, name) => name === 'store_answer' ? { name, effect: 'write' } : null,
+      list: () => ['store_answer'],
+      execute: async () => ({ seq: f.seq, type: 'clarify.answer', status: 'applied' }),
+    };
+    let calls = 0;
+    const deps: EngineDeps = {
+      now: () => 1_990_000_001, workerId: 's8-effect-happy',
+      model: { complete: async () => {
+        calls += 1;
+        return { output: { text: '', tool_calls: [{ id: 'reply-1', name: 'store_answer',
+          args: { ask_seq: 1812, answer: 'preuve D1' } }] }, usage: { tokens: 25, cost_cents: 0 } };
+      } },
+      tools: host,
+    };
+    expect((await runStep(db, f.run.run_id, deps)).outcome).toBe('completed');
+    expect((await runSummary(db, f.run.run_id))?.status).toBe('completed');
+    expect(calls).toBe(1);
   });
 });
