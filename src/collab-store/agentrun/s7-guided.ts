@@ -275,6 +275,11 @@ export function planGuidedS7(entries: readonly GuidedEntry[], branch: string, ta
   const baseSha = sha(scope.base_sha);
   const paths = Array.isArray(scope.granted_paths) ? scope.granted_paths.filter((p): p is string => typeof p === 'string') : [];
   if (!baseSha || paths.length === 0) return stop('scope_invalid');
+  // CC8 S7 : le compteur est durable pour (cycle, tâche, branche), pas propre à un run.
+  // Ne pas demander de génération au modèle quand les 3 corrections historiques
+  // sont consommées : reserveCommit refuserait l'écriture avant GitHub.
+  if (typeof scope.corrections_remaining === 'number' && scope.corrections_remaining <= 0)
+    return stop('commit_budget_exhausted');
 
   // 2. Branche : créée dans cette exécution, ou préexistante (tête lue par le serveur dans le mandat).
   let createdAt = lastIndex(entries, 0, e => e.tool === 'github_create_branch' && e.value?.branch === branch && !!sha(e.value?.sha));
