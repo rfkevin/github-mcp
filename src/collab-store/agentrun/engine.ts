@@ -899,7 +899,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const final = output.tool_calls.length === 0 || provenAtPr ? 1 : 0;
   const verified = provenAtPr || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true);
   const completionStatus = verified ? 'completed' : 'failed';
-  const completionReason = verified ? 'final' : 'incomplete_final:github_evidence_missing';
+  const completionReason = verified ? 'final'
+    : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
   const [done] = await db.batch([
     db.prepare([
       "UPDATE agent_run_steps SET state = 'completed', results = ?4, completed_at = ?5",
