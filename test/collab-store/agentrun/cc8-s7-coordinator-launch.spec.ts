@@ -57,7 +57,7 @@ async function setup(label: string) {
   const grant={cycle,task,participant:gemini,branch:'mcp/105856986/'+gemini+'-api-test',paths:[path]};
   const runtime={AGENT_RUNS_ENABLED:'true',AGENT_RUN_GITHUB_WRITES:'true',AGENT_RUN_PARTICIPANTS:gemini,
     AGENT_RUN_GITHUB_WRITERS:gemini,AGENT_RUN_GITHUB_TASKS:JSON.stringify([grant]),
-    AGENT_RUN_MODEL:'workers-ai:@cf/zai-org/glm-4.7-flash',AI:{},AGENT_RUN:{} as never} as AgentRunObjectEnv;
+    AGENT_RUN_MODEL:'workers-ai:@cf/zai-org/glm-4.7-flash',AI:{},AGENT_RUN:{} as never} as unknown as AgentRunObjectEnv;
   const wakeIds: string[] = [];
   const input={db,store:new CollabStore(db,{dailyWriteLimit:100000}),env:runtime,coordinator,cycle,task,
     participant:gemini,reviewer:vibe,tester:grok,takeoverChat:false,

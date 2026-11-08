@@ -42,6 +42,8 @@ export function modelEnvOf(env: object): PolicyEnv {
 export interface CollabToolContext {
   actor: string;
   store: CollabStore;
+  /** Direct coordinator launches must avoid an intermediate task.claim event wake. */
+  storeNoWake: CollabStore;
   scopes: readonly string[];
   /** CC-3 C5 : identité dérivée du client OAuth du jeton (I8), résolue une fois par requête. */
   identity: () => Promise<ParticipantIdentity>;
@@ -76,8 +78,11 @@ export function createCollabToolContext(
     ...(options.onApplied ? { onApplied: options.onApplied } : {}),
   });
   const db = env.COLLAB_DB;
+  const storeNoWake = new CollabStore(db, {
+    dailyWriteLimit: options.dailyWriteLimit ?? collabDailyWriteLimit(env.COLLAB_DAILY_WRITE_LIMIT), now,
+  });
   let resolved: Promise<ParticipantIdentity> | undefined;
-  return { actor, store, scopes, db, fallback: storeFallback(parseFallbackState(env.COLLAB_FALLBACK_STATE)),
+  return { actor, store, storeNoWake, scopes, db, fallback: storeFallback(parseFallbackState(env.COLLAB_FALLBACK_STATE)),
     executor: {
       factory: providerAdapterFactory(env),
       dailyCap: parseDailyCap(env.EXECUTOR_DAILY_CAP),

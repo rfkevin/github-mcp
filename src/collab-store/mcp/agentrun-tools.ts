@@ -81,7 +81,7 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
         throw new CollabStoreError('AGENT_RUN_UNAVAILABLE', 'Identite et binding Durable Object requis.');
       }
       const result = await launchCoordinatorImplement({
-        db: context.db, store: context.store, env: context.agentRunEnv,
+        db: context.db, store: context.storeNoWake, env: context.agentRunEnv,
         coordinator: identity.participant_id,
         cycle: input.cycle, task: input.task, participant: input.participant,
         reviewer: input.reviewer, tester: input.tester, takeoverChat: input.takeover_chat,
