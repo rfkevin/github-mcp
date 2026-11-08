@@ -29,6 +29,7 @@ import type { WorkersAiBinding } from '../executors/adapter';
 import { parseNeuronBudget } from '../executors/run';
 import { resolveEffectiveMaxTokens } from '../executors/task-profiles';
 import { parseRequiredChecks } from './verdict-tools';
+import { drainDurableEventWakes, EVENT_WAKE_OBJECT_NAME } from './wake-trigger';
 
 export interface AgentRunObjectEnv extends AgentRunEnv {
   COLLAB_DB?: D1Database;
@@ -265,7 +266,35 @@ export class AgentRunObject extends DurableObject<AgentRunObjectEnv> {
     return objectWake(this.deps(), runId, leaseKey);
   }
 
+  /** S8 B : horloge DO singleton réservée aux intentions D1, jamais un run modèle. */
+  private isEventPassObject(): boolean {
+    return !!this.env.AGENT_RUN && this.env.AGENT_RUN.idFromName(EVENT_WAKE_OBJECT_NAME).equals(this.ctx.id);
+  }
+
+  async armEventPass(atMs: number): Promise<void> {
+    if (!this.isEventPassObject()) throw new Error('event_pass_wrong_object');
+    if (!Number.isFinite(atMs) || atMs <= 0) throw new Error('event_pass_invalid_alarm');
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > atMs) await this.ctx.storage.setAlarm(Math.ceil(atMs));
+  }
+
   async alarm(): Promise<void> {
+    if (this.isEventPassObject()) {
+      const db = agentRunDb(this.env);
+      if (!db || !this.env.AGENT_RUN) return;
+      const now = Math.floor(Date.now() / 1000);
+      try {
+        const result = await drainDurableEventWakes(db, this.env, {
+          now, deliverer: 'event-pass:alarm:' + crypto.randomUUID(),
+          wake: wakeViaNamespace(this.env.AGENT_RUN),
+        });
+        if (result.next_at !== null) await this.armEventPass(Math.max(now + 1, result.next_at) * 1000);
+      } catch {
+        // Alarme réarmée sans remonter l'exception, les intentions D1 restent en attente.
+        await this.armEventPass((now + 60) * 1000);
+      }
+      return;
+    }
     await this.runAlarm();
   }
 

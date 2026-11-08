@@ -97,6 +97,19 @@ export interface StoreContextTask {
   revision: number;
 }
 
+/** S8 B : prédicat pur partagé pour l'enregistrement transactionnel du réveil. */
+export const DURABLE_WAKE_EVENT_TYPES = ['clarify.ask', 'evidence.add', 'task.claim', 'task.status',
+  'task.handoff', 'owner.decision', 'round.add'] as const;
+export function durableWakeWorthy(type: string, payloadJson: string): boolean {
+  if (type === 'clarify.ask') {
+    try {
+      const payload = JSON.parse(payloadJson) as { to?: unknown };
+      return typeof payload.to === 'string' && payload.to.length > 0;
+    } catch { return false; }
+  }
+  return (DURABLE_WAKE_EVENT_TYPES as readonly string[]).includes(type);
+}
+
 export interface StoreOptions {
   dailyWriteLimit?: number;
   now?: () => Date;
@@ -281,6 +294,19 @@ export class CollabStore {
     const nextRevision = event.expected_rev + 1;
     const taskStatements = await this.taskStatements(event, nextRevision);
     const invocationStatement = invocation ? invocationInsertStatement(this.db, invocation, key, at) : null;
+    // S8 B : l'intention accompagne le journal D1 sous le même CAS ; aucun hook waitUntil
+    // ni bail occupé ne peut annuler cette écriture. Rejeu duplicate et STALE => rien.
+    const wakeIntent = durableWakeWorthy(event.type, event.payload_json);
+    const wakeStatements = wakeIntent ? [
+      this.db.prepare([
+        'INSERT INTO agent_event_wake_intents',
+        '(event_key,cycle_id,event_type,status,attempts,next_at,created_at,updated_at,last_error)',
+        "VALUES (?1,?2,?3,'queued',0,?4,?4,?4,'')",
+      ].join(' ')).bind(key, event.cycle_id, event.type, at),
+      this.db.prepare("INSERT INTO agent_event_wake_audit(event_key,at,kind) VALUES (?1,?2,'wake_queued')")
+        .bind(key, at),
+    ] : [];
+
     // CR-B (CR-02) : un événement memory.* porte ses effets memory_entries
     // dans le MÊME batch CAS que l'append du journal — un applied garantit
     // l'effet mémoire (champ memory), un refus n'écrit rien du tout (ni
@@ -336,6 +362,7 @@ export class CollabStore {
       ].join(' ')).bind(event.cycle_id, at, event.type, event.participant_id, event.session_id,
         event.role, event.payload_json, event.expected_rev, key, event.evidence_ref),
       ...(invocationStatement ? [invocationStatement] : []),
+      ...wakeStatements,
       this.db.prepare(
         'UPDATE cycles SET revision = ?2 WHERE cycle_id = ?1 AND revision = ?3'
       ).bind(event.cycle_id, nextRevision, event.expected_rev),
