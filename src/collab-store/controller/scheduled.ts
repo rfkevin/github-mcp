@@ -24,8 +24,10 @@ export interface ScheduledRunResult {
 }
 
 /**
- * CC-8 S8c : Le cron */15 agit uniquement comme un moniteur (audit, journalisation, détection d'incidents).
- * Il ne déclenche aucun run d'agent, retry ou appel de modèle de langage.
+ * CC-8 S8c : le cron de quart d'heure est un MONITEUR.
+ * Il journalise les décisions et les incidents D1, sans déclencher de run,
+ * retry d'agent ou appel de modèle. Le réveil métier passe par les événements
+ * et le lot S8 B (outbox durable, intégration préalable obligatoire).
  */
 export async function runScheduledControllers(db: D1Database, options: { now?: () => Date; research?: boolean; salonEnabled?: boolean } = {}): Promise<ScheduledRunResult> {
   await ensureSchema(db);
@@ -64,6 +66,8 @@ export async function runScheduledControllers(db: D1Database, options: { now?: (
     try {
       if (await recordFailure(db, { ...failure, now: at })) failuresRecorded += 1;
     } catch {
+      // Une indisponibilité de la file est sans effet sur le passage de contrôle.
+      // Le prochain passage réévalue l'incident, sans relancer de tâche d'agent.
     }
   }
   return { cycles, research: { pass_id: passId, status }, failures_recorded: failuresRecorded };
