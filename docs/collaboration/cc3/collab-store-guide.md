@@ -396,6 +396,8 @@ Merges vers `main`/`master`, dérogations, promotion et production restent humai
 
 ## 7. Codes d’erreur
 
+**Réveil durable CC8 S8 B :** `DISABLED` (`src/collab-store/agentrun/wake-trigger.ts`) désigne le cas où le passage du planificateur est désactivé après l'obtention d'une intention de réveil. Cette intention reste en file, puis la reprise est bornée et auditée ; ne pas confondre le code interne avec une exécution réussie. Vérifier `AGENT_RUNS_ENABLED`, le binding de l'agent et les portes d'autorisation avant de relancer. Le canal de stockage reste non bloquant.
+
 Les échecs typés sont déterministes (`retryable: false`). Seul `STORE_UNAVAILABLE` est `retryable: true`. « Lot » indique le lot qui émet le code ; L1 désigne le parser d’état `src/collab/state.ts`.
 
 ### 7.1 Identité, canal owner, transport

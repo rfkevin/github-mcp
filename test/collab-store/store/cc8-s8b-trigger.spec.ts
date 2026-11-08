@@ -32,15 +32,16 @@ describe('CC8 S8 B — intention de réveil atomique dans CAS store', () => {
     const event = { cycle_id: cycle, type: 'evidence.add' as const, participant_id: 'vibe',
       payload_json: payload, op_id: 'vibe:' + cycle + ':s8b:1' };
     const revision = await store.currentRevision(cycle);
+    const eventKey = 'op:' + event.op_id; // canonical D1 idempotency key normalized by store
     expect((await store.appendEvent({ ...event, expected_rev: revision })).status).toBe('applied');
-    expect(await rowsOf(cycle)).toEqual([{ event_key: event.op_id, event_type: 'evidence.add',
+    expect(await rowsOf(cycle)).toEqual([{ event_key: eventKey, event_type: 'evidence.add',
       status: 'queued', attempts: 0, next_at: T }]);
     expect((await store.appendEvent({ ...event, expected_rev: revision + 1 })).status).toBe('duplicate');
     expect((await store.appendEvent({ ...event, op_id: 'vibe:' + cycle + ':s8b:2',
       expected_rev: revision + 10 })).status).toBe('stale');
     expect(await rowsOf(cycle)).toHaveLength(1);
     const { results } = await db.prepare("SELECT kind FROM agent_event_wake_audit WHERE event_key=?1")
-      .bind(event.op_id).all<{ kind: string }>();
+      .bind(eventKey).all<{ kind: string }>();
     expect(results.map(r => r.kind)).toEqual(['wake_queued']);
   });
   it('question adressée seule → intention; refus de type tranquille et question sans destinataire', async () => {
