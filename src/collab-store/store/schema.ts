@@ -327,6 +327,32 @@ export const STORE_MIGRATION_0011 = [
   ].join(' '),
 ];
 
+
+/** S8 B — intentions de réveil atomiques avec l'événement source, sans dépendance aux alarmes DO. */
+export const STORE_MIGRATION_0014_EVENT_WAKES = [
+  ['CREATE TABLE IF NOT EXISTS agent_event_wake_intents (',
+    '  event_key TEXT PRIMARY KEY,',
+    '  cycle_id TEXT NOT NULL,',
+    '  event_type TEXT NOT NULL,',
+    "  status TEXT NOT NULL CHECK(status IN ('queued','deferred','delivered','error')),",
+    '  attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),',
+    '  next_at INTEGER NOT NULL,',
+    '  created_at INTEGER NOT NULL,',
+    '  updated_at INTEGER NOT NULL,',
+    "  last_error TEXT NOT NULL DEFAULT ''",
+    ')'].join(' '),
+  'CREATE INDEX IF NOT EXISTS agent_event_wake_due ON agent_event_wake_intents(status,next_at)',
+  ['CREATE TABLE IF NOT EXISTS agent_event_wake_audit (',
+    '  id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    '  event_key TEXT NOT NULL,',
+    '  at INTEGER NOT NULL,',
+    "  kind TEXT NOT NULL CHECK(kind IN ('wake_queued','wake_deferred','wake_delivered','wake_error')),",
+    "  detail TEXT NOT NULL DEFAULT ''",
+    ')'].join(' '),
+  "CREATE TRIGGER IF NOT EXISTS agent_event_wake_audit_no_update BEFORE UPDATE ON agent_event_wake_audit BEGIN SELECT RAISE(ABORT,'append-only'); END",
+  "CREATE TRIGGER IF NOT EXISTS agent_event_wake_audit_no_delete BEFORE DELETE ON agent_event_wake_audit BEGIN SELECT RAISE(ABORT,'append-only'); END",
+];
+
 const ENSURED = new WeakSet<object>();
 
 function runnableStatements(sql: string): string[] {
@@ -363,6 +389,8 @@ export async function ensureSchema(db: D1Database, force = false): Promise<void>
     ...STORE_MIGRATION_0011.map(statement => db.prepare(statement)),
     // CC-7 L4 (0012) : salon d'équipe (messages, wakes, quotas journaliers).
     ...STORE_MIGRATION_0012_SALON.map(statement => db.prepare(statement)),
+    // CC8 S8 B : outbox métier et journal en D1, même transaction CAS que l'événement.
+    ...STORE_MIGRATION_0014_EVENT_WAKES.map(statement => db.prepare(statement)),
   ]);
   // Structural idempotence: avoid depending on the exact wording of a
   // duplicate-column error, which differs between D1 and Miniflare.
