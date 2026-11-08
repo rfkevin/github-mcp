@@ -141,7 +141,7 @@ export function guidedBareDependencies(call: ToolCall): string[] {
       if (pkg) packages.add(pkg);
     }
   }
-  return [...packages].sort();
+  return [...packages].sort((a, b) => a.localeCompare(b));
 }
 export interface GuidedPrecheckContext {
   declaredDependencies?: ReadonlySet<string>;
