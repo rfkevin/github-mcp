@@ -66,6 +66,36 @@ async function setup(label: string) {
   return {coordinator,vibe,gemini,grok,cycle,task,path,grant,runtime,wakeIds,input};
 }
 describe('CC8 S7 direct launch — real D1 handoff, run and lease',()=>{
+
+  it('deux tâches distinctes partent en parallèle : deux runs running et deux wakeups avant toute fin',async()=>{
+    const s=await setup('parallel');
+    const secondTask='test-parallel-other';
+    const secondPath='test/collab-store/agentrun/s7-direct-parallel-other.spec.ts';
+    const vibeGrant={cycle:s.cycle,task:secondTask,participant:s.vibe,
+      branch:'mcp/105856986/'+s.vibe+'-api-test',paths:[secondPath]};
+    s.runtime.AGENT_RUN_PARTICIPANTS=[s.gemini,s.vibe].join(',');
+    s.runtime.AGENT_RUN_GITHUB_WRITERS=[s.gemini,s.vibe].join(',');
+    s.runtime.AGENT_RUN_GITHUB_TASKS=JSON.stringify([s.grant,vibeGrant]);
+    // Lancer B dès que A a reçu son run_id : ne jamais attendre completion de A.
+    const a=await launchCoordinatorImplement(s.input);
+    const b=await launchCoordinatorImplement({...s.input,task:secondTask,participant:s.vibe,
+      reviewer:s.gemini,tester:s.grok,
+      opId:s.coordinator+':'+s.cycle+':launch-other:1'});
+    expect(a.status).toBe('started');
+    expect(b.status).toBe('started');
+    expect(b.run_id).not.toBe(a.run_id);
+    expect(s.wakeIds).toEqual([a.run_id,b.run_id]);
+    const rows=await db.prepare('SELECT run_id,participant_id,task_id,status,cost_cents FROM agent_runs WHERE run_id IN (?1,?2) ORDER BY participant_id')
+      .bind(a.run_id,b.run_id).all<{run_id:string;participant_id:string;task_id:string;status:string;cost_cents:number}>();
+    expect(rows.results).toHaveLength(2);
+    expect(rows.results.map(row=>row.status)).toEqual(['running','running']);
+    expect(rows.results.map(row=>row.cost_cents)).toEqual([0,0]);
+    expect(rows.results.map(row=>row.task_id).sort()).toEqual([s.task,secondTask].sort());
+    const after=await launchCoordinatorImplement({...s.input,task:secondTask,participant:s.vibe,
+      reviewer:s.gemini,tester:s.grok,opId:s.coordinator+':'+s.cycle+':launch-other:1'});
+    expect(after.status).toBe('existing');
+    expect(s.wakeIds).toHaveLength(2);
+  });
   it('Gemini sans chat : handoff sous propre identité puis un run unique',async()=>{
     const s=await setup('gemini');
     const first=await launchCoordinatorImplement(s.input);
