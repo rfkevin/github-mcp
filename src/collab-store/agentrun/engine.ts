@@ -45,7 +45,7 @@ import { modelFailureKind } from './model-failure';
 import { verifyContext } from './verify-guided';
 import { missionOf, type MissionKind } from './mission-quality';
 import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
-  planGuidedS7, PRECHECK_HINTS, type GuidedStep } from './s7-guided';
+  planGuidedS7, PRECHECK_HINTS, guidedBareDependencies, type GuidedStep } from './s7-guided';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
 import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
 
@@ -477,6 +477,7 @@ async function enrichGuided(run: RunRow, deps: EngineDeps, n: number, step: Extr
   // Étape de contenu : le serveur lit chaque fichier autorisé au head (blob SHA et contenu borné).
   // Le SHA du blob est imposé par applyGuidedFill ; le contenu actuel aide une correction.
   const blobs: Record<string, string | null> = {};
+  const currentFiles: Record<string, string> = {};
   const shown: string[] = [];
   if (deps.tools.spec(run.task_kind, 'github_read_file')?.effect === 'read') {
     for (const path of step.fill.paths.slice(0, 2)) {
@@ -485,6 +486,7 @@ async function enrichGuided(run: RunRow, deps: EngineDeps, n: number, step: Extr
           { run_id: run.run_id }) as { sha?: unknown; content?: unknown };
         blobs[path] = typeof file?.sha === 'string' && COMPLETION_SHA.test(file.sha) ? file.sha : null;
         if (typeof file?.content === 'string') {
+          if (new TextEncoder().encode(file.content).length <= 100_000) currentFiles[path] = file.content;
           shown.push('Contenu actuel de « ' + path + ' » au SHA ' + step.fill.head + ' (borné) :\n' + file.content.slice(0, GUIDED_FILE_PREVIEW));
         }
       } catch {
@@ -492,7 +494,7 @@ async function enrichGuided(run: RunRow, deps: EngineDeps, n: number, step: Extr
       }
     }
   }
-  return { ...step, fill: { ...step.fill, blobs }, instruction: shown.length ? step.instruction + '\n\n' + shown.join('\n\n') : step.instruction };
+  return { ...step, fill: { ...step.fill, blobs, currentFiles }, instruction: shown.length ? step.instruction + '\n\n' + shown.join('\n\n') : step.instruction };
 }
 
 const GUIDED_FILE_PREVIEW = 8_000;
@@ -729,6 +731,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
 
   // 1. Modèle (sortie persistée avant tout effet : une reprise rejoue la même décision).
   let output: ModelOutput;
+  let guidedPrecheckFill: Extract<GuidedStep, { kind: 'model' }>['fill'] | undefined;
   if (claimed.model_output) {
     output = JSON.parse(claimed.model_output) as ModelOutput;
   } else {
@@ -737,6 +740,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // CC8 S7 mode guidé : étape mécanique émise par le serveur (sans modèle ni jeton), ou consigne précise
     // et un seul outil pour l'étape de contenu. Le résultat suit ensuite le chemin commun (gardes, effets).
     const guide = plan?.kind === 'model' ? await enrichGuided(run, deps, n, plan) : plan;
+    if (guide?.kind === 'model') guidedPrecheckFill = guide.fill;
     // CC8 S7 vérification guidée : contexte serveur pour review/test (préparé une fois, relu ensuite), outils libres.
     const verify = !guide && deps.guidedVerify ? await verifyContext(db, run, {
       execute: (call, ctx) => deps.tools.execute(call, ctx),
@@ -877,7 +881,42 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // Lot A R2 (#281) : prévalidation statique de l'étape de contenu guidée, AVANT tout effet GitHub.
     // Le plan est recalculé à chaque passage : une reprise rejoue la même décision (clé déterministe).
     if (plan?.kind === 'model' && call.name === GUIDED_TOOL) {
-      const cause = guidedPrecheck(call, plan.fill.paths, plan.fill.mission);
+      const source = guidedPrecheckFill ?? plan.fill;
+      // U2 : vérifier les modules externes depuis le manifeste du dépôt à la tête immuable.
+      const bare = guidedBareDependencies(call);
+      let declaredDependencies: ReadonlySet<string> | undefined;
+      if (bare.length && deps.tools.spec(run.task_kind, 'github_read_file')?.effect === 'read') {
+        try {
+          const file = await deps.tools.execute({ id: 'srv-package-' + n, name: 'github_read_file',
+            args: { path: 'package.json', ref: source.head } }, { run_id: runId, prefetch: true }) as { content?: unknown };
+          if (typeof file?.content === 'string') {
+            const packageJson = JSON.parse(file.content) as Record<string, unknown>;
+            declaredDependencies = new Set(['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
+              .flatMap(section => {
+                const obj = packageJson[section];
+                return obj && typeof obj === 'object' && !Array.isArray(obj) ? Object.keys(obj) : [];
+              }));
+          }
+        } catch { /* impossible de prouver le module déclaré : refus typé */ }
+      }
+      // U3 : après CI rouge, refuser une correction bit-à-bit identique à tous les fichiers proposés.
+      // En reprise après coupure, relire les sources au SHA de tête, indépendamment de la mémoire.
+      const currentFiles: Record<string, string> = { ...(source.currentFiles ?? {}) };
+      if (source.correction && Array.isArray(call.args?.files)
+        && deps.tools.spec(run.task_kind, 'github_read_file')?.effect === 'read') {
+        for (const file of call.args.files as Array<{ path?: unknown }>) {
+          if (typeof file?.path !== 'string' || !plan.fill.paths.includes(file.path)
+            || Object.prototype.hasOwnProperty.call(currentFiles, file.path)) continue;
+          try {
+            const result = await deps.tools.execute({ id: 'srv-diff-' + n, name: 'github_read_file',
+              args: { path: file.path, ref: source.head } }, { run_id: runId, prefetch: true }) as { content?: unknown };
+            if (typeof result?.content === 'string' && new TextEncoder().encode(result.content).length <= 100_000)
+              currentFiles[file.path] = result.content;
+          } catch { /* lecture impossible : aucune preuve de diff nul */ }
+        }
+      }
+      const cause = guidedPrecheck(call, plan.fill.paths, plan.fill.mission,
+        { declaredDependencies, currentFiles, correction: source.correction });
       if (cause) {
         const stopped = await recordPrecheck(db, runId, claim, idx, call, cause, deps.now());
         if (stopped) return stopped;
