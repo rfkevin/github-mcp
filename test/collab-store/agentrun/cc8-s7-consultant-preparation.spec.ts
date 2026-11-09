@@ -38,13 +38,14 @@ function consultantHost() {
     github_open_pr:[{branch:BRANCH,head_sha:C1,number:901}],
   });
   const seenRead:string[]=[];
-  const available=new Set(['store_context','store_delta','store_memory','store_continuity','github_read_file']);
+  const available=new Set(['store_context','store_delta','store_memory','store_continuity','github_read_file','github_list_directory']);
   const tools:ToolHost={
     list:(kind:string)=>[...new Set([...adapter.tools.list(kind),...available])],
     spec:(kind:string,name:string)=>available.has(name)?{name,effect:'read'}:adapter.tools.spec(kind,name),
     async execute(c,ctx) {
       if(available.has(c.name)) {
         seenRead.push(c.name);
+        if(c.name==='github_list_directory') return {path:c.args.path,ref:c.args.ref,entries:[{name:'s7-guided.ts',path:SOURCE,type:'file',size:210,sha:source.sha}],truncated:false};
         if(c.name==='github_read_file') {
           if(c.args.path===SOURCE && c.args.ref===BASE) return source;
           throw new Error('File not found for source proof');
@@ -77,7 +78,23 @@ describe('CC8 S7 consultant : mémoire et analyse avant codage',()=>{
       .toMatch(/tool_not_offered/);
     expect(preparationViolation({text:'j’ai lu',tool_calls:[]},['store_context'])).toBe('no_tool_call');
     expect(preparationViolation({text:'',tool_calls:readCalls},readCalls.map(c=>c.name))).toBeNull();
+    expect(preparationViolation({text:'',tool_calls:[call('github_list_directory',{path:'',ref:BASE},'tree')]},
+      ['github_list_directory'])).toBeNull();
     expect(PREPARATION_ROUNDS_MAX).toBe(3);
+  });
+  it('exploration de répertoire : le modèle consulte les sources sans chemin préconnu',async()=>{
+    const s=await newRun('consultant-discovery');
+    const h=consultantHost();
+    const first=call('github_list_directory',{path:'src/collab-store/agentrun',ref:BASE},'tree');
+    const model=scripted([{text:'Je découvre les chemins.',tool_calls:[first]},
+      {text:'Je lis mémoire, contexte et signature réelle.',tool_calls:readCalls},
+      commitAs('github_commit_files',CODE)]);
+    const outcomes=await drive(s.runId,{model:model.client,tools:h.tools,now:()=>T+100,workerId:'consultant',
+      guidedS7:true,guidedPreparation:true,githubCompletionGrants:s.grants});
+    expect(outcomes.at(-1)).toBe('completed');
+    expect(model.seen).toHaveLength(3);
+    expect(model.seen[0].tools).toContain('github_list_directory');
+    expect(model.seen[2].tools).toEqual(['github_commit_files']);
   });
   it('les résultats de contexte, mémoire et source restent visibles au modèle AVANT le commit',async()=>{
     const s=await newRun('consultant-verified');
@@ -89,7 +106,7 @@ describe('CC8 S7 consultant : mémoire et analyse avant codage',()=>{
     expect(outcomes.at(-1)).toBe('completed');
     expect(h.seenRead.slice(0,readCalls.length)).toEqual(readCalls.map(x=>x.name));
     expect(model.seen).toHaveLength(2);
-    expect(model.seen[0].tools).toEqual(readCalls.map(c=>c.name));
+    expect(model.seen[0].tools).toEqual([...readCalls.map(c=>c.name),'github_list_directory']);
     expect(model.seen[1].tools).toEqual(['github_commit_files']);
     const prompt=JSON.stringify(model.seen[1].messages);
     expect(prompt).toContain('planGuidedS7(entries: readonly GuidedEntry[]');

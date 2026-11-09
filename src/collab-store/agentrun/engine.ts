@@ -43,7 +43,8 @@ import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
 import { verifyContext } from './verify-guided';
-import { PREPARATION_ROUNDS_MAX, PREPARATION_READ_TOOLS, readPreparationEvidence, preparationInstruction,
+import { PREPARATION_ROUNDS_MAX, PREPARATION_READ_TOOLS, PREPARATION_DISCOVERY_TOOLS,
+  readPreparationEvidence, preparationInstruction,
   preparationViolation, type PreparationRecord } from './guided-preparation';
 import { missionOf, type MissionKind } from './mission-quality';
 import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
@@ -464,7 +465,8 @@ async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: numb
     const evidence = readPreparationEvidence(results, baseSha, step.fill.paths);
     if (!evidence.prepared) {
       if (evidence.rounds >= PREPARATION_ROUNDS_MAX) return { kind: 'stop', reason: 'preparation_incomplete' };
-      return { kind: 'prepare', tools: required,
+      return { kind: 'prepare', tools: [...required,
+          ...PREPARATION_DISCOVERY_TOOLS.filter(tool => deps.tools.spec(run.task_kind, tool)?.effect === 'read')],
         instruction: preparationInstruction(run.task_id, baseSha, evidence.missing,
           missionOf(grants[0]).acceptance, evidence.rounds) };
     }

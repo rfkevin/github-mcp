@@ -12,6 +12,7 @@ export const PREPARATION_READ_TOOLS = [
   'store_context', 'store_delta', 'store_memory', 'store_continuity', 'github_read_file',
 ] as const;
 
+export const PREPARATION_DISCOVERY_TOOLS = ['github_list_directory'] as const;
 export type PreparationTool = typeof PREPARATION_READ_TOOLS[number];
 export interface PreparationRecord { model_output: string; results: string }
 export interface PreparationEvidence {
@@ -24,7 +25,7 @@ export interface PreparationEvidence {
 interface Result { id: string; content: string; error?: boolean }
 const SOURCE_EXT = /\.(?:[cm]?[jt]sx?|py|go|rs|java|cs|sql|kt|swift|rb|php|vue)$/i;
 const SHA = /^[a-f0-9]{40}$/;
-const allowed = new Set<string>(PREPARATION_READ_TOOLS);
+const allowed = new Set<string>([...PREPARATION_READ_TOOLS,...PREPARATION_DISCOVERY_TOOLS]);
 
 function usableResponse(result: Result | undefined): unknown | null {
   if (!result || result.error) return null;
@@ -92,6 +93,7 @@ export function preparationInstruction(taskId: string, baseSha: string, missing:
     'PHASE CONSULTANT S7 — LECTURE SEULE, AVANT LE PREMIER COMMIT (' + (rounds + 1) + '/' + PREPARATION_ROUNDS_MAX + ').',
     'Tâche : ' + taskId + '. Base GitHub immuable : ' + baseSha + '.',
     'Ne codez pas encore. Lisez et analysez la mission comme un consultant : contexte, décisions, mémoire persistante C4,',
+    'Explorez les dossiers via github_list_directory si les chemins ne sont pas connus, puis lisez les vrais fichiers sources.',
     'continuité des chats et runs du même participant, signatures réelles et tests existants du dépôt.',
     'Il manque des preuves de lecture réussie pour : ' + missing.join(', ') + '.',
     'Appelez uniquement les outils LECTURE offerts. Pour github_read_file, utilisez ref=' + baseSha

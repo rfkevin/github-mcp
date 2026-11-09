@@ -31,6 +31,7 @@ export function githubReadsFrom(env: { GITHUB_APP_ID?: string; GITHUB_INSTALLATI
   const checks = new GitHubClient({ ...shared, tokenPermissions: { metadata: 'read', checks: 'read' } });
   return {
     getTextFile: (repository, path, ref) => contents.files.getTextFile(repository, path, ref),
+    listDirectory: (repository, path, ref) => contents.files.listDirectory(repository, path, ref),
     getPullRequest: (repository, number) => pulls.pullRequests.getPullRequest(repository, number),
     listCheckRuns: (repository, ref) => checks.actions.listCheckRuns(repository, ref),
     // L5a : diff du couple exact ; un fichier sensible garde ses métadonnées mais perd son patch.

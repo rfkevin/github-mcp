@@ -21,3 +21,7 @@ Le serveur n'invente pas une mémoire par run. Il réutilise la mémoire C4 pers
 - Des lectures réussies de contexte, delta, mémoire, continuité et source SHA déclenchent ensuite exactement le chemin S7 existant.
 - Un second run du même participant retrouve la mémoire C4 et ses notes de passation, sans mélange avec les mémoires d'autres identités.
 - PR et revue D12 avant fusion par Kevin. Aucun reset D1, aucun déploiement automatique, aucun modèle payant.
+
+## Découverte des chemins
+
+Le consultant peut appeler `github_list_directory` (GitHub App en lecture seule, au plus 80 entrées, fichiers sensibles masqués par le client existant) avant `github_read_file`. La lecture des dossiers ne compte PAS comme preuve de consultation du code : un vrai fichier source au SHA immuable de la base reste obligatoire. Les prompts de préparation proposent de commencer par le dossier `src/` si le chemin est inconnu.
