@@ -3,7 +3,8 @@ import { CollabStoreError, type CollabStore } from '../store/collab-store';
 import { isCoordinator } from '../owner/coordinators';
 import { equivalentParticipantIds } from '../identity/families';
 import { opIdClientFor, parseOpId } from '../contracts';
-import { grants, type WriteGrant } from './github-write/authorization';
+import { exactGrant, type WriteGrant } from './github-write/authorization';
+import { issueDynamicGrant } from './github-write/dynamic-grants';
 import { apiParticipants, attemptRunId, taskKindMaxSteps, taskKindMaxTokens, taskPrompt, taskKindCostCents } from './plan';
 import { runDeadlineS } from './run-policy';
 import { runCapacity } from './capacity';
@@ -15,7 +16,8 @@ import type { AgentRunObjectEnv } from './object';
 export interface LaunchInput {
   db: D1Database; store: CollabStore; env: AgentRunObjectEnv; coordinator: string;
   cycle: string; task: string; participant: string;
-  reviewer?: string; tester?: string; takeoverChat: boolean; opId: string; now: number; wake: WakeFn;
+  reviewer?: string; tester?: string; paths?: string[]; acceptance?: string[];
+  takeoverChat: boolean; opId: string; now: number; wake: WakeFn;
 }
 export interface LaunchResult {
   status: 'started' | 'existing' | 'wake_pending'; run_id: string; cycle: string;
@@ -24,7 +26,8 @@ export interface LaunchResult {
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 function deny(code: string, message: string): never { throw new CollabStoreError(code, message); }
 
-export function grantForLaunch(env: AgentRunObjectEnv, cycle: string, task: string, pid: string): WriteGrant {
+export async function grantForLaunch(db: D1Database, env: AgentRunObjectEnv, cycle: string, task: string,
+  pid: string, coordinator: string, paths?: string[], acceptance?: string[], now=Math.floor(Date.now()/1000)): Promise<WriteGrant> {
   if (env.AGENT_RUNS_ENABLED !== 'true' || env.AGENT_RUN_GITHUB_WRITES !== 'true')
     deny('AGENT_RUN_DISABLED', 'Runs or GitHub write tools disabled.');
   if (![cycle, task, pid].every(s => ID.test(s))) deny('INVALID_RUN_TARGET', 'Invalid target identifiers.');
@@ -32,11 +35,22 @@ export function grantForLaunch(env: AgentRunObjectEnv, cycle: string, task: stri
       || !(env.AGENT_RUN_GITHUB_WRITERS ?? '').split(',').map(s => s.trim()).includes(pid))
     deny('WRITER_NOT_GRANTED', 'Agent has no API writing permission.');
   if (taskKindCostCents(env, 'implement') !== 0) deny('PAID_RUN_FORBIDDEN', 'Only zero-cost implement runs are allowed.');
-  const match = grants({tasks: env.AGENT_RUN_GITHUB_TASKS})
-    .filter(g => g.cycle === cycle && g.task === task && g.participant === pid);
-  if (match.length !== 1 || !match[0].branch.startsWith('mcp/105856986/' + pid + '-api-'))
-    deny('TASK_NOT_GRANTED', 'An exact owner task and API branch grant is required.');
-  return match[0];
+  const policy={writers:env.AGENT_RUN_GITHUB_WRITERS,
+    tasks:env.AGENT_RUN_GITHUB_TASKS,dynamic:env.AGENT_RUN_DYNAMIC_SCOPE};
+  const existing=await exactGrant(db,policy,cycle,task,pid);
+  if (existing) {
+    if (paths && JSON.stringify(paths)!==JSON.stringify(existing.paths))
+      deny('TASK_SCOPE_MISMATCH', 'Cannot widen or alter a frozen grant.');
+    if (acceptance && JSON.stringify(acceptance)!==JSON.stringify(existing.acceptance??[]))
+      deny('TASK_ACCEPTANCE_MISMATCH','Cannot modify a frozen mission.');
+    if (!existing.branch.startsWith('mcp/105856986/' + pid + '-api-'))
+      deny('TASK_NOT_GRANTED','Branch outside API namespace.');
+    return existing;
+  }
+  if (!paths || paths.length<1) deny('TASK_NOT_GRANTED','Missing owner-approved static grant or dynamic scope paths.');
+  return issueDynamicGrant(db,env.AGENT_RUN_DYNAMIC_SCOPE,{
+    cycle,task,participant:pid,paths,acceptance,coordinator,now});
+
 }
 interface Task { owner_pid: string; reviewer_pid: string; tester_pid: string; status: string; owned_paths: string }
 async function readTask(i: LaunchInput): Promise<Task | null> {
@@ -83,7 +97,17 @@ export async function launchCoordinatorImplement(i: LaunchInput): Promise<Launch
   const op = parseOpId(i.opId);
   if (op.client !== opIdClientFor(i.coordinator) || op.cycle !== i.cycle)
     deny('INVALID_OP_ID', 'Launch op_id must belong to the authenticated coordinator and cycle.');
-  const grant = grantForLaunch(i.env, i.cycle, i.task, i.participant);
+  // No implicit grant for an unrelated or wrongly assigned task.
+  const current=await readTask(i);
+  if (!current && (!i.reviewer||!i.tester||i.reviewer===i.tester
+    || i.reviewer===i.participant||i.tester===i.participant
+    || i.coordinator===i.reviewer||i.coordinator===i.tester||i.coordinator===i.participant))
+    deny('D12_ASSIGNMENT_REQUIRED','Distinct reviewer and tester required before grant issue.');
+  if (current && (current.status!=='in_progress'
+    || (current.owner_pid!==i.coordinator && current.owner_pid!==i.participant)))
+    deny('TASK_SCOPE_MISMATCH','Existing task may not be regranted to another author.');
+  const grant = await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,
+    i.coordinator,i.paths,i.acceptance,i.now);
   if (!i.env.AGENT_RUN) deny('AGENT_RUN_UNAVAILABLE', 'Durable Object binding required.');
   const c = await i.db.prepare('SELECT status,phase FROM cycles WHERE cycle_id=?1').bind(i.cycle)
     .first<{status:string;phase:string}>();

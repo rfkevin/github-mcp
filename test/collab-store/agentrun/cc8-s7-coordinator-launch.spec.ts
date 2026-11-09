@@ -9,19 +9,19 @@ const config = {AGENT_RUNS_ENABLED:'true',AGENT_RUN_GITHUB_WRITES:'true',
   AGENT_RUN_PARTICIPANTS:'vibe,gemini',AGENT_RUN_GITHUB_WRITERS:'vibe,gemini',
   AGENT_RUN_GITHUB_TASKS:JSON.stringify([grant])} as AgentRunObjectEnv;
 const get = (env:AgentRunObjectEnv=config,pid='gemini')=>
-  grantForLaunch(env,'cc8-systeme-unique','S7-compare-gemini-1',pid);
+  grantForLaunch(db,env,'cc8-systeme-unique','S7-compare-gemini-1',pid,'gpt6');
 
 describe('CC8 S7 direct API bridge — deny by default', () => {
-  it('requires exact owner grant for participant, task and isolated branch',()=>{
-    expect(get()).toEqual(grant);
-    expect(()=>get(config,'vibe')).toThrow();
-    expect(()=>get({...config,AGENT_RUN_GITHUB_TASKS:'[]'})).toThrow();
-    expect(()=>get({...config,AGENT_RUN_GITHUB_TASKS:JSON.stringify([{...grant,branch:'main'}])})).toThrow();
+  it('requires exact owner grant for participant, task and isolated branch',async()=>{
+    expect(await get()).toEqual(grant);
+    await expect(get(config,'vibe')).rejects.toThrow();
+    await expect(get({...config,AGENT_RUN_GITHUB_TASKS:'[]'})).rejects.toThrow();
+    await expect(get({...config,AGENT_RUN_GITHUB_TASKS:JSON.stringify([{...grant,branch:'main'}])})).rejects.toThrow();
   });
-  it('refuses disabled API writing or any paid implement budget',()=>{
-    expect(()=>get({...config,AGENT_RUNS_ENABLED:'false'})).toThrow();
-    expect(()=>get({...config,AGENT_RUN_GITHUB_WRITERS:''})).toThrow();
-    expect(()=>get({...config,AGENT_RUN_COST_CENTS_IMPLEMENT:'1'} as AgentRunObjectEnv)).toThrow();
+  it('refuses disabled API writing or any paid implement budget',async()=>{
+    await expect(get({...config,AGENT_RUNS_ENABLED:'false'})).rejects.toThrow();
+    await expect(get({...config,AGENT_RUN_GITHUB_WRITERS:''})).rejects.toThrow();
+    await expect(get({...config,AGENT_RUN_COST_CENTS_IMPLEMENT:'1'} as AgentRunObjectEnv)).rejects.toThrow();
   });
 });
 

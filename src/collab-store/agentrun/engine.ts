@@ -112,6 +112,8 @@ export interface EngineDeps {
   compactHistory?: boolean;
   /** Mandats GitHub de réussite posés par le propriétaire, jamais par le modèle. */
   githubCompletionGrants?: readonly GitHubCompletionGrant[];
+  /** Grants D1 are checked on every planning/completion step, never injected by the model. */
+  dynamicGrantFor?: (target:{cycle_id:string;task_id:string;participant_id:string})=>Promise<GitHubCompletionGrant|null>;
   /** CC8 S7 mode guidé : étapes mécaniques émises par le serveur sous mandat S7 (activé au runtime). */
   guidedS7?: boolean;
   /** CC8: opt-in consultation context/memory/repo before S7 code writes. */
@@ -408,12 +410,17 @@ export async function storeCompletionVerified(db: D1Database, run: Pick<RunRow,
   return false;
 }
 
+async function runGrants(run:RunRow,deps:EngineDeps):Promise<GitHubCompletionGrant[]> {
+  const staticGrants=(deps.githubCompletionGrants??[]).filter(g=>g.cycle===run.cycle_id
+    && g.task===run.task_id && g.participant===run.participant_id);
+  const dynamic=deps.dynamicGrantFor ? await deps.dynamicGrantFor(run) : null;
+  return [...staticGrants,...(dynamic?[dynamic]:[])];
+}
 async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps): Promise<boolean> {
   if (['answer', 'review', 'test', 'design'].includes(run.task_kind)) return storeCompletionVerified(db, run);
   if (run.task_kind !== 'implement') return true; // Historical synthetic kinds only.
-  const grants = (deps.githubCompletionGrants ?? []).filter(g => g.cycle === run.cycle_id
-    && g.task === run.task_id && g.participant === run.participant_id);
-  if (grants.length === 0) return true; // Implement hors mandat S7 inchangé.
+  const grants = await runGrants(run,deps);
+  if (grants.length === 0) return !deps.dynamicGrantFor; // Dynamic mode fail closed without grant.
   if (grants.length !== 1) return false; // Ambiguïté = pas de succès.
   return githubCompletionSatisfied(await runEvidence(db, run.run_id), grants[0].branch);
 }
@@ -440,9 +447,8 @@ async function runEvidence(db: D1Database, runId: string): Promise<GithubComplet
 type PreparationStep = { kind: 'prepare' | 'handover'; tools: string[]; instruction: string };
 async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: number): Promise<GuidedStep | PreparationStep | null> {
   if (!deps.guidedS7 || run.task_kind !== 'implement') return null;
-  const grants = (deps.githubCompletionGrants ?? []).filter(g => g.cycle === run.cycle_id
-    && g.task === run.task_id && g.participant === run.participant_id);
-  if (grants.length !== 1) return null;
+  const grants = await runGrants(run,deps);
+  if (grants.length !== 1) return deps.dynamicGrantFor ? {kind:'stop',reason:'task_grant_unavailable'} : null;
   // Run guidé : jamais de repli libre. Plafond serveur, outil absent ou état non prévu = arrêt typé.
   const used = await db.prepare('SELECT COUNT(*) AS c FROM agent_run_server_steps WHERE run_id = ?1').bind(run.run_id).first<{ c: number }>();
   if ((used?.c ?? 0) >= GUIDED_SERVER_MAX) return { kind: 'stop', reason: 'server_cap' };

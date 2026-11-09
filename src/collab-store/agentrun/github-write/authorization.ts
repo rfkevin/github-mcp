@@ -3,9 +3,10 @@ import { ACCEPTANCE_MAX_CHARS, ACCEPTANCE_MAX_ITEMS, MISSION_KINDS, type Mission
 import { equivalentParticipantIds } from '../../identity/families';
 import { agentRunPaused } from '../../owner/agent-run-status';
 import { isAutomationHalted } from '../../owner/automation';
+import { findDynamicGrant } from './dynamic-grants';
 
 /** Owner-supplied configuration, never model arguments. Empty configuration denies writes. */
-export interface WritePolicy { writers?: string; tasks?: string }
+export interface WritePolicy { writers?: string; tasks?: string; dynamic?: string }
 export interface WriteGrant {
   cycle: string; task: string; participant: string; branch: string; paths: string[];
   /** Lot C R3 (#283) : `functional` déclaré par le propriétaire ; absent = pilote technique (inchangé). */
@@ -67,14 +68,23 @@ export function assertPaths(scope: WriteScope, paths: string[]): void {
   }
 }
 
+/** Static and D1 grants are disjoint. Revoked/expired dynamic grants fail closed. */
+export async function exactGrant(db:D1Database,policy:WritePolicy,cycle:string,task:string,
+  participant:string):Promise<WriteGrant|null> {
+  const existing=grants(policy).filter(g=>g.cycle===cycle&&g.task===task&&g.participant===participant);
+  const dynamic=await findDynamicGrant(db,policy.dynamic,cycle,task,participant);
+  if (existing.length>1 || (existing.length===1 && dynamic)) throw new ToolRefused('api_task_grant_ambiguous');
+  return existing[0] ?? dynamic;
+}
+
 export async function authorize(db: D1Database, policy: WritePolicy, runId: string, branch: string): Promise<WriteScope> {
   const run = await db.prepare('SELECT participant_id, cycle_id, task_id, task_kind, status, lease_key, generation FROM agent_runs WHERE run_id = ?1')
     .bind(runId).first<{ participant_id: string; cycle_id: string; task_id: string; task_kind: string; status: string; lease_key: string; generation: number }>();
   if (!run || run.task_kind !== 'implement' || run.status !== 'running') throw new ToolRefused('api_write_run_invalid');
   const writers = (policy.writers ?? '').split(',').map(s => s.trim()).filter(Boolean);
   if (!writers.includes(run.participant_id)) throw new ToolRefused('api_writer_not_enabled');
-  const matches = grants(policy).filter(g => g.participant === run.participant_id && g.cycle === run.cycle_id && g.task === run.task_id);
-  if (matches.length !== 1 || matches[0].branch !== branch) throw new ToolRefused('api_task_not_enabled');
+  const grant = await exactGrant(db,policy,run.cycle_id,run.task_id,run.participant_id);
+  if (!grant || grant.branch !== branch) throw new ToolRefused('api_task_not_enabled');
   const task = await db.prepare('SELECT t.owner_pid, t.status, t.owned_paths, c.status AS cycle_status FROM tasks t JOIN cycles c ON c.cycle_id=t.cycle_id WHERE t.cycle_id=?1 AND t.task_id=?2')
     .bind(run.cycle_id, run.task_id).first<{ owner_pid: string; status: string; owned_paths: string; cycle_status: string }>();
   const ids = await equivalentParticipantIds(db, run.participant_id);
@@ -87,5 +97,5 @@ export async function authorize(db: D1Database, policy: WritePolicy, runId: stri
   let owned: unknown;
   try { owned = JSON.parse(task.owned_paths); } catch { throw new ToolRefused('api_write_paths_invalid'); }
   if (!Array.isArray(owned) || !owned.every(p => typeof p === 'string')) throw new ToolRefused('api_write_paths_invalid');
-  return { ...matches[0], run_id: runId, owned_paths: owned };
+  return { ...grant, run_id: runId, owned_paths: owned };
 }
