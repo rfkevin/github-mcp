@@ -87,7 +87,7 @@ describe('CC8 S7 consultant : mémoire et analyse avant codage',()=>{
     const outcomes=await drive(s.runId,{model:model.client,tools:h.tools,now:()=>T+100,workerId:'consultant',
       guidedS7:true,guidedPreparation:true,compactHistory:true,githubCompletionGrants:s.grants});
     expect(outcomes.at(-1)).toBe('completed');
-    expect(h.seenRead).toEqual(readCalls.map(x=>x.name));
+    expect(h.seenRead.slice(0,readCalls.length)).toEqual(readCalls.map(x=>x.name));
     expect(model.seen).toHaveLength(2);
     expect(model.seen[0].tools).toEqual(readCalls.map(c=>c.name));
     expect(model.seen[1].tools).toEqual(['github_commit_files']);

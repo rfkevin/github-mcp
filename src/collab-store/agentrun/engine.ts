@@ -788,7 +788,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         response = await deps.model.complete({
           messages: extra ? [...messages, { role: 'user', content: extra }] : messages,
           tools: guide?.kind === 'model' || guide?.kind === 'prepare'
-            ? tools.filter(name => guide.tools.includes(name)) : tools,
+            ? guide.tools.filter(name => tools.includes(name)) : tools,
           task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
       }
     } catch (error) {
