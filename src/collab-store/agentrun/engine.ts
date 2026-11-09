@@ -43,6 +43,10 @@ import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
 import { verifyContext } from './verify-guided';
+import { HANDOVER_WRITE_TOOLS, HANDOVER_INSTRUCTION, handoverViolation,
+  PREPARATION_ROUNDS_MAX, PREPARATION_READ_TOOLS, PREPARATION_DISCOVERY_TOOLS,
+  readPreparationEvidence, preparationInstruction,
+  preparationViolation, type PreparationRecord } from './guided-preparation';
 import { missionOf, type MissionKind } from './mission-quality';
 import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
   planGuidedS7, PRECHECK_HINTS, guidedBareDependencies, type GuidedStep } from './s7-guided';
@@ -110,6 +114,8 @@ export interface EngineDeps {
   githubCompletionGrants?: readonly GitHubCompletionGrant[];
   /** CC8 S7 mode guidé : étapes mécaniques émises par le serveur sous mandat S7 (activé au runtime). */
   guidedS7?: boolean;
+  /** CC8: opt-in consultation context/memory/repo before S7 code writes. */
+  guidedPreparation?: boolean;
   /**
    * CC8 S7 vérification guidée (décision de Kevin, 07/11) : runs review/test avec contexte préparé par le
    * serveur (PR, CI au head, diff borné) réinjecté à chaque étape, outils libres. Activé au runtime.
@@ -431,7 +437,8 @@ async function runEvidence(db: D1Database, runId: string): Promise<GithubComplet
 }
 
 /** CC8 S7 mode guidé : prochaine étape déduite des effets D1, pour une exécution sous mandat S7 seulement. */
-async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: number): Promise<GuidedStep | null> {
+type PreparationStep = { kind: 'prepare' | 'handover'; tools: string[]; instruction: string };
+async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: number): Promise<GuidedStep | PreparationStep | null> {
   if (!deps.guidedS7 || run.task_kind !== 'implement') return null;
   const grants = (deps.githubCompletionGrants ?? []).filter(g => g.cycle === run.cycle_id
     && g.task === run.task_id && g.participant === run.participant_id);
@@ -442,6 +449,37 @@ async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: numb
   const entries = (await runEvidence(db, run.run_id)).map(e => ({ tool: e.tool, value: completedPayload(e), failed: e.status === 'failed',
     ...(e.tool === GUIDED_PRECHECK_TOOL ? { detail: precheckCause(e.result) } : {}) }));
   const step = planGuidedS7(entries, grants[0].branch, run.task_id, n, missionOf(grants[0]));
+  // Once the server has opened a PR after green CI, let the agent write one
+  // durable handover and optionally one proposed/revised C4 memory entry.
+  // The C4 lifecycle still requires its normal independent activation review.
+  if (deps.guidedPreparation && step.kind==='stop' && step.reason==='pr_already_open') {
+    const offered = HANDOVER_WRITE_TOOLS.filter(name=>deps.tools.spec(run.task_kind,name)?.effect==='write');
+    if (offered.length !== HANDOVER_WRITE_TOOLS.length) return {kind:'stop',reason:'handover_tools_unavailable'};
+    return {kind:'handover',tools:offered,instruction:HANDOVER_INSTRUCTION};
+  }
+  // The server and branch setup stay mechanical. Before the FIRST content commit,
+  // require verifiable read-only preparation for this participant and immutable base.
+  if (deps.guidedPreparation && step.kind === 'model' && !step.fill.correction) {
+    const required = [...PREPARATION_READ_TOOLS];
+    if (required.some(tool => deps.tools.spec(run.task_kind, tool)?.effect !== 'read')) {
+      return { kind: 'stop', reason: 'preparation_tools_unavailable' };
+    }
+    const scope = entries.find(e => e.tool === 'github_write_scope'
+      && e.value?.branch === grants[0].branch)?.value;
+    const baseSha = typeof scope?.base_sha === 'string' ? scope.base_sha : '';
+    if (!/^[a-f0-9]{40}$/.test(baseSha)) return { kind: 'stop', reason: 'preparation_base_unverified' };
+    const { results } = await db.prepare(
+      "SELECT model_output, results FROM agent_run_steps WHERE run_id = ?1 AND state = 'completed' ORDER BY n",
+    ).bind(run.run_id).all<PreparationRecord>();
+    const evidence = readPreparationEvidence(results, baseSha, step.fill.paths);
+    if (!evidence.prepared) {
+      if (evidence.rounds >= PREPARATION_ROUNDS_MAX) return { kind: 'stop', reason: 'preparation_incomplete' };
+      return { kind: 'prepare', tools: [...required,
+          ...PREPARATION_DISCOVERY_TOOLS.filter(tool => deps.tools.spec(run.task_kind, tool)?.effect === 'read')],
+        instruction: preparationInstruction(run.task_id, baseSha, evidence.missing,
+          missionOf(grants[0]).acceptance, evidence.rounds) };
+    }
+  }
   if (step.kind === 'server' && !deps.tools.spec(run.task_kind, step.call.name)) return { kind: 'stop', reason: 'tool_unavailable:' + step.call.name };
   if (step.kind === 'model' && !deps.tools.spec(run.task_kind, 'github_commit_files')) return { kind: 'stop', reason: 'tool_unavailable:github_commit_files' };
   return step;
@@ -753,12 +791,15 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
           usage: { tokens: 0, cost_cents: 0 } };
       } else {
         // Compaction de l'historique : implémentation, et depuis la vérification guidée, relecture et test.
-        const messages = await buildMessages(db, run, deps.compactHistory === true && COMPACTED_KINDS.includes(run.task_kind));
+        const messages = await buildMessages(db, run, deps.compactHistory === true
+          && COMPACTED_KINDS.includes(run.task_kind) && !(deps.guidedPreparation && run.task_kind === 'implement' && plan));
         const tools = deps.tools.list(run.task_kind);
-        const extra = guide?.kind === 'model' ? guide.instruction : verify ? verify.context + '\n\n' + verify.instruction : null;
+        const extra = guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
+          ? guide.instruction : verify ? verify.context + '\n\n' + verify.instruction : null;
         response = await deps.model.complete({
           messages: extra ? [...messages, { role: 'user', content: extra }] : messages,
-          tools: guide?.kind === 'model' ? tools.filter(name => guide.tools.includes(name)) : tools,
+          tools: guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
+            ? guide.tools.filter(name => tools.includes(name)) : tools,
           task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
       }
     } catch (error) {
@@ -774,14 +815,17 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       return { outcome: 'failed' };
     }
     output = normalizeOutput(response.output);
-    if (guide?.kind === 'model') {
-      // Lot A R1 (#281) : nom canonisé (espaces de bord seulement) AVANT toute garde ; le reste inchangé.
+    if (guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover') {
+      // Phase de consultation : tous les appels doivent être des lectures offertes.
+      // Phase de codage : exactement un github_commit_files, sans autre outil.
       const raw = output;
-      const canon = canonicalGuidedOutput(output);
-      output = canon.output;
-      normalized = canon.normalized;
-      // Relecture D12 GPT-6 : exactement UN github_commit_files, vérifié en code AVANT tout effet.
-      const violation = guidedViolation(output);
+      if (guide.kind === 'model') {
+        const canon = canonicalGuidedOutput(output);
+        output = canon.output;
+        normalized = canon.normalized;
+      }
+      const violation = guide.kind === 'prepare' ? preparationViolation(output, guide.tools)
+        : guide.kind === 'handover' ? handoverViolation(output) : guidedViolation(output);
       if (violation) {
         // Relecture D12 GPT-6 (R3) : les jetons et le coût de l'appel sont DÉJÀ consommés. Ils sont
         // comptabilisés (run et étape), la sortie rejetée est tracée au journal, puis l'arrêt est posé
@@ -789,7 +833,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         // reste 'claimed' sans model_output : une reprise ne rejoue jamais la sortie rejetée.
         const tokens = Math.max(0, Math.floor(response.usage?.tokens ?? 0));
         const cost = Math.max(0, Math.ceil(response.usage?.cost_cents ?? 0));
-        const reason = 'guided_violation:' + violation;
+        const reason = (guide.kind === 'prepare' ? 'guided_preparation_violation:'
+          : guide.kind === 'handover' ? 'guided_handover_violation:' : 'guided_violation:') + violation;
         await db.batch([
           db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1')
             .bind(runId, tokens, cost, now),
@@ -804,7 +849,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         ]);
         return settled(db, runId, now);
       }
-      output = applyGuidedFill(output, guide.fill);
+      if (guide.kind === 'model') output = applyGuidedFill(output, guide.fill);
     }
     const tokens = Math.max(0, Math.floor(response.usage?.tokens ?? 0));
     const cost = Math.max(0, Math.ceil(response.usage?.cost_cents ?? 0));
@@ -934,15 +979,19 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   // github_open_pr : 6 étapes dépendantes suffisent, sans 7e appel final au modèle.
   const guarded = run.task_kind === 'implement' && (deps.githubCompletionGrants ?? []).some(g =>
     g.cycle === run.cycle_id && g.task === run.task_id && g.participant === run.participant_id);
-  const provenAtPr = guarded && output.tool_calls.some(call => call.name === 'github_open_pr')
+  const provenAtPr = guarded && !deps.guidedPreparation && output.tool_calls.some(call => call.name === 'github_open_pr')
     && await completionVerified(db, run, deps);
   // Un effet métier persistant peut terminer le run sans forcer un tour modèle « final » supplémentaire.
   // Si l'outil est refusé, échoué ou n'a rien écrit, le test D1 ci-dessous reste négatif.
+  const provenAtHandover = guarded && deps.guidedPreparation
+    && output.tool_calls.some(call => call.name === 'store_handover')
+    && (await runEvidence(db, run.run_id)).some(e=>e.tool==='store_handover' && e.status==='completed')
+    && await completionVerified(db,run,deps);
   const provenAtStore = run.task_kind !== 'implement' && output.tool_calls.some(call =>
     ['store_answer', 'store_verdict', 'store_contribute'].includes(call.name))
     && await completionVerified(db, run, deps);
-  const final = output.tool_calls.length === 0 || provenAtPr || provenAtStore ? 1 : 0;
-  const verified = provenAtPr || provenAtStore
+  const final = output.tool_calls.length === 0 || provenAtPr || provenAtHandover || provenAtStore ? 1 : 0;
+  const verified = provenAtPr || provenAtHandover || provenAtStore
     || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true);
   const completionStatus = verified ? 'completed' : 'failed';
   const completionReason = verified ? 'final'

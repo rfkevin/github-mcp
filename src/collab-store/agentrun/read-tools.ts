@@ -52,6 +52,8 @@ export function runRoles(taskKind: string): string[] {
 /** Lectures GitHub utilisées par l'hôte (sous-ensemble des clients existants, lecture seule). */
 export interface GitHubReads {
   getTextFile(repository: string, path: string, ref: string): Promise<{ path: string; sha: string; content: string; size: number }>;
+  /** Optional for older test hosts; actual Worker GitHub client provides bounded safe directory listings. */
+  listDirectory?(repository: string, path: string, ref: string): Promise<Array<{name:string;path:string;type:string;size:number;sha:string}>>;
   getPullRequest(repository: string, pullNumber: number): Promise<unknown>;
   listCheckRuns(repository: string, ref: string): Promise<unknown[]>;
   /** CC-7 L5a : diff entre une base et un head exact (compare du client, lecture seule). */
@@ -69,6 +71,9 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
     parameters: { type: 'object', properties: { since_seq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50 },
       full: { type: 'boolean', description: 'Demander les événements complets si une preuve exacte est nécessaire (opt-in).' } },
       required: ['since_seq'], additionalProperties: false } },
+  { name: 'github_list_directory', description: 'Explorer un dossier du dépôt GitHub autorisé, sans lire les fichiers : jusqu’à 80 entrées. Utiliser ref SHA de base pendant la préparation.',
+    parameters: { type: 'object', properties: { path: { type: 'string', description: 'Dossier depuis la racine, chaîne vide pour racine.' }, ref: { type: 'string' } },
+      required: ['path', 'ref'], additionalProperties: false } },
   { name: 'github_read_file', description: 'Lire un fichier texte du dépôt autorisé à une référence (branche ou SHA).',
     parameters: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' } }, required: ['path', 'ref'], additionalProperties: false } },
   { name: 'github_pull_request', description: 'Lire une PR du dépôt autorisé (titre, état, head et base).',
@@ -80,7 +85,7 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
       required: ['base', 'head'], additionalProperties: false } },
 ]);
 
-export type ReadToolName = 'store_context' | 'store_delta' | 'github_read_file' | 'github_pull_request' | 'github_check_runs' | 'github_diff';
+export type ReadToolName = 'store_context' | 'store_delta' | 'github_list_directory' | 'github_read_file' | 'github_pull_request' | 'github_check_runs' | 'github_diff';
 
 /**
  * CC-7 L3 (incrément 1) : lectures de continuité, ajoutées à TOUS les types de tâche quand l'hôte est créé avec
@@ -107,7 +112,7 @@ export const READ_TOOLS_BY_KIND: Readonly<Record<string, readonly ReadToolName[]
   planning: ['store_context', 'store_delta', 'github_read_file'],
   status: ['store_context', 'store_delta', 'github_check_runs'],
   // 7c-3 : implémentation sur la branche de l'agent (écritures GitHub de github-tools.ts).
-  implement: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs'],
+  implement: ['store_context', 'store_delta', 'github_list_directory', 'github_read_file', 'github_pull_request', 'github_check_runs'],
   // CC-7 L5a (S9) : réveils de relecture et de test — lecture du couple head/base exact.
   review: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs', 'github_diff'],
   test: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs', 'github_diff'],
@@ -191,7 +196,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   const research = options.research ? createResearchTools(options.db, options.research) : null;
   // CC-7 L3 (incrément 2) : proposition de mémoire, seulement avec écritures store ET continuité, types connus.
   const memoryWrite = (taskKind: string): readonly WriteToolName[] =>
-    writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose'] : [];
+    writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose', 'store_memory_rewrite', 'store_handover'] : [];
   const writeNames = (taskKind: string): readonly string[] =>
     [...(writes ? writes.names(taskKind) : []), ...memoryWrite(taskKind), ...(gh ? gh.names(taskKind) : []),
       ...(verdicts && (taskKind === 'review' || taskKind === 'test') ? ['store_verdict' as const] : []),
@@ -202,7 +207,8 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   const allowed = (taskKind: string): readonly ReadToolName[] => {
     const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
     // Sans dépôt ou client GitHub, les outils GitHub ne sont pas proposés du tout.
-    return tools.filter(name => !name.startsWith('github_') || (options.repository !== null && options.github !== null));
+    return tools.filter(name => !name.startsWith('github_') || (options.repository !== null && options.github !== null
+      && (name !== 'github_list_directory' || !!options.github.listDirectory)));
   };
   // Un type inconnu n'a aucun outil, même en continuité (deny-by-default).
   const continuityNames = (taskKind: string): readonly ContinuityToolName[] =>
@@ -261,6 +267,14 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
                 : JSON.stringify({ truncated: true, preview: event.payload_json.slice(0, 1100) }) })) };
         }
         return { has_more: hasMore, events: events.map(event => ({ seq: event.seq, type: event.type, participant_id: event.participant_id, payload: event.payload_json })) };
+      }
+      case 'github_list_directory': {
+        const path = stringArg(args, 'path', /^[^\0]{0,300}$/);
+        const ref = stringArg(args, 'ref', REF_RE);
+        if (!options.github?.listDirectory) throw new ToolRefused('github_list_directory_unavailable');
+        const entries = await options.github.listDirectory(options.repository!, path, ref);
+        await journalRead(options.db, ctx.run_id, 'github_list_directory', SHA_RE.test(ref) ? ref : '');
+        return { path, ref, entries: entries.slice(0, 80), truncated: entries.length > 80 };
       }
       case 'github_read_file': {
         const path = stringArg(args, 'path', /^[^\0]{1,400}$/);

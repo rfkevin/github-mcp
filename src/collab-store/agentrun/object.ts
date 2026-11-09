@@ -40,6 +40,8 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   AGENT_RUN_MODEL?: string;
   /** CC8 : activer la compaction du contexte fournisseur sur cc3-test seulement, opt-in. */
   AGENT_RUN_CONTEXT_COMPACTION?: string;
+  /** CC8: mandatory read-only consultant preparation before S7 first commit. */
+  AGENT_RUN_PREPARATION?: string;
   /** 7c-1 : dépôt unique lisible par les exécutions (ex. rfkevin/github-mcp) ; absent = aucun outil GitHub. */
   AGENT_RUN_REPOSITORY?: string;
   /** 7c-3 : « true » pour injecter les écritures GitHub (branche API de l'agent, PR brouillon) ; absent = aucune. */
@@ -210,7 +212,8 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   return (runId, stepDb) => ({ ...makeEngine(runId, stepDb),
     compactHistory: env.AGENT_RUN_CONTEXT_COMPACTION === 'true',
     // CC8 S7 (Kevin, 2026-11-06) : mode guidé pour toute exécution sous mandat S7 ; sans mandat, sans effet.
-    githubCompletionGrants, guidedS7: true, guidedVerify: true });
+    githubCompletionGrants, guidedS7: true, guidedVerify: true,
+    guidedPreparation: env.AGENT_RUN_PREPARATION === 'true' });
 }
 
 /** Branche de base du canal API : valeur valide, jamais main ni master, sinon le défaut figé en code. */
