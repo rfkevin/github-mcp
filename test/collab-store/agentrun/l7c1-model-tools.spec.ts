@@ -335,6 +335,6 @@ describe('CC-5 l7c-1 — câblage', () => {
     expect(githubReadsFrom({})).toBeNull();
     expect(githubReadsFrom({ GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: '2' })).toBeNull();
     const reads = githubReadsFrom({ GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: '2', GITHUB_PRIVATE_KEY: 'test-only-not-a-key' });
-    expect(Object.keys(reads ?? {}).sort()).toEqual(['compareRefs', 'getPullRequest', 'getTextFile', 'listCheckRuns']);
+    expect(Object.keys(reads ?? {}).sort()).toEqual(['compareRefs', 'getPullRequest', 'getTextFile', 'listCheckRuns', 'listDirectory']);
   });
 });

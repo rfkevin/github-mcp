@@ -24,6 +24,7 @@ const record=(calls:ToolCall[],values:Record<string,unknown>,failed:string[]=[])
   ({model_output:JSON.stringify({text:'Analyse des fichiers',tool_calls:calls}),
     results:JSON.stringify(calls.map(c=>({id:c.id,content:JSON.stringify(values[c.id]??{error:'missing'}),
       ...(failed.includes(c.id)?{error:true}:{})})))});
+const HANDOVER={text:'',tool_calls:[call('store_handover',{done:'PR ouverte',todo:'Revue D12',learned:'Signature vérifiée dans source'},'pass')]};
 const CODE="import { describe, it, expect } from 'vitest';\n"+
   "import { planGuidedS7 } from '../../../src/collab-store/agentrun/s7-guided';\n"+
   "describe('S7',()=>{it('exports a function',()=>{expect(typeof planGuidedS7).toBe('function');});});";
@@ -36,18 +37,23 @@ function consultantHost() {
     github_run_checks:[{targetSha:C1,runId:1001,status:'requested'}],
     github_check_result:[PASSED(C1)],
     github_open_pr:[{branch:BRANCH,head_sha:C1,number:901}],
+    store_handover:[{seq:99,type:'checkpoint',status:'applied'}],
   });
   const seenRead:string[]=[];
   const available=new Set(['store_context','store_delta','store_memory','store_continuity','github_read_file','github_list_directory']);
+  const allowedWrites=new Set(['store_handover','store_memory_propose','store_memory_rewrite']);
   const tools:ToolHost={
-    list:(kind:string)=>[...new Set([...adapter.tools.list(kind),...available])],
-    spec:(kind:string,name:string)=>available.has(name)?{name,effect:'read'}:adapter.tools.spec(kind,name),
+    list:(kind:string)=>[...new Set([...adapter.tools.list(kind),...available,...allowedWrites])],
+    spec:(kind:string,name:string)=>available.has(name)?{name,effect:'read'}
+      :allowedWrites.has(name)?{name,effect:'write'}:adapter.tools.spec(kind,name),
     async execute(c,ctx) {
       if(available.has(c.name)) {
         seenRead.push(c.name);
         if(c.name==='github_list_directory') return {path:c.args.path,ref:c.args.ref,entries:[{name:'s7-guided.ts',path:SOURCE,type:'file',size:210,sha:source.sha}],truncated:false};
         if(c.name==='github_read_file') {
           if(c.args.path===SOURCE && c.args.ref===BASE) return source;
+          if(c.args.path==='package.json' && c.args.ref===HEAD)
+            return {path:'package.json',sha:'4'.repeat(40),size:100,content:JSON.stringify({devDependencies:{vitest:'1.0.0'}})};
           throw new Error('File not found for source proof');
         }
         if(c.name==='store_context') return responses.ctx;
@@ -88,13 +94,14 @@ describe('CC8 S7 consultant : mémoire et analyse avant codage',()=>{
     const first=call('github_list_directory',{path:'src/collab-store/agentrun',ref:BASE},'tree');
     const model=scripted([{text:'Je découvre les chemins.',tool_calls:[first]},
       {text:'Je lis mémoire, contexte et signature réelle.',tool_calls:readCalls},
-      commitAs('github_commit_files',CODE)]);
+      commitAs('github_commit_files',CODE),HANDOVER]);
     const outcomes=await drive(s.runId,{model:model.client,tools:h.tools,now:()=>T+100,workerId:'consultant',
       guidedS7:true,guidedPreparation:true,githubCompletionGrants:s.grants});
     expect(outcomes.at(-1)).toBe('completed');
-    expect(model.seen).toHaveLength(3);
+    expect(model.seen).toHaveLength(4);
     expect(model.seen[0].tools).toContain('github_list_directory');
     expect(model.seen[2].tools).toEqual(['github_commit_files']);
+    expect(model.seen[3].tools).toContain('store_handover');
   });
   it('les résultats de contexte, mémoire et source restent visibles au modèle AVANT le commit',async()=>{
     const s=await newRun('consultant-verified');
@@ -105,9 +112,10 @@ describe('CC8 S7 consultant : mémoire et analyse avant codage',()=>{
       guidedS7:true,guidedPreparation:true,compactHistory:true,githubCompletionGrants:s.grants});
     expect(outcomes.at(-1)).toBe('completed');
     expect(h.seenRead.slice(0,readCalls.length)).toEqual(readCalls.map(x=>x.name));
-    expect(model.seen).toHaveLength(2);
+    expect(model.seen).toHaveLength(3);
     expect(model.seen[0].tools).toEqual([...readCalls.map(c=>c.name),'github_list_directory']);
     expect(model.seen[1].tools).toEqual(['github_commit_files']);
+    expect(model.seen[2].tools).toContain('store_handover');
     const prompt=JSON.stringify(model.seen[1].messages);
     expect(prompt).toContain('planGuidedS7(entries: readonly GuidedEntry[]');
     expect(prompt).toContain('continuity');
