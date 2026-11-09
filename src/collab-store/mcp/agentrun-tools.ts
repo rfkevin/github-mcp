@@ -68,6 +68,8 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
       participant: z.string().min(1).max(128),
       reviewer: z.string().min(1).max(128).optional(),
       tester: z.string().min(1).max(128).optional(),
+      paths: z.array(z.string().min(1).max(400)).min(1).max(5).optional(),
+      acceptance: z.array(z.string().min(1).max(350)).min(1).max(4).optional(),
       takeover_chat: z.boolean().default(false),
       op_id: z.string().min(1).max(253),
     },
@@ -84,7 +86,8 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
         db: context.db, store: context.storeNoWake, env: context.agentRunEnv,
         coordinator: identity.participant_id,
         cycle: input.cycle, task: input.task, participant: input.participant,
-        reviewer: input.reviewer, tester: input.tester, takeoverChat: input.takeover_chat,
+        reviewer: input.reviewer, tester: input.tester,
+        paths: input.paths, acceptance: input.acceptance, takeoverChat: input.takeover_chat,
         opId: input.op_id, now: Math.floor(Date.now() / 1000),
         wake: wakeViaNamespace(namespace),
       });

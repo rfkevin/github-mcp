@@ -14,6 +14,7 @@ import {
 import type { ApiChecks } from './github-write/tools';
 import type { EngineDeps } from './engine';
 import { grants } from './github-write/authorization';
+import { findDynamicGrant } from './github-write/dynamic-grants';
 import { createWorkersAiModel } from './workers-ai-model';
 import { createPaidWorkersAiModel, parseParticipantEnvelope } from './paid-model';
 import { createZaiModel } from './zai-model';
@@ -49,6 +50,8 @@ export interface AgentRunObjectEnv extends AgentRunEnv {
   /** S7: owner configuration; both lists empty by default. Grants freeze branch and paths. */
   AGENT_RUN_GITHUB_WRITERS?: string;
   AGENT_RUN_GITHUB_TASKS?: string;
+  /** Owner-approved BOUNDED dynamic policy, task-level grants stored in D1. */
+  AGENT_RUN_DYNAMIC_SCOPE?: string;
   AGENT_RUN_CHECKS?: string;
   GITHUB_CHECKS_CONFIG?: string;
   /** 7c-3 : branche de base des branches API et cible des PR brouillons (défaut DEFAULT_API_BASE_BRANCH, jamais main/master). */
@@ -148,7 +151,8 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   const github = repository ? githubReads : null;
   // 7c-3 : écritures GitHub seulement avec un dépôt, l'interrupteur dédié et l'adaptateur de la racine.
   const writes = repository && env.AGENT_RUN_GITHUB_WRITES === 'true' && githubWrites
-    ? { writes: githubWrites, baseBranch: apiBaseBranch(env.AGENT_RUN_BASE_BRANCH), s7: { policy: { writers: env.AGENT_RUN_GITHUB_WRITERS, tasks: env.AGENT_RUN_GITHUB_TASKS }, reads: github, checks: apiChecks } } : null;
+    ? { writes: githubWrites, baseBranch: apiBaseBranch(env.AGENT_RUN_BASE_BRANCH), s7: { policy: { writers: env.AGENT_RUN_GITHUB_WRITERS, tasks: env.AGENT_RUN_GITHUB_TASKS,
+      dynamic: env.AGENT_RUN_DYNAMIC_SCOPE }, reads: github, checks: apiChecks } } : null;
   const envelope = parseParticipantEnvelope(env);
   // CC-7 L5b (N1) : plafond de sortie PAR type de tâche (TASK_KIND_BOUNDS via le résolveur).
   const maxOutputTokensFor = (kind: string) => resolveEffectiveMaxTokens({ task_kind: kind });
@@ -212,7 +216,11 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
   return (runId, stepDb) => ({ ...makeEngine(runId, stepDb),
     compactHistory: env.AGENT_RUN_CONTEXT_COMPACTION === 'true',
     // CC8 S7 (Kevin, 2026-11-06) : mode guidé pour toute exécution sous mandat S7 ; sans mandat, sans effet.
-    githubCompletionGrants, guidedS7: true, guidedVerify: true,
+    githubCompletionGrants,
+    dynamicGrantFor: writes && env.AGENT_RUN_DYNAMIC_SCOPE ? async target =>
+      findDynamicGrant(stepDb ?? fallbackDb,env.AGENT_RUN_DYNAMIC_SCOPE,
+        target.cycle_id,target.task_id,target.participant_id) : undefined,
+    guidedS7: true, guidedVerify: true,
     guidedPreparation: env.AGENT_RUN_PREPARATION === 'true' });
 }
 

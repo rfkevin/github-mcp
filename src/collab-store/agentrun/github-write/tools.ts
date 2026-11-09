@@ -3,7 +3,7 @@ import { createGitHubWriteTools, apiBranch, type GitHubWriteToolsOptions } from 
 import type { GitHubReads } from '../read-tools';
 import type { ToolSchema } from '../workers-ai-model';
 import { createStoreWriteTools } from '../store-tools';
-import { authorize, assertPaths, grants, type WritePolicy } from './authorization';
+import { authorize, assertPaths, exactGrant, type WritePolicy } from './authorization';
 import { replaceOnce } from './edits';
 import { reserveCommit, finishCommit, recordCheck, correctionsUsed, releaseReservation } from './progress';
 
@@ -46,7 +46,7 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
     if (call.name === 'github_write_scope') {
       const run = await options.db.prepare('SELECT participant_id,cycle_id,task_id FROM agent_runs WHERE run_id=?1').bind(ctx.run_id).first<{participant_id:string;cycle_id:string;task_id:string}>();
       if (!run) throw new ToolRefused('unknown_run');
-      const grant = grants(s7.policy).find(g => g.participant === run.participant_id && g.cycle === run.cycle_id && g.task === run.task_id);
+      const grant = await exactGrant(options.db,s7.policy,run.cycle_id,run.task_id,run.participant_id);
       if (!grant) throw new ToolRefused('api_task_not_enabled');
       const allowed = await authorize(options.db, s7.policy, ctx.run_id, grant.branch);
       // Expose the authoritative base commit, not a file blob SHA. The subsequent
