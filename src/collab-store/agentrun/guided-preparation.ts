@@ -13,6 +13,13 @@ export const NO_TOOL_CALL_RECOVERY_MAX = 2;
 export function isRecoverablePreparationViolation(violation: string): boolean {
   return violation === 'no_tool_call';
 }
+/** C1: pure gate used by engine + tests (not a local copy in the spec). */
+export function shouldRecoverPreparation(usedRecoveries: number, violation: string): boolean {
+  return isRecoverablePreparationViolation(violation) && usedRecoveries < NO_TOOL_CALL_RECOVERY_MAX;
+}
+export function preparationRecoveriesRemaining(usedRecoveries: number): number {
+  return Math.max(0, NO_TOOL_CALL_RECOVERY_MAX - usedRecoveries);
+}
 export function preparationNoToolCallFeedback(remainingAfterThis: number): string {
   return [
     'RECUPERATION CONSULTANT: aucun appel d outil dans ce tour.',
