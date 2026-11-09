@@ -5,6 +5,7 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { CollabToolContext } from './context';
+import { outputSchemas } from './schemas';
 import { collabFailure } from './result';
 import { CollabStoreError } from '../store/collab-store';
 import {
@@ -16,6 +17,8 @@ import {
   CHAT_HOLD_SECONDS_DEFAULT,
 } from '../agentrun/chat-continuity';
 import { coordinatorRunOverview } from '../agentrun/capacity';
+import { launchCoordinatorImplement } from '../agentrun/coordinator-launch';
+import { wakeViaNamespace } from '../agentrun/object';
 import { previewNextActions } from '../controller/next-actions';
 import { isCoordinator } from '../owner/coordinators';
 
@@ -53,6 +56,41 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
       return { content: [{ type: 'text' as const, text: JSON.stringify(overview) }] };
     } catch (error) {
       return collabFailure(error, 'Vue des exécutions impossible.', {}, context.fallback);
+    }
+  });
+
+  server.registerTool('collab_launch_implement', {
+    title: 'Lancer un run GitHub S7 sur le moteur API existant (coordinateur)',
+    description: 'Coordinateur owner-approved uniquement. Sous grant GitHub owner exact et budget payant 0, attribue si besoin une tache au modele API (claim coordinateur puis handoff D12), cree un run implement idempotent et programme immediatement le Durable Object. takeover_chat libere explicitement le bail de chat, jamais automatiquement. Retourne le run_id ; ne patiente pas pour CI/PR.',
+    inputSchema: {
+      cycle: z.string().min(1).max(64),
+      task: z.string().min(1).max(64),
+      participant: z.string().min(1).max(128),
+      reviewer: z.string().min(1).max(128).optional(),
+      tester: z.string().min(1).max(128).optional(),
+      takeover_chat: z.boolean().default(false),
+      op_id: z.string().min(1).max(253),
+    },
+    outputSchema: outputSchemas.collab_launch_implement,
+    annotations: WRITE,
+  }, async (input) => {
+    try {
+      const identity = await context.identity();
+      const namespace = context.agentRunEnv.AGENT_RUN;
+      if (identity.status !== 'registered' || !namespace) {
+        throw new CollabStoreError('AGENT_RUN_UNAVAILABLE', 'Identite et binding Durable Object requis.');
+      }
+      const result = await launchCoordinatorImplement({
+        db: context.db, store: context.storeNoWake, env: context.agentRunEnv,
+        coordinator: identity.participant_id,
+        cycle: input.cycle, task: input.task, participant: input.participant,
+        reviewer: input.reviewer, tester: input.tester, takeoverChat: input.takeover_chat,
+        opId: input.op_id, now: Math.floor(Date.now() / 1000),
+        wake: wakeViaNamespace(namespace),
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    } catch (error) {
+      return collabFailure(error, 'Lancement API S7 refuse.', {}, context.fallback);
     }
   });
 

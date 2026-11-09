@@ -223,6 +223,6 @@ describe('CC-7 L11 — catalogue MCP', () => {
     expect(on).toContain('collab_research_assign');
     // 21 = 18 outils du lot L11 + collab_memory_inventory + collab_memory_growth_simulate (M1b, toujours enregistrés)
     // + collab_agent_runs_overview (CC-8 S1a 2/3, toujours enregistré).
-    expect(on.length).toBe(21);
+    expect(on.length).toBe(22);
   });
 });

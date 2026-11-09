@@ -52,6 +52,11 @@ const capabilitySet = {
 };
 
 export const outputSchemas = {
+  collab_launch_implement: {
+    status: z.enum(['started', 'existing', 'wake_pending']),
+    run_id: z.string(), cycle: z.string(), task: z.string(), participant: z.string(),
+    wake_accepted: z.boolean(), cost_cents: z.literal(0), detail: z.string(),
+  },
   collab_dispatch_task: {
     status: z.enum(['succeeded', 'attempt_failed', 'busy', 'terminal', 'replayed']),
     invocation_id: z.string(),

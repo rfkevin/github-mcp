@@ -11,6 +11,7 @@ import {
   type AdapterFactory, type ProviderAdapterEnv,
 } from '../executors/run';
 import type { PolicyEnv } from '../agentrun/model-policy';
+import type { AgentRunObjectEnv } from '../agentrun/object';
 
 export interface CollabExecutionEnv extends CollabStoreEnv, ProviderAdapterEnv {
   EXECUTOR_DAILY_CAP?: string;
@@ -41,6 +42,8 @@ export function modelEnvOf(env: object): PolicyEnv {
 export interface CollabToolContext {
   actor: string;
   store: CollabStore;
+  /** Direct coordinator launches must avoid an intermediate task.claim event wake. */
+  storeNoWake: CollabStore;
   scopes: readonly string[];
   /** CC-3 C5 : identité dérivée du client OAuth du jeton (I8), résolue une fois par requête. */
   identity: () => Promise<ParticipantIdentity>;
@@ -52,6 +55,7 @@ export interface CollabToolContext {
   flags: { salonEnabled: boolean; agentRunsEnabled: boolean; researchEnabled: boolean };
   /** CC-7 L9a : vue réduite du Worker pour le catalogue des modèles (aucune valeur de secret). */
   models: PolicyEnv;
+  agentRunEnv: AgentRunObjectEnv;
   /** CC-8 S8a : hook de réveil événementiel du store (optionnel, jamais bloquant). */
   onApplied?: (event: { type: string; payload_json: string }) => void;
 }
@@ -74,8 +78,11 @@ export function createCollabToolContext(
     ...(options.onApplied ? { onApplied: options.onApplied } : {}),
   });
   const db = env.COLLAB_DB;
+  const storeNoWake = new CollabStore(db, {
+    dailyWriteLimit: options.dailyWriteLimit ?? collabDailyWriteLimit(env.COLLAB_DAILY_WRITE_LIMIT), now,
+  });
   let resolved: Promise<ParticipantIdentity> | undefined;
-  return { actor, store, scopes, db, fallback: storeFallback(parseFallbackState(env.COLLAB_FALLBACK_STATE)),
+  return { actor, store, storeNoWake, scopes, db, fallback: storeFallback(parseFallbackState(env.COLLAB_FALLBACK_STATE)),
     executor: {
       factory: providerAdapterFactory(env),
       dailyCap: parseDailyCap(env.EXECUTOR_DAILY_CAP),
@@ -85,6 +92,7 @@ export function createCollabToolContext(
     flags: { salonEnabled: env.SALON_ENABLED === 'true', agentRunsEnabled: env.AGENT_RUNS_ENABLED === 'true',
       researchEnabled: env.AGENT_RUN_RESEARCH === 'true' },
     models: modelEnvOf(env),
+    agentRunEnv: env as unknown as AgentRunObjectEnv,
     ...(options.onApplied ? { onApplied: options.onApplied } : {}),
     // clientId vient du jeton validé (handler.ts) : seul chemin qui enregistre un client observé.
     identity: () => (resolved ??= resolveTokenParticipant(db, clientId)) };
