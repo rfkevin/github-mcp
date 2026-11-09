@@ -3,7 +3,7 @@ import { CollabStoreError, type CollabStore } from '../store/collab-store';
 import { isCoordinator } from '../owner/coordinators';
 import { equivalentParticipantIds } from '../identity/families';
 import { opIdClientFor, parseOpId } from '../contracts';
-import { grants, exactGrant, type WriteGrant } from './github-write/authorization';
+import { exactGrant, type WriteGrant } from './github-write/authorization';
 import { issueDynamicGrant } from './github-write/dynamic-grants';
 import { apiParticipants, attemptRunId, taskKindMaxSteps, taskKindMaxTokens, taskPrompt, taskKindCostCents } from './plan';
 import { runDeadlineS } from './run-policy';

@@ -9,7 +9,7 @@ import { ToolRefused } from '../engine';
 import { sha256Hex } from '../../store/hash';
 import { ensureAgentRunSchema } from '../schema';
 import { apiBranch } from '../github-tools';
-import { validPath, type WriteGrant } from './authorization';
+import type { WriteGrant } from './authorization';
 
 export interface DynamicGrantPolicy {
   cycle: string;
@@ -25,6 +25,9 @@ export interface DynamicGrantRequest {
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const PID = /^[a-z0-9][a-z0-9_-]{0,30}$/;
+const validPath=(path:string):boolean=>path.length>0&&path.length<=400
+  && !/[\\\x00-\x1f\x7f]/.test(path)
+  && !path.split('/').some(part=>!part||part==='.'||part==='..');
 const FORBIDDEN = /^(?:\.github|\.mcp|scripts|migrations)(?:\/|$)|^(?:wrangler\.(?:jsonc?|toml)|AGENT_MEMORY\.md|TOOL_IMPROVEMENTS\.md)$/i;
 export const DYNAMIC_GRANT_TTL_SECONDS = 48 * 3600;
 
