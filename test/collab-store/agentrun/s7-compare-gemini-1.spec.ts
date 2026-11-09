@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planGuidedS7 } from '../../../src/collab-store/agentrun/s7-guided.js';
-import type { S7Scope } from '../../../src/collab-store/agentrun/s7-guided.js';
+import { planGuidedS7, type S7Scope } from '../../../src/collab-store/agentrun/s7-guided.js';
 
 describe('planGuidedS7', () => {
   const baseScope: S7Scope = {
@@ -28,7 +27,6 @@ describe('planGuidedS7', () => {
     const plan = planGuidedS7({
       scope: baseScope,
       corrections_remaining: 3,
-      branch_head: null,
     });
 
     expect(plan).toEqual({
