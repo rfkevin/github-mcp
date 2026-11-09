@@ -8,7 +8,7 @@ import { issueDynamicGrant } from './github-write/dynamic-grants';
 import { apiParticipants, attemptRunId, taskKindMaxSteps, taskKindMaxTokens, taskPrompt, taskKindCostCents } from './plan';
 import { runDeadlineS } from './run-policy';
 import { runCapacity } from './capacity';
-import { createRun, releaseChat, leaseKeyOf } from './engine';
+import { ToolRefused, createRun, releaseChat, leaseKeyOf } from './engine';
 import { ensureAgentRunSchema } from './schema';
 import type { WakeFn } from './orchestrator';
 import type { AgentRunObjectEnv } from './object';
@@ -106,8 +106,23 @@ export async function launchCoordinatorImplement(i: LaunchInput): Promise<Launch
   if (current && (current.status!=='in_progress'
     || (current.owner_pid!==i.coordinator && current.owner_pid!==i.participant)))
     deny('TASK_SCOPE_MISMATCH','Existing task may not be regranted to another author.');
-  const grant = await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,
-    i.coordinator,i.paths,i.acceptance,i.now);
+  let grant: WriteGrant;
+  try {
+    grant = await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,
+      i.coordinator,i.paths,i.acceptance,i.now);
+  } catch (error) {
+    if (!(error instanceof ToolRefused)) throw error;
+    // Fixed reason allowlist: never expose an unexpected exception's message.
+    const reasons = [
+      'dynamic_policy_invalid', 'dynamic_policy_not_approved', 'dynamic_scope_not_approved',
+      'dynamic_acceptance_invalid', 'dynamic_grant_corrupt', 'dynamic_grant_invalid',
+      'dynamic_cycle_not_open', 'dynamic_coordinator_not_active', 'dynamic_grant_cap_exhausted',
+      'dynamic_branch_conflict', 'dynamic_grant_insert_refused', 'dynamic_grant_expired',
+      'dynamic_grant_conflict', 'api_write_policy_invalid', 'api_task_grant_ambiguous',
+    ];
+    throw new CollabStoreError('GITHUB_GRANT_REFUSED',
+      reasons.includes(error.message) ? error.message : 'api_grant_refused');
+  }
   if (!i.env.AGENT_RUN) deny('AGENT_RUN_UNAVAILABLE', 'Durable Object binding required.');
   const c = await i.db.prepare('SELECT status,phase FROM cycles WHERE cycle_id=?1').bind(i.cycle)
     .first<{status:string;phase:string}>();
