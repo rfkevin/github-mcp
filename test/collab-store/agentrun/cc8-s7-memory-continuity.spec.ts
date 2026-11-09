@@ -61,7 +61,7 @@ describe('CC8 S7 consultant : mémoire C4 éditable et passation chat/API',()=>{
     const row=await db.prepare("SELECT id, version FROM memory_entries WHERE scope=?1 AND status='candidate' ORDER BY id DESC LIMIT 1")
       .bind(f.scope).first<{id:string;version:number}>();
     expect(row).not.toBeNull();
-    await c4.activate(row!.id,1,f.peer,f.cycle);
+    await c4.activate(row!.id,1,f.participant,f.cycle);
     const rewrite={id:'rewrite',name:'store_memory_rewrite',
       args:{id:row!.id,text:'Signature réelle vérifiée dans le code source, 5 paramètres.',
         evidence_refs:['sha:base','test:CI']}};
@@ -71,7 +71,7 @@ describe('CC8 S7 consultant : mémoire C4 éditable et passation chat/API',()=>{
     expect(await c4.get(row!.id,2)).toMatchObject({status:'candidate',text:rewrite.args.text});
     // Un chat suivant ne prend pas une candidate pour une mémoire déjà validée.
     expect((await c4.listActiveFor(f.participant,[f.scope])).find(x=>x.id===row!.id)).toBeUndefined();
-    await c4.activate(row!.id,2,f.peer,f.cycle);
+    await c4.activate(row!.id,2,f.participant,f.cycle);
     expect((await c4.listActiveFor(f.participant,[f.scope])).find(x=>x.id===row!.id))
       .toMatchObject({version:2,status:'active',text:rewrite.args.text});
   });

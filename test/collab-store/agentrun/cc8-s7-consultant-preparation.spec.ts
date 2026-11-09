@@ -36,7 +36,7 @@ function consultantHost() {
     github_commit_files:[{branch:BRANCH,commit_sha:C1}],
     github_run_checks:[{targetSha:C1,runId:1001,status:'requested'}],
     github_check_result:[PASSED(C1)],
-    github_open_pr:[{branch:BRANCH,head_sha:C1,number:901}],
+    github_open_pr:[{branch:BRANCH,head_sha:C1,number:901,draft:false}],
     store_handover:[{seq:99,type:'checkpoint',status:'applied'}],
   });
   const seenRead:string[]=[];
@@ -97,7 +97,7 @@ describe('CC8 S7 consultant : mémoire et analyse avant codage',()=>{
       commitAs('github_commit_files',CODE),HANDOVER]);
     const outcomes=await drive(s.runId,{model:model.client,tools:h.tools,now:()=>T+100,workerId:'consultant',
       guidedS7:true,guidedPreparation:true,githubCompletionGrants:s.grants});
-    expect(outcomes.at(-1)).toBe('completed');
+    expect(outcomes.at(-1), JSON.stringify({outcomes, run: await row(s.runId)})).toBe('completed');
     expect(model.seen).toHaveLength(4);
     expect(model.seen[0].tools).toContain('github_list_directory');
     expect(model.seen[2].tools).toEqual(['github_commit_files']);
@@ -107,10 +107,10 @@ describe('CC8 S7 consultant : mémoire et analyse avant codage',()=>{
     const s=await newRun('consultant-verified');
     const h=consultantHost();
     const model=scripted([{text:'Je commence par les sources.',tool_calls:readCalls},
-      commitAs('github_commit_files',CODE)]);
+      commitAs('github_commit_files',CODE),HANDOVER]);
     const outcomes=await drive(s.runId,{model:model.client,tools:h.tools,now:()=>T+100,workerId:'consultant',
       guidedS7:true,guidedPreparation:true,compactHistory:true,githubCompletionGrants:s.grants});
-    expect(outcomes.at(-1)).toBe('completed');
+    expect(outcomes.at(-1), JSON.stringify({outcomes, run: await row(s.runId)})).toBe('completed');
     expect(h.seenRead.slice(0,readCalls.length)).toEqual(readCalls.map(x=>x.name));
     expect(model.seen).toHaveLength(3);
     expect(model.seen[0].tools).toEqual([...readCalls.map(c=>c.name),'github_list_directory']);
@@ -140,7 +140,7 @@ describe('CC8 S7 consultant : mémoire et analyse avant codage',()=>{
     const model=scripted([commitAs('github_commit_files',CODE)]);
     const outcomes=await drive(s.runId,{model:model.client,tools:h.tools,now:()=>T+100,workerId:'legacy',
       guidedS7:true,githubCompletionGrants:s.grants});
-    expect(outcomes.at(-1)).toBe('completed');
+    expect(outcomes.at(-1), JSON.stringify({outcomes, run: await row(s.runId)})).toBe('completed');
     expect(model.seen).toHaveLength(1);
     expect(model.seen[0].tools).toContain('github_commit_files');
   });
