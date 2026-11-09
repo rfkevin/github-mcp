@@ -246,7 +246,9 @@ export function verifiedScopesFor(input: ScopeVerificationInput): VerifiedScope[
   const scopes: VerifiedScope[] = [
     { scope: 'common', verified_by: 'public_common', verified: true },
   ];
-  for (const id of [...input.participantIds].sort()) {
+  // Sonar S2871 : comparateur explicite, ordre UTF-16 identique au sort()
+  // par défaut, déterministe pour dossierFingerprint (jamais localeCompare).
+  for (const id of [...input.participantIds].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
     scopes.push({ scope: 'participant:' + id, verified_by: 'identity', verified: true });
   }
   // Correction revue GPT-6 PR303 objection 1 : les scopes role:<r> et task:<id>
