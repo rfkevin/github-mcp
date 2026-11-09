@@ -864,15 +864,16 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
               cycle_id: run.cycle_id, task_id: run.task_id, branch,
               feedback: preparationNoToolCallFeedback(remainingAfter).slice(0, 400),
             });
-            // Concurrent-safe: every mutation gated by LIVE + claimHeld (no unconditional journal).
+            // Concurrent-safe: journal under claimHeld BEFORE completing the step
+            // (claimHeld requires state <> 'completed' — order matters in this batch).
             await db.batch([
               db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1 AND '
                 + LIVE).bind(runId, tokens, cost, now),
-              db.prepare("UPDATE agent_run_steps SET state = 'completed', model_output = ?5, results = '[]', tokens = tokens + ?6, cost_cents = cost_cents + ?7 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4 AND state = 'claimed' AND "
-                + LIVE).bind(runId, n, deps.workerId, claimed.attempts, JSON.stringify(raw), tokens, cost),
               db.prepare('INSERT INTO agent_run_journal (at, kind, run_id, detail) SELECT ?2, ?3, ?1, ?4 WHERE '
                 + LIVE + ' AND ' + claimHeld('?5', '?6', '?7'))
                 .bind(runId, now, 'preparation_recovery', detail, n, deps.workerId, claimed.attempts),
+              db.prepare("UPDATE agent_run_steps SET state = 'completed', model_output = ?5, results = '[]', tokens = tokens + ?6, cost_cents = cost_cents + ?7 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4 AND state = 'claimed' AND "
+                + LIVE).bind(runId, n, deps.workerId, claimed.attempts, JSON.stringify(raw), tokens, cost),
             ]);
             return settled(db, runId, now);
           }

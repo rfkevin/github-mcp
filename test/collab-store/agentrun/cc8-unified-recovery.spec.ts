@@ -72,13 +72,14 @@ describe('CC8 C1 D1 engine recovery', () => {
     expect(outcomes.at(-1)).toBe('failed');
   });
   it('HALT not widened by recovery path', async () => {
+    const s = await newRun('c1-recovery-halt');
     await setHalt(true);
     try {
-      const s = await newRun('c1-recovery-halt');
       const h = recoveryHost();
       const model = scripted([emptyOut, emptyOut]);
       const outcomes = await drive(s.runId, { model: model.client, tools: h.tools, now: () => T + 100, workerId: 'c1-halt', guidedS7: true, guidedPreparation: true, githubCompletionGrants: s.grants }, 10);
-      expect((await row(s.runId)).status).not.toBe('completed');
+      const run = await row(s.runId);
+      expect(run == null || run.status !== 'completed').toBe(true);
       expect(outcomes.includes('completed')).toBe(false);
     } finally { await setHalt(false); }
   });
