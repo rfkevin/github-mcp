@@ -137,14 +137,29 @@ export function typedStop(stopReason: string | null): { stop_code: string; stop_
  * serveur. Jamais de prompt, de sortie modèle, d'argument d'outil, de contenu de fichier, de message
  * d'erreur ni de résumé texte du modèle.
  */
+/** E0 : ne renvoyer que des COMPTEURS issus du JSON du modèle, jamais son contenu. */
+function toolCallCount(output: string | null): number | null {
+  if (output === null) return null;
+  try {
+    const value: unknown = JSON.parse(output);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const calls = (value as { tool_calls?: unknown }).tool_calls;
+    return Array.isArray(calls) ? calls.length : null;
+  } catch {
+    return null;
+  }
+}
+
+const STEP_TRACE_STATES = new Set(['claimed', 'completed', 'failed', 'pending']);
+
 export async function redactedRunSummary(db: D1Database, runId: string) {
   await ensureAgentRunSchema(db);
   const run = await db.prepare([
-    'SELECT run_id, cycle_id, participant_id, task_id, task_kind, status, stop_reason, steps_done, max_steps, tokens_used, cost_cents,',
+    'SELECT run_id, cycle_id, participant_id, task_id, task_kind, status, stop_reason, steps_done, max_steps, max_tokens, tokens_used, cost_cents, max_cost_cents,',
     '  created_at, updated_at, (SELECT COUNT(*) FROM agent_run_server_steps s WHERE s.run_id = agent_runs.run_id) AS server_steps',
     'FROM agent_runs WHERE run_id = ?1',
   ].join(' ')).bind(runId).first<{ run_id: string; cycle_id: string; participant_id: string; task_id: string; task_kind: string;
-    status: string; stop_reason: string; steps_done: number; max_steps: number; tokens_used: number; cost_cents: number;
+    status: string; stop_reason: string; steps_done: number; max_steps: number; max_tokens: number; tokens_used: number; cost_cents: number; max_cost_cents: number;
     created_at: number; updated_at: number; server_steps: number }>();
   if (!run) return null;
   const all = async <T>(sql: string): Promise<T[]> => {
@@ -154,6 +169,10 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
       return []; // table optionnelle absente (relevés CI, choix de modèle)
     }
   };
+  // Les anciennes sorties restent dans D1. Le client ne reçoit ni leur texte ni leurs arguments.
+  const traces = await all<{ n: number; state: string; model_output: string | null; results: string | null;
+    tokens: number; cost_cents: number }>(
+    'SELECT n, state, model_output, results, tokens, cost_cents FROM agent_run_steps WHERE run_id = ?1 ORDER BY n DESC LIMIT 64');
   const effects = await all<{ n: number; idx: number; tool: string; status: string; result: string | null }>(
     'SELECT n, idx, tool, status, result FROM agent_run_effects WHERE run_id = ?1 ORDER BY n, idx');
   const polls = await all<{ n: number; idx: number; k: number; status: string; result: string }>(
@@ -167,8 +186,17 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
   return {
     run_id: run.run_id, cycle_id: run.cycle_id, participant_id: run.participant_id, task_id: run.task_id, task_kind: run.task_kind,
     status: run.status, ...typedStop(run.stop_reason), steps_done: run.steps_done, server_steps: run.server_steps,
-    model_steps: run.steps_done - run.server_steps, max_steps: run.max_steps, tokens_used: run.tokens_used, cost_cents: run.cost_cents,
+    model_steps: run.steps_done - run.server_steps, max_steps: run.max_steps, max_tokens: run.max_tokens,
+    tokens_used: run.tokens_used, cost_cents: run.cost_cents, max_cost_cents: run.max_cost_cents,
     created_at: run.created_at, updated_at: run.updated_at,
+    // E0 : outil demandé = compteur structurel ; outil exécuté = reçu redacted déjà présent dans effects.
+    step_traces: traces.reverse().map(t => ({
+      n: t.n, state: STEP_TRACE_STATES.has(t.state) ? t.state : 'other',
+      model_output_recorded: t.model_output !== null,
+      tool_calls_requested: toolCallCount(t.model_output),
+      tool_results_recorded: t.results !== null,
+      tokens: t.tokens, cost_cents: t.cost_cents,
+    })),
     effects: effects.map(e => ({ n: e.n, idx: e.idx, tool: e.tool, status: e.status, receipt: redactedReceipt(e.result) })),
     ci_polls: polls.map(p => ({ n: p.n, idx: p.idx, k: p.k, status: p.status, receipt: redactedReceipt(p.result) })),
     model_choices: choices.map(c => ({ n: c.n, ref: c.ref, chosen_by: c.chosen_by, effort: c.effort })),
