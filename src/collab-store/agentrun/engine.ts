@@ -44,9 +44,9 @@ import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI
 import { modelFailureKind } from './model-failure';
 import { verifyContext } from './verify-guided';
 import { HANDOVER_WRITE_TOOLS, HANDOVER_INSTRUCTION, handoverViolation,
-  PREPARATION_ROUNDS_MAX, PREPARATION_READ_TOOLS, PREPARATION_DISCOVERY_TOOLS,
-  readPreparationEvidence, preparationInstruction,
-  preparationViolation, type PreparationRecord } from './guided-preparation';
+  PREPARATION_ROUNDS_MAX, NO_TOOL_CALL_RECOVERY_MAX, PREPARATION_READ_TOOLS, PREPARATION_DISCOVERY_TOOLS,
+  readPreparationEvidence, preparationInstruction, preparationNoToolCallFeedback,
+  isRecoverablePreparationViolation, preparationViolation, type PreparationRecord } from './guided-preparation';
 import { missionOf, type MissionKind } from './mission-quality';
 import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
   planGuidedS7, PRECHECK_HINTS, guidedBareDependencies, type GuidedStep } from './s7-guided';
