@@ -18,3 +18,12 @@ Le grant est issu du seul outil MCP authentifié du coordinateur, non d'une sort
 
 ## Déploiement
 CI4/4, revue Vibe + tests Grok D12, fusion par Kevin seulement vers `cc3-integration`, puis déploiement `cc3-test`. La connexion MCP doit être rafraîchie pour exposer les nouveaux paramètres de `collab_launch_implement`. Après cette fusion, la PR #298 (grants exacts supplémentaires) est redondante ; ne pas la fusionner. Aucun reset D1 ni déploiement master.
+
+
+## Diagnostic des refus et identité du coordinateur
+
+Le contrôle de lancement, l'INSERT atomique du grant et chaque relecture utilisent désormais la même famille d'identité approuvée par le propriétaire. `created_by` conserve l'identité authentifiée, sans réécriture des historiques. Révoquer le mandat actif de la famille retire aussi les grants issus de ses alias.
+
+Un refus déterministe remonte par MCP avec `GITHUB_GRANT_REFUSED`, `retryable=false` et une raison bornée : `dynamic_grant_cap_exhausted` (plafond cumulatif, inchangé), `dynamic_grant_conflict` (intention immuable incompatible), `dynamic_grant_expired` (pas de renouvellement implicite), `dynamic_cycle_not_open`, `dynamic_coordinator_not_active`, `dynamic_branch_conflict` ou `dynamic_grant_insert_refused` (aucune insertion confirmée). Les autres refus de politique restent explicites. Une vraie exception de stockage reste `STORE_UNAVAILABLE` ; aucun message SQL arbitraire n'est publié.
+
+Régression du 9 novembre : le log live `dynamic_grant_conflict_or_cap` prouve le refus, mais ne permet pas seul de choisir sa cause. La suite D1 reproduit l'incohérence d'alias et couvre révocation, quota concurrent, rejeu au plafond, conflit, expiration, cycle fermé et réponse MCP sans réveil. Le déploiement puis les deux vrais essais restent nécessaires pour confirmer la résolution live.

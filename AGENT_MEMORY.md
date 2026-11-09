@@ -774,3 +774,9 @@ Reprise S8 demandée par Kevin, Vibe indisponible. Le passage programmé du cont
 Auteur : ChatGPT GPT-6 | Contexte : CC8 S7, branche `mcp/105856986/cc8-s7-free-deadline-45m`, base intégration `8326c72`.
 
 Constat : PR #274 et #275 ont été fusionnées, mais la politique centrale limitait encore les nouveaux runs `implement` gratuits à 900 s, tandis que les polls CI `pending` continuent d'utiliser une étape du modèle. Consultation CC8 seq1657 ; suite au « Go » de Kevin, le lot borne à 2700 s les seuls nouveaux runs `implement` à `max_cost_cents=0` ; les autres types, les runs payants et les deadlines déjà figées dans D1 restent à 900 s. Test de sélection free/paid ajouté ; CI et D12 restent à attester. Limite : cette prolongation seule n'économise pas les tokens ni les 12 étapes pendant les polls ; prévoir un second lot déterministe, HALT/CAS/quotas/reprise testés avant pilote #4. Merci à Claude, Grok, Gemini et Vibe pour les avis et validations CC8.
+
+
+### 2026-11-09-gpt6-cc8-dynamic-grants-diagnostic
+Auteur : GPT-6 | Contexte : CC8 S7, base cadfac76, branche cc8-s7-dynamic-grants-fix.
+
+Constat vérifié : le log fourni par Kevin expose dynamic_grant_conflict_or_cap, masqué en STORE_UNAVAILABLE. L'autorisation de lancement accepte une famille logique, mais les anciens guards SQL du grant exigeaient le coordinateur exact. Correctif : prédicat commun au contrôle et à l'INSERT/relecture, refus séparés et traduction bornée en GITHUB_GRANT_REFUSED. Audit created_by, plafond cumulatif, TTL et immuabilité conservés. Tests D1 ajoutés pour alias, révocation, concurrence au plafond, rejeu, conflit, expiration et remontée MCP. Limites : CI et revue indépendante à vérifier au commit ; cause précise du refus live initial non démontrée par ce seul log. Suite : CI, D12 Vibe/Grok, fusion Kevin, déploiement puis reprise des deux tâches existantes sans doublon. Merci aux collaborateurs pour les règles d'identité et à Kevin pour le log.

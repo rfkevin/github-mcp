@@ -9,6 +9,7 @@ import { ToolRefused } from '../engine';
 import { sha256Hex } from '../../store/hash';
 import { ensureAgentRunSchema } from '../schema';
 import { apiBranch } from '../github-tools';
+import { activeCoordinatorGuard, isCoordinator } from '../../owner/coordinators';
 import type { WriteGrant } from './authorization';
 
 export interface DynamicGrantPolicy {
@@ -89,11 +90,10 @@ export async function findDynamicGrant(db:D1Database,raw:string|undefined,cycle:
     .bind(cycle,task,participant).first<GrantRow>();
   if (!row || row.expires_at<=now) return null;
   // A coordinator's revocation must revoke ALL of its live grants immediately.
-  const alive=await db.prepare([
-    'SELECT 1 AS ok FROM coordinators c JOIN participants p ON p.participant_id=c.participant_id',
-    "JOIN cycles cyc ON cyc.cycle_id=?2 AND cyc.status='open'",
-    "WHERE c.participant_id=?1 AND c.status='active' AND p.status='active'",
-  ].join(' ')).bind(row.created_by,cycle).first<{ok:number}>();
+  const alive=await db.prepare(
+    "SELECT 1 AS ok WHERE EXISTS(SELECT 1 FROM cycles WHERE cycle_id=?2 AND status='open') AND "
+    + activeCoordinatorGuard('?1')
+  ).bind(row.created_by,cycle).first<{ok:number}>();
   if (alive?.ok!==1) return null;
   let paths:string[], acceptance:string[];
   try { paths=JSON.parse(row.paths_json) as string[]; acceptance=JSON.parse(row.acceptance_json) as string[]; }
@@ -121,18 +121,33 @@ export async function issueDynamicGrant(db:D1Database,raw:string|undefined,i:Dyn
   const branch=await branchFor(i.cycle,i.task,i.participant);
   await ensureAgentRunSchema(db);
   const expiration=i.now+DYNAMIC_GRANT_TTL_SECONDS;
-  const insert=await db.prepare([
+  await db.prepare([
     'INSERT OR IGNORE INTO api_dynamic_grants(cycle,task,participant,branch,paths_json,acceptance_json,created_by,created_at,expires_at)',
     'SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9',
     'WHERE (SELECT COUNT(*) FROM api_dynamic_grants WHERE cycle=?1) < ?10',
     "AND EXISTS(SELECT 1 FROM cycles WHERE cycle_id=?1 AND status='open')",
-    "AND EXISTS(SELECT 1 FROM coordinators c JOIN participants p ON c.participant_id=p.participant_id WHERE c.participant_id=?7 AND c.status='active' AND p.status='active')"
+    'AND ' + activeCoordinatorGuard('?7')
   ].join(' ')).bind(i.cycle,i.task,i.participant,branch,JSON.stringify(i.paths),JSON.stringify(acceptance),
     i.coordinator,i.now,expiration,p.max_grants).run();
   const row=await db.prepare('SELECT cycle,task,participant,branch,paths_json,acceptance_json,created_by,created_at,expires_at FROM api_dynamic_grants WHERE cycle=?1 AND task=?2 AND participant=?3')
     .bind(i.cycle,i.task,i.participant).first<GrantRow>();
-  if (!row || row.branch!==branch || row.paths_json!==JSON.stringify(i.paths)
-    || row.acceptance_json!==JSON.stringify(acceptance) || row.created_by!==i.coordinator
-    || row.expires_at<=i.now) return reject(insert.meta.changes===0?'dynamic_grant_conflict_or_cap':'dynamic_grant_invalid');
+  // Diagnose only after the atomic INSERT guard; these reads never grant permission.
+  const cycle=await db.prepare('SELECT status FROM cycles WHERE cycle_id=?1')
+    .bind(i.cycle).first<{status:string}>();
+  if (cycle?.status!=='open') return reject('dynamic_cycle_not_open');
+  if (!await isCoordinator(db,i.coordinator)) return reject('dynamic_coordinator_not_active');
+  if (!row) {
+    const count=await db.prepare('SELECT COUNT(*) AS n FROM api_dynamic_grants WHERE cycle=?1')
+      .bind(i.cycle).first<{n:number}>();
+    if ((count?.n??0)>=p.max_grants) return reject('dynamic_grant_cap_exhausted');
+    const collision=await db.prepare('SELECT 1 AS ok FROM api_dynamic_grants WHERE branch=?1')
+      .bind(branch).first<{ok:number}>();
+    if (collision) return reject('dynamic_branch_conflict');
+    return reject('dynamic_grant_insert_refused');
+  }
+  if (row.expires_at<=i.now) return reject('dynamic_grant_expired');
+  if (row.branch!==branch || row.paths_json!==JSON.stringify(i.paths)
+    || row.acceptance_json!==JSON.stringify(acceptance) || row.created_by!==i.coordinator)
+    return reject('dynamic_grant_conflict');
   return parseRow(row);
 }

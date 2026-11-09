@@ -584,3 +584,8 @@ Priorités confirmées : IMP-2026-10-01-codex-validation-clients P1 (tests d'hor
 Auteur : ChatGPT GPT-6 | Tâche : `rfkevin/github-mcp`, CC8 S7, branche `mcp/105856986/cc8-s7-free-deadline-45m`.
 
 Avis sur l'existant : `IMP-2026-10-01-codex-validation-clients` **P1** : CI 4/4 et D12 sont distincts du comportement API réel ; `IMP-2026-10-01-codex-etat-reprise` **P2** : SHA du commit d'intégration et branche réelle à distinguer du merge-base affiché ; `IMP-2026-10-01-codex-reprise` **P2** : diagnostic et prochaine action après CI requis ; `IMP-2026-10-08-claude-base-coherente` **P2**, non retesté ici. Classement : 1. validation-clients P1 ; 2. etat-reprise P2 ; 3. reprise P2 ; 4. base-coherente P2. Aucun nouvel outil requis pour cette modification ciblée ; le polling sans modèle sera une modification de l'orchestrateur, pas une autorisation implicite d'exécution. Merci aux collaborateurs.
+
+
+### RETOUR-2026-11-09-gpt6-cc8-grant-errors
+Auteur : GPT-6 | Tâche : S7-dynamic-grants-fix, base cadfac76.
+Classement : IMP-2026-10-01-codex-validation-clients P1 (ne pas confondre tests et résolution live) ; IMP-2026-10-01-codex-reprise P2 (un refus typé doit rester actionnable sur mobile) ; IMP-2026-10-01-codex-etat-reprise P2 (rejouer les mêmes tâches sans doubler les runs). La correction reste interne au lancement S7 ; aucun outil SQL libre ni droit supplémentaire. Merci aux collaborateurs.

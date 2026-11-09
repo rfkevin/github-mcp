@@ -11,7 +11,6 @@ import {
   type OwnerRequestBinding,
 } from './binding';
 import type { OwnerProof } from './proof';
-import { equivalentParticipantIds } from '../identity/families';
 
 export const COORDINATOR_KEY_PREFIX = 'owner:coordinator:';
 const PARTICIPANT_RE = /^[a-z0-9][a-z0-9:_-]{0,127}$/i;
@@ -37,14 +36,27 @@ export async function latestCoordinatorActSeq(db: D1Database, participantId: str
  * Le participant doit être actif. Un grant accordé à un membre d'une famille
  * logique vaut pour les autres membres : il s'agit du même principal D12.
  */
+/** Same owner-approved logical identity check, evaluated inside guarded writes.
+ * Parameters are internal SQL placeholders, never caller-provided SQL.
+ */
+export function activeCoordinatorGuard(parameter: '?1' | '?7'): string {
+  return `EXISTS (
+    SELECT 1 FROM coordinators c JOIN participants p ON p.participant_id = c.participant_id
+    WHERE c.status = 'active' AND p.status = 'active'
+      AND (c.participant_id = ${parameter} OR c.participant_id IN (
+        SELECT peer.participant_id FROM participant_identity_families peer
+        WHERE peer.family_id = COALESCE(
+          (SELECT family_id FROM participant_identity_families WHERE participant_id = ${parameter}),
+          ${parameter}
+        )
+      ))
+  )`;
+}
+
 export async function isCoordinator(db: D1Database, participantId: string): Promise<boolean> {
   await ensureSchema(db);
-  const members = await equivalentParticipantIds(db, participantId);
-  const placeholders = members.map((_, index) => '?' + (index + 1)).join(',');
-  const row = await db.prepare([
-    'SELECT 1 AS ok FROM coordinators c JOIN participants p ON p.participant_id = c.participant_id',
-    "WHERE c.participant_id IN (" + placeholders + ") AND c.status = 'active' AND p.status = 'active' LIMIT 1",
-  ].join(' ')).bind(...members).first<{ ok: number }>();
+  const row = await db.prepare('SELECT 1 AS ok WHERE ' + activeCoordinatorGuard('?1'))
+    .bind(participantId).first<{ ok: number }>();
   return row?.ok === 1;
 }
 
