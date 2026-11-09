@@ -589,3 +589,8 @@ Avis sur l'existant : `IMP-2026-10-01-codex-validation-clients` **P1** : CI 4/4 
 ### RETOUR-2026-11-09-gpt6-cc8-grant-errors
 Auteur : GPT-6 | Tâche : S7-dynamic-grants-fix, base cadfac76.
 Classement : IMP-2026-10-01-codex-validation-clients P1 (ne pas confondre tests et résolution live) ; IMP-2026-10-01-codex-reprise P2 (un refus typé doit rester actionnable sur mobile) ; IMP-2026-10-01-codex-etat-reprise P2 (rejouer les mêmes tâches sans doubler les runs). La correction reste interne au lancement S7 ; aucun outil SQL libre ni droit supplémentaire. Merci aux collaborateurs.
+
+### RETOUR-2026-11-09-gpt6-cc8-e0-chemin-unique
+Auteur : ChatGPT GPT-6 | Tâche : PR #301, `cc8-systeme-unique`, base `d297c2e`
+
+Expérience : branche, commit atomique, diff, PR et CI GitHub ; à chaque nouveau head, les validations doivent être renouvelées au SHA exact. Avis : `IMP-2026-10-01-codex-validation-clients` reste P1 (une CI verte au commit précédent ne prouve pas le dernier) ; `IMP-2026-10-01-codex-etat-reprise` reste P2 (head/base identifiés) ; `IMP-2026-10-01-codex-reprise` reste P2 (trace expurgée utile après échec). Classement : 1. validation-clients P1 ; 2. état-reprise P2 ; 3. reprise P2. Nouvelle proposition : aucune, réutiliser `collab_agent_run_summary` existant plutôt que multiplier les endpoints. Limite : CI et D12 au dernier SHA restent à confirmer. Merci aux collaborateurs.

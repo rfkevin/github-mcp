@@ -177,3 +177,10 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `docs/collaboration/cc8/s7-api-write.md` : configuration et acceptation réelle restante.
 
 - CC8 S8b : `src/collab-store/controller/autonomy.ts` supervise les tâches blocked et le silence du mandat, prépare les alertes salon et demandes owner sous HALT/CAS ; raccordements `scheduled.ts`, `webhook.ts`, `src/index.ts`. Tests : `test/collab-store/controller/s8-autonomy.spec.ts`. Protocole réel 48 h : `docs/collaboration/cc8/s8-autonomy.md`.
+
+### CC8 E0 — chemin unique chat/API : baseline et diagnostics
+
+- `test/collab-store/agentrun/cc8-unique-path-baseline.spec.ts` : golden tests des partitions historiques READ/WRITE/GITHUB_WRITE, budgets, gate de préparation et compaction, avant migration progressive vers un résolveur commun ; références de l'existant, non politique cible.
+- `src/collab-store/agentrun/chat-continuity.ts` (`redactedRunSummary`) : résumé expurgé existant, enrichi des plafonds et compteurs par étape sans sortie brute du modèle.
+- `test/collab-store/agentrun/cc8-e0-redacted-trace.spec.ts` : tests D1 des traces, confidentialité et refus de lecture croisée.
+- Conserver les gardes par acte GitHub, D12, HALT et CAS pendant le passage au chemin unique.
