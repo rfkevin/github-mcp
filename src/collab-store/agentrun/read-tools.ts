@@ -196,7 +196,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   const research = options.research ? createResearchTools(options.db, options.research) : null;
   // CC-7 L3 (incrément 2) : proposition de mémoire, seulement avec écritures store ET continuité, types connus.
   const memoryWrite = (taskKind: string): readonly WriteToolName[] =>
-    writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose'] : [];
+    writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose', 'store_memory_rewrite', 'store_handover'] : [];
   const writeNames = (taskKind: string): readonly string[] =>
     [...(writes ? writes.names(taskKind) : []), ...memoryWrite(taskKind), ...(gh ? gh.names(taskKind) : []),
       ...(verdicts && (taskKind === 'review' || taskKind === 'test') ? ['store_verdict' as const] : []),

@@ -8,6 +8,26 @@
 import type { ModelOutput } from './engine';
 
 export const PREPARATION_ROUNDS_MAX = 3;
+export const HANDOVER_WRITE_TOOLS = ['store_handover','store_memory_propose','store_memory_rewrite'] as const;
+/** The passation is never used to bypass D12; it is an explicit log and optional C4 candidate. */
+export function handoverViolation(output: ModelOutput): string | null {
+  if (output.tool_calls.length === 0) return 'no_tool_call';
+  if (output.tool_calls.length > 2) return 'too_many_tool_calls';
+  const handovers = output.tool_calls.filter(c=>c.name==='store_handover');
+  if (handovers.length !== 1) return 'handover_required_once';
+  const others = output.tool_calls.filter(c=>c.name!=='store_handover');
+  if (others.some(c=>c.name!=='store_memory_propose' && c.name!=='store_memory_rewrite'))
+    return 'tool_not_offered:' + others[0].name;
+  return null;
+}
+export const HANDOVER_INSTRUCTION = [
+  'PASSATION CONSULTANT S7 : PR créée par le serveur avec CI réussie. Le code est déjà écrit.',
+  'Enregistrez UNE note store_handover {done,todo,learned} pour votre futur chat ET run API.',
+  'Vous pouvez en plus appeler UNE fois store_memory_propose (nouvelle leçon) ou',
+  'store_memory_rewrite (nouvelle version candidate d’une entrée C4 existante et visible).',
+  'Écrivez des faits prouvés ; les propositions de mémoire ne sont pas automatiquement actives.',
+  'Aucun appel GitHub ni verdict D12 ici. Cette passation complète la mission, sans fusion.',
+].join('\n');
 export const PREPARATION_READ_TOOLS = [
   'store_context', 'store_delta', 'store_memory', 'store_continuity', 'github_read_file',
 ] as const;

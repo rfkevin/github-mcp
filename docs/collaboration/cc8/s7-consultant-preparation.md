@@ -25,3 +25,9 @@ Le serveur n'invente pas une mémoire par run. Il réutilise la mémoire C4 pers
 ## Découverte des chemins
 
 Le consultant peut appeler `github_list_directory` (GitHub App en lecture seule, au plus 80 entrées, fichiers sensibles masqués par le client existant) avant `github_read_file`. La lecture des dossiers ne compte PAS comme preuve de consultation du code : un vrai fichier source au SHA immuable de la base reste obligatoire. Les prompts de préparation proposent de commencer par le dossier `src/` si le chemin est inconnu.
+
+
+## Mémoire bidirectionnelle chat ↔ API : écrire et réviser
+Après la PR dont la CI est verte, le run ne se termine plus immédiatement quand \`AGENT_RUN_PREPARATION=true\`. Une phase finale de passation permet au modèle d'appeler **une fois \`store_handover\`** avec \`done / todo / learned\`, ainsi qu'au maximum **une proposition C4** : \`store_memory_propose\` (nouvelle leçon) ou \`store_memory_rewrite\` (révision \`memory.consolidate\` d'une entrée existante). Le nouveau texte est une **candidate versionnée**, pas une écriture aveugle sur l'entrée active. Les mêmes règles C4 de revue et d'activation que dans le chat continuent de s'appliquer ; les mémoires personnelles restent privées, et les scopes partagés protégés. \`store_continuity\` (chats et runs) et \`store_memory\` reliront ces données à l'appel suivant. La passation est enregistrée dans le même cycle par l'identité API, idempotente au journal D1. Aucun outil GitHub n'est offert lors de cette étape.
+
+Pour permettre une continuation après échec, le serveur garde aussi dans D1 les statuts, arrêts et effets des runs, consultables via \`store_continuity\`. Un résultat de commit ou de CI n'est pas une leçon validée : le modèle doit qualifier sa proposition, et C4 exige sa revue.

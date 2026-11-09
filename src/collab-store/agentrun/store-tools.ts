@@ -20,10 +20,11 @@ import { StateContractError } from '../../collab/contracts';
 import { opIdClientFor } from '../contracts/phases';
 import { CollabStore, CollabStoreError } from '../store/collab-store';
 import { MemoryStoreError } from '../memory/memory-store';
+import { HANDOVER_MAX_CHARS, handoverLength } from '../context/continuity';
 import { ToolRefused, type LookupResult, type ToolCall } from './engine';
 import type { ToolSchema } from './workers-ai-model';
 
-export type WriteToolName = 'store_ask' | 'store_answer' | 'store_task_status' | 'store_memory_propose';
+export type WriteToolName = 'store_ask' | 'store_answer' | 'store_task_status' | 'store_memory_propose' | 'store_memory_rewrite' | 'store_handover';
 
 /**
  * CC-7 L3 (incrément 2) : proposition de mémoire C4 par l'API (parité S4). Une proposition reste `candidate` :
@@ -44,6 +45,15 @@ export const WRITE_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
   { name: 'store_task_status', description: 'Signaler l’avancement d’une tâche où votre participant a un rôle : in_progress ou blocked seulement.',
     parameters: { type: 'object', properties: { task: { type: 'string' }, status: { type: 'string', enum: ['in_progress', 'blocked'] },
       note: { type: 'string', maxLength: 1000 } }, required: ['task', 'status'], additionalProperties: false } },
+  { name: 'store_handover', description: 'Passation durable chat ↔ API pour votre identité : Fait / Reste / Appris. Enregistre un checkpoint dans le cycle, pas un verdict D12.',
+    parameters: { type: 'object', properties: {
+      done: { type: 'string', maxLength: 1200 }, todo: { type: 'string', maxLength: 1200 },
+      learned: { type: 'string', maxLength: 1200 } }, additionalProperties: false } },
+  { name: 'store_memory_rewrite', description: 'Réviser une entrée C4 existante visible par votre identité : memory.consolidate versionné, nouveau contenu candidat avec références, soumis aux mêmes revues et protections que le chat.',
+    parameters: { type: 'object', properties: {
+      id: { type: 'string', maxLength: 128 }, text: { type: 'string', maxLength: 1000 },
+      evidence_refs: { type: 'array', items: { type: 'string', maxLength: 300 }, minItems: 1, maxItems: 5 } },
+      required: ['id','text','evidence_refs'], additionalProperties: false } },
   { name: 'store_memory_propose', description: 'Proposer une entrée de mémoire C4 (candidate, à activer par revue). scope : personal (défaut, votre mémoire), common, role:<r>, task:<t> ou project:<p>.',
     parameters: { type: 'object', properties: { text: { type: 'string', maxLength: 1000 },
       kind: { type: 'string', enum: ['fact', 'lesson', 'procedure', 'observation', 'open_question'] },
@@ -109,7 +119,7 @@ function memoryProposal(args: Record<string, unknown>, participantId: string): R
   return { memory: { scope, kind: args.kind, text: body, confidence, ...(refs ? { evidence_refs: refs } : {}) } };
 }
 
-function eventFor(call: ToolCall, participantId: string): { type: 'clarify.ask' | 'clarify.answer' | 'task.status' | 'memory.propose'; payload: Record<string, unknown> } {
+function eventFor(call: ToolCall, participantId: string): { type: 'clarify.ask' | 'clarify.answer' | 'task.status' | 'memory.propose' | 'memory.consolidate' | 'checkpoint'; payload: Record<string, unknown> } {
   const args = call.args ?? {};
   switch (call.name as WriteToolName) {
     case 'store_ask': {
@@ -132,6 +142,23 @@ function eventFor(call: ToolCall, participantId: string): { type: 'clarify.ask' 
       const note = text(args, 'note', 1000, false);
       // Forme du contrat store (taskStatements) : { task: { task_id, status } }.
       return { type: 'task.status', payload: { task: { task_id: task, status }, ...(note ? { note } : {}) } };
+    }
+    case 'store_handover': {
+      const done = args.done === undefined ? '' : text(args, 'done', 1200)!;
+      const todo = args.todo === undefined ? '' : text(args, 'todo', 1200)!;
+      const learned = args.learned === undefined ? '' : text(args, 'learned', 1200)!;
+      if (!done && !todo && !learned || handoverLength({ done, todo, learned }) > HANDOVER_MAX_CHARS)
+        throw new ToolRefused('handover_empty_or_too_long');
+      return { type: 'checkpoint', payload: {kind:'handover',done,todo,learned} };
+    }
+    case 'store_memory_rewrite': {
+      const id = text(args, 'id', 128)!;
+      const body = text(args, 'text', MEMORY_PROPOSE_TEXT_MAX)!;
+      const refs = args.evidence_refs;
+      if (!Array.isArray(refs) || refs.length < 1 || refs.length > 5
+        || refs.some(ref=>typeof ref!=='string'||!ref.trim()||ref.length>300))
+        throw new ToolRefused('evidence_refs_required');
+      return {type:'memory.consolidate',payload:{memory:{id,text:body,evidence_refs:refs}}};
     }
     case 'store_memory_propose':
       return { type: 'memory.propose', payload: memoryProposal(args, participantId) };
