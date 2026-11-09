@@ -41,6 +41,8 @@ export async function grantForLaunch(db: D1Database, env: AgentRunObjectEnv, cyc
   if (existing) {
     if (paths && JSON.stringify(paths)!==JSON.stringify(existing.paths))
       deny('TASK_SCOPE_MISMATCH', 'Cannot widen or alter a frozen grant.');
+    if (acceptance && JSON.stringify(acceptance)!==JSON.stringify(existing.acceptance??[]))
+      deny('TASK_ACCEPTANCE_MISMATCH','Cannot modify a frozen mission.');
     if (!existing.branch.startsWith('mcp/105856986/' + pid + '-api-'))
       deny('TASK_NOT_GRANTED','Branch outside API namespace.');
     return existing;

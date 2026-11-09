@@ -88,6 +88,13 @@ export async function findDynamicGrant(db:D1Database,raw:string|undefined,cycle:
   const row=await db.prepare('SELECT cycle,task,participant,branch,paths_json,acceptance_json,created_by,created_at,expires_at FROM api_dynamic_grants WHERE cycle=?1 AND task=?2 AND participant=?3')
     .bind(cycle,task,participant).first<GrantRow>();
   if (!row || row.expires_at<=now) return null;
+  // A coordinator's revocation must revoke ALL of its live grants immediately.
+  const alive=await db.prepare([
+    'SELECT 1 AS ok FROM coordinators c JOIN participants p ON p.participant_id=c.participant_id',
+    "JOIN cycles cyc ON cyc.cycle_id=?2 AND cyc.status='open'",
+    "WHERE c.participant_id=?1 AND c.status='active' AND p.status='active'",
+  ].join(' ')).bind(row.created_by,cycle).first<{ok:number}>();
+  if (alive?.ok!==1) return null;
   let paths:string[], acceptance:string[];
   try { paths=JSON.parse(row.paths_json) as string[]; acceptance=JSON.parse(row.acceptance_json) as string[]; }
   catch { return reject('dynamic_grant_corrupt'); }
