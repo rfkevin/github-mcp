@@ -76,7 +76,7 @@ describe('CC-5 l7c-2 — hôte : écritures figées par type de tâche', () => {
     const host = createReadToolHost({ db, repository: null, github: null, storeWrites: true });
     expect(readOnly.list('answer')).toEqual(['store_context', 'store_delta']);
     expect(host.list('answer')).toEqual(['store_context', 'store_delta', 'store_answer', 'store_ask']);
-    expect(host.list('research')).toEqual(['store_context', 'store_delta']);
+    expect(host.list('research')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
     expect(host.list('fix')).toEqual([]);
     expect(host.list('__proto__')).toEqual([]);
     expect(host.spec('answer', 'store_answer')).toEqual({ name: 'store_answer', effect: 'write' });
