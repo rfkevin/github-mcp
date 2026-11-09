@@ -181,7 +181,19 @@ export interface TaskDossier {
   readonly handovers: readonly DossierHandover[];
   readonly next_actions: readonly string[];
   readonly github: DossierGithubState | null;
+  readonly truncated: DossierTruncation;
   readonly budget: { readonly max_tokens: number; readonly estimated_tokens: number };
+}
+
+/** Correction revue GPT-6 PR303 objection 3 : troncatures SIGNALÉES — nombre
+ * d'éléments écartés par section ; complete=true ssi AUCUNE n'a cédé. */
+export interface DossierTruncation {
+  readonly sources: number;
+  readonly next_actions: number;
+  readonly handovers: number;
+  readonly open_questions: number;
+  readonly delta_events: number;
+  readonly complete: boolean;
 }
 
 /** Refus explicite quand le dossier minimal dépasse le budget (jamais de perte silencieuse). */
@@ -237,13 +249,17 @@ export function verifiedScopesFor(input: ScopeVerificationInput): VerifiedScope[
   for (const id of [...input.participantIds].sort()) {
     scopes.push({ scope: 'participant:' + id, verified_by: 'identity', verified: true });
   }
-  if (input.taskRole !== 'none' && input.taskRole !== 'observer') {
+  // Correction revue GPT-6 PR303 objection 1 : les scopes role:<r> et task:<id>
+  // exigent un rôle de tâche D12 détenu (owner/reviewer/tester) — jamais none ni
+  // observer, qui n'ont pas d'attestation de tâche ; mandat coordinateur séparé.
+  const holdsTask = input.taskRole === 'owner' || input.taskRole === 'reviewer' || input.taskRole === 'tester';
+  if (holdsTask) {
     scopes.push({ scope: 'role:' + input.taskRole, verified_by: 'task_role', verified: true });
   }
   if (input.coordinator) {
     scopes.push({ scope: 'role:coordinator', verified_by: 'coordinator_mandate', verified: true });
   }
-  if (input.taskId) {
+  if (holdsTask && input.taskId) {
     scopes.push({ scope: 'task:' + input.taskId, verified_by: 'task_role', verified: true });
   }
   if (input.projectScopeKey) {
@@ -325,6 +341,18 @@ export function buildTaskDossier(input: TaskDossierInput): TaskDossier {
   let delta = condenseDelta(input.deltaEvents, input.deltaSinceSeq, DOSSIER_DELTA_BUDGET);
   const sources = input.github ? trimSources(input.github.sources, DOSSIER_SOURCES_BUDGET) : [];
 
+  // Correction revue GPT-6 PR303 objection 3 : compte des troncatures par
+  // section, recalculé à chaque instant — jamais de perte silencieuse.
+  const truncationOf = (): DossierTruncation => {
+    const s = (input.github ? input.github.sources.length : 0) - sources.length;
+    const a = input.nextActions.length - nextActions.length;
+    const h = input.handovers.length - handovers.length;
+    const q = input.openQuestions.length - openQuestions.length;
+    const e = delta.total_events - delta.events.length;
+    return { sources: s, next_actions: a, handovers: h, open_questions: q, delta_events: e,
+      complete: s === 0 && a === 0 && h === 0 && q === 0 && e === 0 };
+  };
+
   const snapshot = () => ({
     header: input.header,
     task: input.task,
@@ -335,6 +363,7 @@ export function buildTaskDossier(input: TaskDossierInput): TaskDossier {
     handovers,
     next_actions: nextActions,
     github: input.github ? { ...input.github, sources } : null,
+    truncated: truncationOf(),
     budget: { max_tokens: maxTokens, estimated_tokens: 0 },
   });
 
@@ -360,6 +389,7 @@ export function buildTaskDossier(input: TaskDossierInput): TaskDossier {
     handovers,
     next_actions: nextActions,
     github: input.github ? { ...input.github, sources } : null,
+    truncated: truncationOf(),
     budget: { max_tokens: maxTokens, estimated_tokens: estimated },
   };
 }

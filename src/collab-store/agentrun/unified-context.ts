@@ -66,8 +66,11 @@ export function dossierFingerprint(dossier: TaskDossier): string {
 }
 
 export function buildUnifiedContext(input: UnifiedContextInput): UnifiedContext {
-  const budgetTokens = input.dossier.budgetTokens
-    ?? Math.min(Math.max(1, input.packet.budget.max_tokens), DOSSIER_BUDGET_DEFAULT);
+  // Correction revue GPT-6 PR303 objection 2 : le budget du packet est un
+  // plafond approuvé — un budgetTokens explicite ne peut JAMAIS le dépasser.
+  const packetCeiling = Math.max(1, input.packet.budget.max_tokens);
+  const requested = input.dossier.budgetTokens ?? Math.min(packetCeiling, DOSSIER_BUDGET_DEFAULT);
+  const budgetTokens = Math.min(requested, packetCeiling);
   const dossier = buildTaskDossier({ ...input.dossier, budgetTokens });
   return {
     channel: input.channel,

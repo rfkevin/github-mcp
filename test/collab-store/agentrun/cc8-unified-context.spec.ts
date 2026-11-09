@@ -204,3 +204,74 @@ describe('CC-8 S7 A1 — contexte unifié chat/API (chemin logique unique)', () 
     })).toThrow(DossierBudgetError);
   });
 });
+
+
+describe('CC-8 S7 A1 — corrections revue GPT-6 PR #303', () => {
+  it('scopes : sans rôle de tâche (none/observer), ni scope task:<id> ni role:<r> — reviewer/tester oui', () => {
+    for (const role of ['none', 'observer'] as const) {
+      const keys = verifiedScopesFor({
+        participantIds: new Set(['vibe']), taskRole: role, taskId: 'S7-A1-dossier',
+        coordinator: false, projectScopeKey: null,
+      }).map(scope => scope.scope);
+      expect(keys).not.toContain('task:S7-A1-dossier');
+      expect(keys.filter(key => key.startsWith('role:'))).toEqual([]);
+    }
+    const tester = verifiedScopesFor({
+      participantIds: new Set(['vibe']), taskRole: 'tester', taskId: 'S7-A1-dossier',
+      coordinator: false, projectScopeKey: null,
+    }).map(scope => scope.scope);
+    expect(tester).toContain('role:tester');
+    expect(tester).toContain('task:S7-A1-dossier');
+  });
+
+  it('budget : un budgetTokens explicite ne peut pas dépasser le plafond du packet', () => {
+    const ceiling = { ...packet(), budget: { max_tokens: 2000, estimated_tokens: 0 } };
+    const capped = buildUnifiedContext({ channel: 'chat', packet: ceiling, dossier: dossierInput() });
+    expect(capped.dossier.budget.max_tokens).toBe(2000);
+    const below = buildUnifiedContext({
+      channel: 'chat', packet: packet(), dossier: { ...dossierInput(), budgetTokens: 2000 },
+    });
+    expect(below.dossier.budget.max_tokens).toBe(2000);
+    expect(() => buildUnifiedContext({
+      channel: 'chat', packet: ceiling, dossier: { ...dossierInput(), budgetTokens: 1 },
+    })).toThrow(DossierBudgetError);
+  });
+
+  it('troncatures signalées : chaque section écartée est comptée, complete=false ; rien cédé = complete=true', () => {
+    const many = {
+      ...dossierInput(),
+      handovers: Array.from({ length: 15 }, (_, i) => ({
+        seq: 100 + i, at: 1794200000 + i, channel: 'chat' as const,
+        done: 'd' + i, todo: 't' + i, learned: 'l' + i,
+      })),
+      nextActions: Array.from({ length: 15 }, (_, i) => 'action ' + i),
+      openQuestions: Array.from({ length: 60 }, (_, i) => ({ seq: 100 + i, author: 'gpt6', question: 'q' + i })),
+      deltaEvents: Array.from({ length: 40 }, (_, i) => ({
+        seq: 2000 + i, type: 'checkpoint', participant_id: 'gpt6', summary: 'x'.repeat(200),
+      })),
+      github: {
+        ...github(),
+        sources: Array.from({ length: 12 }, (_, i) => ({
+          path: 'src/p' + i + '.ts', sha: 'd297c2e57e15525831b136eea028fdc1ca4e2223',
+          content_excerpt: 'c'.repeat(600), provenance: 'raw par SHA',
+        })),
+      },
+    };
+    const dossier = buildTaskDossier(many);
+    expect(dossier.truncated.complete).toBe(false);
+    expect(dossier.truncated.handovers).toBe(5);
+    expect(dossier.truncated.next_actions).toBe(5);
+    expect(dossier.truncated.open_questions).toBe(10);
+    expect(dossier.truncated.delta_events).toBe(40 - dossier.delta.events.length);
+    expect(dossier.truncated.delta_events).toBeGreaterThan(0);
+    expect(dossier.truncated.sources).toBe(12 - (dossier.github?.sources.length ?? 0));
+    expect(dossier.truncated.sources).toBeGreaterThan(0);
+    const lean = buildTaskDossier(dossierInput());
+    expect(lean.truncated.complete).toBe(true);
+    expect(lean.truncated.sources).toBe(0);
+    expect(lean.truncated.handovers).toBe(0);
+    expect(lean.truncated.open_questions).toBe(0);
+    expect(lean.truncated.next_actions).toBe(0);
+    expect(lean.truncated.delta_events).toBe(0);
+  });
+});
