@@ -54,3 +54,313 @@ export function buildDossier(input: DossierInput): { text: string; assessment: D
   const truncated = input.question.length > room;
   return { text: [...head, input.question.slice(0, room), ...tail].join('\n'), assessment, truncated };
 }
+
+/**
+ * ---------------------------------------------------------------------------
+ * CC-8 S7 A1 — dossier universel de tâche (chemin unique chat/API).
+ *
+ * Extension A1 du module R6 ci-dessus (assessDossier/buildDossier INCHANGÉS) :
+ * le dossier universel assemble la carte de rôle, les scopes C4 VÉRIFIÉS
+ * (attestation serveur uniquement, jamais une déclaration du modèle), les
+ * questions ouvertes, le delta condensé du journal, les handovers, les
+ * prochaines actions et l'état GitHub/CI figé à un SHA immuable AVEC le CONTENU
+ * des sources et leur provenance.
+ *
+ * Fonctions PURES sans import : ce module ne lit ni n'écrit le store, n'appelle
+ * aucun modèle et n'importe pas engine.ts (mandat A1) ; les données viennent de
+ * l'appelant (packet de context/packet.ts, journal et lectures GitHub du Worker).
+ *
+ * CC8_UNIQUE_LOGICAL_PATH : le dossier ne dépend ni du canal (chat/API) ni du
+ * task_kind — le kind porte des privilèges, pas un orchestrateur (rappel owner
+ * seq1971/1974). Sans nouvelle compaction : toute condensation est bornée et
+ * signalée (complete=false, listes raccourcies), jamais silencieuse.
+ */
+
+/** Budgets : plafonds, pas cibles (même discipline que les budgets V2.1). */
+export const DOSSIER_BUDGET_DEFAULT = 6000;
+export const DOSSIER_OPEN_QUESTIONS_LIMIT = 50;
+export const DOSSIER_DELTA_BUDGET = 1200;
+export const DOSSIER_HANDOVERS_LIMIT = 10;
+export const DOSSIER_NEXT_ACTIONS_LIMIT = 10;
+export const DOSSIER_SOURCES_BUDGET = 1500;
+
+export type DossierParticipation =
+  | 'owner' | 'reviewer' | 'tester' | 'coordinator' | 'observer' | 'none';
+
+export interface DossierRoleCard {
+  readonly role: DossierParticipation;
+  readonly duty: string;
+}
+
+/** Comment le scope a été vérifié — toujours côté serveur, deny-by-default. */
+export type ScopeVerification =
+  | 'public_common' | 'identity' | 'task_role' | 'coordinator_mandate' | 'project_member';
+
+/** Scope C4 visible : TOUJOURS attesté serveur, jamais déclaré par le modèle. */
+export interface VerifiedScope {
+  readonly scope: string;
+  readonly verified_by: ScopeVerification;
+  readonly verified: true;
+}
+
+export interface DossierTask {
+  readonly task_id: string;
+  readonly owner_pid: string;
+  readonly reviewer_pid: string;
+  readonly tester_pid: string;
+  readonly status: string;
+  readonly owned_paths: readonly string[];
+  readonly next_action: string;
+  readonly revision: number;
+}
+
+export interface DossierOpenQuestion {
+  readonly seq: number;
+  readonly author: string;
+  readonly question: string;
+}
+
+/** Une ligne déjà expurgée par l'appelant (CR-C) : jamais le payload brut. */
+export interface DeltaDigestEvent {
+  readonly seq: number;
+  readonly type: string;
+  readonly participant_id: string;
+  readonly summary: string;
+}
+
+export interface DossierDelta {
+  readonly since_seq: number;
+  readonly events: readonly DeltaDigestEvent[];
+  readonly total_events: number;
+  readonly complete: boolean;
+}
+
+export interface DossierHandover {
+  readonly seq: number;
+  readonly at: number;
+  readonly channel: 'chat' | 'api';
+  readonly done: string;
+  readonly todo: string;
+  readonly learned: string;
+}
+
+/** Source figée : contenu OBLIGATOIRE — une référence seule est refusée. */
+export interface DossierSource {
+  readonly path: string;
+  readonly sha: string;
+  readonly content_excerpt: string;
+  readonly provenance: string;
+}
+
+export interface DossierGithubState {
+  readonly repo: string;
+  /** SHA immuable du commit — jamais une branche flottante. */
+  readonly commit_sha: string;
+  readonly ci_status: 'success' | 'failure' | 'pending' | 'unknown';
+  readonly ci_url: string;
+  readonly sources: readonly DossierSource[];
+}
+
+export interface DossierHeader {
+  readonly cycle_id: string;
+  readonly phase: string;
+  readonly revision: number;
+  readonly status: string;
+  readonly task_id: string;
+  readonly participant_id: string;
+  readonly last_seen_seq: number;
+}
+
+export interface TaskDossier {
+  readonly header: DossierHeader;
+  readonly task: DossierTask;
+  readonly role_card: DossierRoleCard;
+  readonly verified_scopes: readonly VerifiedScope[];
+  readonly open_questions: readonly DossierOpenQuestion[];
+  readonly delta: DossierDelta;
+  readonly handovers: readonly DossierHandover[];
+  readonly next_actions: readonly string[];
+  readonly github: DossierGithubState | null;
+  readonly budget: { readonly max_tokens: number; readonly estimated_tokens: number };
+}
+
+/** Refus explicite quand le dossier minimal dépasse le budget (jamais de perte silencieuse). */
+export class DossierBudgetError extends Error {
+  readonly code: string = 'DOSSIER_BUDGET_TOO_SMALL';
+  constructor(message?: string) {
+    super(message ?? 'Le dossier minimal dépasse le budget approuvé.');
+    this.name = 'DossierBudgetError';
+  }
+}
+
+/** Une source sans contenu ni SHA ni provenance viole le mandat A1. */
+export class DossierSourceError extends Error {
+  readonly code: string = 'DOSSIER_SOURCE_CONTENT_REQUIRED';
+  constructor(path: string) {
+    super('Source sans contenu au chemin ' + path + ' : une référence seule viole le mandat A1.');
+    this.name = 'DossierSourceError';
+  }
+}
+
+function estimateTokens(value: unknown): number {
+  return Math.ceil(new TextEncoder().encode(JSON.stringify(value)).byteLength / 4);
+}
+
+/** Devoirs alignés sur roleCard de context/packet.ts, coordonnateur et observateur explicites. */
+export function dutyFor(participation: DossierParticipation): string {
+  switch (participation) {
+    case 'owner': return 'Deliver the task on owned paths; do not self-validate.';
+    case 'reviewer': return 'Read all changed paths and report blockers or agreement at the exact head.';
+    case 'tester': return 'Run independent scenarios and report pass, fail or not_tested.';
+    case 'coordinator': return 'Route tasks and wake participants; never merge or self-validate.';
+    case 'observer': return 'Read the public cycle only; report findings without write.';
+    default: return 'No task role on this cycle; ask a question or request a task.';
+  }
+}
+
+export interface ScopeVerificationInput {
+  /** Identités logiques équivalentes de l'appelant (familles #126 comprises). */
+  readonly participantIds: ReadonlySet<string>;
+  readonly taskRole: DossierParticipation;
+  readonly taskId: string;
+  readonly coordinator: boolean;
+  readonly projectScopeKey: string | null;
+}
+
+/** Scopes C4 vérifiés, deny-by-default : common public, identités seules,
+ * rôle de tâche, mandat coordinateur, tâche et projet — jamais les scopes
+ * privés d'autrui. */
+export function verifiedScopesFor(input: ScopeVerificationInput): VerifiedScope[] {
+  const scopes: VerifiedScope[] = [
+    { scope: 'common', verified_by: 'public_common', verified: true },
+  ];
+  for (const id of [...input.participantIds].sort()) {
+    scopes.push({ scope: 'participant:' + id, verified_by: 'identity', verified: true });
+  }
+  if (input.taskRole !== 'none' && input.taskRole !== 'observer') {
+    scopes.push({ scope: 'role:' + input.taskRole, verified_by: 'task_role', verified: true });
+  }
+  if (input.coordinator) {
+    scopes.push({ scope: 'role:coordinator', verified_by: 'coordinator_mandate', verified: true });
+  }
+  if (input.taskId) {
+    scopes.push({ scope: 'task:' + input.taskId, verified_by: 'task_role', verified: true });
+  }
+  if (input.projectScopeKey) {
+    scopes.push({ scope: 'project:' + input.projectScopeKey, verified_by: 'project_member', verified: true });
+  }
+  return scopes;
+}
+
+/** Condense le delta : ordre seq croissant, les PLUS RÉCENTS retenus, les plus
+ * anciens cèdent ; complete=false dès qu'un événement cède (jamais silencieux). */
+export function condenseDelta(
+  events: readonly DeltaDigestEvent[],
+  sinceSeq: number,
+  budgetTokens: number = DOSSIER_DELTA_BUDGET,
+): DossierDelta {
+  const kept: DeltaDigestEvent[] = [];
+  let used = 0;
+  let complete = true;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    const cost = estimateTokens(event);
+    if (used + cost > budgetTokens) { complete = false; break; }
+    kept.unshift(event);
+    used += cost;
+  }
+  return { since_seq: sinceSeq, events: kept, total_events: events.length, complete };
+}
+
+function assertSourcesHaveContent(sources: readonly DossierSource[]): void {
+  for (const source of sources) {
+    const hasContent = typeof source.content_excerpt === 'string' && source.content_excerpt.trim().length > 0;
+    const hasPin = typeof source.sha === 'string' && source.sha.length > 0;
+    const hasProvenance = typeof source.provenance === 'string' && source.provenance.length > 0;
+    if (!hasContent || !hasPin || !hasProvenance) throw new DossierSourceError(source.path);
+  }
+}
+
+function trimSources(sources: readonly DossierSource[], budgetTokens: number): DossierSource[] {
+  const kept: DossierSource[] = [];
+  let used = 0;
+  for (const source of sources) {
+    const cost = estimateTokens(source);
+    if (used + cost > budgetTokens) break;
+    kept.push(source);
+    used += cost;
+  }
+  return kept;
+}
+
+export interface TaskDossierInput {
+  readonly header: DossierHeader;
+  readonly task: DossierTask;
+  readonly participation: DossierParticipation;
+  readonly scopes: readonly VerifiedScope[];
+  readonly openQuestions: readonly DossierOpenQuestion[];
+  readonly deltaEvents: readonly DeltaDigestEvent[];
+  readonly deltaSinceSeq: number;
+  readonly handovers: readonly DossierHandover[];
+  readonly nextActions: readonly string[];
+  readonly github: DossierGithubState | null;
+  readonly budgetTokens?: number;
+}
+
+/** Assemble le dossier universel : sections bornées par des plafonds dédiés,
+ * puis ordre de sacrifice EXPLICITE (sources, prochaines actions, handovers,
+ * delta, questions ouvertes) ; au-delà, refus DOSSIER_BUDGET_TOO_SMALL. */
+export function buildTaskDossier(input: TaskDossierInput): TaskDossier {
+  const maxTokens = input.budgetTokens ?? DOSSIER_BUDGET_DEFAULT;
+  if (input.github) assertSourcesHaveContent(input.github.sources);
+
+  const scopes = [...input.scopes].sort((a, b) => a.scope.localeCompare(b.scope));
+  const openQuestions = [...input.openQuestions]
+    .sort((a, b) => a.seq - b.seq)
+    .slice(-DOSSIER_OPEN_QUESTIONS_LIMIT);
+  const handovers = [...input.handovers]
+    .sort((a, b) => a.seq - b.seq)
+    .slice(-DOSSIER_HANDOVERS_LIMIT);
+  const nextActions = [...input.nextActions].slice(0, DOSSIER_NEXT_ACTIONS_LIMIT);
+  let delta = condenseDelta(input.deltaEvents, input.deltaSinceSeq, DOSSIER_DELTA_BUDGET);
+  const sources = input.github ? trimSources(input.github.sources, DOSSIER_SOURCES_BUDGET) : [];
+
+  const snapshot = () => ({
+    header: input.header,
+    task: input.task,
+    role_card: { role: input.participation, duty: dutyFor(input.participation) },
+    verified_scopes: scopes,
+    open_questions: openQuestions,
+    delta,
+    handovers,
+    next_actions: nextActions,
+    github: input.github ? { ...input.github, sources } : null,
+    budget: { max_tokens: maxTokens, estimated_tokens: 0 },
+  });
+
+  while (estimateTokens(snapshot()) > maxTokens && sources.length) sources.pop();
+  while (estimateTokens(snapshot()) > maxTokens && nextActions.length) nextActions.pop();
+  while (estimateTokens(snapshot()) > maxTokens && handovers.length) handovers.pop();
+  while (estimateTokens(snapshot()) > maxTokens && delta.events.length) {
+    delta = { ...delta, events: delta.events.slice(1), complete: false };
+  }
+  while (estimateTokens(snapshot()) > maxTokens && openQuestions.length) {
+    openQuestions.shift(); // les plus anciennes cèdent, les récentes survivent
+  }
+  const estimated = estimateTokens(snapshot());
+  if (estimated > maxTokens) throw new DossierBudgetError();
+
+  return {
+    header: input.header,
+    task: input.task,
+    role_card: { role: input.participation, duty: dutyFor(input.participation) },
+    verified_scopes: scopes,
+    open_questions: openQuestions,
+    delta,
+    handovers,
+    next_actions: nextActions,
+    github: input.github ? { ...input.github, sources } : null,
+    budget: { max_tokens: maxTokens, estimated_tokens: estimated },
+  };
+}
+
