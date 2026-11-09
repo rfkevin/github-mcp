@@ -833,12 +833,32 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       const violation = guide.kind === 'prepare' ? preparationViolation(output, guide.tools)
         : guide.kind === 'handover' ? handoverViolation(output) : guidedViolation(output);
       if (violation) {
-        // Relecture D12 GPT-6 (R3) : les jetons et le coût de l'appel sont DÉJÀ consommés. Ils sont
-        // comptabilisés (run et étape), la sortie rejetée est tracée au journal, puis l'arrêt est posé
-        // sous la réclamation exacte et la garde LIVE — dans le même lot, avant tout effet. L'étape
-        // reste 'claimed' sans model_output : une reprise ne rejoue jamais la sortie rejetée.
+        // Tokens already consumed (D12 R3). C1: recoverable no_tool_call in prepare only.
         const tokens = Math.max(0, Math.floor(response.usage?.tokens ?? 0));
         const cost = Math.max(0, Math.ceil(response.usage?.cost_cents ?? 0));
+        if (guide.kind === 'prepare' && isRecoverablePreparationViolation(violation)) {
+          const rec = await db.prepare(
+            "SELECT COUNT(*) AS c FROM agent_run_journal WHERE run_id = ?1 AND kind = 'preparation_recovery'",
+          ).bind(runId).first<{ c: number }>();
+          const used = Number(rec?.c ?? 0);
+          if (used < NO_TOOL_CALL_RECOVERY_MAX) {
+            const remainingAfter = NO_TOOL_CALL_RECOVERY_MAX - used - 1;
+            await db.batch([
+              db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1')
+                .bind(runId, tokens, cost, now),
+              db.prepare("UPDATE agent_run_steps SET state = 'completed', model_output = ?5, results = '[]', tokens = tokens + ?6, cost_cents = cost_cents + ?7 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4 AND state = 'claimed' AND " + LIVE)
+                .bind(runId, n, deps.workerId, claimed.attempts, JSON.stringify(raw), tokens, cost),
+              db.prepare('INSERT INTO agent_run_journal (at, kind, run_id, detail) VALUES (?1, ?2, ?3, ?4)')
+                .bind(now, 'preparation_recovery', runId, JSON.stringify({
+                  n, worker: deps.workerId, attempts: claimed.attempts, violation, used: used + 1,
+                  remainingAfter, tokens, cost_cents: cost,
+                  feedback: preparationNoToolCallFeedback(remainingAfter).slice(0, 400),
+                })),
+            ]);
+            // Run stays running — planner can offer another prepare round.
+            return settled(db, runId, now);
+          }
+        }
         const reason = (guide.kind === 'prepare' ? 'guided_preparation_violation:'
           : guide.kind === 'handover' ? 'guided_handover_violation:' : 'guided_violation:') + violation;
         await db.batch([
