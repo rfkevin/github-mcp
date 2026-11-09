@@ -52,12 +52,21 @@ export interface UnifiedContext {
   dossier_fingerprint: string;
 }
 
+// Correction revue PR #303 (TS2322 + candidats Sonar unifiés) : pas de cast « as »,
+// pas de coalescence « ?? » sur une valeur typée non nullable, pas de comparaison
+// impossible (TS2367) — typage strict sûr via la surcharge Object.entries(o: {}).
+// Sortie identique pour les données du dossier (chaînes, nombres, booléens,
+// tableaux, objets simples) ; bigint rend « null » au lieu de lever (aucun bigint
+// dans un dossier ; l'ordre des clés réplique le tri par défaut, UTF-16).
 function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value !== 'object') return 'null';
   if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
-  const record = value as Record<string, unknown>;
-  return '{' + Object.keys(record).sort()
-    .map(key => JSON.stringify(key) + ':' + stableStringify(record[key]))
+  return '{' + Object.entries(value)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, val]) => JSON.stringify(key) + ':' + stableStringify(val))
     .join(',') + '}';
 }
 
