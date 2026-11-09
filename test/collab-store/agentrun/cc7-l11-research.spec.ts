@@ -120,7 +120,8 @@ describe('CC-7 L11 — outils de l’exécution research', () => {
     expect(on.spec('research', 'store_salon_post')).toEqual({ name: 'store_salon_post', effect: 'write' });
     for (const kind of ['answer', 'review', 'test', 'implement', 'design']) {
       expect(on.spec(kind, 'web_fetch_official')).toBeNull();
-      expect(on.spec(kind, 'store_salon_post')).toBeNull();
+      expect(on.spec(kind, 'store_salon_post')).toEqual({ name: 'store_salon_post', effect: 'write' });
+      expect(on.spec(kind, 'store_salon_read')).toEqual({ name: 'store_salon_read', effect: 'read' });
     }
     expect(on.schemas('research').map(s => s.name)).toEqual(expect.arrayContaining(['web_fetch_official', 'store_salon_read', 'store_salon_post']));
     const quiet = createReadToolHost({ db, repository: null, github: null, research: { salonEnabled: false } });
@@ -153,7 +154,9 @@ describe('CC-7 L11 — outils de l’exécution research', () => {
     expect(read.messages.length).toBeLessThanOrEqual(60);
     expect(read.messages.some(m => m.author === 'vibe' && m.body.startsWith('Veille prix'))).toBe(true);
     const answer = await researchRun('vibe', 'prix', 'answer');
-    expect(await refusal(on.execute({ id: 'c2', name: 'store_salon_read', args: {} }, { run_id: answer }))).toBe('unknown_run');
+    const shared = await on.execute({ id: 'c2', name: 'store_salon_read', args: {} }, { run_id: answer }) as { messages: Array<{ author: string }> };
+    expect(shared.messages.some(m => m.author === 'vibe')).toBe(true);
+    expect(await refusal(on.execute({ id: 'c3', name: 'web_fetch_official', args: { url: 'https://docs.z.ai/' } }, { run_id: answer }))).toBe('unknown_run');
   });
 });
 

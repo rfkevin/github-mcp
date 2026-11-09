@@ -64,11 +64,16 @@ export const WRITE_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
 
 /** Écritures par type de tâche, figées en code ; un type absent n'écrit rien. */
 export const WRITE_TOOLS_BY_KIND: Readonly<Record<string, readonly WriteToolName[]>> = Object.freeze({
-  answer: ['store_answer'],
-  planning: ['store_ask'],
-  status: ['store_task_status'],
-  // 7c-3 : l'implémentation signale aussi son avancement (in_progress / blocked).
-  implement: ['store_task_status'],
+  // CC8 : tous les kinds API connus peuvent poser/répondre aux clarifications ;
+  // le store continue de vérifier les droits du participant au point d'écriture.
+  answer: ['store_answer', 'store_ask'],
+  planning: ['store_ask', 'store_answer'],
+  status: ['store_task_status', 'store_ask', 'store_answer'],
+  implement: ['store_task_status', 'store_ask', 'store_answer'],
+  review: ['store_ask', 'store_answer'],
+  test: ['store_ask', 'store_answer'],
+  design: ['store_ask', 'store_answer'],
+  research: ['store_ask', 'store_answer'],
 });
 
 const TASK_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
