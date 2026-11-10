@@ -192,6 +192,15 @@ export function createStoreWriteTools(db: D1Database): StoreWriteTools {
       if (!ctx.effect_key) throw new ToolRefused('effect_key_required');
       const { cycle_id, participant_id } = await scope(ctx.run_id);
       const { type, payload } = eventFor(call, participant_id);
+      // Les outils de clarification respectent HALT comme le moteur et le salon.
+      // La garde d'exécution LIVE du moteur reste la protection atomique contre
+      // une préemption concurrente avant cet appel API.
+      if (type === 'clarify.ask' || type === 'clarify.answer') {
+        const halted = await db.prepare(
+          "SELECT 1 AS ok FROM owner_flags WHERE name = 'halt' AND value = '1' LIMIT 1",
+        ).first<{ ok: number }>();
+        if (halted) throw new ToolRefused('HALT');
+      }
       const store = new CollabStore(db);
       const opId = effectOpId(participant_id, cycle_id, ctx.effect_key);
       let expected = await store.currentRevision(cycle_id);

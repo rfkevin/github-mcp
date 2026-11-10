@@ -10,7 +10,7 @@
  * - Outils de l'exécution `research` : `web_fetch_official` (GET en lecture seule, https, hôtes
  *   officiels figés en code, redirections revérifiées, corps borné, texte rendu au modèle comme
  *   DONNÉE), `store_salon_read` (le salon sert de journal partagé : tous les agents le lisent) et
- *   `store_salon_post` (UN message `info` par exécution, auteur = le participant de l'exécution).
+ *   `store_salon_post` (un info + un blocking au plus par exécution ; auteur vérifié par D1).
  *
  * Porte propre AGENT_RUN_RESEARCH (« true » exact), éteinte par défaut, en plus d'AGENT_RUNS_ENABLED.
  * Coût : AGENT_RUN_COST_CENTS_RESEARCH (0 par défaut = modèles gratuits seulement, fail-closed).
@@ -343,7 +343,7 @@ export const RESEARCH_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
       required: ['url'], additionalProperties: false } },
   { name: 'store_salon_read', description: 'Lire le même salon partagé que les agents chat, au plus 60 messages des 30 derniers jours.',
     parameters: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'store_salon_post', description: 'Publier un message ponctuel au salon commun. info pour l’information ; blocking pour un vrai obstacle sur la tâche de cette exécution. Un par run, quotas et anti-doublons du salon conservés.',
+  { name: 'store_salon_post', description: 'Publier dans le salon commun : au plus un info ET un blocking par exécution. Les vrais blocages restent possibles après une information ; quotas et anti-doublons conservés.',
     parameters: { type: 'object', properties: {
       body: { type: 'string', maxLength: 2000 },
       level: { type: 'string', enum: ['info', 'blocking'] },
@@ -495,10 +495,22 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
       throw new ToolRefused('new_fact_invalid');
     await db.prepare(POSTS_SCHEMA).run();
     const key = ctx.effect_key ?? 'direct:' + ctx.run_id;
-    // Réservation AVANT la publication : un second message de la même exécution est refusé,
-    // et un effet interrompu reste « inconnu » (jamais republié à l'aveugle).
+    // Réservation AVANT la publication, un emplacement par niveau (sans migration).
+    // La clé ancienne run_id reste dédiée à info (veille inchangée). blocking
+    // bénéficie d'une réservation distincte pour rester signalable après info.
+    // Un effet interrompu reste PENDING : lookup ne republie jamais à l'aveugle.
+    const reservationRunId = level === 'blocking' ? ctx.run_id + ':blocking' : ctx.run_id;
+    if (level === 'blocking') {
+      // Compatibilité avec les blocking inscrits dans l'ancien emplacement
+      // (avant la séparation info/blocking) ; ne jamais autoriser un 2e blocage.
+      const prior = await db.prepare(
+        'SELECT p.msg_id, m.level FROM agent_research_posts p LEFT JOIN salon_messages m ON m.msg_id = p.msg_id WHERE p.run_id = ?1',
+      ).bind(ctx.run_id).first<{ msg_id: string; level: string | null }>();
+      if (prior && (prior.msg_id === PENDING || prior.level === 'blocking'))
+        throw new ToolRefused('one_post_per_run');
+    }
     const reserved = await db.prepare('INSERT OR IGNORE INTO agent_research_posts (effect_key, run_id, msg_id, at) VALUES (?1, ?2, ?3, ?4)')
-      .bind(key, ctx.run_id, PENDING, now()).run();
+      .bind(key, reservationRunId, PENDING, now()).run();
     if (!reserved.meta.changes) throw new ToolRefused('one_post_per_run');
     // Réveiller les coordinateurs réellement actifs pour un vrai blocage API ;
     // garder le comportement historique des veilles infra (Claude).

@@ -18,6 +18,7 @@ async function seed(kind: 'implement' | 'review' | 'test' | 'answer', task = tru
     .bind(cycleId).run();
   await db.prepare("INSERT OR IGNORE INTO participants (participant_id, display_label, status) VALUES ('vibe','Vibe','active')").run();
   await db.prepare("INSERT OR IGNORE INTO participants (participant_id, display_label, status) VALUES ('gpt6','GPT-6','active')").run();
+  await db.prepare("INSERT OR IGNORE INTO participants (participant_id, display_label, status) VALUES ('claude','Claude','active')").run();
   await db.prepare("INSERT OR REPLACE INTO coordinators (participant_id, status, event_seq, updated_at) VALUES ('gpt6','active',NULL,1)").run();
   if (taskId) await db.prepare(
     "INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid, status, owned_paths, target_ref, next_action, revision)"
@@ -93,4 +94,102 @@ describe('CC8 — agents API dans le même salon que les chats', () => {
     expect(host(false).spec('answer', 'store_salon_post')).toBeNull();
     expect(ToolRefused).toBeDefined();
   });
+  it('info puis blocking dans la même exécution, un de chaque, sans deuxième blocking', async () => {
+    const run = await seed('implement');
+    const tools = host();
+    const infoKey = '1'.repeat(64);
+    const blockerKey = '2'.repeat(64);
+    const first = await tools.execute({ id: 'info', name: 'store_salon_post', args: {
+      level: 'info', body: 'Avancement ordinaire',
+    } }, { run_id: run.runId, effect_key: infoKey }) as { msg_id: string };
+    const blocker = await tools.execute({ id: 'blocking', name: 'store_salon_post', args: {
+      level: 'blocking', body: 'Bloqué : aide nécessaire', incident_key: run.runId,
+    } }, { run_id: run.runId, effect_key: blockerKey }) as { msg_id: string };
+    expect(first.msg_id).not.toBe(blocker.msg_id);
+    const messages = await listSalonMessages(db, { sinceAt: AT - 1, limit: 100 });
+    expect(messages.find(m => m.msg_id === first.msg_id)?.level).toBe('info');
+    expect(messages.find(m => m.msg_id === blocker.msg_id)?.level).toBe('blocking');
+    expect(await tools.lookup!({ id: 'blocking', name: 'store_salon_post', args: {} },
+      { run_id: run.runId, effect_key: blockerKey })).toMatchObject({ found: true, result: { msg_id: blocker.msg_id } });
+    await expect(tools.execute({ id: 'second-block', name: 'store_salon_post', args: {
+      level: 'blocking', body: 'Second blocage',
+    } }, { run_id: run.runId, effect_key: '3'.repeat(64) })).rejects.toThrow('one_post_per_run');
+    await expect(tools.execute({ id: 'second-info', name: 'store_salon_post', args: {
+      level: 'info', body: 'Second message ordinaire',
+    } }, { run_id: run.runId, effect_key: '4'.repeat(64) })).rejects.toThrow('one_post_per_run');
+  });
+
+  it('HALT propriétaire refuse salon, question et réponse API sans créer de trace', async () => {
+    const run = await seed('review');
+    const tools = host();
+    await db.prepare("INSERT INTO owner_flags (name, value, event_seq, updated_at) VALUES ('halt','1',NULL,?1) ON CONFLICT(name) DO UPDATE SET value='1', updated_at=?1")
+      .bind(AT).run();
+    try {
+      await expect(tools.execute({ id: 'halt-salon', name: 'store_salon_post', args: {
+        level: 'blocking', body: 'Blocage pendant HALT',
+      } }, { run_id: run.runId, effect_key: '5'.repeat(64) })).rejects.toThrow('SALON_HALT');
+      await expect(tools.execute({ id: 'halt-ask', name: 'store_ask', args: {
+        question: 'Question pendant HALT ?',
+      } }, { run_id: run.runId, effect_key: '6'.repeat(64) })).rejects.toThrow('HALT');
+      await expect(tools.execute({ id: 'halt-answer', name: 'store_answer', args: {
+        ask_seq: 1, answer: 'Réponse interdite pendant HALT',
+      } }, { run_id: run.runId, effect_key: '7'.repeat(64) })).rejects.toThrow('HALT');
+      const count = await db.prepare("SELECT COUNT(*) AS n FROM salon_messages WHERE body = 'Blocage pendant HALT'")
+        .first<{ n: number }>();
+      expect(count?.n).toBe(0);
+      const events = await db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type IN ('clarify.ask','clarify.answer')")
+        .bind(run.cycleId).first<{ n: number }>();
+      expect(events?.n).toBe(0);
+    } finally {
+      await db.prepare("UPDATE owner_flags SET value='0' WHERE name='halt'").run();
+    }
+  });
+
+  it.each(['review', 'test', 'design'] as const)(
+    'refuse store_answer par un non-destinataire en %s', async kind => {
+      const run = await seed('review');
+      // Changer uniquement le kind du run ciblé, sans modifier l'identité.
+      await db.prepare('UPDATE agent_runs SET task_kind = ?2 WHERE run_id = ?1').bind(run.runId, kind).run();
+      const authorRun = 'cc8-salon-author-' + run.cycleId;
+      const made = await createRun(db, { runId: authorRun, cycleId: run.cycleId,
+        participantId: 'gpt6', taskId: run.taskId, taskKind: 'planning',
+        prompt: 'Clarification adressée', maxSteps: 8, maxTokens: 100_000,
+        maxCostCents: 0, deadlineAt: AT + 3600, now: AT });
+      expect(made.created).toBe(true);
+      const tools = host();
+      const asked = await tools.execute({ id: 'author-ask', name: 'store_ask', args: {
+        question: 'Question exclusivement pour Claude ?', task: run.taskId, to: 'claude',
+      } }, { run_id: authorRun, effect_key: '8'.repeat(64) }) as { seq: number };
+      expect(tools.spec(kind, 'store_answer')).toEqual({ name: 'store_answer', effect: 'write' });
+      await expect(tools.execute({ id: 'outsider-answer', name: 'store_answer', args: {
+        ask_seq: asked.seq, answer: 'Réponse non autorisée par Vibe',
+      } }, { run_id: run.runId, effect_key: '9'.repeat(64) })).rejects.toThrow('CLARIFY_ANSWER_FORBIDDEN');
+      const answer = await db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id = ?1 AND type = 'clarify.answer'")
+        .bind(run.cycleId).first<{ n: number }>();
+      expect(answer?.n).toBe(0);
+    });
+
+  it('reprise après coupure : réservation PENDING ne republie jamais un message', async () => {
+    const run = await seed('implement');
+    const tools = host();
+    const effectKey = 'a'.repeat(64);
+    const first = await tools.execute({ id: 'post', name: 'store_salon_post', args: {
+      level: 'blocking', body: 'Blocage persistant à signaler', incident_key: run.runId,
+    } }, { run_id: run.runId, effect_key: effectKey }) as { msg_id: string };
+    // Simuler une coupure après postSalonMessage, mais avant écriture du reçu msg_id.
+    await db.prepare('UPDATE agent_research_posts SET msg_id = ?2 WHERE effect_key = ?1')
+      .bind(effectKey, '__pending__').run();
+    const before = await db.prepare('SELECT COUNT(*) AS n FROM salon_messages WHERE msg_id = ?1')
+      .bind(first.msg_id).first<{ n: number }>();
+    expect(before?.n).toBe(1);
+    expect(await tools.lookup!({ id: 'post', name: 'store_salon_post', args: {} },
+      { run_id: run.runId, effect_key: effectKey })).toBeNull();
+    await expect(tools.execute({ id: 'retry', name: 'store_salon_post', args: {
+      level: 'blocking', body: 'Blocage persistant à signaler', incident_key: run.runId,
+    } }, { run_id: run.runId, effect_key: effectKey })).rejects.toThrow('one_post_per_run');
+    const after = await db.prepare('SELECT COUNT(*) AS n FROM salon_messages WHERE msg_id = ?1')
+      .bind(first.msg_id).first<{ n: number }>();
+    expect(after?.n).toBe(1);
+  });
+
 });
