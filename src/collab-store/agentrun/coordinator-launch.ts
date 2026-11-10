@@ -7,6 +7,7 @@ import { exactGrant, type WriteGrant } from './github-write/authorization';
 import { issueDynamicGrant } from './github-write/dynamic-grants';
 import { apiParticipants, attemptRunId, taskKindMaxSteps, taskKindMaxTokens, taskPrompt, taskKindCostCents } from './plan';
 import { runDeadlineS } from './run-policy';
+import { taskPromptWithServerPacket } from './unified-run-packet';
 import { runCapacity } from './capacity';
 import { ToolRefused, createRun, releaseChat, leaseKeyOf } from './engine';
 import { ensureAgentRunSchema } from './schema';
@@ -133,24 +134,47 @@ export async function launchCoordinatorImplement(i: LaunchInput): Promise<Launch
   await ensureAgentRunSchema(i.db);
   const rounds = await i.db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id=?1 AND type='round.add'")
     .bind(i.cycle).first<{n:number}>();
-  const runId = await attemptRunId('implement',i.cycle,i.participant,i.task,'none',c.phase,rounds?.n??0,1);
-  const existing = await i.db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId)
-    .first<{status:string}>();
+  // A1/C2d : un GO explicite peut reprendre un run stoppé par le contrôle guidé
+  // AVANT toute étape ou effet. Trois identités au maximum, comme le planner.
+  // Jamais de reprise automatique après résultat, modèle consommé ou effet GitHub.
+  const runIds = await Promise.all([1, 2, 3].map(attempt =>
+    attemptRunId('implement',i.cycle,i.participant,i.task,'none',c.phase,rounds?.n??0,attempt)));
+  let runId = runIds[0];
+  let attempt = 1;
   const summary = (status: LaunchResult['status'], accepted: boolean, detail: string): LaunchResult =>
     ({status,run_id:runId,cycle:i.cycle,task:i.task,participant:i.participant,
       wake_accepted:accepted,cost_cents:0,detail});
-  if (existing) return summary('existing',false,existing.status);
+  for (let index = 0; index < runIds.length; index++) {
+    runId = runIds[index];
+    attempt = index + 1;
+    const existing = await i.db.prepare(
+      'SELECT status,stop_reason,steps_done,tokens_used FROM agent_runs WHERE run_id=?1',
+    ).bind(runId).first<{status:string;stop_reason:string;steps_done:number;tokens_used:number}>();
+    if (!existing) break;
+    if (existing.status !== 'failed' || !existing.stop_reason.startsWith('guided_stop')
+      || existing.steps_done !== 0 || existing.tokens_used !== 0) {
+      return summary('existing',false,existing.status);
+    }
+    const effects = await i.db.prepare('SELECT 1 FROM agent_run_effects WHERE run_id=?1 LIMIT 1')
+      .bind(runId).first();
+    if (effects) return summary('existing',false,'side_effects_present');
+    if (index === runIds.length - 1) return summary('existing',false,'retry_cap_reached');
+  }
+  // Même paquet C4/chat que les réveils automatiques, pas un prompt parallèle.
+  const prompt = await taskPromptWithServerPacket(i.db,
+    {cycleId:i.cycle,participantId:i.participant,taskId:i.task},
+    taskPrompt('implement',i.cycle,i.task,'none'));
   await event(i,'checkpoint','s7launch-' + i.task + '-go',
     {task:i.task,state:'COORDINATOR_OWNER_GO',participant:i.participant,branch:grant.branch,
-      takeover_chat:i.takeoverChat,cost_cents:0});
+      run_id:runId,attempt,takeover_chat:i.takeoverChat,cost_cents:0});
   if (i.takeoverChat) {
     for (const pid of await equivalentParticipantIds(i.db,i.participant))
       await releaseChat(i.db,{cycleId:i.cycle,participantId:pid,taskId:i.task,now:i.now});
   }
   const created = await createRun(i.db,{
     runId,cycleId:i.cycle,participantId:i.participant,taskId:i.task,taskKind:'implement',
-    prompt:taskPrompt('implement',i.cycle,i.task,'none'),maxSteps:taskKindMaxSteps('implement'),
-    maxTokens:taskKindMaxTokens('implement',{}),maxCostCents:0,
+    prompt,maxSteps:taskKindMaxSteps('implement'),
+    maxTokens:taskKindMaxTokens('implement',i.env),maxCostCents:0,
     deadlineAt:i.now+runDeadlineS('implement',0),now:i.now});
   if (!created.created) {
     if (created.reason === 'run_exists') return summary('existing',false,'run_exists');

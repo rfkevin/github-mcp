@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/server';
+import type { CollabToolContext } from '../../../src/collab-store/mcp/context';
+import { registerAgentRunTools } from '../../../src/collab-store/mcp/agentrun-tools';
+import { outputSchemas } from '../../../src/collab-store/mcp/schemas';
 import { grantForLaunch } from '../../../src/collab-store/agentrun/coordinator-launch';
 import type { AgentRunObjectEnv } from '../../../src/collab-store/agentrun/object';
 
@@ -113,6 +118,60 @@ describe('CC8 S7 direct launch — real D1 handoff, run and lease',()=>{
     expect(run).toEqual({max_tokens:48000,max_cost_cents:0,task_kind:'implement'});
     expect((await launchCoordinatorImplement(s.input)).status).toBe('existing');
     expect(s.wakeIds).toHaveLength(1);
+  });
+  it('GO explicite : reprend une tentative guided_stop à zéro effet, 3 essais au plus et paquet C4',async()=>{
+    const s=await setup('resume');
+    (s.runtime as AgentRunObjectEnv & { AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS?: string }).AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS='120000';
+    const first=await launchCoordinatorImplement(s.input);
+    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable' WHERE run_id=?1")
+      .bind(first.run_id).run();
+    const second=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:2'});
+    expect(second.status).toBe('started');
+    expect(second.run_id).not.toBe(first.run_id);
+    const row=await db.prepare('SELECT prompt,max_tokens,max_cost_cents FROM agent_runs WHERE run_id=?1')
+      .bind(second.run_id).first<{prompt:string;max_tokens:number;max_cost_cents:number}>();
+    expect(row?.prompt).toContain('DOSSIER CC8 SERVEUR');
+    expect(row?.max_tokens).toBe(120000);
+    expect(row?.max_cost_cents).toBe(0);
+    const unchanged=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:3'});
+    expect(unchanged).toMatchObject({status:'existing',run_id:second.run_id});
+    expect(s.wakeIds).toHaveLength(2);
+    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable' WHERE run_id=?1")
+      .bind(second.run_id).run();
+    const third=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:4'});
+    expect(third.status).toBe('started');
+    expect(third.run_id).not.toBe(second.run_id);
+    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable' WHERE run_id=?1")
+      .bind(third.run_id).run();
+    const capped=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:5'});
+    expect(capped).toMatchObject({status:'existing',run_id:third.run_id,detail:'retry_cap_reached'});
+  });
+  it('aucune reprise si le run échoué a commencé à consommer une étape',async()=>{
+    const s=await setup('no-replay');
+    const first=await launchCoordinatorImplement(s.input);
+    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable',steps_done=1 WHERE run_id=?1")
+      .bind(first.run_id).run();
+    const after=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:2'});
+    expect(after).toMatchObject({status:'existing',run_id:first.run_id});
+    expect(s.wakeIds).toHaveLength(1);
+  });
+  it('collab_launch_implement renvoie structuredContent conforme au schéma MCP',async()=>{
+    const s=await setup('mcp-shape');
+    const first=await launchCoordinatorImplement(s.input);
+    const handlers=new Map<string,(args:Record<string,unknown>)=>Promise<{structuredContent?:Record<string,unknown>;isError?:boolean}>>();
+    const fakeServer={registerTool(name:string,_spec:unknown,handler:(args:Record<string,unknown>)=>Promise<{structuredContent?:Record<string,unknown>;isError?:boolean}>) {
+      handlers.set(name,handler);
+    }} as unknown as McpServer;
+    const ctx={db,storeNoWake:s.input.store,agentRunEnv:s.runtime,
+      identity:async()=>({status:'registered',participant_id:s.coordinator})} as unknown as CollabToolContext;
+    registerAgentRunTools(fakeServer,ctx);
+    const result=await handlers.get('collab_launch_implement')!({
+      cycle:s.cycle,task:s.task,participant:s.gemini,
+      op_id:s.coordinator+':'+s.cycle+':launch:1',takeover_chat:false,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(z.object(outputSchemas.collab_launch_implement).parse(result.structuredContent))
+      .toMatchObject({status:'existing',run_id:first.run_id,cost_cents:0});
   });
   it('Vibe chat : bail refuse sans takeover, puis transfert explicite au moteur',async()=>{
     const s=await setup('vibe');
