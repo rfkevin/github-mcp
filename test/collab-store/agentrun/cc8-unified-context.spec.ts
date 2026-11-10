@@ -256,7 +256,8 @@ describe('CC-8 S7 A1 — corrections revue GPT-6 PR #303', () => {
         sources: Array.from({ length: 12 }, (_, i) => ({
           path: 'src/p' + i + '.ts', sha: 'd297c2e57e15525831b136eea028fdc1ca4e2223',
           content_excerpt: 'c'.repeat(600), provenance: 'raw par SHA',
-          content_trust: 'untrusted',
+          // as const : Array.from perd le typage contextuel de DossierSource
+          content_trust: 'untrusted' as const,
         })),
       },
     };
