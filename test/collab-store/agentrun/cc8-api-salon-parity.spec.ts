@@ -178,7 +178,7 @@ describe('CC8 — agents API dans le même salon que les chats', () => {
     } }, { run_id: run.runId, effect_key: effectKey }) as { msg_id: string };
     // Simuler une coupure après postSalonMessage, mais avant écriture du reçu msg_id.
     await db.prepare('UPDATE agent_research_posts SET msg_id = ?2 WHERE effect_key = ?1')
-      .bind(effectKey, '__pending__').run();
+      .bind(effectKey, 'pending').run();
     const before = await db.prepare('SELECT COUNT(*) AS n FROM salon_messages WHERE msg_id = ?1')
       .bind(first.msg_id).first<{ n: number }>();
     expect(before?.n).toBe(1);
