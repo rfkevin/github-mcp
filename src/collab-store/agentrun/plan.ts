@@ -34,6 +34,7 @@ import { createRun } from './engine';
 import { ensureAgentRunSchema } from './schema';
 import { recordCapacity, runCapacity, type RunCapacity } from './capacity';
 import { buildDossier } from './task-dossier';
+import { taskPromptWithServerPacket } from './unified-run-packet';
 // CC-8 S1b-2 : deadline d'exécution PAR TYPE DE TÂCHE — politique unique (v2 point 5).
 import { runDeadlineS } from './run-policy';
 import { decisionKey } from '../controller/journal';
@@ -485,7 +486,9 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           if (attempt === null) return false;
           return (await createRun(db, {
             runId: ids[attempt - 1], cycleId, participantId,
-            taskId, taskKind: kind, prompt: taskPrompt(kind, cycleId, taskId, decision.subject),
+            taskId, taskKind: kind,
+            prompt: await taskPromptWithServerPacket(db, { cycleId, participantId, taskId },
+              taskPrompt(kind, cycleId, taskId, decision.subject)),
             maxSteps: taskKindMaxSteps(kind), maxTokens: taskKindMaxTokens(kind, env), maxCostCents: taskKindCostCents(env, kind),
             deadlineAt: input.now + runDeadlineS(kind, taskKindCostCents(env, kind)), now: input.now,
           })).created;
