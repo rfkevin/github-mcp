@@ -11,6 +11,7 @@
  */
 import { fnv1a64 } from './fiche';
 import {
+  assertValidBudgetTokens,
   buildTaskDossier,
   DOSSIER_BUDGET_DEFAULT,
   type TaskDossier,
@@ -77,7 +78,15 @@ export function dossierFingerprint(dossier: TaskDossier): string {
 export function buildUnifiedContext(input: UnifiedContextInput): UnifiedContext {
   // Correction revue GPT-6 PR303 objection 2 : le budget du packet est un
   // plafond approuvé — un budgetTokens explicite ne peut JAMAIS le dépasser.
-  const packetCeiling = Math.max(1, input.packet.budget.max_tokens);
+  // Verdict testeur PR303 F1 : fail-closed — Math.max(1, …) clampait les
+  // valeurs invalides et laissait NaN franchir toutes les limites ; tout
+  // budget qui n'est pas un entier fini strictement positif (NaN, Infinity,
+  // négatif, nul, fractionnaire) est refusé typé, côté packet ET côté dossier.
+  assertValidBudgetTokens(input.packet.budget.max_tokens, 'packet.budget.max_tokens');
+  if (input.dossier.budgetTokens !== undefined) {
+    assertValidBudgetTokens(input.dossier.budgetTokens, 'dossier.budgetTokens');
+  }
+  const packetCeiling = input.packet.budget.max_tokens;
   const requested = input.dossier.budgetTokens ?? Math.min(packetCeiling, DOSSIER_BUDGET_DEFAULT);
   const budgetTokens = Math.min(requested, packetCeiling);
   const dossier = buildTaskDossier({ ...input.dossier, budgetTokens });

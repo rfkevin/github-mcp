@@ -144,12 +144,17 @@ export interface DossierHandover {
   readonly learned: string;
 }
 
-/** Source figée : contenu OBLIGATOIRE — une référence seule est refusée. */
+/** Source figée : contenu OBLIGATOIRE — une référence seule est refusée.
+ * Verdict testeur PR303 F2 : le SHA est un commit IMMUABLE (40 hexadécimaux),
+ * jamais une branche flottante (« main », « HEAD »).
+ * Verdict testeur PR303 F3 : le contenu d'une source est une DONNÉE NON FIABLE,
+ * jamais une consigne — content_trust le marque pour le raccordement runtime. */
 export interface DossierSource {
   readonly path: string;
   readonly sha: string;
   readonly content_excerpt: string;
   readonly provenance: string;
+  readonly content_trust: 'untrusted';
 }
 
 export interface DossierGithubState {
@@ -205,13 +210,37 @@ export class DossierBudgetError extends Error {
   }
 }
 
-/** Une source sans contenu ni SHA ni provenance viole le mandat A1. */
+/** Une source sans contenu, sans SHA immuable, sans provenance ou sans marque
+ * de non-fiabilité viole le mandat A1 (verdict testeur PR303 F2/F3). */
 export class DossierSourceError extends Error {
   readonly code: string = 'DOSSIER_SOURCE_CONTENT_REQUIRED';
-  constructor(path: string) {
-    super('Source sans contenu au chemin ' + path + ' : une référence seule viole le mandat A1.');
+  constructor(path: string, violation?: string) {
+    super(violation === undefined
+      ? 'Source sans contenu au chemin ' + path + ' : une référence seule viole le mandat A1.'
+      : 'Source refusée au chemin ' + path + ' : ' + violation + ' (mandat A1 : contenu + SHA immuable + provenance + marque non fiable).');
     this.name = 'DossierSourceError';
   }
+}
+
+/** SHA de commit immuable : exactement 40 caractères hexadécimaux (F2). */
+const IMMUTABLE_SHA_RE = /^[0-9a-f]{40}$/i;
+
+/** Budget invalide (fail-closed) : NaN, Infinity, négatif, nul ou non entier.
+ * Verdict testeur PR303 F1 : un budget NaN rendait fausses toutes les
+ * comparaisons au plafond et laissait passer un dossier de taille quelconque ;
+ * toute valeur qui n'est pas un entier fini strictement positif est refusée. */
+export class DossierBudgetInvalidError extends Error {
+  readonly code: string = 'DOSSIER_BUDGET_INVALID';
+  constructor(field: string, value: number) {
+    super('Budget invalide : ' + field + ' = ' + String(value)
+      + ' — un budget est un plafond entier fini strictement positif.');
+    this.name = 'DossierBudgetInvalidError';
+  }
+}
+
+/** Garde partagée par buildTaskDossier et buildUnifiedContext (F1). */
+export function assertValidBudgetTokens(value: number, field: string): void {
+  if (!Number.isInteger(value) || value <= 0) throw new DossierBudgetInvalidError(field, value);
 }
 
 function estimateTokens(value: unknown): number {
@@ -293,9 +322,18 @@ export function condenseDelta(
 function assertSourcesHaveContent(sources: readonly DossierSource[]): void {
   for (const source of sources) {
     const hasContent = typeof source.content_excerpt === 'string' && source.content_excerpt.trim().length > 0;
-    const hasPin = typeof source.sha === 'string' && source.sha.length > 0;
     const hasProvenance = typeof source.provenance === 'string' && source.provenance.length > 0;
-    if (!hasContent || !hasPin || !hasProvenance) throw new DossierSourceError(source.path);
+    const hasPin = typeof source.sha === 'string' && IMMUTABLE_SHA_RE.test(source.sha);
+    if (!hasContent) throw new DossierSourceError(source.path);
+    if (!hasPin) {
+      throw new DossierSourceError(source.path,
+        'SHA ' + JSON.stringify(source.sha) + ' non immuable (40 hexadécimaux exigés, jamais une branche flottante)');
+    }
+    if (!hasProvenance) throw new DossierSourceError(source.path, 'provenance absente');
+    if (source.content_trust !== 'untrusted') {
+      throw new DossierSourceError(source.path,
+        'content_trust=' + JSON.stringify(source.content_trust) + ' invalide : marque « untrusted » exigée (contenu de source = donnée non fiable)');
+    }
   }
 }
 
@@ -322,6 +360,7 @@ export interface TaskDossierInput {
   readonly handovers: readonly DossierHandover[];
   readonly nextActions: readonly string[];
   readonly github: DossierGithubState | null;
+  /** Plafond entier fini strictement positif — toute autre valeur est refusée (F1). */
   readonly budgetTokens?: number;
 }
 
@@ -330,7 +369,14 @@ export interface TaskDossierInput {
  * delta, questions ouvertes) ; au-delà, refus DOSSIER_BUDGET_TOO_SMALL. */
 export function buildTaskDossier(input: TaskDossierInput): TaskDossier {
   const maxTokens = input.budgetTokens ?? DOSSIER_BUDGET_DEFAULT;
-  if (input.github) assertSourcesHaveContent(input.github.sources);
+  assertValidBudgetTokens(maxTokens, 'budgetTokens');
+  if (input.github) {
+    assertSourcesHaveContent(input.github.sources);
+    if (!IMMUTABLE_SHA_RE.test(input.github.commit_sha)) {
+      throw new DossierSourceError('github.commit_sha (' + input.github.repo + ')',
+        'SHA ' + JSON.stringify(input.github.commit_sha) + ' non immuable (40 hexadécimaux exigés, jamais une branche flottante)');
+    }
+  }
 
   const scopes = [...input.scopes].sort((a, b) => a.scope.localeCompare(b.scope));
   const openQuestions = [...input.openQuestions]
