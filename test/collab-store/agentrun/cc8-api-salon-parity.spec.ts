@@ -67,7 +67,7 @@ describe('CC8 — agents API dans le même salon que les chats', () => {
     expect(wakes.results.some(x => x.participant_id === 'gpt6')).toBe(true);
     expect(await tools.lookup!({ id: 'p1', name: 'store_salon_post', args: {} }, { run_id: run.runId, effect_key: key }))
       .toMatchObject({ found: true, result: { msg_id: result.msg_id } });
-    await expect(tools.execute({ id: 'p2', name: 'store_salon_post', args: { body: 'encore' } },
+    await expect(tools.execute({ id: 'p2', name: 'store_salon_post', args: { level: 'blocking', body: 'encore' } },
       { run_id: run.runId, effect_key: 'c'.repeat(64) })).rejects.toThrow('one_post_per_run');
   });
 
