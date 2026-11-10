@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { ensureAgentRunSchema } from '../../../src/collab-store/agentrun/schema';
-import { createRun, ToolRefused, type ToolHost } from '../../../src/collab-store/agentrun/engine';
+import { createRun, type ToolHost } from '../../../src/collab-store/agentrun/engine';
 import {
   createReadToolHost, requiredUnifiedCapability, runVerifiedClaims, READ_TOOLS_BY_KIND,
   READ_TOOL_SCHEMAS, CONTINUITY_TOOL_SCHEMAS, type ReadToolHostOptions, type RunScope,
