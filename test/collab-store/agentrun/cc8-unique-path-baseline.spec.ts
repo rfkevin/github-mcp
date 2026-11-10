@@ -9,7 +9,7 @@ import { PREPARATION_ROUNDS_MAX, preparationViolation } from '../../../src/colla
 /**
  * CC8 E0-0: golden baseline AVANT le résolveur du chemin unique.
  *
- * Ces attentes décrivent les anciennes partitions, elles ne les approuvent pas.
+ * Ces attentes fixent la partition après l'ajout explicite par Kevin des clarifications API dans CC8.
  * La migration doit comparer l'ancien et le nouveau résolveur, puis modifier
  * ces références seulement après validation explicite des nouveaux privilèges.
  */
@@ -25,14 +25,14 @@ const READS = {
 } as const;
 
 const STORE_WRITES = {
-  answer: ['store_answer'],
-  design: [],
-  review: [],
-  test: [],
-  implement: ['store_task_status'],
-  research: [],
-  planning: ['store_ask'],
-  status: ['store_task_status'],
+  answer: ['store_answer', 'store_ask'],
+  design: ['store_ask', 'store_answer'],
+  review: ['store_ask', 'store_answer'],
+  test: ['store_ask', 'store_answer'],
+  implement: ['store_task_status', 'store_ask', 'store_answer'],
+  research: ['store_ask', 'store_answer'],
+  planning: ['store_ask', 'store_answer'],
+  status: ['store_task_status', 'store_ask', 'store_answer'],
 } as const;
 
 const GITHUB_WRITES = {

@@ -43,13 +43,19 @@ async function ensureSalonSchema(db: D1Database): Promise<void> {
 }
 
 async function haltActive(db: D1Database): Promise<boolean> {
+  // Le moteur AgentRun et /owner utilisent owner_flags : c'est le HALT canonique.
+  // Conserver la lecture legacy halt_state pour compatibilité des stores existants.
+  const owner = await db.prepare(
+    "SELECT 1 AS ok FROM owner_flags WHERE name = 'halt' AND value = '1' LIMIT 1",
+  ).first<{ ok: number }>();
+  if (owner) return true;
   try {
-    const row = await db.prepare(
-      "SELECT 1 AS ok FROM halt_state WHERE active = 1 LIMIT 1",
+    const legacy = await db.prepare(
+      'SELECT 1 AS ok FROM halt_state WHERE active = 1 LIMIT 1',
     ).first<{ ok: number }>();
-    return !!row;
+    return !!legacy;
   } catch {
-    // Table absente sur bases minimales de test : pas de HALT.
+    // Table legacy absente sur bases minimales de test.
     return false;
   }
 }

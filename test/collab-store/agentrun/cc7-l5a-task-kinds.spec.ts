@@ -164,19 +164,21 @@ describe('CC-7 L5a — planification des réveils de tâche', () => {
 });
 
 describe('CC-7 L5a — outils review, github_diff et github_open_pr', () => {
-  it('allowlist review/test : lectures seules (github_diff compris), aucun outil d’écriture, pas de store_verdict', () => {
+  it('allowlist review/test : lectures GitHub, clarifications store uniquement, pas de verdict générique', () => {
     const host = createReadToolHost({ db, repository: REPO, github: fakeReads(), storeWrites: true });
-    expect(host.list('review')).toEqual([...READ_TOOLS_BY_KIND.review]);
-    expect(host.list('test')).toEqual([...READ_TOOLS_BY_KIND.test]);
     for (const kind of ['review', 'test'] as const) {
-      for (const name of host.list(kind)) expect(host.spec(kind, name)).toEqual({ name, effect: 'read' });
-      for (const write of ['store_task_status', 'store_answer', 'github_commit_files', 'github_open_pr', 'evidence.add']) {
+      expect(host.list(kind)).toEqual([...READ_TOOLS_BY_KIND[kind], 'store_ask', 'store_answer']);
+      for (const name of READ_TOOLS_BY_KIND[kind]) expect(host.spec(kind, name)).toEqual({ name, effect: 'read' });
+      for (const name of ['store_ask', 'store_answer']) {
+        expect(host.spec(kind, name)).toEqual({ name, effect: 'write' });
+      }
+      for (const write of ['store_task_status', 'github_commit_files', 'github_open_pr', 'evidence.add']) {
         expect(host.spec(kind, write)).toBeNull();
       }
     }
     // Sans dépôt ni client GitHub, aucun outil GitHub n'est proposé (deny-by-default).
     expect(createReadToolHost({ db, repository: null, github: null, storeWrites: true }).list('review'))
-      .toEqual(['store_context', 'store_delta']);
+      .toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
     // L5b décidera des verdicts serveur : aucun store_verdict ni store_submit n’existe encore.
     expect(WRITE_TOOL_SCHEMAS.some(schema => /verdict|submit/.test(schema.name))).toBe(false);
   });

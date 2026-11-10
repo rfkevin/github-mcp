@@ -75,14 +75,14 @@ describe('CC-5 l7c-2 — hôte : écritures figées par type de tâche', () => {
     const readOnly = createReadToolHost({ db, repository: null, github: null });
     const host = createReadToolHost({ db, repository: null, github: null, storeWrites: true });
     expect(readOnly.list('answer')).toEqual(['store_context', 'store_delta']);
-    expect(host.list('answer')).toEqual(['store_context', 'store_delta', 'store_answer']);
-    expect(host.list('research')).toEqual(['store_context', 'store_delta']);
+    expect(host.list('answer')).toEqual(['store_context', 'store_delta', 'store_answer', 'store_ask']);
+    expect(host.list('research')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
     expect(host.list('fix')).toEqual([]);
     expect(host.list('__proto__')).toEqual([]);
     expect(host.spec('answer', 'store_answer')).toEqual({ name: 'store_answer', effect: 'write' });
     expect(host.spec('answer', 'store_task_status')).toBeNull();
     expect(host.spec('status', 'store_task_status')).toEqual({ name: 'store_task_status', effect: 'write' });
-    expect(host.schemas('planning').map(s => s.name)).toEqual(['store_context', 'store_delta', 'store_ask']);
+    expect(host.schemas('planning').map(s => s.name)).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
     expect(typeof host.lookup).toBe('function');
     const all = Object.values(WRITE_TOOLS_BY_KIND).flat();
     expect(all.some(name => /evidence|verdict|owner|merge/.test(name))).toBe(false);
@@ -207,8 +207,8 @@ describe('CC-5 l7c-2 — écritures store', () => {
   it('câblage : engineFor réel propose les écritures du type ; consigne commune explicite', () => {
     const ai = { async run() { return {}; } };
     const deps = engineFor({ AGENT_RUN_MODEL: 'workers-ai:@cf/zai-org/glm-4.7-flash', AI: ai }, db)('r');
-    expect(deps.tools.list('answer')).toEqual(['store_context', 'store_delta', 'store_answer']);
-    expect(deps.tools.list('research')).toEqual(['store_context', 'store_delta']);
+    expect(deps.tools.list('answer')).toEqual(['store_context', 'store_delta', 'store_answer', 'store_ask']);
+    expect(deps.tools.list('research')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
     expect(AGENT_RUN_SYSTEM).toContain('in_progress/blocked');
   });
 });

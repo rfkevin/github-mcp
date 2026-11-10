@@ -122,15 +122,15 @@ describe('CC-5 l7c-3 — allowlist et branche de l’agent', () => {
   it('écritures GitHub seulement pour implement, avec un dépôt et l’adaptateur ; aucun outil de fusion, approbation ou résolution', () => {
     const { writes } = fakeGitHub();
     const host = createReadToolHost({ db, repository: REPO, github: null, storeWrites: true, githubWrites: { writes, baseBranch: BASE } });
-    expect(host.list('implement')).toEqual(['store_context', 'store_delta', 'store_task_status', 'github_create_branch', 'github_commit_files', 'github_open_draft_pr', 'github_open_pr']);
+    expect(host.list('implement')).toEqual(['store_context', 'store_delta', 'store_task_status', 'store_ask', 'store_answer', 'github_create_branch', 'github_commit_files', 'github_open_draft_pr', 'github_open_pr']);
     for (const name of ['github_create_branch', 'github_commit_files', 'github_open_draft_pr', 'github_open_pr']) {
       expect(host.spec('implement', name)).toEqual({ name, effect: 'write' });
       for (const kind of ['answer', 'planning', 'status', 'research', 'review', 'test']) expect(host.spec(kind, name)).toBeNull();
     }
     expect(createReadToolHost({ db, repository: null, github: null, storeWrites: true, githubWrites: { writes, baseBranch: BASE } }).list('implement'))
-      .toEqual(['store_context', 'store_delta', 'store_task_status']);
+      .toEqual(['store_context', 'store_delta', 'store_task_status', 'store_ask', 'store_answer']);
     expect(createReadToolHost({ db, repository: REPO, github: null, storeWrites: true }).list('implement'))
-      .toEqual(['store_context', 'store_delta', 'store_task_status']);
+      .toEqual(['store_context', 'store_delta', 'store_task_status', 'store_ask', 'store_answer']);
     const every = [...Object.values(GITHUB_WRITE_TOOLS_BY_KIND), ...Object.values(WRITE_TOOLS_BY_KIND), ...Object.values(READ_TOOLS_BY_KIND)].flat();
     expect(every.some(name => /merge|resolve|approve|conflict|delete|force/i.test(name))).toBe(false);
     expect(() => createGitHubWriteTools({ db, repository: REPO, writes, baseBranch: 'main' })).toThrow();
@@ -361,7 +361,7 @@ describe('CC-5 l7c-3 — câblage', () => {
     const off = engineFor({ AGENT_RUN_MODEL: model, AI: ai, AGENT_RUN_REPOSITORY: REPO }, db, null, writes)('r');
     expect(off.tools.list('implement').some(name => name.startsWith('github_') && name !== 'github_read_file')).toBe(false);
     const noRepo = engineFor({ AGENT_RUN_MODEL: model, AI: ai, AGENT_RUN_GITHUB_WRITES: 'true' }, db, null, writes)('r');
-    expect(noRepo.tools.list('implement')).toEqual(['store_context', 'store_delta', 'store_task_status']);
+    expect(noRepo.tools.list('implement')).toEqual(['store_context', 'store_delta', 'store_task_status', 'store_ask', 'store_answer']);
     expect(AGENT_RUN_SYSTEM).toContain('jamais de fusion');
   });
 

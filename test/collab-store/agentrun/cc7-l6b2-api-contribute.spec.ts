@@ -54,7 +54,7 @@ async function product() {
 describe('CC-7 L6b-2 — store_contribute', () => {
   it('outil proposé au seul kind design ; un autre kind est refusé même s’il l’appelle', async () => {
     const q = await product();
-    expect(q.host.list('design')).toEqual(['store_context', 'store_delta', 'store_contribute']);
+    expect(q.host.list('design')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer', 'store_contribute']);
     expect(q.host.list('review')).not.toContain('store_contribute');
     expect(q.host.spec('design', 'store_contribute')).toEqual({ name: 'store_contribute', effect: 'write' });
     const off = createReadToolHost({ db, repository: null, github: null, storeWrites: true });

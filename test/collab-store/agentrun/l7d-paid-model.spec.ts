@@ -304,7 +304,7 @@ describe('CC-5 l7d — parcours moteur et câblage', () => {
   it('câblage engineFor : simulé sans env ; payant refusé sans enveloppe ; prioritaire sur le chemin gratuit', async () => {
     expect((await engineFor({}, db)('r').model.complete({ messages: [], tools: [], task_kind: 'x' })).output.text).toContain('simulée');
     const noEnvelope = engineFor({ AGENT_RUN_PAID_MODEL: GLM53, AI: aiStub([]) }, db)('r');
-    expect(noEnvelope.tools.list('research')).toEqual(['store_context', 'store_delta']);
+    expect(noEnvelope.tools.list('research')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
     const refused = await noEnvelope.model.complete({ messages: [{ role: 'user', content: 'q' }], tools: [], task_kind: 'research' }).catch(e => e);
     expect((refused as ModelCallError).message).toMatch(/PAID_ENVELOPE_NOT_FUNDED/);
     const at = new Date('2032-03-12T10:00:00Z');

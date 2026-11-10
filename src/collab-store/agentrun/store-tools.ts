@@ -64,11 +64,16 @@ export const WRITE_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
 
 /** Écritures par type de tâche, figées en code ; un type absent n'écrit rien. */
 export const WRITE_TOOLS_BY_KIND: Readonly<Record<string, readonly WriteToolName[]>> = Object.freeze({
-  answer: ['store_answer'],
-  planning: ['store_ask'],
-  status: ['store_task_status'],
-  // 7c-3 : l'implémentation signale aussi son avancement (in_progress / blocked).
-  implement: ['store_task_status'],
+  // CC8 : tous les kinds API connus peuvent poser/répondre aux clarifications ;
+  // le store continue de vérifier les droits du participant au point d'écriture.
+  answer: ['store_answer', 'store_ask'],
+  planning: ['store_ask', 'store_answer'],
+  status: ['store_task_status', 'store_ask', 'store_answer'],
+  implement: ['store_task_status', 'store_ask', 'store_answer'],
+  review: ['store_ask', 'store_answer'],
+  test: ['store_ask', 'store_answer'],
+  design: ['store_ask', 'store_answer'],
+  research: ['store_ask', 'store_answer'],
 });
 
 const TASK_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -187,6 +192,15 @@ export function createStoreWriteTools(db: D1Database): StoreWriteTools {
       if (!ctx.effect_key) throw new ToolRefused('effect_key_required');
       const { cycle_id, participant_id } = await scope(ctx.run_id);
       const { type, payload } = eventFor(call, participant_id);
+      // Les outils de clarification respectent HALT comme le moteur et le salon.
+      // La garde d'exécution LIVE du moteur reste la protection atomique contre
+      // une préemption concurrente avant cet appel API.
+      if (type === 'clarify.ask' || type === 'clarify.answer') {
+        const halted = await db.prepare(
+          "SELECT 1 AS ok FROM owner_flags WHERE name = 'halt' AND value = '1' LIMIT 1",
+        ).first<{ ok: number }>();
+        if (halted) throw new ToolRefused('HALT');
+      }
       const store = new CollabStore(db);
       const opId = effectOpId(participant_id, cycle_id, ctx.effect_key);
       let expected = await store.currentRevision(cycle_id);

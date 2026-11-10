@@ -324,7 +324,7 @@ describe('CC-5 l7c-1 — câblage', () => {
   it('avec AGENT_RUN_MODEL et AI : modèle Workers AI, lecture store seule sans dépôt, consigne commune sans pouvoir d’écriture', async () => {
     const ai = fakeAi([openAi('fin')]);
     const deps = engineFor({ AGENT_RUN_MODEL: MODEL_REF, AI: ai, AGENT_RUN_REPOSITORY: 'pas un dépôt' }, db)('r');
-    expect(deps.tools.list('research')).toEqual(['store_context', 'store_delta']);
+    expect(deps.tools.list('research')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
     await deps.model.complete({ messages: [{ role: 'user', content: 'x' }], tools: deps.tools.list('research'), task_kind: 'research' });
     const sent = ai.calls[0].input as { messages: Array<{ role: string; content: string }> };
     expect(sent.messages[0].content).toBe(AGENT_RUN_SYSTEM);
