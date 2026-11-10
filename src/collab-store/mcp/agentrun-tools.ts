@@ -6,7 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { CollabToolContext } from './context';
 import { outputSchemas } from './schemas';
-import { collabFailure } from './result';
+import { collabFailure, collabSuccess } from './result';
 import { CollabStoreError } from '../store/collab-store';
 import {
   listRunsForParticipant,
@@ -91,7 +91,7 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
         opId: input.op_id, now: Math.floor(Date.now() / 1000),
         wake: wakeViaNamespace(namespace),
       });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      return collabSuccess(result);
     } catch (error) {
       return collabFailure(error, 'Lancement API S7 refuse.', {}, context.fallback);
     }
