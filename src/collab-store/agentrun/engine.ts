@@ -45,7 +45,8 @@ import { modelFailureKind } from './model-failure';
 import { verifyContext } from './verify-guided';
 import { HANDOVER_WRITE_TOOLS, HANDOVER_INSTRUCTION, handoverViolation,
   PREPARATION_ROUNDS_MAX, PREPARATION_READ_TOOLS, PREPARATION_DISCOVERY_TOOLS,
-  readPreparationEvidence, preparationInstruction,
+  readPreparationEvidence, preparationInstruction, preparationNoToolCallFeedback,
+  isRecoverablePreparationViolation, shouldRecoverPreparation, preparationRecoveriesRemaining,
   preparationViolation, type PreparationRecord } from './guided-preparation';
 import { missionOf, type MissionKind } from './mission-quality';
 import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
@@ -480,10 +481,20 @@ async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: numb
     const evidence = readPreparationEvidence(results, baseSha, step.fill.paths);
     if (!evidence.prepared) {
       if (evidence.rounds >= PREPARATION_ROUNDS_MAX) return { kind: 'stop', reason: 'preparation_incomplete' };
+      // C1: reinject recovery feedback from ledger (cycle,task,branch), not journal-only silence.
+      const ledger = await db.prepare(
+        "SELECT COUNT(*) AS c FROM agent_run_journal j JOIN agent_runs r ON r.run_id = j.run_id "
+        + "WHERE j.kind = 'preparation_recovery' AND r.cycle_id = ?1 AND r.task_id = ?2 "
+        + "AND COALESCE(json_extract(j.detail, '$.branch'), '') = ?3",
+      ).bind(run.cycle_id, run.task_id, grants[0].branch).first<{ c: number }>();
+      const usedLedger = Number(ledger?.c ?? 0);
+      const recoveryHint = usedLedger > 0
+        ? preparationNoToolCallFeedback(preparationRecoveriesRemaining(usedLedger))
+        : undefined;
       return { kind: 'prepare', tools: [...required,
           ...PREPARATION_DISCOVERY_TOOLS.filter(tool => deps.tools.spec(run.task_kind, tool)?.effect === 'read')],
         instruction: preparationInstruction(run.task_id, baseSha, evidence.missing,
-          missionOf(grants[0]).acceptance, evidence.rounds) };
+          missionOf(grants[0]).acceptance, evidence.rounds, recoveryHint) };
     }
   }
   if (step.kind === 'server' && !deps.tools.spec(run.task_kind, step.call.name)) return { kind: 'stop', reason: 'tool_unavailable:' + step.call.name };
@@ -833,12 +844,50 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       const violation = guide.kind === 'prepare' ? preparationViolation(output, guide.tools)
         : guide.kind === 'handover' ? handoverViolation(output) : guidedViolation(output);
       if (violation) {
-        // Relecture D12 GPT-6 (R3) : les jetons et le coût de l'appel sont DÉJÀ consommés. Ils sont
-        // comptabilisés (run et étape), la sortie rejetée est tracée au journal, puis l'arrêt est posé
-        // sous la réclamation exacte et la garde LIVE — dans le même lot, avant tout effet. L'étape
-        // reste 'claimed' sans model_output : une reprise ne rejoue jamais la sortie rejetée.
+        // Tokens already consumed (D12 R3). C1: recoverable no_tool_call in prepare only.
         const tokens = Math.max(0, Math.floor(response.usage?.tokens ?? 0));
         const cost = Math.max(0, Math.ceil(response.usage?.cost_cents ?? 0));
+        if (guide.kind === 'prepare' && isRecoverablePreparationViolation(violation)) {
+          const grantsNow = await runGrants(run, deps);
+          const branch = grantsNow[0]?.branch ?? '';
+          // Ledger across relances: (cycle_id, task_id, branch), not only this run_id.
+          const rec = await db.prepare(
+            "SELECT COUNT(*) AS c FROM agent_run_journal j JOIN agent_runs r ON r.run_id = j.run_id "
+            + "WHERE j.kind = 'preparation_recovery' AND r.cycle_id = ?1 AND r.task_id = ?2 "
+            + "AND COALESCE(json_extract(j.detail, '$.branch'), '') = ?3",
+          ).bind(run.cycle_id, run.task_id, branch).first<{ c: number }>();
+          const used = Number(rec?.c ?? 0);
+          if (shouldRecoverPreparation(used, violation)) {
+            const remainingAfter = preparationRecoveriesRemaining(used + 1);
+            const detail = JSON.stringify({
+              n, worker: deps.workerId, attempts: claimed.attempts, violation, used: used + 1,
+              remainingAfter, tokens, cost_cents: cost,
+              cycle_id: run.cycle_id, task_id: run.task_id, branch,
+              feedback: preparationNoToolCallFeedback(remainingAfter).slice(0, 400),
+            });
+            // Concurrent-safe order:
+            // 1) journal under claimHeld (state still claimed)
+            // 2) complete step + completed_at
+            // 3) CAS advance steps_done so next claimStep uses n+1 (else busy forever)
+            // Then return stepped (not settled→busy) so the drive loop continues.
+            const [journaled, completed, advanced] = await db.batch([
+              db.prepare('INSERT INTO agent_run_journal (at, kind, run_id, detail) SELECT ?2, ?3, ?1, ?4 WHERE '
+                + LIVE + ' AND ' + claimHeld('?5', '?6', '?7'))
+                .bind(runId, now, 'preparation_recovery', detail, n, deps.workerId, claimed.attempts),
+              db.prepare("UPDATE agent_run_steps SET state = 'completed', model_output = ?5, results = '[]', tokens = tokens + ?6, cost_cents = cost_cents + ?7, completed_at = ?8 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4 AND state = 'claimed' AND "
+                + LIVE).bind(runId, n, deps.workerId, claimed.attempts, JSON.stringify(raw), tokens, cost, now),
+              db.prepare([
+                'UPDATE agent_runs SET tokens_used = tokens_used + ?3, cost_cents = cost_cents + ?4,',
+                '  steps_done = steps_done + 1, updated_at = ?5',
+                'WHERE run_id = ?1 AND steps_done = ?2 AND ' + LIVE,
+                "  AND EXISTS (SELECT 1 FROM agent_run_steps WHERE run_id = ?1 AND n = ?2 AND state = 'completed'",
+                '    AND claimed_by = ?6 AND completed_at = ?5)',
+              ].join(' ')).bind(runId, n, tokens, cost, now, deps.workerId),
+            ]);
+            if (journaled.meta.changes !== 1 || completed.meta.changes !== 1 || advanced.meta.changes !== 1) return settled(db, runId, now);
+            return { outcome: 'stepped' };
+          }
+        }
         const reason = (guide.kind === 'prepare' ? 'guided_preparation_violation:'
           : guide.kind === 'handover' ? 'guided_handover_violation:' : 'guided_violation:') + violation;
         await db.batch([

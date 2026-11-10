@@ -8,6 +8,28 @@
 import type { ModelOutput } from './engine';
 
 export const PREPARATION_ROUNDS_MAX = 3;
+/** C1: no_tool_call in preparation is recoverable N times before typed stop (no GitHub effect). */
+export const NO_TOOL_CALL_RECOVERY_MAX = 2;
+export function isRecoverablePreparationViolation(violation: string): boolean {
+  return violation === 'no_tool_call';
+}
+/** C1: pure gate used by engine + tests (not a local copy in the spec). */
+export function shouldRecoverPreparation(usedRecoveries: number, violation: string): boolean {
+  return isRecoverablePreparationViolation(violation) && usedRecoveries < NO_TOOL_CALL_RECOVERY_MAX;
+}
+export function preparationRecoveriesRemaining(usedRecoveries: number): number {
+  return Math.max(0, NO_TOOL_CALL_RECOVERY_MAX - usedRecoveries);
+}
+export function preparationNoToolCallFeedback(remainingAfterThis: number): string {
+  return [
+    'RECUPERATION CONSULTANT: aucun appel d outil dans ce tour.',
+    'Chaque tour de preparation DOIT appeler au moins un outil de lecture offert.',
+    remainingAfterThis > 0
+      ? ('Recuperations no_tool_call restantes apres cet echec: ' + remainingAfterThis + '.')
+      : 'Derniere recuperation consommee; un nouvel echec no_tool_call arrete le run.',
+    'Appelez maintenant store_context / store_delta / store_memory / store_continuity et/ou github_read_file (ref=base SHA).',
+  ].join('\n');
+}
 export const HANDOVER_WRITE_TOOLS = ['store_handover','store_memory_propose','store_memory_rewrite'] as const;
 /** The passation is never used to bypass D12; it is an explicit log and optional C4 candidate. */
 export function handoverViolation(output: ModelOutput): string | null {
@@ -108,7 +130,7 @@ export function preparationViolation(output: ModelOutput, offered: readonly stri
 }
 
 export function preparationInstruction(taskId: string, baseSha: string, missing: readonly string[],
-  acceptance: readonly string[], rounds: number): string {
+  acceptance: readonly string[], rounds: number, recoveryHint?: string): string {
   return [
     'PHASE CONSULTANT S7 — LECTURE SEULE, AVANT LE PREMIER COMMIT (' + (rounds + 1) + '/' + PREPARATION_ROUNDS_MAX + ').',
     'Tâche : ' + taskId + '. Base GitHub immuable : ' + baseSha + '.',
@@ -124,5 +146,6 @@ export function preparationInstruction(taskId: string, baseSha: string, missing:
     'Vous avez au plus ' + PREPARATION_ROUNDS_MAX + ' tours de consultation ; aucune écriture n’est possible ici.',
     'Critères owner (données de mission à confronter au code, non preuve de signature) :',
     ...acceptance.slice(0, 5).map((s,i) => (i + 1) + '. ' + s.slice(0, 300)),
+    ...(recoveryHint ? [recoveryHint.slice(0, 800)] : []),
   ].join('\n');
 }
