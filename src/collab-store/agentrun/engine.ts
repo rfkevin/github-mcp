@@ -44,9 +44,10 @@ import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI
 import { modelFailureKind } from './model-failure';
 import { verifyContext } from './verify-guided';
 import { HANDOVER_WRITE_TOOLS, HANDOVER_INSTRUCTION, handoverViolation,
-  PREPARATION_ROUNDS_MAX, NO_TOOL_CALL_RECOVERY_MAX, PREPARATION_READ_TOOLS, PREPARATION_DISCOVERY_TOOLS,
+  PREPARATION_ROUNDS_MAX, PREPARATION_READ_TOOLS, PREPARATION_DISCOVERY_TOOLS,
   readPreparationEvidence, preparationInstruction, preparationNoToolCallFeedback,
-  isRecoverablePreparationViolation, preparationViolation, type PreparationRecord } from './guided-preparation';
+  isRecoverablePreparationViolation, shouldRecoverPreparation, preparationRecoveriesRemaining,
+  preparationViolation, type PreparationRecord } from './guided-preparation';
 import { missionOf, type MissionKind } from './mission-quality';
 import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
   planGuidedS7, PRECHECK_HINTS, guidedBareDependencies, type GuidedStep } from './s7-guided';
@@ -488,7 +489,7 @@ async function guidedStep(db: D1Database, run: RunRow, deps: EngineDeps, n: numb
       ).bind(run.cycle_id, run.task_id, grants[0].branch).first<{ c: number }>();
       const usedLedger = Number(ledger?.c ?? 0);
       const recoveryHint = usedLedger > 0
-        ? preparationNoToolCallFeedback(Math.max(0, NO_TOOL_CALL_RECOVERY_MAX - usedLedger))
+        ? preparationNoToolCallFeedback(preparationRecoveriesRemaining(usedLedger))
         : undefined;
       return { kind: 'prepare', tools: [...required,
           ...PREPARATION_DISCOVERY_TOOLS.filter(tool => deps.tools.spec(run.task_kind, tool)?.effect === 'read')],
@@ -856,8 +857,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
             + "AND COALESCE(json_extract(j.detail, '$.branch'), '') = ?3",
           ).bind(run.cycle_id, run.task_id, branch).first<{ c: number }>();
           const used = Number(rec?.c ?? 0);
-          if (used < NO_TOOL_CALL_RECOVERY_MAX) {
-            const remainingAfter = NO_TOOL_CALL_RECOVERY_MAX - used - 1;
+          if (shouldRecoverPreparation(used, violation)) {
+            const remainingAfter = preparationRecoveriesRemaining(used + 1);
             const detail = JSON.stringify({
               n, worker: deps.workerId, attempts: claimed.attempts, violation, used: used + 1,
               remainingAfter, tokens, cost_cents: cost,

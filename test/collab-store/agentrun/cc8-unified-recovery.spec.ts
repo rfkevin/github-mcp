@@ -67,9 +67,13 @@ describe('CC8 C1 D1 engine recovery', () => {
     expect(Number(journal?.c ?? 0)).toBe(NO_TOOL_CALL_RECOVERY_MAX);
     expect(run.steps_done).toBeGreaterThanOrEqual(NO_TOOL_CALL_RECOVERY_MAX);
     expect(outcomes).not.toContain('busy');
-    expect(model.seen.length).toBeGreaterThanOrEqual(3);
-    const prompts = model.seen.map(x => JSON.stringify(x.messages)).join('\n');
-    expect(prompts).toMatch(/RECUPERATION|recuperation|outil/i);
+    const prompts = model.seen.map(x => x.messages.map(message => message.content).join('\n'));
+    expect(prompts).toHaveLength(3);
+    expect(prompts[0]).not.toContain('RECUPERATION CONSULTANT');
+    expect(prompts[1]).toContain('RECUPERATION CONSULTANT');
+    expect(prompts[1]).toContain('Recuperations no_tool_call restantes apres cet echec: 1.');
+    expect(prompts[2]).toContain('RECUPERATION CONSULTANT');
+    expect(prompts[2]).toContain('Derniere recuperation consommee');
     expect(h.adapter.writes().every(w => w === 'github_write_scope' || w === 'github_create_branch')).toBe(true);
     expect(outcomes.at(-1)).toBe('failed');
   });
@@ -83,6 +87,11 @@ describe('CC8 C1 D1 engine recovery', () => {
       const run = await row(s.runId);
       expect(run == null || run.status !== 'completed').toBe(true);
       expect(outcomes.includes('completed')).toBe(false);
+      expect(run.steps_done).toBe(0);
+      expect(model.seen).toHaveLength(0);
+      const recoveryRows = await db.prepare("SELECT COUNT(*) AS c FROM agent_run_journal WHERE run_id = ?1 AND kind = 'preparation_recovery'")
+        .bind(s.runId).first<{ c: number }>();
+      expect(Number(recoveryRows?.c ?? 0)).toBe(0);
     } finally { await setHalt(false); }
   });
 });
