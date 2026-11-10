@@ -91,7 +91,7 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
         opId: input.op_id, now: Math.floor(Date.now() / 1000),
         wake: wakeViaNamespace(namespace),
       });
-      return collabSuccess(result);
+      return collabSuccess({ ...result });
     } catch (error) {
       return collabFailure(error, 'Lancement API S7 refuse.', {}, context.fallback);
     }
