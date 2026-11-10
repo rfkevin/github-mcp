@@ -864,18 +864,27 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
               cycle_id: run.cycle_id, task_id: run.task_id, branch,
               feedback: preparationNoToolCallFeedback(remainingAfter).slice(0, 400),
             });
-            // Concurrent-safe: journal under claimHeld BEFORE completing the step
-            // (claimHeld requires state <> 'completed' — order matters in this batch).
-            await db.batch([
-              db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1 AND '
-                + LIVE).bind(runId, tokens, cost, now),
+            // Concurrent-safe order:
+            // 1) journal under claimHeld (state still claimed)
+            // 2) complete step + completed_at
+            // 3) CAS advance steps_done so next claimStep uses n+1 (else busy forever)
+            // Then return stepped (not settled→busy) so the drive loop continues.
+            const [journaled, completed, advanced] = await db.batch([
               db.prepare('INSERT INTO agent_run_journal (at, kind, run_id, detail) SELECT ?2, ?3, ?1, ?4 WHERE '
                 + LIVE + ' AND ' + claimHeld('?5', '?6', '?7'))
                 .bind(runId, now, 'preparation_recovery', detail, n, deps.workerId, claimed.attempts),
-              db.prepare("UPDATE agent_run_steps SET state = 'completed', model_output = ?5, results = '[]', tokens = tokens + ?6, cost_cents = cost_cents + ?7 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4 AND state = 'claimed' AND "
-                + LIVE).bind(runId, n, deps.workerId, claimed.attempts, JSON.stringify(raw), tokens, cost),
+              db.prepare("UPDATE agent_run_steps SET state = 'completed', model_output = ?5, results = '[]', tokens = tokens + ?6, cost_cents = cost_cents + ?7, completed_at = ?8 WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?4 AND state = 'claimed' AND "
+                + LIVE).bind(runId, n, deps.workerId, claimed.attempts, JSON.stringify(raw), tokens, cost, now),
+              db.prepare([
+                'UPDATE agent_runs SET tokens_used = tokens_used + ?3, cost_cents = cost_cents + ?4,',
+                '  steps_done = steps_done + 1, updated_at = ?5',
+                'WHERE run_id = ?1 AND steps_done = ?2 AND ' + LIVE,
+                "  AND EXISTS (SELECT 1 FROM agent_run_steps WHERE run_id = ?1 AND n = ?2 AND state = 'completed'",
+                '    AND claimed_by = ?6 AND completed_at = ?5)',
+              ].join(' ')).bind(runId, n, tokens, cost, now, deps.workerId),
             ]);
-            return settled(db, runId, now);
+            if (journaled.meta.changes !== 1 || completed.meta.changes !== 1 || advanced.meta.changes !== 1) return settled(db, runId, now);
+            return { outcome: 'stepped' };
           }
         }
         const reason = (guide.kind === 'prepare' ? 'guided_preparation_violation:'

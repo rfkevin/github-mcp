@@ -64,8 +64,10 @@ describe('CC8 C1 D1 engine recovery', () => {
     expect(run.status).toBe('failed');
     expect(run.stop_reason).toContain('guided_preparation_violation:no_tool_call');
     const journal = await db.prepare("SELECT COUNT(*) AS c FROM agent_run_journal j JOIN agent_runs r ON r.run_id = j.run_id WHERE j.kind = 'preparation_recovery' AND r.task_id = 'S7-live-vibe' AND COALESCE(json_extract(j.detail, '$.branch'), '') = ?1").bind(BRANCH).first<{ c: number }>();
-    expect(Number(journal?.c ?? 0)).toBeGreaterThanOrEqual(1);
-    expect(Number(journal?.c ?? 0)).toBeLessThanOrEqual(NO_TOOL_CALL_RECOVERY_MAX);
+    expect(Number(journal?.c ?? 0)).toBe(NO_TOOL_CALL_RECOVERY_MAX);
+    expect(run.steps_done).toBeGreaterThanOrEqual(NO_TOOL_CALL_RECOVERY_MAX);
+    expect(outcomes).not.toContain('busy');
+    expect(model.seen.length).toBeGreaterThanOrEqual(3);
     const prompts = model.seen.map(x => JSON.stringify(x.messages)).join('\n');
     expect(prompts).toMatch(/RECUPERATION|recuperation|outil/i);
     expect(h.adapter.writes().every(w => w === 'github_write_scope' || w === 'github_create_branch')).toBe(true);
