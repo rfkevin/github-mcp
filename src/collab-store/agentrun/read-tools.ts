@@ -29,6 +29,7 @@ import type { ToolSchema } from './workers-ai-model';
 import { createStoreWriteTools, WRITE_TOOL_SCHEMAS, type WriteToolName } from './store-tools';
 import { API_BRANCH_NAMESPACE, createGitHubWriteTools, GITHUB_WRITE_TOOL_SCHEMAS, type GitHubWrites, type GitHubWriteToolName } from './github-tools';
 import { createS7Tools, S7_SCHEMAS, type S7Options } from './github-write/tools';
+import { exactGrant, type WriteGrant } from './github-write/authorization';
 import { sha256Hex } from '../store/hash';
 import { createVerdictTools, VERDICT_TOOL_SCHEMAS } from './verdict-tools';
 import { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_TOOL_SCHEMAS } from './contribution-tools';
@@ -208,7 +209,8 @@ export function requiredUnifiedCapability(name: string): UnifiedCapability | nul
 
 /**
  * CC8 C2c — attestations serveur du run pour le contrat unique C0 : identité, cycle,
- * HALT (owner_flags) et rôle relus dans D1 ; canaux configurés de l'hôte pour les grants.
+ * HALT (owner_flags), rôle et grant GitHub EXACT (statique/dynamique S7, R2)
+ * relus dans D1 et dans la politique S7 de l'hôte.
  * Aucun argument du modèle n'entre ici ; l'allowlist par kind et les gardes au point
  * d'effet restent seules autorité (C0 : une capacité est un droit d'affichage, pas un permis).
  */
@@ -221,9 +223,9 @@ export async function runVerifiedClaims(db: D1Database, run: RunScope, options: 
   const cycle = await db.prepare('SELECT status FROM cycles WHERE cycle_id = ?1').bind(run.cycle_id).first<{ status: string }>();
   const halted = await db.prepare("SELECT 1 FROM owner_flags WHERE name = 'halt' AND value = '1'").first();
   const task = run.task_id
-    ? await db.prepare('SELECT owner_pid, reviewer_pid, tester_pid, owned_paths FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
+    ? await db.prepare('SELECT owner_pid, reviewer_pid, tester_pid, status, owned_paths FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
       .bind(run.cycle_id, run.task_id)
-      .first<{ owner_pid: string; reviewer_pid: string; tester_pid: string; owned_paths: string }>()
+      .first<{ owner_pid: string; reviewer_pid: string; tester_pid: string; status: string; owned_paths: string }>()
     : null;
   const role: AssignedTaskRole = task
     ? (equivalents.includes(task.owner_pid) ? 'author'
@@ -241,12 +243,55 @@ export async function runVerifiedClaims(db: D1Database, run: RunScope, options: 
     ].join('')).bind(run.cycle_id, ...equivalents, ...equivalents, ...equivalents).first();
     cycleMember = member != null;
   }
+  if (!cycleMember) {
+    // R1 (contre-revue Claude, cc8 seq 2132) : un run sans tâche (réponse adressée
+    // X13) prouve sa relation au cycle par la question qui lui est ADRESSÉE dans
+    // le journal — jamais en fabriquant une tâche. L'EXISTENCE (question répondue
+    // ou non) évite de perdre la relation en plein run quand store_answer ferme la
+    // question ; un adressage par rôle ($.to = owner/reviewer/tester) suppose une
+    // tâche, déjà couverte par la requête de rôles ci-dessus. Payload illisible :
+    // fail-closed, aucun élargissement.
+    try {
+      const addressed = await db.prepare([
+        "SELECT 1 FROM events WHERE cycle_id = ?1 AND type = 'clarify.ask'",
+        "AND json_extract(payload_json, '$.to') IN (" + equivalents.map((_, index) => '?' + (index + 2)).join(',') + ')',
+        'LIMIT 1',
+      ].join(' ')).bind(run.cycle_id, ...equivalents).first();
+      cycleMember = addressed != null;
+    } catch {
+      cycleMember = false;
+    }
+  }
   let ownedPaths: string[] = [];
   try {
     const parsed: unknown = task ? JSON.parse(task.owned_paths) : null;
     if (Array.isArray(parsed)) ownedPaths = parsed.filter((path): path is string => typeof path === 'string' && path.length > 0);
   } catch {
     // owned_paths illisible : mandat vide, github.write refusé (fail-closed C0).
+  }
+  // R2 (contre-revue Claude, cc8 seq 2132) : l'attestation github.write est le
+  // grant EXACT statique/dynamique S7 (exactGrant) que la garde au point d'effet
+  // revalide à chaque écriture — jamais la seule configuration de l'hôte. Le
+  // mandat de la tâche (owned_paths) reste exigé car assertPaths borne chaque
+  // effet au couple grant ∩ owned_paths ; hôte sans politique S7, ambiguïté de
+  // politique, tâche inactive ou mandat vide : fail-closed.
+  let githubWriteGrant: VerifiedCapabilityClaims['github_write_grant'];
+  if (options.githubWrites != null && options.repository !== null) {
+    const s7 = options.githubWrites.s7 ?? null;
+    const writers = (s7?.policy.writers ?? '').split(',').map(part => part.trim()).filter(Boolean);
+    let grant: WriteGrant | null = null;
+    if (run.task_id && s7 && writers.includes(run.participant_id)) {
+      try {
+        grant = await exactGrant(options.db, s7.policy, run.cycle_id, run.task_id, run.participant_id);
+      } catch {
+        grant = null; // api_task_grant_ambiguous / politique invalide : fail-closed.
+      }
+    }
+    githubWriteGrant = {
+      valid: grant != null && ownedPaths.length > 0 && task?.status === 'in_progress',
+      branch: grant?.branch ?? API_BRANCH_NAMESPACE,
+      paths: grant?.paths ?? [],
+    };
   }
   return {
     participant_registered: registered != null,
@@ -263,10 +308,10 @@ export async function runVerifiedClaims(db: D1Database, run: RunScope, options: 
     design_contribution_authorized: options.contributions === true && run.task_kind === CONTRIBUTION_TASK_KIND,
     verdict_sha_pair_verified: options.verdicts === true && options.repository !== null && options.github !== null
       && (run.task_kind === 'review' || run.task_kind === 'test'),
-    // Mandat d'affichage : l'espace de noms figé des branches API ; la branche exacte et
-    // les chemins restent gardés À CHAQUE EFFET par github-tools et les mandats de complétion.
-    github_write_grant: options.githubWrites != null && options.repository !== null
-      ? { valid: true, branch: API_BRANCH_NAMESPACE, paths: ownedPaths } : undefined,
+    // Mandat d'affichage : le grant EXACT statique/dynamique S7 relu ci-dessus ;
+    // la branche exacte et les chemins restent gardés À CHAQUE EFFET par les
+    // outils S7 (authorize + assertPaths) et les mandats de complétion.
+    github_write_grant: githubWriteGrant,
   };
 }
 

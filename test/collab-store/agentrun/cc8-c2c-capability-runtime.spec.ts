@@ -18,10 +18,10 @@ import { RESEARCH_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/resear
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const NOW = 2_000_000_000;
-/** c2c-author/reviewer/tester = titulaires ; c2c-intruder enregistré sans rôle ; c2c-ghost absent de participants. */
-const REGISTERED = ['c2c-author', 'c2c-reviewer', 'c2c-tester', 'c2c-intruder'];
+/** c2c-author/reviewer/tester = titulaires ; c2c-intruder enregistré sans rôle ; c2c-answerer destinataire X13 sans tâche ; c2c-ghost absent de participants. */
+const REGISTERED = ['c2c-author', 'c2c-reviewer', 'c2c-tester', 'c2c-intruder', 'c2c-answerer'];
 
-async function seeded(input: { kind: string; participant: string; ownedPaths?: string }): Promise<{ runId: string; scope: RunScope }> {
+async function seeded(input: { kind: string; participant: string; ownedPaths?: string; taskless?: boolean }): Promise<{ runId: string; scope: RunScope }> {
   await ensureSchema(db);
   await ensureAgentRunSchema(db);
   for (const id of REGISTERED) {
@@ -37,11 +37,11 @@ async function seeded(input: { kind: string; participant: string; ownedPaths?: s
   ].join(' ')).bind(taskId, cycleId, input.ownedPaths ?? '["src/x.ts"]').run();
   const runId = 'c2c-run-' + crypto.randomUUID();
   const created = await createRun(db, {
-    runId, cycleId, participantId: input.participant, taskId, taskKind: input.kind,
+    runId, cycleId, participantId: input.participant, taskId: input.taskless ? '' : taskId, taskKind: input.kind,
     prompt: 'Mission C2c.', maxSteps: 4, maxTokens: 5_000, maxCostCents: 0, deadlineAt: NOW + 900, now: NOW,
   });
   expect(created.created).toBe(true);
-  return { runId, scope: { cycle_id: cycleId, participant_id: input.participant, task_id: taskId, task_kind: input.kind } };
+  return { runId, scope: { cycle_id: cycleId, participant_id: input.participant, task_id: input.taskless ? '' : taskId, task_kind: input.kind } };
 }
 
 const github = {
@@ -161,20 +161,62 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     }
   });
 
-  it('porte active : github.write exige auteur, mandat et chemins (C0)', async () => {
+  it('porte active : github.write exige le grant EXACT statique/dynamique S7, pas la configuration de l’hôte (R2)', async () => {
     const author = await seeded({ kind: 'implement', participant: 'c2c-author' });
-    const reviewer = await seeded({ kind: 'review', participant: 'c2c-reviewer' });
+    const noGrant = await seeded({ kind: 'implement', participant: 'c2c-author' });
     const noPaths = await seeded({ kind: 'implement', participant: 'c2c-author', ownedPaths: '[]' });
-    const options: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true,
-      githubWrites: { writes, baseBranch: 'mcp/105856986/cc3-integration' } };
-    expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, author.scope, options))).toContain('github.write');
-    expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, reviewer.scope, options))).not.toContain('github.write');
-    expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, noPaths.scope, options))).not.toContain('github.write');
-    const h = createReadToolHost(options);
-    await expect(h.execute({ id: 't', name: 'github_create_branch', args: { name: 'c2c' } }, { run_id: reviewer.runId }))
+    const reviewer = await seeded({ kind: 'review', participant: 'c2c-reviewer' });
+    const optionsFor = (cycle: string, task: string, tasks: string): ReadToolHostOptions => ({
+      db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true,
+      githubWrites: { writes, baseBranch: 'mcp/105856986/cc3-integration',
+        s7: { policy: { writers: 'c2c-author', tasks }, reads: null, checks: null } } });
+    const grantFor = (cycle: string, task: string) => JSON.stringify([
+      { cycle, task, participant: 'c2c-author', branch: 'mcp/105856986/c2c-static', paths: ['src/x.ts'] }]);
+    // Grant statique exact : l'auteur tient github.write.
+    const withGrant = optionsFor(author.scope.cycle_id, author.scope.task_id, grantFor(author.scope.cycle_id, author.scope.task_id));
+    expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, author.scope, withGrant))).toContain('github.write');
+    // Hôte configuré mais SANS grant exact (statique ou dynamique) : plus
+    // d'attestation github.write depuis la seule configuration de l'hôte (R2).
+    const configured = optionsFor(noGrant.scope.cycle_id, noGrant.scope.task_id, '[]');
+    expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, noGrant.scope, configured))).not.toContain('github.write');
+    const h = createReadToolHost(configured);
+    await expect(h.execute({ id: 't', name: 'github_write_scope', args: {} }, { run_id: noGrant.runId }))
       .rejects.toThrow(/capability_not_held:github\.write/);
-    await expect(h.execute({ id: 't2', name: 'github_create_branch', args: { name: 'c2c' } }, { run_id: noPaths.runId }))
-      .rejects.toThrow(/capability_not_held:github\.write/);
+    // Grant statique mais mandat de tâche vide : fail-closed (assertPaths borne chaque effet à grant ∩ owned_paths).
+    const emptyMandate = optionsFor(noPaths.scope.cycle_id, noPaths.scope.task_id, grantFor(noPaths.scope.cycle_id, noPaths.scope.task_id));
+    expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, noPaths.scope, emptyMandate))).not.toContain('github.write');
+    // Relecteur : jamais github.write (writers exclu, canWriteGitHub exige l'auteur).
+    const reviewerOpts = optionsFor(reviewer.scope.cycle_id, reviewer.scope.task_id, grantFor(reviewer.scope.cycle_id, reviewer.scope.task_id));
+    expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, reviewer.scope, reviewerOpts))).not.toContain('github.write');
+    // Grant dynamique expiré dans D1 : refusé comme à chaque effet, l'attestation suit (R2).
+    const dyn = await seeded({ kind: 'implement', participant: 'c2c-author' });
+    const dynOpts = optionsFor(dyn.scope.cycle_id, dyn.scope.task_id, '[]');
+    dynOpts.githubWrites!.s7!.policy.dynamic = JSON.stringify(
+      { cycle: dyn.scope.cycle_id, participants: ['c2c-author'], path_prefixes: ['src/'], max_paths: 5, max_grants: 10 });
+    await db.prepare('INSERT INTO api_dynamic_grants (cycle, task, participant, branch, paths_json, acceptance_json, created_by, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)')
+      .bind(dyn.scope.cycle_id, dyn.scope.task_id, 'c2c-author', 'mcp/105856986/c2c-dyn',
+        JSON.stringify(['src/x.ts']), JSON.stringify(['critère']), 'gpt6', 1, 1).run();
+    expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, dyn.scope, dynOpts))).not.toContain('github.write');
+  });
+
+  it('porte active : réponse adressée sans tâche — relation au cycle prouvée par la question X13 (R1)', async () => {
+    const { runId, scope } = await seeded({ kind: 'answer', participant: 'c2c-answerer', taskless: true });
+    const options: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true };
+    const h: ToolHost = createReadToolHost(options);
+    // Aucune question adressée : pas de relation prouvée au cycle, refus (aucun élargissement).
+    await expect(h.execute({ id: 't', name: 'store_context', args: {} }, { run_id: runId }))
+      .rejects.toThrow(/capability_not_held:cycle\.read/);
+    // Question adressée au participant (X13) : la relation est prouvée SANS tâche.
+    await db.prepare("INSERT INTO events (cycle_id, at, type, participant_id, payload_json, idempotency_key) VALUES (?1, ?2, 'clarify.ask', 'c2c-author', ?3, ?4)")
+      .bind(scope.cycle_id, NOW, JSON.stringify({ question: 'Pourquoi C2c ?', to: 'c2c-answerer' }), 'c2c-ask-' + crypto.randomUUID()).run();
+    expect((await runVerifiedClaims(db, scope, options)).cycle_member).toBe(true);
+    const context = await h.execute({ id: 't2', name: 'store_context', args: {} }, { run_id: runId }) as Record<string, unknown>;
+    expect(context.cycle_id).toBe(scope.cycle_id);
+    // La relation survit à la fermeture de la question : existence, pas ouverture (pas de rupture en plein run).
+    const ask = await db.prepare("SELECT seq FROM events WHERE cycle_id = ?1 AND type = 'clarify.ask'").bind(scope.cycle_id).first<{ seq: number }>();
+    await db.prepare("INSERT INTO events (cycle_id, at, type, participant_id, payload_json, idempotency_key) VALUES (?1, ?2, 'clarify.answer', 'c2c-answerer', ?3, ?4)")
+      .bind(scope.cycle_id, NOW, JSON.stringify({ ask_seq: ask!.seq, answer: 'Fait.' }), 'c2c-ans-' + crypto.randomUUID()).run();
+    expect((await runVerifiedClaims(db, scope, options)).cycle_member).toBe(true);
   });
 
   it('porte active : review.verdict réservé au pair D12 (reviewer/tester) avec verdicts actifs', async () => {
