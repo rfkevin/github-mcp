@@ -5,6 +5,7 @@
  * aucune référence URL ne vaut une preuve de lecture.
  */
 import { buildRolePacket } from '../context/packet';
+import { CollabStoreError } from '../store/collab-store';
 
 export interface RunTaskPacketScope {
   cycleId: string;
@@ -25,7 +26,8 @@ export async function taskPromptWithServerPacket(
     cycle: scope.cycleId, participant_id: scope.participantId, task: scope.taskId,
   }, { c0BaselineTokens: 6_400, approvedBudgetTokens: 1_600 });
   if (!packet.task || packet.task.task_id !== scope.taskId) {
-    throw new Error('CC8_TASK_PACKET_NOT_HELD');
+    // Contrat existant de la résolution C4, déjà documenté dans le guide store.
+    throw new CollabStoreError('TASK_NOT_HELD', 'Dossier serveur refusé : tâche non attribuée au participant.');
   }
   // Le contenu libre du mandat, questions et mémoires reste de la DONNÉE NON
   // FIABLE, sans changement des gardes aux points d'effet (HALT, rôle, GitHub).
