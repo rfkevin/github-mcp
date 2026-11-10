@@ -121,7 +121,7 @@ describe('CC8 S7 direct launch — real D1 handoff, run and lease',()=>{
   });
   it('GO explicite : reprend une tentative guided_stop à zéro effet, 3 essais au plus et paquet C4',async()=>{
     const s=await setup('resume');
-    s.runtime.AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS='120000';
+    (s.runtime as AgentRunObjectEnv & { AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS?: string }).AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS='120000';
     const first=await launchCoordinatorImplement(s.input);
     await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable' WHERE run_id=?1")
       .bind(first.run_id).run();
