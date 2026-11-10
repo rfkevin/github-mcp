@@ -553,9 +553,6 @@ async function enrichGuided(run: RunRow, deps: EngineDeps, n: number, step: Extr
 }
 
 const GUIDED_FILE_PREVIEW = 8_000;
-/** Types d'exécution dont l'historique est compacté (opt-in AGENT_RUN_CONTEXT_COMPACTION). */
-const COMPACTED_KINDS: readonly string[] = ['implement', 'review', 'test'];
-
 /** Compaction déterministe et opt-in du seul contexte envoyé au fournisseur.
  * D1 conserve chaque réponse, argument, résultat et effet sans aucune modification.
  * Dernière étape intégrale pour préserver le couple tool_calls / tool_call_id.
@@ -807,9 +804,9 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         response = { output: { text: 'Étape mécanique exécutée par le serveur (mode guidé S7) : ' + guide.call.name + '.', tool_calls: [guide.call] },
           usage: { tokens: 0, cost_cents: 0 } };
       } else {
-        // Compaction de l'historique : implémentation, et depuis la vérification guidée, relecture et test.
-        const messages = await buildMessages(db, run, deps.compactHistory === true
-          && COMPACTED_KINDS.includes(run.task_kind) && !(deps.guidedPreparation && run.task_kind === 'implement' && plan));
+        // CC8 C2a : une seule compaction opt-in, quel que soit le kind ou le mode guidé.
+        // L'historique complet et les preuves D1 ne sont jamais condensés en stockage.
+        const messages = await buildMessages(db, run, deps.compactHistory === true);
         const tools = deps.tools.list(run.task_kind);
         const extra = guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
           ? guide.instruction : verify ? verify.context + '\n\n' + verify.instruction : null;
