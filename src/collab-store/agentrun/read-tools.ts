@@ -27,7 +27,7 @@ import { loadContinuity, loadVisibleActiveMemory, memoryRolesOf } from '../conte
 import { ToolRefused, type LookupResult, type ToolCall, type ToolHost, type ToolSpec } from './engine';
 import type { ToolSchema } from './workers-ai-model';
 import { createStoreWriteTools, WRITE_TOOL_SCHEMAS, type WriteToolName } from './store-tools';
-import { createGitHubWriteTools, GITHUB_WRITE_TOOL_SCHEMAS, type GitHubWrites, type GitHubWriteToolName } from './github-tools';
+import { API_BRANCH_NAMESPACE, createGitHubWriteTools, GITHUB_WRITE_TOOL_SCHEMAS, type GitHubWrites, type GitHubWriteToolName } from './github-tools';
 import { createS7Tools, S7_SCHEMAS, type S7Options } from './github-write/tools';
 import { sha256Hex } from '../store/hash';
 import { createVerdictTools, VERDICT_TOOL_SCHEMAS } from './verdict-tools';
@@ -36,6 +36,8 @@ import { createModelChoiceTools, MODEL_CHOICE_TOOL_SCHEMAS } from './model-choic
 import type { PolicyEnv } from './model-policy';
 import { createResearchTools, RESEARCH_TOOL_SCHEMAS, type ResearchToolsOptions } from './research';
 import { diffReadRef } from './verify-guided';
+// CC8 C2c : le catalogue runtime consomme le contrat unique C0 (attestations serveur uniquement).
+import { hasUnifiedCapability, type AssignedTaskRole, type UnifiedCapability, type VerifiedCapabilityClaims } from './agent-capabilities';
 
 /**
  * CC-7 M2 : rôle mémoire tenu par une exécution API selon son type (role:<rôle>, parité avec le
@@ -160,9 +162,113 @@ export interface ReadToolHostOptions {
   modelChoice?: PolicyEnv | null;
   /** CC-7 L11 : outils des chercheurs en tournante (web officiel, salon) pour le kind research ; absent = aucun. */
   research?: ResearchToolsOptions | null;
+  /**
+   * CC8 C2c : consommer le contrat unique C0 — chaque outil servi est borné par les
+   * attestations serveur du run (runVerifiedClaims) AVANT tout effet. Absent = inchangé :
+   * l'allowlist par kind et les gardes au point d'effet restent seules en vigueur.
+   */
+  unifiedCapabilities?: boolean;
 }
 
-interface RunScope { cycle_id: string; participant_id: string; task_id: string; task_kind: string }
+export interface RunScope { cycle_id: string; participant_id: string; task_id: string; task_kind: string }
+
+/**
+ * CC8 C2c — capacité du contrat unique C0 exigée par chaque outil servi par ce runtime.
+ * Les outils sans entrée C0 (web_fetch_official, store_choose_model) restent régis par
+ * la seule allowlist par kind ; les outils d'écriture GitHub (S7 compris) exigent github.write.
+ */
+const TOOL_UNIFIED_CAPABILITY: Readonly<Record<string, UnifiedCapability>> = Object.freeze({
+  store_context: 'cycle.read',
+  store_delta: 'cycle.read',
+  store_salon_read: 'cycle.read',
+  store_memory: 'memory.read',
+  store_continuity: 'memory.read',
+  github_list_directory: 'github.read',
+  github_read_file: 'github.read',
+  github_pull_request: 'github.read',
+  github_check_runs: 'github.read',
+  github_diff: 'github.read',
+  store_ask: 'question.ask',
+  store_answer: 'question.answer',
+  store_salon_post: 'salon.announce',
+  store_task_status: 'task.status',
+  store_handover: 'task.handover',
+  store_memory_propose: 'memory.propose',
+  store_memory_rewrite: 'memory.rewrite',
+  store_verdict: 'review.verdict',
+  store_contribute: 'design.contribute',
+});
+const GITHUB_WRITE_CAPABILITY_TOOLS: ReadonlySet<string> = new Set(
+  [...GITHUB_WRITE_TOOL_SCHEMAS, ...S7_SCHEMAS].map(schema => schema.name));
+
+/** Capacité C0 exigée pour servir cet outil, ou null si hors vocabulaire (allowlist seule). */
+export function requiredUnifiedCapability(name: string): UnifiedCapability | null {
+  return TOOL_UNIFIED_CAPABILITY[name] ?? (GITHUB_WRITE_CAPABILITY_TOOLS.has(name) ? 'github.write' : null);
+}
+
+/**
+ * CC8 C2c — attestations serveur du run pour le contrat unique C0 : identité, cycle,
+ * HALT (owner_flags) et rôle relus dans D1 ; canaux configurés de l'hôte pour les grants.
+ * Aucun argument du modèle n'entre ici ; l'allowlist par kind et les gardes au point
+ * d'effet restent seules autorité (C0 : une capacité est un droit d'affichage, pas un permis).
+ */
+export async function runVerifiedClaims(db: D1Database, run: RunScope, options: ReadToolHostOptions): Promise<VerifiedCapabilityClaims> {
+  const equivalents = [...new Set([run.participant_id, ...(await equivalentParticipantIds(db, run.participant_id))])];
+  const registered = await db.prepare(
+    'SELECT 1 FROM participants WHERE participant_id IN (' + equivalents.map((_, index) => '?' + (index + 1)).join(',')
+      + ") AND status = 'active' LIMIT 1",
+  ).bind(...equivalents).first();
+  const cycle = await db.prepare('SELECT status FROM cycles WHERE cycle_id = ?1').bind(run.cycle_id).first<{ status: string }>();
+  const halted = await db.prepare("SELECT 1 FROM owner_flags WHERE name = 'halt' AND value = '1'").first();
+  const task = run.task_id
+    ? await db.prepare('SELECT owner_pid, reviewer_pid, tester_pid, owned_paths FROM tasks WHERE cycle_id = ?1 AND task_id = ?2')
+      .bind(run.cycle_id, run.task_id)
+      .first<{ owner_pid: string; reviewer_pid: string; tester_pid: string; owned_paths: string }>()
+    : null;
+  const role: AssignedTaskRole = task
+    ? (equivalents.includes(task.owner_pid) ? 'author'
+      : equivalents.includes(task.reviewer_pid) ? 'reviewer'
+      : equivalents.includes(task.tester_pid) ? 'tester' : 'none')
+    : 'none';
+  const held = role !== 'none';
+  let cycleMember = held;
+  if (!cycleMember) {
+    const placeholders = (offset: number) => equivalents.map((_, index) => '?' + (offset + index)).join(',');
+    const member = await db.prepare([
+      'SELECT 1 FROM tasks WHERE cycle_id = ?1 AND (owner_pid IN (' + placeholders(2) + ')',
+      ' OR reviewer_pid IN (' + placeholders(2 + equivalents.length) + ')',
+      ' OR tester_pid IN (' + placeholders(2 + 2 * equivalents.length) + ')) LIMIT 1',
+    ].join('')).bind(run.cycle_id, ...equivalents, ...equivalents, ...equivalents).first();
+    cycleMember = member != null;
+  }
+  let ownedPaths: string[] = [];
+  try {
+    const parsed: unknown = task ? JSON.parse(task.owned_paths) : null;
+    if (Array.isArray(parsed)) ownedPaths = parsed.filter((path): path is string => typeof path === 'string' && path.length > 0);
+  } catch {
+    // owned_paths illisible : mandat vide, github.write refusé (fail-closed C0).
+  }
+  return {
+    participant_registered: registered != null,
+    cycle_member: cycleMember,
+    cycle_open: cycle?.status === 'open',
+    halted: halted != null,
+    task_role: role,
+    task_assignment_verified: held,
+    github_read_granted: options.repository !== null && options.github !== null,
+    memory_read_scoped: options.continuity === true,
+    question_answer_authorized: options.storeWrites === true,
+    memory_propose_scoped: options.storeWrites === true && options.continuity === true,
+    memory_rewrite_scoped: options.storeWrites === true && options.continuity === true,
+    design_contribution_authorized: options.contributions === true && run.task_kind === CONTRIBUTION_TASK_KIND,
+    verdict_sha_pair_verified: options.verdicts === true && options.repository !== null && options.github !== null
+      && (run.task_kind === 'review' || run.task_kind === 'test'),
+    // Mandat d'affichage : l'espace de noms figé des branches API ; la branche exacte et
+    // les chemins restent gardés À CHAQUE EFFET par github-tools et les mandats de complétion.
+    github_write_grant: options.githubWrites != null && options.repository !== null
+      ? { valid: true, branch: API_BRANCH_NAMESPACE, paths: ownedPaths } : undefined,
+  };
+}
 
 function intArg(args: Record<string, unknown>, name: string, min: number, max: number, fallback?: number): number {
   const value = args[name] ?? fallback;
@@ -221,6 +327,16 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     return run;
   }
   async function execute(call: ToolCall, ctx: { run_id: string; effect_key?: string; prefetch?: boolean }): Promise<unknown> {
+    // CC8 C2c : le run est relu AVANT tout effet ; quand l'hôte consomme le contrat
+    // unique C0, chaque outil exige sa capacité vérifiée — l'allowlist par kind et les
+    // gardes au point d'effet restent inchangés (refus typé, jamais d'élargissement).
+    const runScope = await scope(ctx.run_id);
+    if (options.unifiedCapabilities === true) {
+      const required = requiredUnifiedCapability(call.name);
+      if (required && !hasUnifiedCapability(await runVerifiedClaims(options.db, runScope, options), required)) {
+        throw new ToolRefused('capability_not_held:' + required);
+      }
+    }
     if (writes && (WRITE_TOOL_SCHEMAS.some(schema => schema.name === call.name))) return writes.execute(call, ctx);
     if (gh && isGitHubWrite(call.name)) return gh.execute(call, ctx);
     // CC-7 L5b (S10) : verdict contrôlé serveur (rôle, identité, couple, CI, preuve).
@@ -229,7 +345,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     if (contributions && call.name === 'store_contribute') return contributions.execute(call, ctx);
     if (modelChoice && call.name === 'store_choose_model') return modelChoice.execute(call, ctx);
     if (research && RESEARCH_TOOL_SCHEMAS.some(schema => schema.name === call.name)) return research.execute(call, ctx);
-    const { cycle_id, participant_id, task_id, task_kind } = await scope(ctx.run_id);
+    const { cycle_id, participant_id, task_id, task_kind } = runScope;
     const args = call.args ?? {};
     const store = new CollabStore(options.db);
     switch (call.name as ReadToolName) {
