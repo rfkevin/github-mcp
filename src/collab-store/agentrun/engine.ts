@@ -42,6 +42,7 @@ import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
+import { runClarificationState, continuationReplyMessage } from './continuation';
 import { verifyContext } from './verify-guided';
 import { HANDOVER_WRITE_TOOLS, HANDOVER_INSTRUCTION, handoverViolation,
   PREPARATION_ROUNDS_MAX, PREPARATION_READ_TOOLS, PREPARATION_DISCOVERY_TOOLS,
@@ -143,7 +144,8 @@ export interface GitHubCompletionGrant { cycle: string; participant: string; tas
 export type RunStatus = 'running' | 'completed' | 'failed' | 'halted' | 'preempted' | 'needs_reconcile'
   | 'step_limit' | 'token_limit' | 'cost_limit' | 'deadline';
 
-export interface StepResult { outcome: RunStatus | 'stepped' | 'busy' | 'retry' | 'unknown_run' }
+/** waiting_for_reply is a NON-terminal step result; the D1 run remains running. */
+export interface StepResult { outcome: RunStatus | 'stepped' | 'busy' | 'retry' | 'waiting_for_reply' | 'unknown_run' }
 
 interface RunRow {
   run_id: string; cycle_id: string; participant_id: string; task_id: string;
@@ -748,6 +750,14 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const run = await getRun(db, runId);
   if (!run) return { outcome: 'unknown_run' };
   if (run.status !== 'running') return { outcome: run.status };
+  // U2b2: a completed store_ask effect creates a durable wait. In the absence of
+  // its applied clarify.answer, never claim a new step or call the provider.
+  // D1 effects/events are authoritative; the model cannot forge an answer.
+  const clarifications = await runClarificationState(db, run.cycle_id, runId);
+  if (clarifications.pending.length) {
+    const status = await settle(db, runId, now); // HALT, chat fence, deadline and budgets win.
+    return { outcome: status === 'running' ? 'waiting_for_reply' : status };
+  }
   // CC8 S7 : CI pending → relevé serveur, sans modèle ni étape (au plus CI_POLL_MAX, dans la deadline).
   await ensureCiPollSchema(db);
   const pendingPoll = await pendingCiPoll(db, runId, run.steps_done);
@@ -825,7 +835,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
           ? 'Dernière étape de relecture : utiliser UNIQUEMENT store_verdict pour déposer un verdict structuré '
             + 'avec les preuves et le couple head/base exacts. Si les preuves manquent, ne pas inventer AGREE.'
           : null;
-        const additional = [extra, verdictInstruction].filter(Boolean).join('\n\n');
+        const replyContext = continuationReplyMessage(clarifications);
+        const additional = [extra, replyContext, verdictInstruction].filter(Boolean).join('\n\n');
         // Preserve an approximate full-context+output budget for the terminal verdict call.
         // No paid allowance or D12 bypass; exhausted budgets still refuse before the provider.
         const verdictReserve = (run.task_kind === 'review' || run.task_kind === 'test') && !verdictTurn
