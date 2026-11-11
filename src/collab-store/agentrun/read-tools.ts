@@ -198,6 +198,8 @@ const TOOL_UNIFIED_CAPABILITY: Readonly<Record<string, UnifiedCapability>> = Obj
   store_memory_rewrite: 'memory.rewrite',
   store_verdict: 'review.verdict',
   store_contribute: 'design.contribute',
+  web_fetch_official: 'web.read',
+  store_choose_model: 'model.choose',
 });
 const GITHUB_WRITE_CAPABILITY_TOOLS: ReadonlySet<string> = new Set(
   [...GITHUB_WRITE_TOOL_SCHEMAS, ...S7_SCHEMAS].map(schema => schema.name));
@@ -305,9 +307,11 @@ export async function runVerifiedClaims(db: D1Database, run: RunScope, options: 
     question_answer_authorized: options.storeWrites === true,
     memory_propose_scoped: options.storeWrites === true && options.continuity === true,
     memory_rewrite_scoped: options.storeWrites === true && options.continuity === true,
-    design_contribution_authorized: options.contributions === true && run.task_kind === CONTRIBUTION_TASK_KIND,
+    design_contribution_authorized: options.contributions === true,
     verdict_sha_pair_verified: options.verdicts === true && options.repository !== null && options.github !== null
-      && (run.task_kind === 'review' || run.task_kind === 'test'),
+      && (role === 'reviewer' || role === 'tester'),
+    web_read_granted: options.research?.researchEnabled === true,
+    model_choose_granted: options.modelChoice != null,
     // Mandat d'affichage : le grant EXACT statique/dynamique S7 relu ci-dessus ;
     // la branche exacte et les chemins restent gardés À CHAQUE EFFET par les
     // outils S7 (authorize + assertPaths) et les mandats de complétion.
@@ -344,28 +348,36 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   // CC-7 L9b : choix de modèle par l'agent lui-même, pour tout type de tâche connu.
   const modelChoice = options.modelChoice ? createModelChoiceTools(options.db, options.modelChoice) : null;
   // CC-7 L11 : lecture web officielle et salon (journal partagé), seulement pour le kind research.
-  const research = options.research ? createResearchTools(options.db, options.research) : null;
-  // CC-7 L3 (incrément 2) : proposition de mémoire, seulement avec écritures store ET continuité, types connus.
-  const memoryWrite = (taskKind: string): readonly WriteToolName[] =>
-    writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose', 'store_memory_rewrite', 'store_handover'] : [];
-  const writeNames = (taskKind: string): readonly string[] =>
-    [...(writes ? writes.names(taskKind) : []), ...memoryWrite(taskKind), ...(gh ? gh.names(taskKind) : []),
-      ...(verdicts && (taskKind === 'review' || taskKind === 'test') ? ['store_verdict' as const] : []),
-      ...(contributions && taskKind === CONTRIBUTION_TASK_KIND ? ['store_contribute' as const] : []),
-      ...(modelChoice && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_choose_model' as const] : []),
-      ...(research ? research.writes(taskKind) : [])];
+  const research = options.research ? createResearchTools(options.db, {
+    ...options.research, unifiedCapabilities: options.unifiedCapabilities === true,
+  }) : null;
+  // Unified WorkSession tools depend on the host resources and actual C0
+  // claims, not on API vs chat or a legacy kind string. Claims are checked
+  // again at every effect. Legacy callers keep the old lists until migrated.
+  const unified = options.unifiedCapabilities === true;
+  const memoryWrite = (kind: string): readonly WriteToolName[] =>
+    writes && options.continuity && (unified || Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind))
+      ? ['store_memory_propose', 'store_memory_rewrite', 'store_handover'] : [];
+  const writeNames = (kind: string): readonly string[] =>
+    [...(writes ? (unified ? WRITE_TOOL_SCHEMAS.map(schema => schema.name) : writes.names(kind)) : []),
+      ...memoryWrite(kind),
+      ...(gh ? (unified ? ghSchemas.filter(schema => !options.githubWrites?.s7 || options.githubWrites.s7.checks
+        || !['github_run_checks', 'github_check_result'].includes(schema.name)).map(schema => schema.name) : gh.names(kind)) : []),
+      ...(verdicts && (unified || kind === 'review' || kind === 'test') ? ['store_verdict' as const] : []),
+      ...(contributions && (unified || kind === CONTRIBUTION_TASK_KIND) ? ['store_contribute' as const] : []),
+      ...(modelChoice && (unified || Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind)) ? ['store_choose_model' as const] : []),
+      ...(research ? research.writes(kind) : [])];
   const isGitHubWrite = (name: string) => ghSchemas.some(schema => schema.name === name);
-  const allowed = (taskKind: string): readonly ReadToolName[] => {
-    const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
-    // Sans dépôt ou client GitHub, les outils GitHub ne sont pas proposés du tout.
-    return tools.filter(name => !name.startsWith('github_') || (options.repository !== null && options.github !== null
+  const allowed = (kind: string): readonly ReadToolName[] => {
+    const candidate = unified ? READ_TOOL_SCHEMAS.map(schema => schema.name as ReadToolName)
+      : Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind) ? READ_TOOLS_BY_KIND[kind] : [];
+    return candidate.filter(name => !name.startsWith('github_') || (options.repository !== null && options.github !== null
       && (name !== 'github_list_directory' || !!options.github.listDirectory)));
   };
-  // Un type inconnu n'a aucun outil, même en continuité (deny-by-default).
-  const continuityNames = (taskKind: string): readonly ContinuityToolName[] =>
-    options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? CONTINUITY_TOOLS : [];
-  const readNames = (taskKind: string): readonly string[] =>
-    [...allowed(taskKind), ...continuityNames(taskKind), ...(research ? research.reads(taskKind) : [])];
+  const continuityNames = (kind: string): readonly ContinuityToolName[] =>
+    options.continuity && (unified || Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind)) ? CONTINUITY_TOOLS : [];
+  const readNames = (kind: string): readonly string[] =>
+    [...allowed(kind), ...continuityNames(kind), ...(research ? research.reads(kind) : [])];
   async function scope(runId: string): Promise<RunScope> {
     const run = await options.db.prepare('SELECT cycle_id, participant_id, task_id, task_kind FROM agent_runs WHERE run_id = ?1').bind(runId).first<RunScope>();
     if (!run) throw new ToolRefused('unknown_run');
@@ -376,10 +388,13 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     // unique C0, chaque outil exige sa capacité vérifiée — l'allowlist par kind et les
     // gardes au point d'effet restent inchangés (refus typé, jamais d'élargissement).
     const runScope = await scope(ctx.run_id);
-    if (options.unifiedCapabilities === true) {
+    if (unified) {
       const required = requiredUnifiedCapability(call.name);
       if (required && !hasUnifiedCapability(await runVerifiedClaims(options.db, runScope, options), required)) {
         throw new ToolRefused('capability_not_held:' + required);
+      }
+      if (![...readNames(runScope.task_kind), ...writeNames(runScope.task_kind)].includes(call.name)) {
+        throw new ToolRefused('tool_not_configured');
       }
     }
     if (writes && (WRITE_TOOL_SCHEMAS.some(schema => schema.name === call.name))) return writes.execute(call, ctx);

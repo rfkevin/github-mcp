@@ -366,6 +366,7 @@ export interface ResearchToolsOptions {
   /** CC-8 S4 : env sonde (AGENT_RUN_PROBE + LLM_KEY_GEMINI) pour FINDING → probe live. */
   probeEnv?: ProbeEnv;
   fetchImpl?: typeof fetch;
+  unifiedCapabilities?: boolean;
   now?: () => number;
 }
 
@@ -473,8 +474,8 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const probeEnv: ProbeEnv = options.probeEnv ?? {};
-  const isResearch = (kind: string) => options.researchEnabled !== false && kind === RESEARCH_TASK_KIND;
-  const isSalonKind = (kind: string) => SALON_KINDS.has(kind);
+  const isResearch = (kind: string) => options.researchEnabled !== false && (options.unifiedCapabilities || kind === RESEARCH_TASK_KIND);
+  const isSalonKind = (kind: string) => options.unifiedCapabilities || SALON_KINDS.has(kind);
   async function run(runId: string, salon = false) {
     const row = await db.prepare('SELECT participant_id, task_id, task_kind FROM agent_runs WHERE run_id = ?1').bind(runId)
       .first<{ participant_id: string; task_id: string; task_kind: string }>();
@@ -546,11 +547,15 @@ export function createResearchTools(db: D1Database, options: ResearchToolsOption
     }
   }
   return {
-    reads: kind => (isResearch(kind) ? RESEARCH_READS
-      : isSalonKind(kind) && options.salonEnabled ? ['store_salon_read'] : []),
+    reads: kind => options.unifiedCapabilities
+      ? [...(options.researchEnabled === true ? ['web_fetch_official' as const] : []),
+        ...(options.salonEnabled ? ['store_salon_read' as const] : [])]
+      : (isResearch(kind) ? RESEARCH_READS
+        : isSalonKind(kind) && options.salonEnabled ? ['store_salon_read'] : []),
     writes: kind => (isSalonKind(kind) && options.salonEnabled ? ['store_salon_post'] : []),
     async execute(call, ctx) {
       if (call.name === 'store_salon_post') return post(call, ctx);
+      if (call.name === 'web_fetch_official' && options.researchEnabled !== true) throw new ToolRefused('research_not_configured');
       await run(ctx.run_id, call.name === 'store_salon_read');
       if (call.name === 'web_fetch_official') {
         const offset = call.args?.offset;

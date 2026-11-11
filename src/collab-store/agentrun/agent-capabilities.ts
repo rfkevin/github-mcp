@@ -21,7 +21,9 @@ export type UnifiedCapability =
   | 'memory.rewrite'
   | 'design.contribute'
   | 'review.verdict'
-  | 'github.write';
+  | 'github.write'
+  | 'web.read'
+  | 'model.choose';
 
 export type AssignedTaskRole = 'author' | 'reviewer' | 'tester' | 'observer' | 'none';
 
@@ -42,6 +44,8 @@ export interface VerifiedCapabilityClaims {
   memory_propose_scoped: boolean;
   memory_rewrite_scoped: boolean;
   design_contribution_authorized: boolean;
+  web_read_granted?: boolean;
+  model_choose_granted?: boolean;
   /** Le serveur a validé la PR et le couple head/base soumis pour un pair D12. */
   verdict_sha_pair_verified: boolean;
   /** Mandat de modification GitHub lié à CET auteur, CETTE branche et SES chemins. */
@@ -74,11 +78,13 @@ export function resolveUnifiedCapabilities(claims: Readonly<VerifiedCapabilityCl
   const capabilities: UnifiedCapability[] = [...READ_BASE];
   if (claims.memory_read_scoped) capabilities.push('memory.read');
   if (claims.github_read_granted) capabilities.push('github.read');
+  if (claims.web_read_granted) capabilities.push('web.read');
   if (claims.halted || !claims.cycle_open) return capabilities;
 
   // Les actions de salon ne dépendent pas du genre de mission.
   capabilities.push('question.ask', 'salon.announce');
   if (claims.question_answer_authorized) capabilities.push('question.answer');
+  if (claims.model_choose_granted) capabilities.push('model.choose');
 
   if (claims.task_assignment_verified && ROLE_MEMBERS.has(claims.task_role)) {
     capabilities.push('task.status', 'task.handover');
