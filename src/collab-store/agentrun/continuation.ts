@@ -49,7 +49,7 @@ export async function runClarificationState(db: D1Database, cycleId: string,
     const reply = await db.prepare([
       'SELECT participant_id,payload_json FROM events WHERE cycle_id=?1',
       " AND type='clarify.answer' AND json_valid(payload_json)",
-      " AND json_extract(payload_json,'$.ask_seq')=?2",
+      " AND json_extract(payload_json,'$.ask_seq')=?2 AND seq>?2",
       'ORDER BY seq LIMIT 1',
     ].join(' ')).bind(cycleId, seq).first<{ participant_id: string; payload_json: string }>();
     if (!reply) { state.pending.push(seq); continue; }
