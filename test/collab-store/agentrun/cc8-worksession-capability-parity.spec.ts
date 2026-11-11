@@ -16,6 +16,7 @@ import { CONTRIBUTION_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/co
 import { MODEL_CHOICE_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/model-choice-tools';
 import { RESEARCH_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/research';
 import { authorize } from '../../../src/collab-store/agentrun/github-write/authorization';
+import { createS7Tools } from '../../../src/collab-store/agentrun/github-write/tools';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const NOW = 2_000_000_000;
@@ -109,8 +110,14 @@ describe('CC8 WorkSession C0 provider API parity', () => {
         s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null } },
     }))).toContain('github.write');
     expect(writeHost.list('answer')).toContain('github_write_scope');
-    const effect = await authorize(db, { writers: 'c2c-author', tasks: grant }, answer.runId, branch);
-    expect(effect).toMatchObject({ branch, task: answer.scope.task_id });
+    const direct = createS7Tools({ db, repository: 'rfkevin/github-mcp',
+      baseBranch: 'mcp/105856986/cc3-integration',
+      writes: { ...writes, branchHead: async (_, current) =>
+        current === 'mcp/105856986/cc3-integration' ? 'a'.repeat(40) : null } },
+      { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null });
+    const effect = await direct.execute({ id: 'scope', name: 'github_write_scope', args: {} },
+      { run_id: answer.runId, effect_key: 'a'.repeat(64) });
+    expect(effect).toMatchObject({ branch, base_sha: 'a'.repeat(40) });
   });
 
   it('WorkSession: reviewer peut demander un verdict D12 depuis un run answer, sans usurpation de rôle', async () => {
