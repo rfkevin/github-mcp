@@ -19,8 +19,8 @@ async function fixture() {
   const memory = (s: string, scope: string, value: string) => db.prepare([
     'INSERT INTO memory_entries (id,version,scope,kind,text,evidence_refs,confidence,status,',
     'author_pid,reviewer_pid,supersedes,uses,last_used_rev,expires_rev)',
-    "VALUES(?1,1,?2,'fact',?3,'["u2b-proof"]','observed','active','u2b-agent','u2b-reviewer',NULL,0,NULL,NULL)",
-  ].join(' ')).bind(cycle+s,scope,value).run();
+    "VALUES(?1,1,?2,'fact',?3,?4,'observed','active','u2b-agent','u2b-reviewer',NULL,0,NULL,NULL)",
+  ].join(' ')).bind(cycle+s,scope,value,JSON.stringify(['u2b-proof'])).run();
   await memory('-own','participant:u2b-agent','PRIVATE_OWN_U2B');
   await memory('-other','participant:u2b-other','PRIVATE_OTHER_U2B');
   await memory('-common','common','COMMON_U2B');
