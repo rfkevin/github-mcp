@@ -19,11 +19,11 @@ describe('CC8 U1 per-call token telemetry', () => {
     const base = { run_id: runId, n: 0, chosen_ref: 'zai:glm-4.7-flash', latency_ms: 17, at: 2_000_000_000 };
     await recordRunModelCall(db, { ...base, ref: 'zai:glm-4.7-flash', ok: false, failure: 'transient' });
     await recordRunModelCall(db, { ...base, ref: 'workers-ai:@cf/zai-org/glm-4.7-flash',
-      ok: true, failure: '', input_tokens: 1200, output_tokens: 90 });
+      ok: true, failure: '', input_tokens: 1200, output_tokens: 90, estimated_input_tokens: 1350 });
     const summary = await redactedRunSummary(db, runId);
     expect(summary?.model_calls).toMatchObject([
-      { n: 0, k: 0, input_tokens: null, output_tokens: null },
-      { n: 0, k: 1, input_tokens: 1200, output_tokens: 90 },
+      { n: 0, k: 0, input_tokens: null, output_tokens: null, estimated_input_tokens: null },
+      { n: 0, k: 1, input_tokens: 1200, output_tokens: 90, estimated_input_tokens: 1350 },
     ]);
     expect(JSON.stringify(summary)).not.toContain('PRIVATE_NEVER_RETURN');
   });
