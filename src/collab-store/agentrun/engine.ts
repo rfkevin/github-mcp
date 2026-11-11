@@ -143,7 +143,7 @@ export interface StepResult { outcome: RunStatus | 'stepped' | 'busy' | 'retry' 
 interface RunRow {
   run_id: string; cycle_id: string; participant_id: string; task_id: string;
   lease_key: string; generation: number; task_kind: string; status: RunStatus;
-  steps_done: number; prompt: string;
+  steps_done: number; prompt: string; max_tokens: number; tokens_used: number;
   /** CC-8 S1b-2 : deadline d'exécution (secondes) — borne le budget d'appels modèle de l'étape. */
   deadline_at: number;
 }
@@ -291,7 +291,7 @@ export async function createRun(db: D1Database, input: CreateRunInput): Promise<
 // ---------------------------------------------------------------- étape
 
 async function getRun(db: D1Database, runId: string): Promise<RunRow | null> {
-  return db.prepare('SELECT run_id, cycle_id, participant_id, task_id, lease_key, generation, task_kind, status, steps_done, prompt, deadline_at FROM agent_runs WHERE run_id = ?1')
+  return db.prepare('SELECT run_id, cycle_id, participant_id, task_id, lease_key, generation, task_kind, status, steps_done, prompt, max_tokens, tokens_used, deadline_at FROM agent_runs WHERE run_id = ?1')
     .bind(runId).first<RunRow>();
 }
 
