@@ -108,7 +108,7 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     expect(await f.result()).toMatchObject({next_action:'request_D12',verifiedSuccess:true});
     expect(f.commits()).toBe(2);
   });
-  it.skip('retries CI failures beyond three corrections without marking the task blocked',async()=>{
+  it('retries CI failures beyond three corrections without marking the task blocked',async()=>{
     const f=await fixture();await f.tools.execute(f.commit(),f.ctx());
     for(let i=0;i<5;i++){
       expect(await f.result()).toMatchObject({next_action:'correct'});
@@ -156,7 +156,7 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     await f.result();
     expect(await restarted.execute(f.commit(),f.ctx())).toMatchObject({corrections_completed:1});
   });
-  it.skip('new S7 host keeps CI corrections possible after repeated failed checks',async()=>{
+  it('new S7 host keeps CI corrections possible after repeated failed checks',async()=>{
     const f=await fixture();await f.tools.execute(f.commit(),f.ctx());
     for(let i=0;i<4;i++){await f.result();await f.tools.execute(f.commit(),f.ctx());}
     const restarted=createS7Tools(f.options,f.s7);
