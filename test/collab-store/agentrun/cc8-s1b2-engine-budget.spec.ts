@@ -102,4 +102,3 @@ describe('CC8 S1b-2 — budget d’appels et garde avant effets (engine, plan se
     expect(r.stopReason).toBe('');
   });
 });
-});
