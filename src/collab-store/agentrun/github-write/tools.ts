@@ -7,7 +7,6 @@ import { authorize, assertPaths, exactGrant, type WritePolicy, type WriteScope }
 import { MAX_EDITS, normalizeEdits, replaceOnce } from './edits';
 import { functionalTestCause, missionOf } from '../mission-quality';
 import { PRECHECK_HINTS } from '../s7-guided';
-import { GitHubApiError } from '../../../github/types';
 import { reserveCommit, finishCommit, recordCheck, correctionsUsed, releaseReservation } from './progress';
 
 export interface ApiChecks {
@@ -57,7 +56,13 @@ async function commitGuards(s: WriteScope, reads: GitHubReads | null, repository
     } catch (error) {
       // A blob fetch may also return 404 for an existing path: only the
       // canonical missing-tree-entry sentinel proves a file is new.
-      if (error instanceof GitHubApiError && error.status === 404 && error.endpoint === '/git/trees') {
+      // No direct /github/ import from the collab store (CC3 boundary).
+      // Match the canonical typed tree-miss error by its complete stable shape;
+      // an HTTP 404 from a blob fetch, a different endpoint, or an ordinary
+      // Error('404') must NOT authorize a write.
+      const cause = error as { name?: unknown; status?: unknown; endpoint?: unknown; message?: unknown } | null;
+      if (error instanceof Error && cause?.name === 'GitHubApiError' && cause.status === 404
+        && cause.endpoint === '/git/trees' && cause.message === 'Fichier introuvable.') {
         changed = true; // Verified missing tree entry, not a missing blob.
         continue;
       }
