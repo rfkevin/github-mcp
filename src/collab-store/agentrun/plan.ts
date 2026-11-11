@@ -222,7 +222,7 @@ export async function taskRunId(kind: TaskWakeKind, cycleId: string, participant
 export async function answerAttemptRunId(cycleId: string, participantId: string, askSeq: number,
   phase: string, round: number, attempt: number): Promise<string> {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(phase) || !Number.isSafeInteger(round) || round < 0
-    || !Number.isSafeInteger(attempt) || attempt < 1 || attempt > 3) throw new Error('INVALID_RUN_ATTEMPT');
+    || !Number.isSafeInteger(attempt) || attempt < 1) throw new Error('INVALID_RUN_ATTEMPT');
   return 'api-answer-' + (await sha256Hex(
     ['answer', cycleId, participantId, String(askSeq), phase, String(round), String(attempt)].join('\u001f'),
   )).slice(0, 32);
@@ -232,7 +232,7 @@ export async function answerAttemptRunId(cycleId: string, participantId: string,
 export async function attemptRunId(kind: TaskWakeKind, cycleId: string, participantId: string, taskId: string,
   subject: string, phase: string, round: number, attempt: number): Promise<string> {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(phase) || !Number.isSafeInteger(round) || round < 0
-    || !Number.isSafeInteger(attempt) || attempt < 1 || attempt > 3) {
+    || !Number.isSafeInteger(attempt) || attempt < 1) {
     throw new Error('INVALID_RUN_ATTEMPT : phase, ronde ou tentative invalide');
   }
   return 'api-' + kind + '-' + (await sha256Hex(
@@ -271,7 +271,7 @@ export function taskPrompt(kind: TaskWakeKind, cycleId: string, taskId: string, 
     return [
       'Tâche ' + taskId + ' du cycle ' + cycleId + ' : elle attend votre implémentation.' + object,
       'Lisez le mandat actuel avec store_context (task-first si mode compact). Consultez store_delta depuis recent_since_seq puis next_since_seq pour les derniers événements. Pour toute preuve exacte, utilisez store_delta avec full:true et relisez les fichiers avec github_read_file.',
-      'Appelez github_write_scope pour connaître le mandat exact, son nom de branche et base_sha (SHA de commit de la base, PAS SHA de blob). Utilisez le name et le base_sha fournis pour github_create_branch ; ne devinez aucun SHA. Après chaque commit, github_run_checks puis github_check_result au SHA courant ; attendez si pending, corrigez si rouge, trois corrections maximum puis escalade. CI verte ne remplace pas D12.',
+      'Appelez github_write_scope pour connaître le mandat exact, son nom de branche et base_sha (SHA de commit de la base, PAS SHA de blob). Utilisez le name et le base_sha fournis pour github_create_branch ; ne devinez aucun SHA. Après chaque commit, github_run_checks puis github_check_result au SHA courant ; attendez si pending et corrigez la CI rouge autant que nécessaire sans recréer la tâche. CI verte ne remplace pas D12.',
       'Travaillez sur VOTRE branche API : github_create_branch au besoin, github_commit_files avec expected_head_sha lu avant chaque commit.',
       'Ouvrez ensuite la PR prête à la revue avec github_open_pr : jamais de fusion, d’approbation ni de résolution de conflit.',
       'IMPORTANT : une réponse finale qui PLANIFIE une lecture ou une écriture SANS invoquer les outils n est PAS une mission terminée. Continuez effectivement les appels d outils jusqu aux preuves branche, commit, CI vérifiée et PR. Si vous ne pouvez pas exécuter, décrivez le blocage factuel : le serveur marquera la mission incomplete_final, jamais success.',
@@ -394,19 +394,21 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
     }
     return value.capable;
   };
-  // S1b : une seule relance après un passage cron (>= 15 min), trois runs au maximum.
-  // Le run précédent doit être un échec explicitement transitoire, jamais un refus permanent.
-  const retryAttempt = async (ids: string[]): Promise<number | null> => {
-    const rows = await Promise.all(ids.map(runId => db.prepare(
-      'SELECT status, stop_reason, updated_at FROM agent_runs WHERE run_id = ?1',
-    ).bind(runId).first<{ status: string; stop_reason: string; updated_at: number }>()));
-    const firstMissing = rows.findIndex(row => !row);
-    if (firstMissing === 0) return 1;
-    if (firstMissing < 0) return null;
-    if (rows.slice(firstMissing + 1).some(Boolean)) return null; // fail-closed : trou dans l'historique
-    const last = rows[firstMissing - 1]!;
-    if (last.status !== 'failed' || !last.stop_reason.startsWith('model_transient:')) return null;
-    return input.now - last.updated_at >= 900 ? firstMissing + 1 : null;
+  // Each transient provider failure normally retries the same durable run.
+  // A historical model_transient failure can start another run after 900 s,
+  // without a fixed number of allowed attempts or any duplicate IDs.
+  const retryAttempt = async (runIdFor: (attempt: number) => Promise<string>): Promise<string | null> => {
+    let previous: { status: string; stop_reason: string; updated_at: number } | null = null;
+    for (let attempt = 1; Number.isSafeInteger(attempt); attempt++) {
+      const runId = await runIdFor(attempt);
+      const row = await db.prepare('SELECT status, stop_reason, updated_at FROM agent_runs WHERE run_id = ?1')
+        .bind(runId).first<{ status: string; stop_reason: string; updated_at: number }>();
+      if (row) { previous = row; continue; }
+      if (!previous) return runId;
+      return previous.status === 'failed' && previous.stop_reason.startsWith('model_transient:')
+        && input.now - previous.updated_at >= 900 ? runId : null;
+    }
+    return null;
   };
   let order = 0;
   const queues = new Map<string, PlanIntent[]>(participants.map(pid => [pid, []]));
@@ -442,14 +444,13 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           }
           const askSeq = Number(match[1]);
           queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => {
-            const ids = await Promise.all([1, 2, 3].map(attempt =>
-              answerAttemptRunId(cycleId, participantId, askSeq, phase, round, attempt)));
-            const attempt = await retryAttempt(ids);
-            if (attempt === null) return false;
+            const runId = await retryAttempt(attempt =>
+              answerAttemptRunId(cycleId, participantId, askSeq, phase, round, attempt));
+            if (runId === null) return false;
             const dossier = await answerTaskDossier(db, cycleId, askSeq);
             if (dossier === null) return false;
             return (await createRun(db, {
-              runId: ids[attempt - 1], cycleId, participantId, taskId: '', taskKind: 'answer',
+              runId, cycleId, participantId, taskId: '', taskKind: 'answer',
             prompt: continuityEnabled(env)
                ? await answerPromptWithServerPacket(db, { cycleId, participantId }, answerPrompt(cycleId, askSeq, true, dossier))
                : answerPrompt(cycleId, askSeq, false, dossier),
@@ -479,12 +480,11 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         const taskId = decision.task_id ?? '';
         queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => {
           // La ronde est liée au sujet de la décision (incluant le couple head/base pour review/test).
-          const ids = await Promise.all([1, 2, 3].map(attempt =>
-            attemptRunId(kind, cycleId, participantId, taskId, decision.subject, phase, round, attempt)));
-          const attempt = await retryAttempt(ids);
-          if (attempt === null) return false;
+          const runId = await retryAttempt(attempt =>
+            attemptRunId(kind, cycleId, participantId, taskId, decision.subject, phase, round, attempt));
+          if (runId === null) return false;
           return (await createRun(db, {
-            runId: ids[attempt - 1], cycleId, participantId,
+            runId, cycleId, participantId,
             taskId, taskKind: kind,
             prompt: await taskPromptWithServerPacket(db, { cycleId, participantId, taskId },
               taskPrompt(kind, cycleId, taskId, decision.subject)),
