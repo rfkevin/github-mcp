@@ -343,8 +343,8 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
     ].join(' ')).bind(runId).first<{ task_kind: string; deadline_at: number; last_ci: string | null }>();
     const currentMs = deps.nowMs();
     const delayS = nextStepIntervalS(state?.task_kind ?? '', state?.last_ci ?? null);
-    const deadlineMs = (state?.deadline_at ?? Math.ceil(currentMs / 1000)) * 1000;
-    const next = Math.max(currentMs, Math.min(deadlineMs, currentMs + delayS * 1000));
+    // A logical WorkSession is not terminated by a per-run clock.
+    const next = currentMs + delayS * 1000;
     await scheduleAt(deps, runId, run.lease_key, next);
     return { action: 'stepped', outcome, next_at: next };
   }
