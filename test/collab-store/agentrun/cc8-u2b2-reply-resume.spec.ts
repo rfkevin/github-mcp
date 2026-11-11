@@ -208,34 +208,51 @@ function u2b2Slot() {
   return { slot, state };
 }
 
+/** Common test wiring: distinct scenarios, one stable D1/DO mock contract. */
+async function waitFixture(label: string, task: string, owner: string, reviewer: string, deadlineSeconds: number) {
+  await ensureSchema(db);
+  const cycle = 'u2b2-' + label + '-' + crypto.randomUUID();
+  await insertCycleRow(db, cycle, 'P6');
+  await insertPhaseDefinition(db, cycle, 'P6', []);
+  await insertTaskRow(db, { cycle, taskId: task, owner, reviewer, tester: owner + '-tester' });
+  const runId = 'u2b2-' + label + '-run-' + crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  expect((await createRun(db, {
+    runId, cycleId: cycle, participantId: owner, taskId: task,
+    taskKind: 'implement', prompt: 'Wait for explicit reviewer clarification',
+    maxSteps: 8, maxTokens: 48_000, maxCostCents: 0,
+    deadlineAt: now + deadlineSeconds, now,
+  })).created).toBe(true);
+  return { cycle, runId, now, tools: createReadToolHost({ db, repository: null, github: null, storeWrites: true }) };
+}
+function askModel(task: string, reviewer: string) {
+  let calls = 0;
+  const model: ModelClient = { async complete() {
+    calls += 1;
+    return { output: calls === 1
+      ? { text: 'Awaiting independent human review', tool_calls: [{
+        id: 'ask', name: 'store_ask', args: { question: 'Which acceptance criterion?',
+          to: reviewer, task },
+      }] }
+      : { text: 'Continuing after verified answer', tool_calls: [] },
+      usage: { tokens: 20, cost_cents: 0 } };
+  } };
+  return { model, callCount: () => calls };
+}
+function waitDeps(slot: ObjectSlot, model: ModelClient, tools: ReturnType<typeof createReadToolHost>, now: () => number) {
+  return { db, env: { AGENT_RUNS_ENABLED: 'true' }, slot,
+    ownsLease: (_: string) => true, nowMs: () => now() * 1000,
+    engine: () => ({ model, tools, now }), workerId: () => 'u2b2-recovered-worker' };
+}
+
 describe('CC8 U2b2 — crash before wake, recovery and step budget', () => {
   it('rescues the original D1 run after losing the alarm and does not spend model steps while waiting', async () => {
-    await ensureSchema(db);
-    const cycle = 'u2b2-crash-' + crypto.randomUUID();
-    await insertCycleRow(db, cycle, 'P6');
-    await insertPhaseDefinition(db, cycle, 'P6', []);
-    await insertTaskRow(db, { cycle, taskId: 'resume', owner: 'u2b2-crash-owner',
-      reviewer: 'u2b2-crash-reviewer', tester: 'u2b2-crash-tester' });
-    const runId = 'u2b2-crash-run-' + crypto.randomUUID(), now = Math.floor(Date.now()/1000);
-    expect((await createRun(db, { runId, cycleId: cycle, participantId: 'u2b2-crash-owner',
-      taskId: 'resume', taskKind: 'implement', prompt: 'Ask, wait, resume',
-      maxSteps: 8, maxTokens: 48_000, maxCostCents: 0, deadlineAt: now + 1800, now })).created).toBe(true);
-    let calls = 0;
-    const model: ModelClient = { async complete() {
-      calls++;
-      return { output: calls === 1
-        ? { text: 'Asking reviewer', tool_calls: [{ id: 'ask', name: 'store_ask',
-          args: { question: 'Which criterion?', to: 'u2b2-crash-reviewer', task: 'resume' } }] }
-        : { text: 'Completed after actual reply', tool_calls: [] },
-        usage: { tokens: 20, cost_cents: 0 } };
-    } };
-    const tools = createReadToolHost({ db, repository: null, github: null, storeWrites: true });
+    const { cycle, runId, now, tools } = await waitFixture(
+      'crash', 'resume', 'u2b2-crash-owner', 'u2b2-crash-reviewer', 1800);
+    const { model, callCount } = askModel('resume', 'u2b2-crash-reviewer');
     let clock = now + 1;
     const doState = u2b2Slot();
-    const deps = { db, env: { AGENT_RUNS_ENABLED: 'true' }, slot: doState.slot,
-      ownsLease: (_: string) => true, nowMs: () => clock*1000,
-      engine: () => ({ model, tools, now: () => clock }),
-      workerId: () => 'u2b2-restarted-object' };
+    const deps = waitDeps(doState.slot, model, tools, () => clock);
     const readSteps = async () => (await db.prepare('SELECT steps_done FROM agent_runs WHERE run_id=?1')
       .bind(runId).first<{ steps_done: number }>())!.steps_done;
 
@@ -253,7 +270,7 @@ describe('CC8 U2b2 — crash before wake, recovery and step budget', () => {
     // A real DO consumes the alarm before invoking the handler.
     await doState.slot.deleteAlarm();
     expect((await objectAlarm(deps)).outcome).toBe('waiting_for_reply');
-    expect(calls).toBe(1);
+    expect(callCount()).toBe(1);
     expect(await readSteps()).toBe(1);
     const alarm = doState.state.alarm as number;
     expect(alarm).toBeGreaterThan(clock*1000);
@@ -266,7 +283,7 @@ describe('CC8 U2b2 — crash before wake, recovery and step budget', () => {
     expect(await rescueStalledRuns(db, { now:clock, wake })).toBe(1);
     await doState.slot.deleteAlarm();
     expect((await objectAlarm(deps)).outcome).toBe('waiting_for_reply');
-    expect(calls).toBe(1);
+    expect(callCount()).toBe(1);
     expect(await readSteps()).toBe(1);
     const store = new CollabStore(db);
     const ask = await db.prepare("SELECT seq FROM events WHERE cycle_id=?1 AND type='clarify.ask' ORDER BY seq DESC LIMIT 1")
@@ -278,7 +295,7 @@ describe('CC8 U2b2 — crash before wake, recovery and step budget', () => {
     clock += 121; // Existing D1 alarm, no separate model or fresh run.
     await doState.slot.deleteAlarm();
     expect((await objectAlarm(deps)).outcome).toBe('completed');
-    expect(calls).toBe(2);
+    expect(callCount()).toBe(2);
     expect(await readSteps()).toBe(2);
     expect((await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE run_id=?1').bind(runId)
       .first<{n:number}>())!.n).toBe(1);
@@ -289,29 +306,12 @@ describe('CC8 U2b2 — crash before wake, recovery and step budget', () => {
 
 describe('CC8 U2b2 — bounded long wait escalation and lease slot release', () => {
   it('preserves steps, emits a typed owner diagnostic at deadline and frees the DO slot', async () => {
-    await ensureSchema(db);
-    const cycle = 'u2b2-long-' + crypto.randomUUID();
-    await insertCycleRow(db,cycle,'P6');
-    await insertPhaseDefinition(db,cycle,'P6',[]);
-    await insertTaskRow(db,{cycle,taskId:'longwait',owner:'u2b2-long-owner',
-      reviewer:'u2b2-long-reviewer',tester:'u2b2-long-tester'});
-    const runId='u2b2-long-run-'+crypto.randomUUID(), now=Math.floor(Date.now()/1000);
-    expect((await createRun(db,{runId,cycleId:cycle,participantId:'u2b2-long-owner',
-      taskId:'longwait',taskKind:'implement',prompt:'Request human review',
-      maxSteps:8,maxTokens:48000,maxCostCents:0,deadlineAt:now+400,now})).created).toBe(true);
-    let calls=0;
-    const model:ModelClient={async complete(){
-      calls++;
-      return {output:{text:'Ask for review',tool_calls:[{id:'ask',name:'store_ask',
-        args:{question:'Please review',to:'u2b2-long-reviewer',task:'longwait'}}]},
-        usage:{tokens:10,cost_cents:0}};
-    }};
-    const tools=createReadToolHost({db,repository:null,github:null,storeWrites:true});
-    let clock=now+1;
-    const {slot,state}=u2b2Slot();
-    const deps={db,env:{AGENT_RUNS_ENABLED:'true'},slot,ownsLease:(_:string)=>true,
-      nowMs:()=>clock*1000,engine:()=>({model,tools,now:()=>clock}),
-      workerId:()=> 'u2b2-long-worker'};
+    const { cycle, runId, now, tools } = await waitFixture(
+      'long', 'longwait', 'u2b2-long-owner', 'u2b2-long-reviewer', 400);
+    const { model, callCount } = askModel('longwait', 'u2b2-long-reviewer');
+    let clock = now + 1;
+    const { slot, state } = u2b2Slot();
+    const deps = waitDeps(slot, model, tools, () => clock);
     expect((await runStep(db,runId,{model,tools,now:()=>clock,workerId:'first'})).outcome).toBe('stepped');
     const original=(await db.prepare('SELECT steps_done,tokens_used FROM agent_runs WHERE run_id=?1')
       .bind(runId).first<{steps_done:number;tokens_used:number}>())!;
@@ -332,7 +332,7 @@ describe('CC8 U2b2 — bounded long wait escalation and lease slot release', () 
     clock=now+401;
     await slot.deleteAlarm();
     expect((await objectAlarm(deps)).outcome).toBe('deadline');
-    expect(calls).toBe(1);
+    expect(callCount()).toBe(1);
     const stopped=(await db.prepare('SELECT status,stop_reason,steps_done,tokens_used FROM agent_runs WHERE run_id=?1')
       .bind(runId).first<{status:string;stop_reason:string;steps_done:number;tokens_used:number}>())!;
     expect(stopped).toMatchObject({...original,status:'deadline',stop_reason:'clarification_wait_expired'});
@@ -343,7 +343,7 @@ describe('CC8 U2b2 — bounded long wait escalation and lease slot release', () 
     expect((await db.prepare('SELECT next_alarm_at FROM agent_run_alarms WHERE run_id=?1')
       .bind(runId).first<{next_alarm_at:number|null}>())?.next_alarm_at).toBeNull();
     expect((await runStep(db,runId,{model,tools,now:()=>now+500,workerId:'late'})).outcome).toBe('deadline');
-    expect(calls).toBe(1);
+    expect(callCount()).toBe(1);
     // Original terminal run no longer blocks a separately authorized handover.
     expect((await createRun(db,{runId:runId+'-new',cycleId:cycle,participantId:'u2b2-long-owner',
       taskId:'longwait',taskKind:'implement',prompt:'New explicit authorized continuation',
