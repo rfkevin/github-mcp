@@ -180,7 +180,7 @@ const TABLES = [
   // U1 : nouveau registre de mesures. Ne change pas les lignes existantes du journal D1.
   ['CREATE TABLE IF NOT EXISTS agent_run_call_usage (',
     '  run_id TEXT NOT NULL, n INTEGER NOT NULL, k INTEGER NOT NULL,',
-    '  input_tokens INTEGER, output_tokens INTEGER,',
+    '  input_tokens INTEGER, output_tokens INTEGER, estimated_input_tokens INTEGER,',
     '  PRIMARY KEY (run_id, n, k)',
     ')'].join(' '),
 ];

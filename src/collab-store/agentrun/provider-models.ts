@@ -255,7 +255,7 @@ export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderM
  */
 export async function recordRunModelCall(db: D1Database, input: { run_id: string; n: number; chosen_ref: string; ref: string;
   ok: boolean; failure: string; latency_ms: number; at: number;
-  input_tokens?: number | null; output_tokens?: number | null }): Promise<void> {
+  input_tokens?: number | null; output_tokens?: number | null; estimated_input_tokens?: number | null }): Promise<void> {
   try {
     // Both rows are inserted in one transaction; no private prompt or output is persisted.
     await db.batch([
@@ -265,10 +265,11 @@ export async function recordRunModelCall(db: D1Database, input: { run_id: string
       ].join(' ')).bind(input.run_id, input.n, input.chosen_ref, input.ref, input.ok ? 1 : 0, input.failure.slice(0, 40),
         Math.max(0, Math.round(input.latency_ms)), input.at),
       db.prepare([
-        'INSERT OR IGNORE INTO agent_run_call_usage (run_id, n, k, input_tokens, output_tokens)',
-        'SELECT run_id, n, k, ?3, ?4 FROM agent_run_model_calls',
+        'INSERT OR IGNORE INTO agent_run_call_usage (run_id, n, k, input_tokens, output_tokens, estimated_input_tokens)',
+        'SELECT run_id, n, k, ?3, ?4, ?5 FROM agent_run_model_calls',
         'WHERE run_id = ?1 AND n = ?2 ORDER BY k DESC LIMIT 1',
-      ].join(' ')).bind(input.run_id, input.n, input.input_tokens ?? null, input.output_tokens ?? null),
+      ].join(' ')).bind(input.run_id, input.n, input.input_tokens ?? null, input.output_tokens ?? null,
+        input.estimated_input_tokens ?? null),
     ]);
   } catch {
     // Optional telemetry failure never invents measurements or hides the real model outcome.
@@ -401,7 +402,8 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           const result = await candidate.model().complete(budgetLeftMs === undefined ? input : { ...input, budget_left_ms: budgetLeftMs });
           await recordRunModelCall(ctx.db, { run_id: ctx.runId, n: run.steps_done, chosen_ref: ref, ref: candidate.ref, ok: true, failure: '',
             latency_ms: Date.now() - started, at: Math.floor(now.getTime() / 1000),
-            input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens });
+            input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens,
+            estimated_input_tokens: result.usage.estimated_input_tokens });
           if (isProbe) {
             await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
           } else {

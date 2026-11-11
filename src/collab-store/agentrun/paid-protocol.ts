@@ -160,7 +160,7 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
       const prepared = options.protocol.prepare({ model, system: options.system, messages: input.messages,
         tools: input.tools, taskKind: input.task_kind, schemas: options.schemas,
         maxOutputTokens, requestOptions: options.requestOptions });
-      requireTokenBudget(prepared.bound, maxOutputTokens, input.budget_left_tokens);
+      const preflight = requireTokenBudget(prepared.bound, maxOutputTokens, input.budget_left_tokens);
       const worstTokens = prepared.bound + maxOutputTokens;
       const worstCents = Math.min(centsOfApiTokens(rate, prepared.bound, maxOutputTokens), MAX_PAID_CENTS);
       // Borne par exécution : refus PRÉEMPTIF avant toute réservation (jamais de découvert).
@@ -203,7 +203,8 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
       await settleParticipantStep(options.db, { runId: options.runId, n, participantId: run.participant_id, cycleId: run.cycle_id,
         day, reservedCents: reserved, actualCents, reservedTokens: worstTokens, actualTokens, nowSec });
       return { output: parsed.output, usage: { tokens: actualTokens, cost_cents: actualCents,
-        input_tokens: inputTokens, output_tokens: outputTokens } };
+        input_tokens: parsed.input, output_tokens: parsed.output_tokens,
+        estimated_input_tokens: preflight.estimated_input_tokens } };
     },
   };
 }
@@ -226,7 +227,7 @@ function createFreeProtocolModel(options: PaidProtocolModelOptions, model: strin
       const prepared = options.protocol.prepare({ model, system: options.system, messages: input.messages,
         tools: input.tools, taskKind: input.task_kind, schemas: options.schemas,
         maxOutputTokens, requestOptions: options.requestOptions });
-      requireTokenBudget(prepared.bound, maxOutputTokens, input.budget_left_tokens);
+      const preflight = requireTokenBudget(prepared.bound, maxOutputTokens, input.budget_left_tokens);
       let raw: unknown;
       try {
         const response = await fetchWithTimeout(options.fetchImpl ?? fetch, options.url, {
@@ -244,7 +245,8 @@ function createFreeProtocolModel(options: PaidProtocolModelOptions, model: strin
       const inputTokens = parsed.input ?? prepared.bound;
       const outputTokens = parsed.output_tokens ?? bytes(JSON.stringify(parsed.output));
       return { output: parsed.output, usage: { tokens: inputTokens + outputTokens, cost_cents: 0,
-        input_tokens: inputTokens, output_tokens: outputTokens } };
+        input_tokens: parsed.input, output_tokens: parsed.output_tokens,
+        estimated_input_tokens: preflight.estimated_input_tokens } };
     },
   };
 }

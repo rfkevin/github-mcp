@@ -173,7 +173,7 @@ export function createWorkersAiModel(options: WorkersAiModelOptions): ModelClien
       const bound = inputTokenBound(messages, tools);
       // CC-7 L5b (N1) : plafond de sortie par type de tâche quand le canal API fournit le résolveur.
       const maxOutputTokens = effectiveMaxOutputTokens(options, input.task_kind);
-      requireTokenBudget(bound, maxOutputTokens, input.budget_left_tokens);
+      const preflight = requireTokenBudget(bound, maxOutputTokens, input.budget_left_tokens);
       const worst = neurons(bound, maxOutputTokens);
       const now = options.now?.() ?? new Date();
       await ensureSchema(options.db);
@@ -203,7 +203,8 @@ export function createWorkersAiModel(options: WorkersAiModelOptions): ModelClien
       const outputTokens = parsed.output_tokens ?? bytes(JSON.stringify(parsed.output));
       await settleNeurons(options.db, key, worst, neurons(inputTokens, outputTokens));
       return { output: parsed.output, usage: { tokens: inputTokens + outputTokens, cost_cents: 0,
-        input_tokens: inputTokens, output_tokens: outputTokens } };
+        input_tokens: parsed.input, output_tokens: parsed.output_tokens,
+        estimated_input_tokens: preflight.estimated_input_tokens } };
     },
   };
 }

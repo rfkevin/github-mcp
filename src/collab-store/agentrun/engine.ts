@@ -71,7 +71,7 @@ export function reviewVerdictTurn(kind: string, stepsDone: number, maxSteps: num
   return (kind === 'review' || kind === 'test') && stepsDone >= maxSteps - 1;
 }
 /** Split values are provided by the adapter when reported by the provider. */
-export interface ModelUsage { tokens: number; cost_cents: number; input_tokens?: number | null; output_tokens?: number | null }
+export interface ModelUsage { tokens: number; cost_cents: number; input_tokens?: number | null; output_tokens?: number | null; estimated_input_tokens?: number | null }
 export interface AgentMessage {
   role: 'user' | 'assistant' | 'tool';
   content: string;
