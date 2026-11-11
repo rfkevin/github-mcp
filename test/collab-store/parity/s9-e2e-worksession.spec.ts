@@ -92,7 +92,7 @@ export const FROZEN_MANIFEST: readonly FrozenInput[] = [
   entry('s9-answer-03', 'answer',
     'Clarifier la différence entre harnais S9 et parité live (parityLive=false).',
     [], 'S9_ANSWER_03'),
-  entry('s9-review-01', ' reciew' as Kind,
+  entry('s9-review-01', 'review',
     'Relire le couple head/base fourni et déposer un verdict structuré si les preuves suffisent.',
     ['pair:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'], 'S9_REVIEW_01'),
   entry('s9-review-02', 'review',
