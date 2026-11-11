@@ -39,7 +39,7 @@ describe('CC8 WorkSession — reprise autonome après interruption du fournisseu
 
     clock.now += 2;
     const resumed = await runStep(db, id, deps);
-    expect(resumed.outcome).toBe('stepped');
+    expect(resumed.outcome).toBe('completed');
     expect(calls).toBe(2);
     const stored = await db.prepare('SELECT status, steps_done FROM agent_runs WHERE run_id=?1').bind(id)
       .first<{ status: string; steps_done: number }>();
