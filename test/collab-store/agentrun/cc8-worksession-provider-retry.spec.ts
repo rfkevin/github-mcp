@@ -5,18 +5,23 @@ import { ensureSchema } from '../../../src/collab-store/store/schema';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 
+/** Shared durable-run setup avoids repeating the same D1 fixtures across scenarios. */
+async function sessionRun(prefix: string, participantId: string, taskId: string, now: number, prompt: string): Promise<string> {
+  await ensureSchema(db);
+  const runId = 'cc8-' + prefix + '-' + crypto.randomUUID();
+  const created = await createRun(db, {
+    runId, cycleId: 'cc8-' + prefix + '-cycle-' + crypto.randomUUID(),
+    participantId, taskId, taskKind: 'planning', prompt,
+    maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1, now,
+  });
+  expect(created.created).toBe(true);
+  return runId;
+}
+
 describe('CC8 WorkSession — reprise autonome après interruption du fournisseur API', () => {
   it('503 puis succès : conserve la même tâche, son run_id et ses étapes, sans plafond de tentatives', async () => {
-    await ensureSchema(db);
-    const id = 'cc8-retry-' + crypto.randomUUID();
     const clock = { now: 2_000_000_000 };
-    const created = await createRun(db, {
-      runId: id, cycleId: 'cc8-retry-' + crypto.randomUUID(), participantId: 'cc8-model-retry',
-      taskId: 'session', taskKind: 'planning', prompt: 'Résoudre la tâche, puis terminer.',
-      maxSteps: -1, maxTokens: -1, maxCostCents: 0,
-      deadlineAt: clock.now + 1, now: clock.now,
-    });
-    expect(created.created).toBe(true);
+    const id = await sessionRun('retry', 'cc8-model-retry', 'session', clock.now, 'Résoudre la tâche, puis terminer.');
     let calls = 0;
     const deps: EngineDeps = {
       model: { complete: async () => {
@@ -50,14 +55,8 @@ describe('CC8 WorkSession — reprise autonome après interruption du fournisseu
     expect(STEP_TIMEOUT_S).toBeGreaterThan(30);
   });
   it('100 étapes et 100 000 jetons cumulés ne terminent pas la mission', async () => {
-    await ensureSchema(db);
-    const id = 'cc8-long-session-' + crypto.randomUUID();
     const now = 2_000_000_000;
-    expect((await createRun(db, {
-      runId: id, cycleId: 'cc8-long-' + crypto.randomUUID(), participantId: 'cc8-long-agent',
-      taskId: 'long-work', taskKind: 'planning', prompt: 'Mission longue et libre',
-      maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1, now,
-    })).created).toBe(true);
+    const id = await sessionRun('long', 'cc8-long-agent', 'long-work', now, 'Mission longue et libre');
     let turns = 0;
     let reads = 0;
     const deps: EngineDeps = {
@@ -93,14 +92,9 @@ describe('CC8 WorkSession — reprise autonome après interruption du fournisseu
   });
 
   it('trois refus déterministes identiques -> blocage documenté, sans effet extérieur ni plafond global', async () => {
-    await ensureSchema(db);
-    const runId = 'cc8-stuck-' + crypto.randomUUID();
     const now = 2_000_000_000;
-    expect((await createRun(db, {
-      runId, cycleId: 'cc8-stuck-' + crypto.randomUUID(), participantId: 'cc8-stuck-agent',
-      taskId: 'same-denied', taskKind: 'planning', prompt: 'Try without forcing owner actions.',
-      maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1, now,
-    })).created).toBe(true);
+    const runId = await sessionRun('stuck', 'cc8-stuck-agent', 'same-denied', now,
+      'Try without forcing owner actions.');
     let calls = 0;
     let effects = 0;
     const deps: EngineDeps = {
@@ -136,14 +130,9 @@ describe('CC8 WorkSession — reprise autonome après interruption du fournisseu
   });
 
   it('deux refus suivis d’une action différente autorisée ne déclenchent pas le disjoncteur', async () => {
-    await ensureSchema(db);
-    const runId = 'cc8-recover-' + crypto.randomUUID();
     const now = 2_000_000_000;
-    expect((await createRun(db, {
-      runId, cycleId: 'cc8-recover-' + crypto.randomUUID(), participantId: 'cc8-recover-agent',
-      taskId: 'recovery', taskKind: 'planning', prompt: 'Recover after a denial.',
-      maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1, now,
-    })).created).toBe(true);
+    const runId = await sessionRun('recover', 'cc8-recover-agent', 'recovery', now,
+      'Recover after a denial.');
     let calls = 0;
     let reads = 0;
     const deps: EngineDeps = {
