@@ -160,49 +160,101 @@ function checkpointSummary(payloadJson: string): string {
   }
 }
 
-/** Travail en cours de l'agent dans le cycle (lecture seule, bornée, limitée à ses identités). */
-export async function loadActiveWork(db: D1Database, cycleId: string, ids: readonly string[]): Promise<ActiveWork> {
+/** Pagination de l'état commun chat/API. Aucun plafond total d'historique. */
+export interface ActiveWorkPageOptions {
+  runPage?: number;
+  checkpointPage?: number;
+  pageSize?: number;
+}
+export interface ActiveWorkPage extends ActiveWork {
+  page: { open_api_runs: number; last_checkpoints: number };
+  next_page: { open_api_runs: number | null; last_checkpoints: number | null };
+}
+export const ACTIVE_WORK_PAGE_SIZE_MAX = 100;
+
+function validPageNumber(value: number | undefined, fallback: number, min: number, max: number): number {
+  const n = value ?? fallback;
+  if (!Number.isSafeInteger(n) || n < min || n > max) throw new Error('active_work_page_invalid');
+  return n;
+}
+
+/**
+ * Une seule source D1 commune aux chats et aux agents API.
+ * Les pages bornent la sortie de chaque appel, jamais la continuité stockée.
+ * Lecture des anciens checkpoints par séquence, sans fenêtre totale de 50 événements.
+ */
+export async function loadActiveWorkPage(db: D1Database, cycleId: string, ids: readonly string[],
+  options: ActiveWorkPageOptions = {}): Promise<ActiveWorkPage> {
   await ensureSchema(db);
   const unique = [...new Set(ids)].filter(Boolean);
-  const empty: ActiveWork = { last_chat_write: null, open_api_runs: [], last_checkpoints: [], truncated: { open_api_runs: false, last_checkpoints: false } };
+  const size = validPageNumber(options.pageSize, ACTIVE_WORK_MAX_CHECKPOINTS, 1, ACTIVE_WORK_PAGE_SIZE_MAX);
+  const runPage = validPageNumber(options.runPage, 0, 0, 1_000_000);
+  const checkpointPage = validPageNumber(options.checkpointPage, 0, 0, 1_000_000);
+  const page = { open_api_runs: runPage, last_checkpoints: checkpointPage };
+  const nextNone = { open_api_runs: null, last_checkpoints: null };
+  const empty: ActiveWorkPage = { last_chat_write: null, open_api_runs: [], last_checkpoints: [],
+    truncated: { open_api_runs: false, last_checkpoints: false }, page, next_page: nextNone };
   if (unique.length === 0) return empty;
   const placeholders = participantsIn(unique, 2);
-
+  const limitArg = '?' + (unique.length + 2);
+  const offsetArg = '?' + (unique.length + 3);
   const lastWrite = await lastChatWrite(db, cycleId, unique);
 
-  const { results: checkpointRows } = await db.prepare([
-    'SELECT seq, at, role, payload_json FROM events WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ')',
-    "AND type = 'checkpoint' AND json_valid(payload_json) ORDER BY seq DESC LIMIT 50",
-  ].join(' ')).bind(cycleId, ...unique).all<{ seq: number; at: number; role: string | null; payload_json: string }>();
-  const seenTasks = new Set<string>();
-  const checkpoints: ActiveWork['last_checkpoints'] = [];
-  let checkpointsTruncated = false;
-  for (const row of checkpointRows) {
-    const task = taskOfPayload(row.payload_json);
-    const key = task ?? '';
-    if (seenTasks.has(key)) continue;
-    seenTasks.add(key);
-    if (checkpoints.length >= ACTIVE_WORK_MAX_CHECKPOINTS) {
-      checkpointsTruncated = true;
-      break;
+  type CheckpointRow = { seq: number; at: number; role: string | null; payload_json: string };
+  const distinct: CheckpointRow[] = [];
+  const seen = new Set<string>();
+  const offset = checkpointPage * size;
+  const wanted = offset + size + 1;
+  let scanned = 0;
+  const chunk = 200;
+  while (distinct.length < wanted) {
+    const { results } = await db.prepare([
+      'SELECT seq, at, role, payload_json FROM events',
+      'WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ')',
+      "AND type = 'checkpoint' AND json_valid(payload_json)",
+      'ORDER BY seq DESC LIMIT ' + limitArg + ' OFFSET ' + offsetArg,
+    ].join(' ')).bind(cycleId, ...unique, chunk, scanned).all<CheckpointRow>();
+    for (const row of results) {
+      const task = taskOfPayload(row.payload_json) ?? '';
+      if (seen.has(task)) continue;
+      seen.add(task);
+      distinct.push(row);
     }
-    checkpoints.push({ task, seq: row.seq, at: row.at, channel: row.role === 'api-agent' ? 'api' : 'chat', summary: checkpointSummary(row.payload_json) });
+    scanned += results.length;
+    if (results.length < chunk) break;
   }
 
+  const checkpoints: ActiveWork['last_checkpoints'] = distinct.slice(offset, offset + size)
+    .map((row): ActiveWork['last_checkpoints'][number] => ({
+      task: taskOfPayload(row.payload_json), seq: row.seq, at: row.at,
+      channel: row.role === 'api-agent' ? 'api' : 'chat',
+      summary: checkpointSummary(row.payload_json),
+    }));
+  const moreCheckpoints = distinct.length > offset + size;
   let runs: ActiveWork['open_api_runs'] = [];
   if (await agentRunsTableExists(db)) {
     const { results } = await db.prepare([
       'SELECT run_id, task_id, task_kind, status, updated_at FROM agent_runs',
       'WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ") AND status IN ('running', 'needs_reconcile')",
-      'ORDER BY updated_at DESC, run_id LIMIT ' + (ACTIVE_WORK_MAX_RUNS + 1),
-    ].join(' ')).bind(cycleId, ...unique).all<ActiveWork['open_api_runs'][number]>();
+      'ORDER BY updated_at DESC, run_id LIMIT ' + limitArg + ' OFFSET ' + offsetArg,
+    ].join(' ')).bind(cycleId, ...unique, size + 1, runPage * size)
+      .all<ActiveWork['open_api_runs'][number]>();
     runs = results;
   }
-
+  const moreRuns = runs.length > size;
   return {
     last_chat_write: lastWrite,
-    open_api_runs: runs.slice(0, ACTIVE_WORK_MAX_RUNS),
+    open_api_runs: runs.slice(0, size),
     last_checkpoints: checkpoints,
-    truncated: { open_api_runs: runs.length > ACTIVE_WORK_MAX_RUNS, last_checkpoints: checkpointsTruncated },
+    truncated: { open_api_runs: moreRuns, last_checkpoints: moreCheckpoints },
+    page,
+    next_page: { open_api_runs: moreRuns ? runPage + 1 : null,
+      last_checkpoints: moreCheckpoints ? checkpointPage + 1 : null },
   };
+}
+
+/** Compatibilité des clients historiques : même forme, même première page. */
+export async function loadActiveWork(db: D1Database, cycleId: string, ids: readonly string[]): Promise<ActiveWork> {
+  const { page: _page, next_page: _next, ...legacy } = await loadActiveWorkPage(db, cycleId, ids);
+  return legacy;
 }
