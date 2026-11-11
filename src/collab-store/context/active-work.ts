@@ -192,28 +192,37 @@ export async function loadActiveWork(db: D1Database, cycleId: string, ids: reado
   const limitArg = '?' + (unique.length + 2);
   const offsetArg = '?' + (unique.length + 3);
   const lastWrite = await lastChatWrite(db, cycleId, unique);
-  // Pick the newest checkpoint for EACH task across the entire journal.
-  // The historical 50-event scan silently discarded older tasks.
-  const taskKey = [
-    "COALESCE(CASE WHEN json_type(payload_json, '$.task.task_id') = 'text'",
-    "THEN substr(trim(json_extract(payload_json, '$.task.task_id')),1,64)",
-    "WHEN json_type(payload_json, '$.task') = 'text'",
-    "THEN substr(trim(json_extract(payload_json, '$.task')),1,64) END, '')",
-  ].join(' ');
-  const { results: checkpointRows } = await db.prepare([
-    'WITH ranked AS (SELECT seq, at, role, payload_json,',
-    'ROW_NUMBER() OVER (PARTITION BY ' + taskKey + ' ORDER BY seq DESC) AS rn',
-    'FROM events WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ')',
-    "AND type = 'checkpoint' AND json_valid(payload_json))",
-    'SELECT seq, at, role, payload_json FROM ranked WHERE rn = 1',
-    'ORDER BY seq DESC LIMIT ' + limitArg + ' OFFSET ' + offsetArg,
-  ].join(' ')).bind(cycleId, ...unique, pageSize + 1, checkpointPage * pageSize)
-    .all<{ seq: number; at: number; role: string | null; payload_json: string }>();
-  const checkpoints: ActiveWork['last_checkpoints'] = checkpointRows.slice(0, pageSize).map((row): ActiveWork['last_checkpoints'][number] => ({
-    task: taskOfPayload(row.payload_json), seq: row.seq, at: row.at,
-    channel: row.role === 'api-agent' ? 'api' : 'chat', summary: checkpointSummary(row.payload_json),
-  }));
-  const moreCheckpoints = checkpointRows.length > pageSize;
+  // Scan ordered journal pages until enough UNIQUE tasks are found.
+  // Unlike the former 50-event snapshot, there is no history cutoff. A task
+  // with thousands of recent checkpoints cannot hide older tasks from C4/D1.
+  type CheckpointRow = { seq: number; at: number; role: string | null; payload_json: string };
+  const seen = new Set<string>();
+  const distinct: CheckpointRow[] = [];
+  const offset = checkpointPage * pageSize;
+  let scanned = 0;
+  const chunk = 200;
+  while (distinct.length <= offset + pageSize) {
+    const { results } = await db.prepare([
+      'SELECT seq, at, role, payload_json FROM events',
+      'WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ')',
+      "AND type = 'checkpoint' AND json_valid(payload_json)",
+      'ORDER BY seq DESC LIMIT ' + limitArg + ' OFFSET ' + offsetArg,
+    ].join(' ')).bind(cycleId, ...unique, chunk, scanned).all<CheckpointRow>();
+    for (const row of results) {
+      const task = taskOfPayload(row.payload_json) ?? '';
+      if (seen.has(task)) continue;
+      seen.add(task);
+      distinct.push(row);
+    }
+    scanned += results.length;
+    if (results.length < chunk) break;
+  }
+  const checkpoints: ActiveWork['last_checkpoints'] = distinct.slice(offset, offset + pageSize)
+    .map((row): ActiveWork['last_checkpoints'][number] => ({
+      task: taskOfPayload(row.payload_json), seq: row.seq, at: row.at,
+      channel: row.role === 'api-agent' ? 'api' : 'chat', summary: checkpointSummary(row.payload_json),
+    }));
+  const moreCheckpoints = distinct.length > offset + pageSize;
   let runs: ActiveWork['open_api_runs'] = [];
   if (await agentRunsTableExists(db)) {
     const { results } = await db.prepare([
