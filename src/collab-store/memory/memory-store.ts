@@ -152,13 +152,13 @@ function scopeMismatch(id: string, type: string): MemoryStoreError {
  * - task 0 : portée GELÉE (FROZEN_SCOPE_FAMILIES) — la reprise d'une tâche passe par active_work (L12) ;
  *   les entrées existantes restent lisibles, rien de nouveau n'est proposé ni activé.
  */
-export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
-  // Durable curated facts live in D1; API and chat share these same scopes.
-  common: 131_072,
-  project: 131_072,
-  role: 65_536,
-  participant: 131_072,
-  task: 0, // Task execution/history is persisted in active_work and D1.
+/** null = no application-level storage ceiling. Per-call prompt windows are separate. */
+export const MEMORY_TOKEN_BUDGETS: Record<string, number | null> = {
+  common: null,
+  project: null,
+  role: null,
+  participant: null,
+  task: 0, // Frozen task scope: task state belongs in D1 active_work instead.
 };
 
 /** CC-7 M2 : plancher du budget participant (décision #1138 §4, demande de Gemini #1131). */
@@ -596,7 +596,8 @@ export class MemoryStore {
     const pausedKey = pauseKey(row.scope);
     const baseKey = baselineKey(row.scope);
     const occKey = occurrenceKey(row.scope);
-    const budget = MEMORY_TOKEN_BUDGETS[scopeFamily(row.scope)] ?? 500;
+    const budget = Object.prototype.hasOwnProperty.call(MEMORY_TOKEN_BUDGETS, scopeFamily(row.scope))
+      ? MEMORY_TOKEN_BUDGETS[scopeFamily(row.scope)] : 500;
     const newTokens = estimateTokens(row.text);
     const protectedKind = PROTECTED_KINDS.has(row.kind);
     const statements: D1PreparedStatement[] = [
@@ -616,7 +617,7 @@ export class MemoryStore {
         '  AND NOT EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND scope <> ?6)',
         '  AND NOT EXISTS (SELECT 1 FROM quota_counters WHERE day = ?3 AND writes > 0)',
         '  AND COALESCE((SELECT writes FROM quota_counters WHERE day = ?4), 0) < ?5',
-        `  AND COALESCE((SELECT SUM(COALESCE(token_cost, (length(text) + 3) / 4)) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8`,
+        `  AND (?8 IS NULL OR COALESCE((SELECT SUM(COALESCE(token_cost, (length(text) + 3) / 4)) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8)`,
         '  THEN 1 ELSE 0 END',
       ].join(' ')).bind(id, version, pausedKey, capKey, MAX_ACTIVATIONS_PER_CYCLE, row.scope, newTokens, budget),
       // A03: the cap reservation lives inside the transaction — exactly one
@@ -1297,7 +1298,9 @@ export class MemoryStore {
   /** Budget is per exact scope string (not whole family). */
   private async assertBudgetAllows(scope: string, text: string): Promise<void> {
     const family = scopeFamily(scope);
-    const budget = MEMORY_TOKEN_BUDGETS[family] ?? 500;
+    const budget = Object.prototype.hasOwnProperty.call(MEMORY_TOKEN_BUDGETS, family)
+      ? MEMORY_TOKEN_BUDGETS[family] : 500;
+    if (budget === null) return;
     const { results } = await this.db
       .prepare(`SELECT text FROM memory_entries WHERE status = 'active' AND scope = ?1`)
       .bind(scope)
