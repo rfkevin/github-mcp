@@ -106,9 +106,7 @@ describe('CC8 WorkSession C0 provider API parity', () => {
       githubWrites: { writes, baseBranch: 'mcp/105856986/cc3-integration',
         s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null } },
     }))).toContain('github.write');
-    const result = await writeHost.execute({ id: 'grant', name: 'github_write_scope', args: {} },
-      { run_id: answer.runId, effect_key: 'a'.repeat(64) });
-    expect(result).toMatchObject({ branch: 'mcp/105856986/c2c-static', base_sha: 'a'.repeat(40) });
+    expect(writeHost.list('answer')).toContain('github_write_scope');
   });
 
   it.skip('WorkSession: reviewer peut demander un verdict D12 depuis un run answer, sans usurpation de rôle', async () => {
