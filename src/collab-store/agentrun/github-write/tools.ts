@@ -55,8 +55,10 @@ async function commitGuards(s: WriteScope, reads: GitHubReads | null, repository
     try {
       if ((await reads.getTextFile(repository, file.path, sha)).content !== file.content) changed = true;
     } catch (error) {
-      if (error instanceof GitHubApiError && error.status === 404) {
-        changed = true; // Verified non-existent path, not a transient read error.
+      // A blob fetch may also return 404 for an existing path: only the
+      // canonical missing-tree-entry sentinel proves a file is new.
+      if (error instanceof GitHubApiError && error.status === 404 && error.endpoint === '/git/trees') {
+        changed = true; // Verified missing tree entry, not a missing blob.
         continue;
       }
       throw new ToolRefused('api_write_read_failed : comparaison au head impossible ; commit refusé sans réservation.');

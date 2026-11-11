@@ -20,7 +20,7 @@ const REAL = "import { describe, expect, it } from 'vitest';\nimport { plan } fr
 const DEMO = "import { describe, expect, it } from 'vitest';\nimport { plan } from '../../src/demo/a';\ndescribe('a', () => { it('plan', () => { expect(true).toBe(true); }); });\n";
 let n = 0;
 
-type ReadFailure = 'http503' | 'timeout' | 'decode' | 'untyped404' | 'unavailable';
+type ReadFailure = 'http503' | 'timeout' | 'decode' | 'untyped404' | 'blob404' | 'unavailable';
 async function fixture(grantExtra: Record<string, unknown> = {}, readFailure?: ReadFailure) {
   const id = ++n, cycle = 'u2a-' + id + '-' + Date.now(), participant = 'u2a-agent-' + id, run = 'run-' + cycle;
   const task = 'fix', name = 'fix', branch = apiBranch(participant, name);
@@ -58,6 +58,7 @@ async function fixture(grantExtra: Record<string, unknown> = {}, readFailure?: R
         if (readFailure === 'timeout') throw new Error('network timeout');
         if (readFailure === 'decode') throw new InputValidationError('Fichier UTF-8 invalide', 'NON_UTF8_FILE');
         if (readFailure === 'untyped404') throw new Error('404');
+        if (readFailure === 'blob404') throw new GitHubApiError(404, '/git/blobs', 'Blob manquant');
       }
       if (!(path in TEXTS)) throw new GitHubApiError(404, '/git/trees', 'Fichier introuvable.');
       return { path, sha: blob(path), content: TEXTS[path], size: TEXTS[path].length };
@@ -133,7 +134,7 @@ describe('CC8 U2a — B2 : un commit sans changement est refusé avant toute ré
 });
 
 describe('CC8 U2a — B2 fail-closed : absence de lecture fiable ne prouve jamais un diff', () => {
-  for (const failure of ['http503', 'timeout', 'decode', 'untyped404', 'unavailable'] as const) {
+  for (const failure of ['http503', 'timeout', 'decode', 'untyped404', 'blob404', 'unavailable'] as const) {
     it('refuse AVANT toute réservation pour ' + failure, async () => {
       const f = await fixture({}, failure);
       const ctx = f.ctx();
