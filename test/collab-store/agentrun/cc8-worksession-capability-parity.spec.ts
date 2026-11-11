@@ -9,7 +9,7 @@ import {
 } from '../../../src/collab-store/agentrun/read-tools';
 import { resolveUnifiedCapabilities } from '../../../src/collab-store/agentrun/agent-capabilities';
 import { WRITE_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/store-tools';
-import { GITHUB_WRITE_TOOL_SCHEMAS, type GitHubWrites } from '../../../src/collab-store/agentrun/github-tools';
+import { GITHUB_WRITE_TOOL_SCHEMAS, apiBranch, type GitHubWrites } from '../../../src/collab-store/agentrun/github-tools';
 import { S7_SCHEMAS } from '../../../src/collab-store/agentrun/github-write/tools';
 import { VERDICT_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/verdict-tools';
 import { CONTRIBUTION_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/contribution-tools';
@@ -91,8 +91,9 @@ describe('CC8 WorkSession C0 provider API parity', () => {
 
   it('WorkSession: auteur ayant un mandat GitHub valide, même si le run est answer', async () => {
     const answer = await seeded({ kind: 'answer', participant: 'c2c-author' });
+    const branch = apiBranch('c2c-author', 'work');
     const grant = JSON.stringify([{ cycle: answer.scope.cycle_id, task: answer.scope.task_id,
-      participant: 'c2c-author', branch: 'mcp/105856986/c2c-static', paths: ['src/x.ts'] }]);
+      participant: 'c2c-author', branch, paths: ['src/x.ts'] }]);
     const writeHost = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github,
       unifiedCapabilities: true, githubWrites: {
         writes: { ...writes, branchHead: async (branch: string) =>
@@ -107,6 +108,9 @@ describe('CC8 WorkSession C0 provider API parity', () => {
         s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null } },
     }))).toContain('github.write');
     expect(writeHost.list('answer')).toContain('github_write_scope');
+    const effect = await writeHost.execute({ id: 'scope', name: 'github_write_scope', args: {} },
+      { run_id: answer.runId, effect_key: 'a'.repeat(64) });
+    expect(effect).toMatchObject({ branch, base_branch: 'mcp/105856986/cc3-integration', base_sha: 'a'.repeat(40) });
   });
 
   it('WorkSession: reviewer peut demander un verdict D12 depuis un run answer, sans usurpation de rôle', async () => {
