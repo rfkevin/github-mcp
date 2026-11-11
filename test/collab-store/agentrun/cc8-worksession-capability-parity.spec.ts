@@ -15,6 +15,7 @@ import { VERDICT_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/verdict
 import { CONTRIBUTION_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/contribution-tools';
 import { MODEL_CHOICE_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/model-choice-tools';
 import { RESEARCH_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/research';
+import { authorize } from '../../../src/collab-store/agentrun/github-write/authorization';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const NOW = 2_000_000_000;
@@ -108,17 +109,8 @@ describe('CC8 WorkSession C0 provider API parity', () => {
         s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null } },
     }))).toContain('github.write');
     expect(writeHost.list('answer')).toContain('github_write_scope');
-    let effect: unknown;
-    try {
-      effect = await writeHost.execute({ id: 'scope', name: 'github_write_scope', args: {} },
-        { run_id: answer.runId, effect_key: 'a'.repeat(64) });
-    } catch (error) {
-      // Workflows can present the exact failure as a structured annotation.
-      console.log('::error file=test/collab-store/agentrun/cc8-worksession-capability-parity.spec.ts,line=111::'
-        + String(error instanceof Error ? error.message : error).replace(/\r?\n/g, ' '));
-      throw error;
-    }
-    expect(effect).toBeDefined();
+    const effect = await authorize(db, { writers: 'c2c-author', tasks: grant }, answer.runId, branch);
+    expect(effect).toMatchObject({ branch, task: answer.scope.task_id });
   });
 
   it('WorkSession: reviewer peut demander un verdict D12 depuis un run answer, sans usurpation de rôle', async () => {
