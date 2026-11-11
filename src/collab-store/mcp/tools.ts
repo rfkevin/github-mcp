@@ -126,6 +126,9 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       delta_limit: z.number().int().min(1).max(200).optional(),
       c0_baseline_tokens: z.number().int().min(1).max(100_000).optional(),
       approved_budget_tokens: z.number().int().min(1).max(6000).optional(),
+       active_work_run_page: z.number().int().min(0).max(1_000_000).optional(),
+       active_work_checkpoint_page: z.number().int().min(0).max(1_000_000).optional(),
+       active_work_page_size: z.number().int().min(1).max(100).optional(),
     },
     outputSchema: outputSchemas.collab_get_context,
     annotations: READ_ONLY,
@@ -155,7 +158,11 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       const ownIds = identity.status === 'registered' ? await equivalentParticipantIds(context.db, participantId) : null;
       const continuity = ownIds ? await loadContinuity(context.db, resolved.cycle_id, ownIds) : null;
       // CC-7 L12 : travail en cours du même agent (chat ou API) — reprendre plutôt que recommencer.
-      const activeWork = ownIds ? await loadActiveWork(context.db, resolved.cycle_id, ownIds) : null;
+      const activeWork = ownIds ? await loadActiveWork(context.db, resolved.cycle_id, ownIds, {
+         runPage: input.active_work_run_page,
+         checkpointPage: input.active_work_checkpoint_page,
+         pageSize: input.active_work_page_size,
+       }) : null;
       let delta: Awaited<ReturnType<typeof context.store.getDelta>> | undefined;
       if (input.include_delta) {
         delta = await context.store.getDelta(

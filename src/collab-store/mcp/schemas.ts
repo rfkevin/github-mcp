@@ -136,6 +136,8 @@ export const outputSchemas = {
       open_api_runs: z.array(z.object({ run_id: z.string(), task_id: z.string(), task_kind: z.string(), status: z.string(), updated_at: z.number() })),
       last_checkpoints: z.array(z.object({ task: z.string().nullable(), seq: z.number(), at: z.number(), channel: z.enum(['api', 'chat']), summary: z.string() })),
       truncated: z.object({ open_api_runs: z.boolean(), last_checkpoints: z.boolean() }),
+       page: z.object({ open_api_runs: z.number(), last_checkpoints: z.number() }),
+       next_page: z.object({ open_api_runs: z.number().nullable(), last_checkpoints: z.number().nullable() }),
     }).optional(),
     delta: z.object({
       events: z.array(z.object(storedEvent)),

@@ -72,6 +72,9 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
     parameters: { type: 'object', properties: {
       full: { type: 'boolean' }, registry_page: { type: 'integer', minimum: 0 },
       registry_limit: { type: 'integer', minimum: 1, maximum: 200 },
+       active_work_run_page: { type: 'integer', minimum: 0 },
+       active_work_checkpoint_page: { type: 'integer', minimum: 0 },
+       active_work_page_size: { type: 'integer', minimum: 1, maximum: 100 },
     }, additionalProperties: false } },
   { name: 'store_delta', description: 'Événements du cycle après since_seq (au plus 50), masqués selon votre participant.',
     parameters: { type: 'object', properties: { since_seq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50 },
@@ -417,7 +420,11 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         // Same durable active_work source consumed by the chat MCP context.
         // Transport-specific API task_kind never controls what history exists.
         const ids = options.continuity ? await equivalentParticipantIds(options.db, participant_id) : null;
-        const activeWork = ids ? await loadActiveWork(options.db, cycle_id, ids) : null;
+        const activeWork = ids ? await loadActiveWork(options.db, cycle_id, ids, {
+          runPage: intArg(args, 'active_work_run_page', 0, 1_000_000, 0),
+          checkpointPage: intArg(args, 'active_work_checkpoint_page', 0, 1_000_000, 0),
+          pageSize: intArg(args, 'active_work_page_size', 1, 100, 5),
+        }) : null;
         const shared = activeWork ? { active_work: activeWork } : {};
         if (options.contextCompaction && !unified && task_kind === 'implement' && task_id && args.full !== true && args.registry_page === undefined) {
           const current = mine.tasks.find(task => task.task_id === task_id);
