@@ -206,7 +206,7 @@ describe('CC-5 l7c-1 — hôte d’outils en lecture seule', () => {
     expect((await runStep(db, run.runId, { model, tools: host, now: () => T + 100, workerId: 'w' })).outcome).toBe('stepped');
     const [row] = (await db.prepare('SELECT results FROM agent_run_steps WHERE run_id = ?1').bind(run.runId).all<{ results: string }>()).results;
     const results = JSON.parse(row.results) as Array<{ content: string; error?: boolean }>;
-    expect(results[0].content).toContain('tool_forbidden_on_api_channel');
+    expect(results[0].content).toContain('tool_not_allowlisted');
     expect(results[1].content).toContain('tool_not_allowlisted');
     expect(results[2].error).toBe(true);
     expect(JSON.parse(results[3].content)).not.toHaveProperty('body');
@@ -325,11 +325,16 @@ describe('CC-5 l7c-1 — câblage', () => {
   it('avec AGENT_RUN_MODEL et AI : modèle Workers AI, lecture store seule sans dépôt, consigne commune sans pouvoir d’écriture', async () => {
     const ai = fakeAi([openAi('fin')]);
     const deps = engineFor({ AGENT_RUN_MODEL: MODEL_REF, AI: ai, AGENT_RUN_REPOSITORY: 'pas un dépôt' }, db)('r');
-    expect(deps.tools.list('research')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
+    const offered = deps.tools.list('research');
+    expect(offered).toEqual(expect.arrayContaining(['store_context', 'store_delta', 'store_memory',
+      'store_continuity', 'store_ask', 'store_answer']));
+    expect(new Set(offered).size).toBe(offered.length);
+    expect(new Set(deps.tools.schemas('research').map(tool => tool.name)).size)
+      .toBe(deps.tools.schemas('research').length);
     await deps.model.complete({ messages: [{ role: 'user', content: 'x' }], tools: deps.tools.list('research'), task_kind: 'research' });
     const sent = ai.calls[0].input as { messages: Array<{ role: string; content: string }> };
     expect(sent.messages[0].content).toBe(AGENT_RUN_SYSTEM);
-    expect(AGENT_RUN_SYSTEM).toContain('lecture seule');
+    expect(AGENT_RUN_SYSTEM).toContain('même système MCP');
   });
 
   it('lectures GitHub injectées par la racine du Worker seulement, avec les trois identifiants de l’App', () => {

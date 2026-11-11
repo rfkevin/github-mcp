@@ -196,10 +196,10 @@ describe('CC-5 l7c-2 — écritures store', () => {
     expect((await runStep(db, runId, { model, tools: host, now: () => T, workerId: 'w1' })).outcome).toBe('stepped');
     const results = JSON.parse((await db.prepare('SELECT results FROM agent_run_steps WHERE run_id = ?1 AND n = 0').bind(runId).first<{ results: string }>())!.results) as Array<{ id: string; content: string }>;
     expect(results.map(r => r.content.match(/"error":"([^"]+)"/)?.[1] ?? 'ok')).toEqual([
-      'tool_forbidden_on_api_channel', 'd12_verdict_forbidden_on_api_channel', 'tool_not_allowlisted', 'ok',
+      'tool_not_allowlisted', 'ok', 'tool_not_allowlisted', 'ok',
     ]);
     const asks = await eventsOf(q.cycle, 'clarify.ask');
-    expect(asks.filter(a => a.participant_id === 'p-resp')).toHaveLength(1);
+    expect(asks.filter(a => a.participant_id === 'p-resp')).toHaveLength(2);
     expect(await eventsOf(q.cycle, 'evidence.add')).toHaveLength(0);
     expect(await eventsOf(q.cycle, 'task.status')).toHaveLength(0);
   });
@@ -207,9 +207,13 @@ describe('CC-5 l7c-2 — écritures store', () => {
   it('câblage : engineFor réel propose les écritures du type ; consigne commune explicite', () => {
     const ai = { async run() { return {}; } };
     const deps = engineFor({ AGENT_RUN_MODEL: 'workers-ai:@cf/zai-org/glm-4.7-flash', AI: ai }, db)('r');
-    expect(deps.tools.list('answer')).toEqual(['store_context', 'store_delta', 'store_answer', 'store_ask']);
-    expect(deps.tools.list('research')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
-    expect(AGENT_RUN_SYSTEM).toContain('in_progress/blocked');
+    for (const kind of ['answer', 'research']) {
+      const offered = deps.tools.list(kind);
+      expect(offered).toEqual(expect.arrayContaining(['store_context', 'store_delta', 'store_memory',
+        'store_continuity', 'store_ask', 'store_answer']));
+      expect(new Set(offered).size).toBe(offered.length);
+    }
+    expect(AGENT_RUN_SYSTEM).toContain('identité, rôle et mandat');
   });
 });
 

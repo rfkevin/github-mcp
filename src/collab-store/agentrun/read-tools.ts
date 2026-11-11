@@ -554,11 +554,12 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       return null;
     },
     list(taskKind: string): string[] {
-      return [...readNames(taskKind), ...writeNames(taskKind)];
+      return [...new Set([...readNames(taskKind), ...writeNames(taskKind)])];
     },
     schemas(taskKind: string): ToolSchema[] {
       const names = new Set<string>([...readNames(taskKind), ...writeNames(taskKind)]);
-      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...ghSchemas, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
+      const seen = new Set<string>();
+      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...ghSchemas, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name) && !seen.has(schema.name) && !!seen.add(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.
