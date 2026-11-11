@@ -750,6 +750,14 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const run = await getRun(db, runId);
   if (!run) return { outcome: 'unknown_run' };
   if (run.status !== 'running') return { outcome: run.status };
+  // CC8 S7 : CI pending → relevé serveur SANS modèle. Ces effets déjà lancés
+  // doivent progresser même si une clarification humaine est encore ouverte.
+  await ensureCiPollSchema(db);
+  const pendingPoll = await pendingCiPoll(db, runId, run.steps_done);
+  if (pendingPoll) {
+    const polled = await runCiPoll(db, run, pendingPoll, deps, now);
+    if (polled) return polled;
+  }
   // U2b2: a completed store_ask effect creates a durable wait. In the absence of
   // its applied clarify.answer, never claim a new step or call the provider.
   // D1 effects/events are authoritative; the model cannot forge an answer.
@@ -757,13 +765,6 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   if (clarifications.pending.length) {
     const status = await settle(db, runId, now); // HALT, chat fence, deadline and budgets win.
     return { outcome: status === 'running' ? 'waiting_for_reply' : status };
-  }
-  // CC8 S7 : CI pending → relevé serveur, sans modèle ni étape (au plus CI_POLL_MAX, dans la deadline).
-  await ensureCiPollSchema(db);
-  const pendingPoll = await pendingCiPoll(db, runId, run.steps_done);
-  if (pendingPoll) {
-    const polled = await runCiPoll(db, run, pendingPoll, deps, now);
-    if (polled) return polled;
   }
   // CC8 S7 mode guidé : prochaine étape décidée sur l'état D1 AVANT la réclamation (même état, même décision).
   // Empreinte de l'état lu (effets + relevés), prise AVANT la lecture du plan (relecture D12 GPT-6, R4).
