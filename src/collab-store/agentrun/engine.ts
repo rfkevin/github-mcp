@@ -854,9 +854,27 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1')
           .bind(runId, Math.max(0, usage?.tokens ?? 0), Math.max(0, usage?.cost_cents ?? 0), now),
       ]);
-      // Le repli intra-famille est déjà épuisé. Terminer cette tentative avec
-      // son motif typé ; seul le planificateur peut en créer une autre après 900 s.
-      // Ne pas modifier la réclamation : stopAs vérifie encore son identité exacte.
+      // A provider 429/5xx/timeout is an interrupted *call*, not a failed
+      // logical mission. Keep the exact D1 step and tool journal: after a
+      // durable backoff, claimStep reclaims this same step on the same run_id.
+      // No arbitrary attempt ceiling and no new task/branch/PR is created.
+      if (modelFailureKind(error) === 'transient') {
+        const retryAt = deps.now();
+        const delayS = Math.min(300, 30 * 2 ** Math.min(4, Math.max(0, claim.attempts - 1)));
+        const released = await db.prepare([
+          'UPDATE agent_run_steps SET claimed_at = ?4',
+          "WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?5 AND state = 'claimed' AND " + LIVE,
+        ].join(' ')).bind(runId, n, deps.workerId, retryAt - STEP_TIMEOUT_S + delayS, claim.attempts).run();
+        if (released.meta.changes !== 1) return settled(db, runId, retryAt);
+        await db.prepare([
+          "INSERT INTO agent_run_journal (at,kind,run_id,detail) VALUES (?1,'model_retry',?2,?3)",
+        ].join(' ')).bind(retryAt, runId, JSON.stringify({
+          step: n, attempt: claim.attempts, backoff_seconds: delayS, reason: 'provider_transient',
+        })).run();
+        return { outcome: 'retry' };
+      }
+      // An invalid/unauthorized provider request is not retried blindly.
+      // It remains visible for diagnosis; transient errors resume instead.
       await stopAs(db, runId, 'failed', 'model_' + modelFailureKind(error) + ': ' + errorText(error), now, claim);
       return { outcome: 'failed' };
     }
