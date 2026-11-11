@@ -58,6 +58,16 @@ describe('CC8 U2b2 — RED baseline: suspend and resume the SAME authorized Work
     expect(calls).toBe(1);
 
     const store = new CollabStore(db);
+    // A third-party reply to an addressed question is denied by the canonical
+    // store. A refused answer MUST NOT cause the provider to resume.
+    await expect(store.appendEvent({
+      cycle_id: cycle, participant_id: 'u2b2-intruder', type: 'clarify.answer',
+      expected_rev: await store.currentRevision(cycle),
+      payload_json: JSON.stringify({ ask_seq: ask!.seq, answer: 'Untrusted forged approval' }),
+      op_id: 'u2b2-intruder:' + cycle + ':bad:1',
+    })).rejects.toThrow();
+    expect((await runStep(db, runId, deps)).outcome).toBe('waiting_for_reply');
+    expect(calls).toBe(1);
     const reply = await store.appendEvent({
       cycle_id: cycle, participant_id: 'u2b2-peer', type: 'clarify.answer',
       expected_rev: await store.currentRevision(cycle),
@@ -65,6 +75,13 @@ describe('CC8 U2b2 — RED baseline: suspend and resume the SAME authorized Work
       op_id: 'u2b2-peer:' + cycle + ':answer:1',
     });
     expect(reply.status).toBe('applied');
+    const replay = await store.appendEvent({
+      cycle_id: cycle, participant_id: 'u2b2-peer', type: 'clarify.answer',
+      expected_rev: await store.currentRevision(cycle),
+      payload_json: JSON.stringify({ ask_seq: ask!.seq, answer: 'Use acceptance criterion A, verified.' }),
+      op_id: 'u2b2-peer:' + cycle + ':answer:1',
+    });
+    expect(replay.status).toBe('duplicate');
     expect((await runStep(db, runId, deps)).outcome).toBe('completed');
     expect(calls).toBe(2);
     expect(JSON.stringify(resumedMessages)).toContain('Use acceptance criterion A, verified.');
