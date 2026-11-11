@@ -209,7 +209,7 @@ export async function loadActiveWork(db: D1Database, cycleId: string, ids: reado
     'ORDER BY seq DESC LIMIT ' + limitArg + ' OFFSET ' + offsetArg,
   ].join(' ')).bind(cycleId, ...unique, pageSize + 1, checkpointPage * pageSize)
     .all<{ seq: number; at: number; role: string | null; payload_json: string }>();
-  const checkpoints: ActiveWork['last_checkpoints'] = checkpointRows.slice(0, pageSize).map(row => ({
+  const checkpoints: ActiveWork['last_checkpoints'] = checkpointRows.slice(0, pageSize).map((row): ActiveWork['last_checkpoints'][number] => ({
     task: taskOfPayload(row.payload_json), seq: row.seq, at: row.at,
     channel: row.role === 'api-agent' ? 'api' : 'chat', summary: checkpointSummary(row.payload_json),
   }));
