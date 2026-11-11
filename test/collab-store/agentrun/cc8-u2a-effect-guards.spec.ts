@@ -6,6 +6,8 @@ import { MAX_EDITS, normalizeEdits } from '../../../src/collab-store/agentrun/gi
 import type { WritePolicy } from '../../../src/collab-store/agentrun/github-write/authorization';
 import { createS7Tools, type ApiChecks } from '../../../src/collab-store/agentrun/github-write/tools';
 import type { GitHubReads } from '../../../src/collab-store/agentrun/read-tools';
+import { GitHubApiError, InputValidationError } from '../../../src/github/types';
+import { ensureProgress } from '../../../src/collab-store/agentrun/github-write/progress';
 import { insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
 
 // CC8 U2a (#seq2189) : gardes de COMMIT communes aux modes guidé et libre (B1, B2), anti-doublon de PR (B3), édition groupée (C1).
@@ -18,7 +20,8 @@ const REAL = "import { describe, expect, it } from 'vitest';\nimport { plan } fr
 const DEMO = "import { describe, expect, it } from 'vitest';\nimport { plan } from '../../src/demo/a';\ndescribe('a', () => { it('plan', () => { expect(true).toBe(true); }); });\n";
 let n = 0;
 
-async function fixture(grantExtra: Record<string, unknown> = {}) {
+type ReadFailure = 'http503' | 'timeout' | 'decode' | 'untyped404' | 'unavailable';
+async function fixture(grantExtra: Record<string, unknown> = {}, readFailure?: ReadFailure) {
   const id = ++n, cycle = 'u2a-' + id + '-' + Date.now(), participant = 'u2a-agent-' + id, run = 'run-' + cycle;
   const task = 'fix', name = 'fix', branch = apiBranch(participant, name);
   await insertCycleRow(db, cycle, 'P6');
@@ -50,7 +53,13 @@ async function fixture(grantExtra: Record<string, unknown> = {}) {
   };
   const reads: GitHubReads = {
     getTextFile: async (_r, path) => {
-      if (!(path in TEXTS)) throw Error('404');
+      if (path === 'src/demo/a.ts') {
+        if (readFailure === 'http503') throw new GitHubApiError(503, '/git/trees', 'Service indisponible');
+        if (readFailure === 'timeout') throw new Error('network timeout');
+        if (readFailure === 'decode') throw new InputValidationError('Fichier UTF-8 invalide', 'NON_UTF8_FILE');
+        if (readFailure === 'untyped404') throw new Error('404');
+      }
+      if (!(path in TEXTS)) throw new GitHubApiError(404, '/git/trees', 'Fichier introuvable.');
       return { path, sha: blob(path), content: TEXTS[path], size: TEXTS[path].length };
     },
     getPullRequest: async () => ({}), listCheckRuns: async () => [], compareRefs: async () => ({}),
@@ -59,7 +68,7 @@ async function fixture(grantExtra: Record<string, unknown> = {}) {
   const checks: ApiChecks = { start: async sha => ({ runId: ++runCounter, targetSha: sha }), lookup: async () => null,
     result: async sha => ({ targetSha: sha, status: 'completed', conclusion: 'success', verifiedSuccess: true }) };
   const options = { db, repository: REPO, baseBranch: BASE, writes };
-  const tools = createS7Tools(options, { policy, reads, checks });
+  const tools = createS7Tools(options, { policy, reads: readFailure === 'unavailable' ? null : reads, checks });
   let effect = 0;
   const ctx = () => ({ run_id: run, effect_key: (id * 1000 + ++effect).toString(16).padEnd(64, '0') });
   const commit = (files: Array<{ path: string; content: string }>) => ({ id: 'c', name: 'github_commit_files',
@@ -120,6 +129,29 @@ describe('CC8 U2a — B2 : un commit sans changement est refusé avant toute ré
     await expect(f.tools.execute(f.edit({ path: 'src/demo/a.ts', expected_sha: blob('src/demo/a.ts'), old_text: 'beta', new_text: 'beta' }), f.ctx())).rejects.toThrow('api_write_no_change');
     expect(f.commits()).toBe(0);
     expect(await f.tools.execute(f.commit([{ path: 'src/demo/new.ts', content: 'export {}' }]), f.ctx())).toMatchObject({ corrections_remaining: 3 });
+  });
+});
+
+describe('CC8 U2a — B2 fail-closed : absence de lecture fiable ne prouve jamais un diff', () => {
+  for (const failure of ['http503', 'timeout', 'decode', 'untyped404', 'unavailable'] as const) {
+    it('refuse AVANT toute réservation pour ' + failure, async () => {
+      const f = await fixture({}, failure);
+      const ctx = f.ctx();
+      await expect(f.tools.execute(f.commit([{ path: 'src/demo/a.ts', content: 'alpha beta' }]), ctx))
+        .rejects.toThrow(failure === 'unavailable' ? 'api_write_read_unavailable' : 'api_write_read_failed');
+      expect(f.commits()).toBe(0);
+      await ensureProgress(db);
+      const reserved = (await db.prepare('SELECT COUNT(*) AS n FROM api_write_commits WHERE effect_key=?1')
+        .bind(ctx.effect_key).first<{ n:number }>())!.n;
+      expect(reserved).toBe(0);
+    });
+  }
+
+  it('accepte uniquement une 404 GitHub TYPOLOGIQUEMENT vérifiée comme nouveau fichier', async () => {
+    const f = await fixture();
+    const out = await f.tools.execute(f.commit([{ path: 'src/demo/new.ts', content: 'export const added = 1;\n' }]), f.ctx());
+    expect(out).toMatchObject({ corrections_remaining: 3 });
+    expect(f.commits()).toBe(1);
   });
 });
 
