@@ -118,17 +118,21 @@ describe('CC8 S7 — mode guidé (moteur, D1)', () => {
     expect(server?.c).toBe(11);
   });
 
-  it('la limite d’étapes modèle reste appliquée : une correction au-delà de max_steps → step_limit', async () => {
+  it('la CI rouge peut nécessiter plusieurs tours même si l’ancien max_steps était 1', async () => {
     const { runId, grants } = await newRun('limit', 1);
     const model = scripted([commit(HEAD, 'v1'), commit(C1, 'v2')]);
     const { tools } = host({
       github_write_scope: [SCOPE], github_create_branch: [{ branch: BRANCH, sha: HEAD }],
-      github_commit_files: [{ branch: BRANCH, commit_sha: C1 }], github_run_checks: [{ targetSha: C1, runId: 9 }],
-      github_check_result: [FAILED(C1)],
+      github_commit_files: [{ branch: BRANCH, commit_sha: C1 }, { branch: BRANCH, commit_sha: C2 }],
+      github_run_checks: [{ targetSha: C1, runId: 9 }, { targetSha: C2, runId: 10 }],
+      github_check_result: [FAILED(C1), PASSED(C2)],
+      github_open_pr: [{ branch: BRANCH, number: 308, head_sha: C2, draft: false }],
     });
-    const outcomes = await drive(runId, { model: model.client, tools, now: () => T + 100, workerId: 'w1', githubCompletionGrants: grants, guidedS7: true });
-    expect(outcomes.at(-1)).toBe('step_limit');
-    expect(model.seen).toHaveLength(1);
+    const outcomes = await drive(runId, { model: model.client, tools, now: () => T + 100,
+      workerId: 'w1', githubCompletionGrants: grants, guidedS7: true }, 40);
+    expect(outcomes.at(-1)).toBe('completed');
+    expect(model.seen).toHaveLength(2);
+    expect((await row(runId)).steps_done).toBeGreaterThan(1);
   });
 
   it('branche préexistante : reprise depuis la tête lue dans le mandat, sans création, preuve de complétude valable', async () => {
