@@ -110,12 +110,15 @@ describe('CC8 WorkSession C0 provider API parity', () => {
         s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null } },
     }))).toContain('github.write');
     expect(writeHost.list('answer')).toContain('github_write_scope');
-    const direct = createS7Tools({ db, repository: 'rfkevin/github-mcp',
-      baseBranch: 'mcp/105856986/cc3-integration',
-      writes: { ...writes, branchHead: async (_, current) =>
-        current === 'mcp/105856986/cc3-integration' ? 'a'.repeat(40) : null } },
-      { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null });
-    const effect = await direct.execute({ id: 'scope', name: 'github_write_scope', args: {} },
+    const legacyHost = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github,
+      unifiedCapabilities: false, githubWrites: {
+        writes: { ...writes, branchHead: async (_, current) =>
+          current === 'mcp/105856986/cc3-integration' ? 'a'.repeat(40) : null },
+        baseBranch: 'mcp/105856986/cc3-integration',
+        s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null },
+      },
+    });
+    const effect = await legacyHost.execute({ id: 'scope', name: 'github_write_scope', args: {} },
       { run_id: answer.runId, effect_key: 'a'.repeat(64) });
     expect(effect).toMatchObject({ branch, base_sha: 'a'.repeat(40) });
   });
