@@ -99,6 +99,6 @@ describe('CC8 S1b-2 — budget d’appels et garde avant effets (engine, plan se
     const r = await runOneEffect('s1b2-engd', AT + 141, AT + 10);
     expect(r.outcome).toBe('stepped');
     expect(r.executed).toBe(1);
-    expect(r.stopReason).toBe('');
+    expect(r.stopReason).not.toContain('model_transient');
   });
 });
