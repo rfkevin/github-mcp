@@ -3,8 +3,10 @@ import { createGitHubWriteTools, apiBranch, type GitHubWriteToolsOptions } from 
 import type { GitHubReads } from '../read-tools';
 import type { ToolSchema } from '../workers-ai-model';
 import { createStoreWriteTools } from '../store-tools';
-import { authorize, assertPaths, exactGrant, type WritePolicy } from './authorization';
-import { replaceOnce } from './edits';
+import { authorize, assertPaths, exactGrant, type WritePolicy, type WriteScope } from './authorization';
+import { MAX_EDITS, normalizeEdits, replaceOnce } from './edits';
+import { functionalTestCause, missionOf } from '../mission-quality';
+import { PRECHECK_HINTS } from '../s7-guided';
 import { reserveCommit, finishCommit, recordCheck, correctionsUsed, releaseReservation } from './progress';
 
 export interface ApiChecks {
@@ -17,15 +19,39 @@ const SHA = /^[a-f0-9]{40}$/;
 const common = { name: { type: 'string' }, sha: { type: 'string', pattern: SHA.source } };
 export const S7_SCHEMAS: readonly ToolSchema[] = [
   { name: 'github_write_scope', description: 'Lire votre mandat serveur : branche, nom, chemins, SHA actuel de la base et corrections restantes. Utiliser base_sha pour github_create_branch, jamais un SHA de fichier.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'github_replace_text', description: 'Remplacement littéral unique au head/blob exacts, dans votre tâche. Après un commit, attendre la CI avant correction (trois maximum).',
-    parameters: { type: 'object', properties: { name: common.name, expected_head_sha: common.sha, path: { type: 'string' }, expected_sha: common.sha,
-      old_text: { type: 'string' }, new_text: { type: 'string' }, message: { type: 'string' } }, required: ['name','expected_head_sha','path','expected_sha','old_text','new_text','message'], additionalProperties: false } },
+  { name: 'github_replace_text', description: 'Remplacement littéral unique au head/blob exacts, dans votre tâche. Une édition (path, expected_sha, old_text, new_text) ou un tableau edits (' + MAX_EDITS + ' au plus, fichiers distincts) appliqué en UN SEUL commit. Un 2e commit n’est accepté qu’après une CI rouge (trois corrections maximum).',
+    parameters: { type: 'object', properties: { name: common.name, expected_head_sha: common.sha, message: { type: 'string' }, path: { type: 'string' }, expected_sha: common.sha,
+      old_text: { type: 'string' }, new_text: { type: 'string' },
+      edits: { type: 'array', minItems: 1, maxItems: MAX_EDITS, items: { type: 'object', properties: { path: { type: 'string' }, expected_sha: common.sha, old_text: { type: 'string' }, new_text: { type: 'string' } },
+        required: ['path','expected_sha','old_text','new_text'], additionalProperties: false } } },
+      required: ['name','expected_head_sha','message'], additionalProperties: false } },
   { name: 'github_run_checks', description: 'Lancer le contrôleur Actions approuvé, périmètre full, au SHA actuel de votre branche. Refus contrôleur = escalade, jamais contournement.',
     parameters: { type: 'object', properties: common, required: ['name','sha'], additionalProperties: false } },
   { name: 'github_check_result', description: 'Lire la CI corrélée à votre SHA, avec diagnostics bornés. Rouge : corriger puis relancer ; trois corrections épuisées : tâche bloquée et escalade.',
     parameters: { type: 'object', properties: { ...common, run_id: { type: 'integer', minimum: 1 } }, required: ['name','sha','run_id'], additionalProperties: false } },
 ];
 type Context = { run_id: string; effect_key?: string };
+
+/**
+ * CC8 U2a (B1, B2) : gardes de COMMIT, communes au mode guidé et au mode libre, avant toute réservation.
+ * B1 : mission fonctionnelle, même fonction que la prévalidation guidée (tests désactivés, sans import du
+ *      dépôt ou tautologiques refusés). B2 : un commit sans aucun changement brûlerait une des 3 corrections.
+ * ToolRefused = rien d'écrit ni réservé ; le message porte la cause typée et son indice.
+ */
+async function commitGuards(s: WriteScope, reads: GitHubReads | null, repository: string, sha: string,
+  changes: readonly { path?: unknown; content?: unknown }[]): Promise<void> {
+  const files = changes.map(change => ({ path: String(change?.path ?? ''), content: typeof change?.content === 'string' ? change.content : '' }));
+  if (missionOf(s).kind === 'functional') {
+    const cause = functionalTestCause(files);
+    if (cause) throw new ToolRefused(cause + ' : ' + (PRECHECK_HINTS[cause] ?? ''));
+  }
+  if (!reads) return;
+  let unchanged = 0;
+  for (const file of files) {
+    try { if ((await reads.getTextFile(repository, file.path, sha)).content === file.content) unchanged++; } catch { /* absent ou illisible : compte comme un changement */ }
+  }
+  if (unchanged === files.length) throw new ToolRefused('api_write_no_change : le commit ne change aucun fichier à la tête ' + sha + ' ; proposez un diff réel.');
+}
 
 export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
   const legacy = createGitHubWriteTools(options);
@@ -63,19 +89,24 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
     const args = call.args ?? {};
     let target = call;
     if (call.name === 'github_replace_text') {
-      if (!s7.reads || typeof args.path !== 'string') throw new ToolRefused('api_edit_unavailable');
-      assertPaths(s, [args.path]);
+      if (!s7.reads) throw new ToolRefused('api_edit_unavailable');
+      const edits = normalizeEdits(args);
+      assertPaths(s, edits.map(edit => edit.path));
       const sha = await head(s.branch, args.expected_head_sha);
-      const file = await s7.reads.getTextFile(options.repository, args.path, sha);
-      if (file.sha !== args.expected_sha) throw new ToolRefused('api_edit_blob_changed');
-      target = { id: call.id, name: 'github_commit_files', args: { name: args.name, expected_head_sha: sha, message: args.message,
-        files: [{ path: args.path, content: replaceOnce(file.content, args.old_text, args.new_text), expected_sha: file.sha }] } };
+      const files: { path: string; content: string; expected_sha: string }[] = [];
+      for (const edit of edits) {
+        const file = await s7.reads.getTextFile(options.repository, edit.path, sha);
+        if (file.sha !== edit.expected_sha) throw new ToolRefused('api_edit_blob_changed');
+        files.push({ path: edit.path, content: replaceOnce(file.content, edit.old_text, edit.new_text), expected_sha: file.sha });
+      }
+      target = { id: call.id, name: 'github_commit_files', args: { name: args.name, expected_head_sha: sha, message: args.message, files } };
     }
     if (target.name === 'github_commit_files') {
       const changes = target.args?.files;
       if (!Array.isArray(changes)) throw new ToolRefused('api_write_files_invalid');
       assertPaths(s, changes.map(f => String(f?.path ?? '')));
       const sha = await head(s.branch, target.args?.expected_head_sha);
+      await commitGuards(s, s7.reads, options.repository, sha, changes);
       await reserveCommit(options.db, s, ctx.effect_key, sha);
       let result: { commit_sha: string };
       try {
