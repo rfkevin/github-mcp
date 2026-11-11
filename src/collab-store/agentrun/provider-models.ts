@@ -345,6 +345,9 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         model = build(ref, route.tier, participantEnvelope(env as PolicyEnv, run.participant_id));
       }
       let lastError: unknown;
+      // A retry chain is ONE model step. Failed upstream calls already consume its token budget.
+      let spentTokens = 0;
+      let spentCents = 0;
       let candidates = [{ ref, model: () => model }, ...fallback.map(item => ({
         ref: item.ref, model: () => build(item.ref, 'auto', item.envelope, item.effort),
       }))];
@@ -399,7 +402,10 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         }
         const started = Date.now();
         try {
-          const result = await candidate.model().complete(budgetLeftMs === undefined ? input : { ...input, budget_left_ms: budgetLeftMs });
+          const tokensRemaining = input.budget_left_tokens === undefined ? undefined
+            : Math.max(0, input.budget_left_tokens - spentTokens);
+          const result = await candidate.model().complete({ ...input, budget_left_ms: budgetLeftMs,
+            budget_left_tokens: tokensRemaining });
           await recordRunModelCall(ctx.db, { run_id: ctx.runId, n: run.steps_done, chosen_ref: ref, ref: candidate.ref, ok: true, failure: '',
             latency_ms: Date.now() - started, at: Math.floor(now.getTime() / 1000),
             input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens,
@@ -413,8 +419,18 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
             await recordBetaExecutionForCall(ctx.db, { participant_id: run.participant_id, ref: candidate.ref,
               run_id: ctx.runId, at: Math.floor(now.getTime() / 1000), ok: true, latency_ms: Date.now() - started });
           }
-          return result;
+          return { ...result, usage: { ...result.usage,
+            tokens: result.usage.tokens + spentTokens,
+            cost_cents: result.usage.cost_cents + spentCents } };
         } catch (error) {
+          if (error instanceof ModelCallError && error.usage) {
+            spentTokens += Math.max(0, error.usage.tokens);
+            spentCents += Math.max(0, error.usage.cost_cents);
+          }
+          // A local preflight refusal never reached the provider; it is NOT a provider outage.
+          if (error instanceof ModelCallError && error.message.startsWith('token_preflight_refused:')) {
+            throw new ModelCallError(error.message, { tokens: spentTokens, cost_cents: spentCents });
+          }
           lastError = error;
           const transient = modelFailureKind(error) === 'transient';
           await recordRunModelCall(ctx.db, { run_id: ctx.runId, n: run.steps_done, chosen_ref: ref, ref: candidate.ref, ok: false,
@@ -437,7 +453,11 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
             await recordBetaExecutionForCall(ctx.db, { participant_id: run.participant_id, ref: candidate.ref,
               run_id: ctx.runId, at: outcome.at, ok: false, latency_ms: outcome.latencyMs });
           }
-          if (!transient) throw error;
+          if (!transient) {
+            if (error instanceof ModelCallError) throw new ModelCallError(error.message,
+              { tokens: spentTokens, cost_cents: spentCents });
+            throw error;
+          }
         }
       }
       // 2e relecture D12 #255 : zéro appel parce que chaque bail de sonde était détenu —
@@ -448,6 +468,8 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           + leaseBlocked.join(', ') + ', fenêtre ' + BREAKER_PROBE_LEASE_S + ' s) ; reprise au plus tôt à '
           + (nowSec + BREAKER_PROBE_LEASE_S) + ' (UTC, secondes), relance d’exécution S1b.', null);
       }
+      if (lastError instanceof ModelCallError) throw new ModelCallError(lastError.message,
+        { tokens: spentTokens, cost_cents: spentCents });
       throw lastError;
     },
   };

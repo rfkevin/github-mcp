@@ -50,6 +50,11 @@ describe('CC8 S1b — incident Gemini 503, repli pendant le même appel', () => 
       (await db.prepare('SELECT ok, err FROM agent_model_calls WHERE ref = ?1').bind(ref).first<{ok:number;err:number}>()) ?? {ok:0,err:0}));
     const result = await client(run.runId, fetchImpl).complete(message);
     expect(result.output.text).toBe('repli réussi');
+    // Le modèle de secours retourne 12+4=16, mais la première tentative a déjà consommé
+    // une estimation d'entrée facturée : l'agrégat de l'étape DOIT inclure les deux.
+    expect(result.usage.tokens).toBeGreaterThan(16);
+    expect(result.usage.input_tokens).toBe(12);
+    expect(result.usage.output_tokens).toBe(4);
     expect(seen).toHaveLength(2);
     expect(seen[0]).toContain('gemini-3.8-flash');
     expect(seen[1]).toContain('gemini-3.6-flash');
