@@ -83,13 +83,14 @@ async function wakeupOf(runId: string): Promise<{ attempts: number; claimed_by: 
 describe('CC-8 S8a — unitaire : types réveil et bail anti-rafale', () => {
   it('wakeWorthy : types de la liste ; clarify.ask seulement si to non vide ; autres types non', () => {
     for (const type of WAKE_EVENT_TYPES) {
-      if (type !== 'clarify.ask') expect(wakeWorthy(type, '{}')).toBe(true);
+      if (type !== 'clarify.ask' && type !== 'clarify.answer') expect(wakeWorthy(type, '{}')).toBe(true);
     }
     expect(wakeWorthy('clarify.ask', JSON.stringify({ question: 'q', to: 'gemini' }))).toBe(true);
     expect(wakeWorthy('clarify.ask', JSON.stringify({ question: 'q' }))).toBe(false);
     expect(wakeWorthy('clarify.ask', JSON.stringify({ question: 'q', to: '' }))).toBe(false);
     expect(wakeWorthy('clarify.ask', 'pas du json')).toBe(false);
-    expect(wakeWorthy('clarify.answer', JSON.stringify({ ask_seq: 1, answer: 'a' }))).toBe(false);
+    expect(wakeWorthy('clarify.answer', JSON.stringify({ ask_seq: 1, answer: 'a' }))).toBe(true);
+    expect(wakeWorthy('clarify.answer', JSON.stringify({ ask_seq: 0, answer: 'a' }))).toBe(false);
     expect(wakeWorthy('checkpoint', '{}')).toBe(false);
     expect(wakeWorthy('memory.propose', '{}')).toBe(false);
     expect(wakeWorthy('proposal.submit', '{}')).toBe(false);
