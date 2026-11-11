@@ -46,3 +46,10 @@ d'un nouveau run, avec un transfert explicite — **pas** la reprise
 magique d'une session expirée. Les mesures de latence, les demandes
 multiples et le vrai pilote API Gemini chat/API doivent encore être
 validés en E2E, sans auto-déploiement production ni coût payant.
+
+
+## Crash, compte d'étapes, longue attente et escalade
+
+Une exécution interrompue après l'effet store_ask n'est pas relancée depuis zéro : le passage périodique existant rescueStalledRuns retrouve les runs D1 running sans alarme vivante et objectWake reconstruit l'alarme. Les réveils d'attente sont purement D1, sans nouvelle étape modèle ni consommation supplémentaire de jetons. Après réponse autorisée, le même run_id et les mêmes effets reprennent.
+
+À la deadline d'origine, le statut terminal reste deadline et stop_reason devient atomiquement clarification_wait_expired ; le journal idempotent clarification_escalation porte owner_attention_required. Ces signaux sont visibles au coordinateur/owner dans les vues de runs existantes. La fonction finish/forget de l'orchestrateur libère le slot DO et efface l'alarme D1. Aucune prolongation de délai, nouveau grant ou relance automatique n'est donnée. Une continuation ultérieure exige un nouveau run autorisé et une passation explicite. Cette escalade durable n'est PAS une notification push au propriétaire : ce dernier doit consulter les diagnostics.
