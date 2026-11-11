@@ -65,6 +65,11 @@ export const RESULT_MAX_CHARS = 16 * 1024;
 
 export interface ToolCall { id: string; name: string; args: Record<string, unknown> }
 export interface ModelOutput { text: string; tool_calls: ToolCall[] }
+/** U1: enforce an actual terminal opportunity for a structured D12 verdict, not prose.
+ * Review and test runs have no mechanical guided server steps. */
+export function reviewVerdictTurn(kind: string, stepsDone: number, maxSteps: number): boolean {
+  return (kind === 'review' || kind === 'test') && stepsDone >= maxSteps - 1;
+}
 /** Split values are provided by the adapter when reported by the provider. */
 export interface ModelUsage { tokens: number; cost_cents: number; input_tokens?: number | null; output_tokens?: number | null }
 export interface AgentMessage {
@@ -143,7 +148,7 @@ export interface StepResult { outcome: RunStatus | 'stepped' | 'busy' | 'retry' 
 interface RunRow {
   run_id: string; cycle_id: string; participant_id: string; task_id: string;
   lease_key: string; generation: number; task_kind: string; status: RunStatus;
-  steps_done: number; prompt: string; max_tokens: number; tokens_used: number;
+  steps_done: number; prompt: string; max_steps: number; max_tokens: number; tokens_used: number;
   /** CC-8 S1b-2 : deadline d'exécution (secondes) — borne le budget d'appels modèle de l'étape. */
   deadline_at: number;
 }
@@ -291,7 +296,7 @@ export async function createRun(db: D1Database, input: CreateRunInput): Promise<
 // ---------------------------------------------------------------- étape
 
 async function getRun(db: D1Database, runId: string): Promise<RunRow | null> {
-  return db.prepare('SELECT run_id, cycle_id, participant_id, task_id, lease_key, generation, task_kind, status, steps_done, prompt, max_tokens, tokens_used, deadline_at FROM agent_runs WHERE run_id = ?1')
+  return db.prepare('SELECT run_id, cycle_id, participant_id, task_id, lease_key, generation, task_kind, status, steps_done, prompt, max_steps, max_tokens, tokens_used, deadline_at FROM agent_runs WHERE run_id = ?1')
     .bind(runId).first<RunRow>();
 }
 
@@ -811,14 +816,26 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         // L'historique complet et les preuves D1 ne sont jamais condensés en stockage.
         const messages = await buildMessages(db, run, deps.compactHistory === true);
         const tools = deps.tools.list(run.task_kind);
+        const verdictTurn = reviewVerdictTurn(run.task_kind, n, run.max_steps) && tools.includes('store_verdict');
         const extra = guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
           ? guide.instruction : verify ? verify.context + '\n\n' + verify.instruction : null;
+        // The final review/test model step must be able to attempt a real store_verdict.
+        // Do not allow an extra discovery loop to consume the final step.
+        const verdictInstruction = verdictTurn
+          ? 'Dernière étape de relecture : utiliser UNIQUEMENT store_verdict pour déposer un verdict structuré '
+            + 'avec les preuves et le couple head/base exacts. Si les preuves manquent, ne pas inventer AGREE.'
+          : null;
+        const additional = [extra, verdictInstruction].filter(Boolean).join('\n\n');
+        // Preserve an approximate full-context+output budget for the terminal verdict call.
+        // No paid allowance or D12 bypass; exhausted budgets still refuse before the provider.
+        const verdictReserve = (run.task_kind === 'review' || run.task_kind === 'test') && !verdictTurn
+          ? Math.min(8192, Math.floor(run.max_tokens / 4)) : 0;
         response = await deps.model.complete({
-          messages: extra ? [...messages, { role: 'user', content: extra }] : messages,
-          tools: guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
+          messages: additional ? [...messages, { role: 'user', content: additional }] : messages,
+          tools: verdictTurn ? ['store_verdict'] : guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
             ? guide.tools.filter(name => tools.includes(name)) : tools,
           task_kind: run.task_kind, budget_left_ms: budgetLeftMs,
-          budget_left_tokens: Math.max(0, run.max_tokens - run.tokens_used) });
+          budget_left_tokens: Math.max(0, run.max_tokens - run.tokens_used - verdictReserve) });
       }
     } catch (error) {
       const usage = error instanceof ModelCallError ? error.usage : null;

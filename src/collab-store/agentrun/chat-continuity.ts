@@ -117,7 +117,7 @@ const STOP_CLASSES = new Set(['no_tool_call', 'tool_not_offered', 'multiple_tool
   'branch_refused', 'checks_refused', 'check_unexpected', 'pr_already_open', 'server_cap', 'tool_unavailable', 'precheck_failed',
   'github_evidence_missing', 'ci_escalate', 'ci_unknown', 'preparation_incomplete',
   'preparation_tools_unavailable', 'preparation_base_unverified', 'task_grant_unavailable',
-  'commit_budget_exhausted', 'store_effect_missing']);
+  'commit_budget_exhausted', 'store_effect_missing', 'token_preflight_refused']);
 
 /**
  * Ensemble FERMÉ des codes d'arrêt écrits par le moteur (settle, stopAs, arrêts guidés, fin d'exécution).
