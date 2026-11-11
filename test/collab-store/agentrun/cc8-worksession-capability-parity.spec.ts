@@ -86,18 +86,18 @@ describe('CC8 WorkSession C0 provider API parity', () => {
     // Catalog availability alone never grants write rights without an actual task grant.
     await expect(host.execute({ id: 'write', name: 'github_write_scope', args: {} },
       { run_id: answer.runId, effect_key: 'b'.repeat(64) }))
-      .rejects.toThrow(/api_task_not_enabled/);
+      .rejects.toThrow(/capability_not_held:github\.write/);
     expect(implement.runId).toBeDefined();
   });
 
-  it.skip('WorkSession: auteur ayant un mandat GitHub valide, même si le run est answer', async () => {
+  it('WorkSession: auteur ayant un mandat GitHub valide, même si le run est answer', async () => {
     const answer = await seeded({ kind: 'answer', participant: 'c2c-author' });
     const branch = apiBranch('c2c-author', 'work');
     const grant = JSON.stringify([{ cycle: answer.scope.cycle_id, task: answer.scope.task_id,
       participant: 'c2c-author', branch, paths: ['src/x.ts'] }]);
     const writeHost = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github,
       unifiedCapabilities: true, githubWrites: {
-        writes: { ...writes, branchHead: async (branch: string) =>
+        writes: { ...writes, branchHead: async (_repository: string, branch: string) =>
           branch === 'mcp/105856986/cc3-integration' ? 'a'.repeat(40) : null },
         baseBranch: 'mcp/105856986/cc3-integration',
         s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null },

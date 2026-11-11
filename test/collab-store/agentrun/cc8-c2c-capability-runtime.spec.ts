@@ -94,7 +94,7 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
       }
     }
     expect(mapped).toBeGreaterThanOrEqual(20);
-    expect(requiredUnifiedCapability('github_write_scope')).toBe('cycle.read');
+    expect(requiredUnifiedCapability('github_write_scope')).toBe('github.write');
     expect(requiredUnifiedCapability('store_salon_post')).toBe('salon.announce');
     expect(requiredUnifiedCapability('store_verdict')).toBe('review.verdict');
     expect(requiredUnifiedCapability('store_memory')).toBe('memory.read');
@@ -182,7 +182,7 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     const h = createReadToolHost(configured);
     await expect(h.execute({ id: 't', name: 'github_write_scope', args: {} },
       { run_id: noGrant.runId, effect_key: 'a'.repeat(64) }))
-      .rejects.toThrow(/api_task_not_enabled/);
+      .rejects.toThrow(/capability_not_held:github\.write/);
     // Grant statique mais mandat de tâche vide : fail-closed (assertPaths borne chaque effet à grant ∩ owned_paths).
     const emptyMandate = optionsFor(noPaths.scope.cycle_id, noPaths.scope.task_id, grantFor(noPaths.scope.cycle_id, noPaths.scope.task_id));
     expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, noPaths.scope, emptyMandate))).not.toContain('github.write');
