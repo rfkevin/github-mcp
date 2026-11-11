@@ -187,4 +187,30 @@ describe('CC8 WorkSession C0 provider API parity', () => {
     expect(receipt).toEqual({ before_sha: baseSha, after_sha: commitSha });
   });
 
+  it('WorkSession: contexte API et chat partagent active_work et un registre paginé', async () => {
+    const run = await seeded({ kind: 'implement', participant: 'c2c-author' });
+    // Historical cutoff was 60 tasks; none may disappear after the first page.
+    const queries = Array.from({ length: 65 }, (_, i) => db.prepare([
+      'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid,',
+      "status, owned_paths, target_ref, next_action, revision) VALUES (?1, ?2, 'c2c-intruder',",
+      "'c2c-reviewer', 'c2c-tester', 'in_progress', '[]', '', '', 1)",
+    ].join(' ')).bind('additional-' + i, run.scope.cycle_id));
+    await db.batch(queries);
+    const host = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github,
+      unifiedCapabilities: true, continuity: true, contextCompaction: true });
+    const pages: Array<{ registry: Array<{task_id: string}>; registry_next_page: number | null;
+      active_work: { open_api_runs: Array<{run_id: string}> }; registry_total: number }> = [];
+    for (let page = 0; page < 3; page++) {
+      const result = await host.execute({ id: 'context-' + page, name: 'store_context',
+        args: { full: true, registry_page: page, registry_limit: 30 } }, { run_id: run.runId });
+      pages.push(result as typeof pages[number]);
+    }
+    expect(pages[0].registry_total).toBe(66);
+    expect(pages[0].registry_next_page).toBe(1);
+    expect(pages[1].registry_next_page).toBe(2);
+    expect(pages[2].registry_next_page).toBeNull();
+    expect(new Set(pages.flatMap(page => page.registry.map(row => row.task_id))).size).toBe(66);
+    expect(pages[0].active_work.open_api_runs.some(row => row.run_id === run.runId)).toBe(true);
+  });
+
 });

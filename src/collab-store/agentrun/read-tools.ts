@@ -22,7 +22,7 @@
  */
 import { CollabStore } from '../store/collab-store';
 import { equivalentParticipantIds } from '../identity/families';
-import { loadContinuity, loadVisibleActiveMemory, memoryRolesOf } from '../context';
+import { loadActiveWork, loadContinuity, loadVisibleActiveMemory, memoryRolesOf } from '../context';
 
 import { ToolRefused, type LookupResult, type ToolCall, type ToolHost, type ToolSpec } from './engine';
 import type { ToolSchema } from './workers-ai-model';
@@ -68,8 +68,11 @@ export const DIFF_MAX_FILES = 50;
 export const DIFF_PATCH_CHARS = 2000;
 
 export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
-  { name: 'store_context', description: 'Contexte du cycle de cette exécution : phase, révision et tâches où votre participant a un rôle.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'store_context', description: 'Contexte du cycle et active_work partagés avec le chat, registre intégral paginé. full:true permet la lecture non compactée à la demande.',
+    parameters: { type: 'object', properties: {
+      full: { type: 'boolean' }, registry_page: { type: 'integer', minimum: 0 },
+      registry_limit: { type: 'integer', minimum: 1, maximum: 200 },
+    }, additionalProperties: false } },
   { name: 'store_delta', description: 'Événements du cycle après since_seq (au plus 50), masqués selon votre participant.',
     parameters: { type: 'object', properties: { since_seq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50 },
       full: { type: 'boolean', description: 'Demander les événements complets si une preuve exacte est nécessaire (opt-in).' } },
@@ -411,23 +414,34 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     switch (call.name as ReadToolName) {
       case 'store_context': {
         const mine = await store.getContext(cycle_id, participant_id);
-        if (options.contextCompaction && task_kind === 'implement' && task_id) {
+        // Same durable active_work source consumed by the chat MCP context.
+        // Transport-specific API task_kind never controls what history exists.
+        const ids = options.continuity ? await equivalentParticipantIds(options.db, participant_id) : null;
+        const activeWork = ids ? await loadActiveWork(options.db, cycle_id, ids) : null;
+        const shared = activeWork ? { active_work: activeWork } : {};
+        if (options.contextCompaction && !unified && task_kind === 'implement' && task_id && args.full !== true && args.registry_page === undefined) {
           const current = mine.tasks.find(task => task.task_id === task_id);
           if (!current) throw new ToolRefused('api_task_context_not_visible');
           const last = await options.db.prepare('SELECT MAX(seq) AS latest FROM events WHERE cycle_id = ?1')
             .bind(cycle_id).first<{ latest: number | null }>();
           const latestSeq = last?.latest ?? 0;
           return { cycle_id, phase: mine.phase, status: mine.status, revision: mine.revision,
-            task: current, scope: 'task-first', latest_seq: latestSeq,
+            task: current, scope: 'task-first', latest_seq: latestSeq, ...shared,
             recent_since_seq: Math.max(0, latestSeq - 50),
             note: 'Lire store_delta avec since_seq=recent_since_seq puis next_since_seq ; full:true pour les preuves exactes.' };
         }
         if (!options.continuity) return mine;
-        // E1-E3 (l8) : le registre complet du cycle, en lecture, pas seulement les tâches où l'on a un rôle.
+        // Every registry entry is reachable by page; no total-count truncation.
+        const page = intArg(args, 'registry_page', 0, 1_000_000, 0);
+        const limit = intArg(args, 'registry_limit', 1, 200, REGISTRY_MAX_TASKS);
+        const offset = page * limit;
         const all = await store.getContext(cycle_id);
-        const registry = all.tasks.slice(0, REGISTRY_MAX_TASKS).map(task => ({ task_id: task.task_id, status: task.status,
+        const rows = all.tasks.slice(offset, offset + limit);
+        const registry = rows.map(task => ({ task_id: task.task_id, status: task.status,
           owner: task.owner_pid, reviewer: task.reviewer_pid, tester: task.tester_pid, next_action: String(task.next_action ?? '').slice(0, 300) }));
-        return { ...mine, registry, registry_truncated: all.tasks.length > REGISTRY_MAX_TASKS };
+        const hasMore = all.tasks.length > offset + rows.length;
+        return { ...mine, ...shared, registry, registry_truncated: hasMore,
+          registry_page: page, registry_next_page: hasMore ? page + 1 : null, registry_total: all.tasks.length };
       }
       case 'store_delta': {
         const since = intArg(args, 'since_seq', 0, Number.MAX_SAFE_INTEGER);
