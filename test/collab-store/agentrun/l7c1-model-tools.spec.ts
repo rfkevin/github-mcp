@@ -100,7 +100,8 @@ describe('CC-5 l7c-1 — modèle Workers AI', () => {
     const model = createWorkersAiModel({ ai, ref: MODEL_REF, db, neuronBudget: 8000, schemas: kind => host.schemas(kind), system: 'CONSIGNE', maxOutputTokens: 256, now: () => at });
     const messages: AgentMessage[] = [{ role: 'user', content: 'go' }];
     const result = await model.complete({ messages, tools: ['store_context', 'github_read_file'], task_kind: 'research' });
-    expect(result.usage).toEqual({ tokens: 120, cost_cents: 0 });
+    expect(result.usage).toMatchObject({ tokens: 120, cost_cents: 0, input_tokens: 100, output_tokens: 20 });
+    expect(result.usage.estimated_input_tokens).toBeGreaterThan(0);
     expect(result.output.tool_calls).toEqual([{ id: 'c1', name: 'store_context', args: {} }]);
     const sent = ai.calls[0].input as { messages: Array<{ role: string; content: string }>; tools: Array<{ function: { name: string } }>; max_tokens: number };
     expect(sent.messages[0]).toEqual({ role: 'system', content: 'CONSIGNE' });
