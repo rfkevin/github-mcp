@@ -206,6 +206,10 @@ const GITHUB_WRITE_CAPABILITY_TOOLS: ReadonlySet<string> = new Set(
 
 /** Capacité C0 exigée pour servir cet outil, ou null si hors vocabulaire (allowlist seule). */
 export function requiredUnifiedCapability(name: string): UnifiedCapability | null {
+  // github_write_scope only READS an existing, identity-scoped mandate.
+  // S7 authorize() still checks the exact writer grant, active task and fence;
+  // the discovery tool itself does not need a mutation capability.
+  if (name === 'github_write_scope') return 'cycle.read';
   return TOOL_UNIFIED_CAPABILITY[name] ?? (GITHUB_WRITE_CAPABILITY_TOOLS.has(name) ? 'github.write' : null);
 }
 

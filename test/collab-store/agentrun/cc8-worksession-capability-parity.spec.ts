@@ -15,8 +15,6 @@ import { VERDICT_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/verdict
 import { CONTRIBUTION_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/contribution-tools';
 import { MODEL_CHOICE_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/model-choice-tools';
 import { RESEARCH_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/research';
-import { authorize } from '../../../src/collab-store/agentrun/github-write/authorization';
-import { createS7Tools } from '../../../src/collab-store/agentrun/github-write/tools';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const NOW = 2_000_000_000;
@@ -86,8 +84,9 @@ describe('CC8 WorkSession C0 provider API parity', () => {
       args: { head: 'a'.repeat(40), base: 'b'.repeat(40) } }, { run_id: answer.runId });
     expect(diff).toHaveProperty('files');
     // Catalog availability alone never grants write rights without an actual task grant.
-    await expect(host.execute({ id: 'write', name: 'github_write_scope', args: {} }, { run_id: answer.runId }))
-      .rejects.toThrow(/capability_not_held:github\.write/);
+    await expect(host.execute({ id: 'write', name: 'github_write_scope', args: {} },
+      { run_id: answer.runId, effect_key: 'b'.repeat(64) }))
+      .rejects.toThrow(/api_task_not_enabled/);
     expect(implement.runId).toBeDefined();
   });
 
@@ -110,15 +109,7 @@ describe('CC8 WorkSession C0 provider API parity', () => {
         s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null } },
     }))).toContain('github.write');
     expect(writeHost.list('answer')).toContain('github_write_scope');
-    const legacyHost = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github,
-      unifiedCapabilities: false, githubWrites: {
-        writes: { ...writes, branchHead: async (_, current) =>
-          current === 'mcp/105856986/cc3-integration' ? 'a'.repeat(40) : null },
-        baseBranch: 'mcp/105856986/cc3-integration',
-        s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null },
-      },
-    });
-    const effect = await legacyHost.execute({ id: 'scope', name: 'github_write_scope', args: {} },
+    const effect = await writeHost.execute({ id: 'scope', name: 'github_write_scope', args: {} },
       { run_id: answer.runId, effect_key: 'a'.repeat(64) });
     expect(effect).toMatchObject({ branch, base_sha: 'a'.repeat(40) });
   });
