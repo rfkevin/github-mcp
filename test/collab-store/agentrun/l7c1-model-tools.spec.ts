@@ -329,8 +329,9 @@ describe('CC-5 l7c-1 — câblage', () => {
     expect(offered).toEqual(expect.arrayContaining(['store_context', 'store_delta', 'store_memory',
       'store_continuity', 'store_ask', 'store_answer']));
     expect(new Set(offered).size).toBe(offered.length);
-    expect(new Set(deps.tools.schemas('research').map(tool => tool.name)).size)
-      .toBe(deps.tools.schemas('research').length);
+    // EngineDeps exposes the minimal ToolHost interface; the actual engine host also provides schemas.
+    const runtimeSchemas = (deps.tools as ToolHost & Pick<ReturnType<typeof createReadToolHost>, 'schemas'>).schemas('research');
+    expect(new Set(runtimeSchemas.map(tool => tool.name)).size).toBe(runtimeSchemas.length);
     await deps.model.complete({ messages: [{ role: 'user', content: 'x' }], tools: deps.tools.list('research'), task_kind: 'research' });
     const sent = ai.calls[0].input as { messages: Array<{ role: string; content: string }> };
     expect(sent.messages[0].content).toBe(AGENT_RUN_SYSTEM);
