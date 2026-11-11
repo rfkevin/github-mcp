@@ -286,7 +286,8 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
       githubWrites: { writes, baseBranch: 'mcp/105856986/cc3-integration',
         s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null } },
     }))).toContain('github.write');
-    const result = await writeHost.execute({ id: 'grant', name: 'github_write_scope', args: {} }, { run_id: answer.runId });
+    const result = await writeHost.execute({ id: 'grant', name: 'github_write_scope', args: {} },
+      { run_id: answer.runId, effect_key: 'a'.repeat(64) });
     expect(result).toMatchObject({ branch: 'mcp/105856986/c2c-static', base_sha: 'a'.repeat(40) });
   });
 
@@ -298,7 +299,8 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, reviewer.scope, {
       db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true, verdicts: true,
     }))).toContain('review.verdict');
-    await expect(host.execute({ id: 'bad', name: 'store_verdict', args: {} }, { run_id: reviewer.runId }))
+    await expect(host.execute({ id: 'bad', name: 'store_verdict', args: {} },
+      { run_id: reviewer.runId, effect_key: 'b'.repeat(64) }))
       .rejects.toThrow(/VERDICT_ARGS_INVALID/);
     await expect(host.execute({ id: 'bad', name: 'store_verdict', args: {} }, { run_id: author.runId }))
       .rejects.toThrow(/capability_not_held:review\.verdict/);
