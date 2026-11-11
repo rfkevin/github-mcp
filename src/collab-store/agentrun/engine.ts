@@ -23,8 +23,10 @@
  *   Un effet resté pending (crash entre l'effet et son enregistrement) n'est
  *   JAMAIS réémis à l'aveugle : `lookup` cherche s'il a eu lieu ; sans réponse
  *   sûre, l'exécution passe en `needs_reconcile`.
- * - Retries bornés : MAX_STEP_ATTEMPTS réclamations par étape, puis `failed`.
- * - Plafonds (R5) vérifiés à chaque étape : étapes, jetons, coût, échéance.
+ * - Reprises techniques d'une WorkSession sans plafond cumulé arbitraire ;
+ *   les réclamations restent soumises au CAS, aux délais par appel et à HALT.
+ * - Coût autorisé et clôture métier vérifiés à chaque étape, sans plafond global
+ *   d'étapes ou de jetons de mission.
  * - Le canal API n'émet aucun verdict D12 LIBRE (L7-6) : outils interdits refusés en
  *   code même si l'hôte les déclare ; toute écriture reste soumise à
  *   `assertNotD12Verdict` SAUF `store_verdict` (L5b, S10) et `store_contribute`
@@ -37,6 +39,7 @@
  * qui ne fait que constater une condition d'arrêt (HALT, préemption, plafond).
  */
 import { sha256Hex } from '../store/hash';
+import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
@@ -982,6 +985,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const results: ResultEntry[] = [];
   for (const [idx, call] of output.tool_calls.entries()) {
     const refused = (reason: string) => results.push({ id: call.id, content: JSON.stringify({ error: reason }), error: true });
+    // Owner-only actions and raw D12 submissions cannot be smuggled into the
+    // provider API by an accidentally permissive future tool host.
+    if ((API_AGENT_FORBIDDEN as readonly string[]).includes(call.name)) {
+      refused('tool_forbidden_on_api_channel');
+      continue;
+    }
     const spec = deps.tools.spec(run.task_kind, call.name);
     if (!spec || spec.name !== call.name) { refused('tool_not_allowlisted'); continue; }
     if (spec.effect === 'read') {
@@ -992,12 +1001,13 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       }
       continue;
     }
-    // CC-7 L5b (S10) : store_verdict est la seule écriture à verdict permise au canal
-    // API — le serveur re-vérifie tout dans verdict-tools (rôle, identité, couple exact
-    // relu, CI au head, preuve de lecture github_diff, idempotence déterministe). Tout
-    // autre appel d'écriture reste soumis au refus D12.
-    // CC-7 L6b-2 : store_contribute porte un état de conception (AGREE/AMEND/OBJECTION) sans PR ni
-    // head/base, re-vérifié serveur contre la phase courante (contribution-tools) : même exception.
+    // A generic write must not carry a free-form D12 verdict; the only exceptions
+    // are the dedicated store_verdict/store_contribute tools, which re-verify
+    // authority server-side at the effect point (role, phase, head/base and CI).
+    if (call.name !== 'store_verdict' && call.name !== 'store_contribute') {
+      try { assertNotD12Verdict(call.args); }
+      catch { refused('d12_verdict_forbidden_on_api_channel'); continue; }
+    }
     // CC-8 S1b-2 (relecture D12 #255, bloquant 1) : garde avant chaque effet — l'effet doit
     // pouvoir FINIR avant le plafond d'étape ET la deadline du run : on réserve son timeout
     // maximal (120 s) + le plancher de 30 s (EFFECT_LAUNCH_FLOOR_S), borné par les DEUX.

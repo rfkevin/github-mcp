@@ -162,3 +162,56 @@ describe('CC8 WorkSession C0 provider API parity', () => {
   });
 
 });
+
+/** Adversarial host: an accidental tool-registration regression must never
+ * grant the provider a raw D12/owner effect. No authenticated write is simulated. */
+async function modelAttemptWithPermissiveHost(name: string, args: Record<string, unknown>) {
+  const { runId } = await seeded({ kind: 'answer', participant: 'c2c-author' });
+  let executed = 0;
+  const tools: import('../../../src/collab-store/agentrun/engine').ToolHost = {
+    spec: (_kind, candidate) => ({ name: candidate, effect: 'write' }),
+    list: () => [name],
+    async execute() { executed += 1; return { unauthorized: true }; },
+  };
+  const model: import('../../../src/collab-store/agentrun/engine').ModelClient = {
+    async complete() {
+      return { output: { text: 'Attempted raw mutation', tool_calls: [{ id: 'attack', name, args }] },
+        usage: { tokens: 4, cost_cents: 0 } };
+    },
+  };
+  const { runStep } = await import('../../../src/collab-store/agentrun/engine');
+  const result = await runStep(db, runId, { model, tools, now: () => 2_000_000_001, workerId: 'cc8-guard-test' });
+  const step = await db.prepare('SELECT results FROM agent_run_steps WHERE run_id = ?1 AND n = 0')
+    .bind(runId).first<{ results: string }>();
+  return { outcome: result.outcome, results: step?.results ?? '', executed };
+}
+
+describe('CC8 WorkSession — actions interdites même avec un hôte API mal configuré', () => {
+  it('refuse evidence.add libre même si un hôte futur le déclare comme écriture', async () => {
+    const result = await modelAttemptWithPermissiveHost('evidence.add', {
+      task: 'anything', state: 'AGREE', head: 'a'.repeat(40), base: 'b'.repeat(40),
+    });
+    expect(result.executed).toBe(0);
+    expect(result.results).toContain('tool_forbidden_on_api_channel');
+  });
+
+  it('refuse un verdict D12 caché dans un outil générique de la WorkSession', async () => {
+    const result = await modelAttemptWithPermissiveHost('store_task_status', {
+      task: 'anything', state: 'PASS', head: 'a'.repeat(40), base: 'b'.repeat(40),
+    });
+    expect(result.executed).toBe(0);
+    expect(result.results).toContain('d12_verdict_forbidden_on_api_channel');
+  });
+
+  it('le catalogue réel ne propose aucune écriture owner ni evidence.add brute', async () => {
+    const { runId } = await seeded({ kind: 'answer', participant: 'c2c-author' });
+    const host = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github,
+      unifiedCapabilities: true, storeWrites: true, verdicts: true });
+    for (const name of ['evidence.add', 'owner.decision', 'merge', 'deploy']) {
+      expect(host.list('answer')).not.toContain(name);
+      expect(host.spec('answer', name)).toBeNull();
+      await expect(host.execute({ id: 'forbidden', name, args: {} }, { run_id: runId }))
+        .rejects.toThrow(/tool_not_configured/);
+    }
+  });
+});

@@ -1,11 +1,11 @@
 /**
  * CC-5 l7 (incrément 7c-1) — hôte d'outils en LECTURE SEULE pour les exécutions API.
  *
- * Allowlist deny-by-default figée en code (amendement A2, plan seq 719) : chaque
- * type de tâche n'a que les outils listés dans READ_TOOLS_BY_KIND ; aucun outil
- * d'écriture (effect 'read' partout), donc aucun effet externe en 7c-1. Le
- * moteur refuse en plus API_AGENT_FORBIDDEN et tronque chaque résultat
- * (RESULT_MAX_CHARS) avant de le rendre au modèle comme donnée.
+ * Le catalogue WorkSession unifié présente les outils de lecture et d'écriture
+ * disponibles, sous attestations serveur C0 et contrôles au point d'effet.
+ * L'ancienne allowlist par type de tâche demeure pour les hôtes historiques.
+ * Le moteur refuse en plus les actes réservés au propriétaire et les verdicts
+ * D12 libres ; les résultats remis au modèle sont bornés.
  *
  * CC-7 L5a (S9) : github_diff donne aux types `review` et `test` le couple
  * head/base exact de la soumission (head = SHA de 40 caractères, base = SHA ou

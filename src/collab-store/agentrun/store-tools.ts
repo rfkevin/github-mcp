@@ -1,12 +1,11 @@
 /**
  * CC-5 l7 (incrément 7c-2) — outils d'ÉCRITURE dans le store pour les exécutions API.
  *
- * Seules écritures autorisées au canal API (plan de clôture v1.1, amendement A2) :
- * poser une question (clarify.ask), répondre à une question (clarify.answer) et
- * signaler l'avancement d'une tâche dont le participant tient un rôle, limité à
- * in_progress / blocked (jamais review, verified ni done : ce sont des étapes D12).
- * evidence.add reste refusé au canal API (API_AGENT_FORBIDDEN, lot L3b) : 7c-2
- * n'affaiblit pas cette règle ; aucun verdict D12 ne peut passer par ces outils.
+ * Écritures disponibles selon rôle et mandat réel : questions, réponses,
+ * avancement de tâche, mémoire C4 et passation durable.
+ * Les actes du propriétaire et `evidence.add` libre sont refusés au canal API,
+ * mais `store_verdict` reste la porte D12 contrôlée pour reviewer/tester autorisé.
+ * Le moteur refuse également le déguisement d'un verdict dans un outil générique.
  *
  * Contrat d'hôte 7a tenu : chaque écriture porte un op_id DÉRIVÉ de la clé d'effet
  * du moteur ({participant}:{cycle}:api-{clé}:1, empreinte d'intention, jamais un
