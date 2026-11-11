@@ -30,6 +30,8 @@ export const RETRY_DELAY_S = 30;
 export const ERROR_DELAY_S = 60;
 /** CC8 S7 : pas de rafale d'appels sur les paliers gratuits. Le run reste borné par sa deadline. */
 export const IMPLEMENT_MIN_INTERVAL_S = 15;
+/** A pending clarification uses only bounded D1 polls (NO provider calls). */
+export const CLARIFICATION_WAIT_RECHECK_S = 120;
 /** Une CI pending ne doit pas consommer les étapes de façon rapprochée. */
 export const IMPLEMENT_CI_PENDING_MIN_S = 60;
 export const IMPLEMENT_CI_PENDING_MAX_S = 120;
@@ -316,6 +318,14 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
     return { action: 'error', next_at: next };
   }
   await settleStep();
+  if (outcome === 'waiting_for_reply') {
+    // The run_id and its effects stay in D1. No false completion/proof and no
+    // new run is created; one bounded alarm checks for the applied reply.
+    await deps.slot.put('busy', 0);
+    const next = deps.nowMs() + CLARIFICATION_WAIT_RECHECK_S * 1000;
+    await scheduleAt(deps, runId, run.lease_key, next);
+    return { action: 'rescheduled', outcome, next_at: next };
+  }
   if (outcome === 'stepped') {
     await deps.slot.put('busy', 0);
     // L'étape a été commitée dans D1 par runStep. Son dernier effet, s'il s'agit

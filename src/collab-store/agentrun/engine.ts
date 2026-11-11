@@ -42,6 +42,7 @@ import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
+import { runClarificationState, continuationReplyMessage } from './continuation';
 import { verifyContext } from './verify-guided';
 import { HANDOVER_WRITE_TOOLS, HANDOVER_INSTRUCTION, handoverViolation,
   PREPARATION_ROUNDS_MAX, PREPARATION_READ_TOOLS, PREPARATION_DISCOVERY_TOOLS,
@@ -143,7 +144,8 @@ export interface GitHubCompletionGrant { cycle: string; participant: string; tas
 export type RunStatus = 'running' | 'completed' | 'failed' | 'halted' | 'preempted' | 'needs_reconcile'
   | 'step_limit' | 'token_limit' | 'cost_limit' | 'deadline';
 
-export interface StepResult { outcome: RunStatus | 'stepped' | 'busy' | 'retry' | 'unknown_run' }
+/** waiting_for_reply is a NON-terminal step result; the D1 run remains running. */
+export interface StepResult { outcome: RunStatus | 'stepped' | 'busy' | 'retry' | 'waiting_for_reply' | 'unknown_run' }
 
 interface RunRow {
   run_id: string; cycle_id: string; participant_id: string; task_id: string;
@@ -301,7 +303,7 @@ async function getRun(db: D1Database, runId: string): Promise<RunRow | null> {
 }
 
 /** Arrête l'exécution si une condition d'arrêt est vraie ; rend le statut courant. */
-export async function settle(db: D1Database, runId: string, now: number, deferStepLimit = false): Promise<RunStatus> {
+export async function settle(db: D1Database, runId: string, now: number, deferStepLimit = false, awaitingClarification = false): Promise<RunStatus> {
   const reason = [
     'CASE WHEN ' + HALTED + " THEN 'halted'",
     '  WHEN NOT EXISTS (SELECT 1 FROM agent_fences f WHERE f.lease_key = agent_runs.lease_key',
@@ -313,7 +315,12 @@ export async function settle(db: D1Database, runId: string, now: number, deferSt
     "  WHEN ?2 >= deadline_at THEN 'deadline'",
     "  ELSE 'running' END",
   ].join(' ');
-  await db.prepare('UPDATE agent_runs SET status = ' + reason + ', stop_reason = ' + reason
+  // The run stays terminal deadline; only its typed reason escalates an unanswered clarification.
+  // The reason and status are written atomically, without extending the deadline or granting authority.
+  const stopReason = awaitingClarification
+    ? "CASE WHEN (" + reason + ") = 'deadline' THEN 'clarification_wait_expired' ELSE (" + reason + ') END'
+    : reason;
+  await db.prepare('UPDATE agent_runs SET status = ' + reason + ', stop_reason = ' + stopReason
     + ", updated_at = ?2 WHERE run_id = ?1 AND status = 'running'").bind(runId, now, deferStepLimit ? 1 : 0).run();
   return (await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ status: RunStatus }>())!.status;
 }
@@ -748,12 +755,30 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const run = await getRun(db, runId);
   if (!run) return { outcome: 'unknown_run' };
   if (run.status !== 'running') return { outcome: run.status };
-  // CC8 S7 : CI pending → relevé serveur, sans modèle ni étape (au plus CI_POLL_MAX, dans la deadline).
+  // CC8 S7 : CI pending → relevé serveur SANS modèle. Ces effets déjà lancés
+  // doivent progresser même si une clarification humaine est encore ouverte.
   await ensureCiPollSchema(db);
   const pendingPoll = await pendingCiPoll(db, runId, run.steps_done);
   if (pendingPoll) {
     const polled = await runCiPoll(db, run, pendingPoll, deps, now);
     if (polled) return polled;
+  }
+  // U2b2: a completed store_ask effect creates a durable wait. In the absence of
+  // its applied clarify.answer, never claim a new step or call the provider.
+  // D1 effects/events are authoritative; the model cannot forge an answer.
+  const clarifications = await runClarificationState(db, run.cycle_id, runId);
+  if (clarifications.pending.length) {
+    const status = await settle(db, runId, now, false, true); // HALT, chat fence, deadline and budgets win.
+    if (status === 'deadline') {
+      // Idempotent durable owner/coordinator breadcrumb: visible via existing run telemetry.
+      await db.prepare([
+        'INSERT INTO agent_run_journal (at,kind,run_id,detail)',
+        "SELECT ?2,'clarification_escalation',?1,'owner_attention_required: deadline reached with unresolved store_ask'",
+        "WHERE EXISTS (SELECT 1 FROM agent_runs WHERE run_id=?1 AND stop_reason='clarification_wait_expired')",
+        " AND NOT EXISTS (SELECT 1 FROM agent_run_journal WHERE run_id=?1 AND kind='clarification_escalation')",
+      ].join(' ')).bind(runId, now).run();
+    }
+    return { outcome: status === 'running' ? 'waiting_for_reply' : status };
   }
   // CC8 S7 mode guidé : prochaine étape décidée sur l'état D1 AVANT la réclamation (même état, même décision).
   // Empreinte de l'état lu (effets + relevés), prise AVANT la lecture du plan (relecture D12 GPT-6, R4).
@@ -825,7 +850,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
           ? 'Dernière étape de relecture : utiliser UNIQUEMENT store_verdict pour déposer un verdict structuré '
             + 'avec les preuves et le couple head/base exacts. Si les preuves manquent, ne pas inventer AGREE.'
           : null;
-        const additional = [extra, verdictInstruction].filter(Boolean).join('\n\n');
+        const replyContext = continuationReplyMessage(clarifications);
+        const additional = [extra, replyContext, verdictInstruction].filter(Boolean).join('\n\n');
         // Preserve an approximate full-context+output budget for the terminal verdict call.
         // No paid allowance or D12 bypass; exhausted budgets still refuse before the provider.
         const verdictReserve = (run.task_kind === 'review' || run.task_kind === 'test') && !verdictTurn
