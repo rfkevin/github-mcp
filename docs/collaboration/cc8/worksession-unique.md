@@ -8,6 +8,8 @@
 
 Un appel à un modèle API ne doit pas être traité comme un automate de six étapes, mais comme une nouvelle interface vers **la même identité d'agent et le même espace de travail qu'un chat**.
 
+**Cible = agent IA piloté via API fournisseur**, non le produit Cloudflare Workers AI ni un Worker hébergeur. L'exécuteur actuel peut être remplacé : la session logique et ses mémoires doivent rester indépendantes du transport et de l'hébergement.
+
 - Le chat et l'API ayant **la même identité logique, le même rôle et le même mandat** peuvent consulter les mêmes mémoires, lire les mêmes dossiers et disposer des mêmes outils MCP.
 - L'API sans chat (Gemini, notamment) reçoit sa continuité depuis notre store, pas depuis le fournisseur.
 - Le fournisseur peut interrompre un appel (quota gratuit, délai, fenêtre de contexte, Worker). La mission logique ne se réinitialise pas : reprise au checkpoint, avec les mêmes preuves, le même projet, la même branche et la même PR.
@@ -42,7 +44,7 @@ Le transport `chat|api` n'a pas à décider des outils ou de la profondeur de ra
 4. **Résumé progressif :** résumer pour le modèle les anciens tours, conserver leurs preuves originales en D1. Injecter un delta récent plutôt que recopier chaque fois tout le contexte.
 5. **Passation bilatérale :** même objet WorkSession partagé par les deux canaux ; une interruption ou le passage chat → API → chat n'entraîne ni nouvelle tâche ni relecture complète depuis zéro.
 
-Premier changement effectif sur cette branche : enveloppes C4 `common/project/participant=131072`, `role=65536` jetons de mémoire organisée, récupération paginée `store_memory` et `store_continuity`, et résumés de runs jusqu'à 4000 caractères lors de la lecture. Ces chiffres sont des capacités de stockage par scope, **pas des limites d'exécution d'une mission**. Aucun ancien checkpoint n'est effacé.
+Premier changement effectif sur cette branche : **aucune limite applicative de tokens stockés par scope C4** pour `common`, `project`, `role`, `participant` (sentinelle `Infinity` côté TypeScript, convertie en `NULL` dans la vérification transactionnelle D1). La mémoire et la continuité sont récupérables par pages via `store_memory` et `store_continuity`; les résumés de runs restitués peuvent atteindre 4000 caractères. Les fenêtres de chaque appel fournisseur ne limitent pas le stockage total. Les checkpoints existants ne sont pas effacés. Les anciens plafonds d'activation/pauses C4 restent à traiter séparément.
 
 ### Reprise des missions
 
