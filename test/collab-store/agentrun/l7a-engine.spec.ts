@@ -397,7 +397,7 @@ describe('CC-5 l7a — plafonds et outils', () => {
     expect((await runStep(db, costly.input.runId, deps(scripted(loop, { usage: { tokens: 1, cost_cents: 3 } }), host().tools, () => T0 + 1))).outcome).toBe('cost_limit');
   });
 
-  it('outil absent de allowlist refusé, outil explicitement offert exécuté par le moteur commun', async () => {
+  it('outils owner et payload D12 libre refusés même si un hôte les expose', async () => {
     const { input } = await newRun();
     const h = host();
     const model = scripted([{
@@ -409,12 +409,12 @@ describe('CC-5 l7a — plafonds et outils', () => {
       ],
     }]);
     expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 1))).outcome).toBe('stepped');
-    expect(h.log).toEqual(['post_note']);
+    expect(h.log).toEqual([]);
     const row = await db.prepare('SELECT results FROM agent_run_steps WHERE run_id = ?1 AND n = 0')
       .bind(input.runId).first<{ results: string }>();
     expect((JSON.parse(row!.results) as { content: string }[]).map(entry =>
       entry.content.startsWith('{"error":') ? JSON.parse(entry.content).error : 'ok'
-    )).toEqual(['tool_not_allowlisted', 'tool_not_allowlisted', 'tool_not_allowlisted', 'ok']);
+    )).toEqual(['tool_forbidden_on_api_channel', 'tool_forbidden_on_api_channel', 'tool_not_allowlisted', 'd12_verdict_forbidden_on_api_channel']);
   });
 
   it('les tables sont append-only : suppression refusée', async () => {

@@ -206,7 +206,7 @@ describe('CC-5 l7c-1 — hôte d’outils en lecture seule', () => {
     expect((await runStep(db, run.runId, { model, tools: host, now: () => T + 100, workerId: 'w' })).outcome).toBe('stepped');
     const [row] = (await db.prepare('SELECT results FROM agent_run_steps WHERE run_id = ?1').bind(run.runId).all<{ results: string }>()).results;
     const results = JSON.parse(row.results) as Array<{ content: string; error?: boolean }>;
-    expect(results[0].content).toContain('tool_not_allowlisted');
+    expect(results[0].content).toContain('tool_forbidden_on_api_channel');
     expect(results[1].content).toContain('tool_not_allowlisted');
     expect(results[2].error).toBe(true);
     expect(JSON.parse(results[3].content)).not.toHaveProperty('body');
