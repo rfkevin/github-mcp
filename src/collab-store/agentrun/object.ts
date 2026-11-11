@@ -182,35 +182,35 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     const schemas = (kind: string) => tools.schemas(kind);
     if (routed) {
       const model = createRoutedModel(env, { env, db, runId: _runId, envelope, schemas, system: AGENT_RUN_SYSTEM,
-        maxOutputTokens: 1024, maxOutputTokensFor, ai, neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS) });
+        maxOutputTokens: 8192, maxOutputTokensFor, ai, neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS) });
       return { model, tools, now };
     }
     if (otherRef) {
       const model = createProviderModel(otherRef, paidRef ? 'paid' : 'free', { env, db, runId: _runId, envelope, schemas,
-        system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
+        system: AGENT_RUN_SYSTEM, maxOutputTokens: 8192, maxOutputTokensFor });
       return { model, tools, now };
     }
     if (zaiRef) {
       const model = createZaiModel({ env, ref: zaiRef, db, runId: _runId, envelope,
-        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
+        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 8192, maxOutputTokensFor });
       return { model, tools, now };
     }
     if (xaiRef) {
       const model = createXaiModel({ env, ref: xaiRef, db, runId: _runId, envelope,
-        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
+        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 8192, maxOutputTokensFor });
       return { model, tools, now };
     }
     if (anthropicRef) {
       const model = createAnthropicModel({ env, ref: anthropicRef, db, runId: _runId, envelope,
-        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
+        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 8192, maxOutputTokensFor });
       return { model, tools, now };
     }
     if (!ai || !ref) return simulated(_runId, stepDb); // inatteignable : gardes ci-dessus (chemins Workers AI, référence globale).
     const model = paidRef
       ? createPaidWorkersAiModel({ ai, ref: paidRef, db, runId: _runId, envelope,
-        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor })
+        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 8192, maxOutputTokensFor })
       : createWorkersAiModel({ ai, ref, db, neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
-        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 1024, maxOutputTokensFor });
+        schemas, system: AGENT_RUN_SYSTEM, maxOutputTokens: 8192, maxOutputTokensFor });
     return { model, tools, now };
   };
   // S7 : seules les tâches explicitement autorisées par l'owner ont une condition
@@ -224,8 +224,8 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     dynamicGrantFor: writes && env.AGENT_RUN_DYNAMIC_SCOPE ? async target =>
       findDynamicGrant(stepDb ?? fallbackDb,env.AGENT_RUN_DYNAMIC_SCOPE,
         target.cycle_id,target.task_id,target.participant_id) : undefined,
-    guidedS7: true, guidedVerify: true,
-    guidedPreparation: env.AGENT_RUN_PREPARATION === 'true' });
+    guidedS7: false, guidedVerify: false,
+    guidedPreparation: false });
 }
 
 /** Branche de base du canal API : valeur valide, jamais main ni master, sinon le défaut figé en code. */

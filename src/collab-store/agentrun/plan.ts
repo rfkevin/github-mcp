@@ -47,8 +47,10 @@ export const PLAN_MAX_STEPS = 6;
 /** S7: implement GitHub doit pouvoir consulter, committer et attendre la CI asynchrone. */
 export const PLAN_IMPLEMENT_MAX_STEPS = 12;
 /** Le plafond de jetons reste indépendant du nombre d'étapes. */
-export function taskKindMaxSteps(kind: PlannedTaskKind): number {
-  return kind === 'implement' ? PLAN_IMPLEMENT_MAX_STEPS : PLAN_MAX_STEPS;
+/** Sentinel for a logical mission without any application token/step ceiling. */
+export const UNBOUNDED_MISSION = -1;
+export function taskKindMaxSteps(_kind: PlannedTaskKind): number {
+  return UNBOUNDED_MISSION;
 }
 export const PLAN_MAX_TOKENS = 24_000;
 /** S1b : plafonds historiques ; les runs implement financés (si autorisés par Kevin) restent à 24k. */
@@ -63,14 +65,9 @@ export const FREE_IMPLEMENT_EXPERIMENT_MAX_TOKENS = 120_000;
  */
 export const FREE_VERIFY_DEFAULT_TOKENS = 48_000;
 /** Le plafond supérieur n'est activé que par une variable propriétaire explicite, pour un run à coût payant 0. */
-export function taskKindMaxTokens(kind: PlannedTaskKind, env: PlanEnv = {}): number {
-  if ((kind === 'review' || kind === 'test') && taskKindCostCents(env, kind) === 0) return FREE_VERIFY_DEFAULT_TOKENS;
-  if (kind !== 'implement' || taskKindCostCents(env, kind) !== 0) return TASK_KIND_MAX_TOKENS[kind];
-  const raw = env.AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS;
-  if (raw === undefined || !/^[1-9][0-9]{0,5}$/.test(raw)) return FREE_IMPLEMENT_DEFAULT_TOKENS;
-  const value = Number(raw);
-  return value >= FREE_IMPLEMENT_DEFAULT_TOKENS && value <= FREE_IMPLEMENT_EXPERIMENT_MAX_TOKENS
-    ? value : FREE_IMPLEMENT_DEFAULT_TOKENS;
+export function taskKindMaxTokens(_kind: PlannedTaskKind, _env: PlanEnv = {}): number {
+  // A mission may span arbitrarily many bounded provider calls. Budget is accounted, never used as a stop.
+  return UNBOUNDED_MISSION;
 }
 /** CC-8 S1b-2 : dérivé de la politique unique (run-policy) — 900 s partout à la fusion, montée S7 après P95. */
 export const PLAN_DEADLINE_S = runDeadlineS('answer');
@@ -456,7 +453,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
             prompt: continuityEnabled(env)
                ? await answerPromptWithServerPacket(db, { cycleId, participantId }, answerPrompt(cycleId, askSeq, true, dossier))
                : answerPrompt(cycleId, askSeq, false, dossier),
-            maxSteps: PLAN_MAX_STEPS, maxTokens: taskKindMaxTokens('answer'), maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + runDeadlineS('answer'), now: input.now,
+            maxSteps: taskKindMaxSteps('answer'), maxTokens: taskKindMaxTokens('answer'), maxCostCents: taskKindCostCents(env, 'answer'), deadlineAt: input.now + runDeadlineS('answer'), now: input.now,
             })).created;
           } });
           continue;
