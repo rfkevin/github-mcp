@@ -182,8 +182,12 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
     'SELECT n, idx, tool, status, result FROM agent_run_effects WHERE run_id = ?1 ORDER BY n, idx');
   const polls = await all<{ n: number; idx: number; k: number; status: string; result: string }>(
     'SELECT n, idx, k, status, result FROM agent_run_ci_polls WHERE run_id = ?1 ORDER BY n, idx, k');
-  const calls = await all<{ n: number; k: number; chosen_ref: string; ref: string; ok: number; failure: string; latency_ms: number }>(
-    'SELECT n, k, chosen_ref, ref, ok, failure, latency_ms FROM agent_run_model_calls WHERE run_id = ?1 ORDER BY n, k');
+  const calls = await all<{ n: number; k: number; chosen_ref: string; ref: string; ok: number; failure: string; latency_ms: number;
+    input_tokens: number | null; output_tokens: number | null }>(
+    'SELECT c.n, c.k, c.chosen_ref, c.ref, c.ok, c.failure, c.latency_ms, u.input_tokens, u.output_tokens'
+    + ' FROM agent_run_model_calls c LEFT JOIN agent_run_call_usage u'
+    + ' ON u.run_id = c.run_id AND u.n = c.n AND u.k = c.k'
+    + ' WHERE c.run_id = ?1 ORDER BY c.n, c.k');
   const choices = await all<{ n: number; ref: string; chosen_by: string; effort: string | null }>(
     'SELECT n, ref, chosen_by, effort FROM agent_model_choices WHERE run_id = ?1 ORDER BY n');
   const proof = await db.prepare('SELECT status, reason, attempts, event_seq FROM agent_run_proofs WHERE run_id = ?1').bind(runId)
@@ -206,7 +210,8 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
     ci_polls: polls.map(p => ({ n: p.n, idx: p.idx, k: p.k, status: p.status, receipt: redactedReceipt(p.result) })),
     model_choices: choices.map(c => ({ n: c.n, ref: c.ref, chosen_by: c.chosen_by, effort: c.effort })),
     model_calls: calls.map(c => ({ n: c.n, k: c.k, chosen_ref: c.chosen_ref, served_ref: c.ref, ok: c.ok === 1,
-      fallback: c.ref !== c.chosen_ref, failure: c.failure === 'transient' || c.failure === 'permanent' ? c.failure : '', latency_ms: c.latency_ms })),
+      fallback: c.ref !== c.chosen_ref, failure: c.failure === 'transient' || c.failure === 'permanent' ? c.failure : '', latency_ms: c.latency_ms,
+      input_tokens: c.input_tokens, output_tokens: c.output_tokens })),
     // Raisons de preuve : codes posés par run-proof.ts (identifiants), jamais de texte externe.
     proof: proof ? { status: proof.status, reason: /^[a-z_:]{1,80}$/.test(proof.reason) ? proof.reason : 'other', attempts: proof.attempts,
       event_seq: proof.event_seq } : null,
