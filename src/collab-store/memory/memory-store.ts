@@ -153,11 +153,12 @@ function scopeMismatch(id: string, type: string): MemoryStoreError {
  *   les entrées existantes restent lisibles, rien de nouveau n'est proposé ni activé.
  */
 export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
-  common: 1500,
-  project: 2000,
-  role: 800,
-  participant: 1500,
-  task: 0,
+  // Durable curated facts live in D1; API and chat share these same scopes.
+  common: 131_072,
+  project: 131_072,
+  role: 65_536,
+  participant: 131_072,
+  task: 0, // Task execution/history is persisted in active_work and D1.
 };
 
 /** CC-7 M2 : plancher du budget participant (décision #1138 §4, demande de Gemini #1131). */

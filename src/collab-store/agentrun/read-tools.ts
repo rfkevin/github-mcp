@@ -96,10 +96,10 @@ export type ReadToolName = 'store_context' | 'store_delta' | 'github_list_direct
  * mémoire C4 visible du participant et « depuis ta dernière visite » (notes de passation, exécutions précédentes).
  */
 export const CONTINUITY_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
-  { name: 'store_memory', description: 'Mémoire C4 active visible par votre participant (scopes partagés et votre scope personnel), au plus 40 entrées.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'store_continuity', description: 'Continuité de votre participant : dernière visite du chat, ses notes de passation et vos exécutions API précédentes avec leur message final.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'store_memory', description: 'Mémoire C4 visible (personnelle et partagée). Lire page 0 puis next_page, sans perte des anciennes entrées.',
+    parameters: { type: 'object', properties: { page: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false } },
+  { name: 'store_continuity', description: 'Historique chat/API du même participant. Lire page 0 puis next_page pour accéder aux anciennes passations et exécutions.',
+    parameters: { type: 'object', properties: { page: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 } }, additionalProperties: false } },
 ]);
 export type ContinuityToolName = 'store_memory' | 'store_continuity';
 const CONTINUITY_TOOLS: readonly ContinuityToolName[] = ['store_memory', 'store_continuity'];
@@ -482,7 +482,11 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     }
     if (options.continuity && (CONTINUITY_TOOLS as readonly string[]).includes(call.name)) {
       const ids = await equivalentParticipantIds(options.db, participant_id);
-      if (call.name === 'store_continuity') return loadContinuity(options.db, cycle_id, ids);
+      if (call.name === 'store_continuity') {
+        const page = intArg(args, 'page', 0, 1_000_000, 0);
+        const limit = intArg(args, 'limit', 1, 100, 5);
+        return loadContinuity(options.db, cycle_id, ids, { page, pageSize: limit });
+      }
       const cycle = await options.db.prepare('SELECT project FROM cycles WHERE cycle_id = ?1').bind(cycle_id).first<{ project: string | null }>();
       // CC-7 M2 : parité chat/API — l'exécution voit aussi la mémoire du rôle qu'elle tient (type d'exécution)
       // et role:coordinator si l'agent détient le mandat de coordination du cycle.
@@ -492,7 +496,12 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       const roles = await memoryRolesOf(options.db, cycle_id, identities, runRoles(run?.task_kind ?? ''));
       const memory = await loadVisibleActiveMemory(options.db, { participantId: participant_id, participantIds: identities, roles,
         taskId: run?.task_id || null, project: cycle?.project ?? null });
-      return { entries: memory.slice(0, CONTINUITY_MEMORY_LIMIT), truncated: memory.length > CONTINUITY_MEMORY_LIMIT };
+      const page = intArg(args, 'page', 0, 1_000_000, 0);
+      const limit = intArg(args, 'limit', 1, 200, CONTINUITY_MEMORY_LIMIT);
+      const offset = page * limit;
+      const entries = memory.slice(offset, offset + limit);
+      const hasMore = memory.length > offset + entries.length;
+      return { entries, truncated: hasMore, next_page: hasMore ? page + 1 : null, page, total_visible: memory.length };
     }
     throw new ToolRefused('tool_not_allowlisted');
   }

@@ -161,3 +161,51 @@ describe('CC-7 L3 — collab_get_context rend « depuis ta dernière visite »',
     expect(body.since_last_visit?.handovers.map(n => n.done)).toEqual(['note du chat']);
   });
 });
+
+describe('CC8 WorkSession — récupération paginée du contexte', () => {
+  it('relit les notes anciennes au-delà de la fenêtre de cinq', async () => {
+    const { cycle, pa } = await seed();
+    for (let i = 0; i < 13; i += 1) {
+      await event(cycle, { type: 'checkpoint', participant: pa, role: 'api-agent', at: 400 + i, payload: handover('histoire-' + i) });
+    }
+    const first = await loadContinuity(db, cycle, [pa], { page: 0, pageSize: 5 });
+    const second = await loadContinuity(db, cycle, [pa], { page: 1, pageSize: 5 });
+    const third = await loadContinuity(db, cycle, [pa], { page: 2, pageSize: 5 });
+    expect(first.next_page).toBe(1);
+    expect(second.next_page).toBe(2);
+    expect(third.handovers.some(note => note.done === 'histoire-0')).toBe(true);
+    expect(new Set([...first.handovers, ...second.handovers, ...third.handovers].map(n => n.seq)).size).toBe(14);
+    expect(third.next_page).toBeNull();
+  });
+
+  it('relit la mémoire C4 visible au-delà de quarante entrées et cache celle des tiers', async () => {
+    const { pa, pb, newRun } = await seed();
+    const inserted = [];
+    for (let i = 0; i < 47; i += 1) {
+      const id = uid('mem');
+      inserted.push(id);
+      await db.prepare(
+        "INSERT INTO memory_entries (id, version, scope, kind, text, confidence, status, author_pid) VALUES (?1, 1, ?2, 'lesson', 'test', 'observed', 'active', ?3)"
+      ).bind(id, 'participant:' + pa, pa).run();
+    }
+    const foreign = uid('foreign');
+    await db.prepare(
+      "INSERT INTO memory_entries (id, version, scope, kind, text, confidence, status, author_pid) VALUES (?1, 1, ?2, 'lesson', 'secret', 'observed', 'active', ?3)"
+    ).bind(foreign, 'participant:' + pb, pb).run();
+    const host = createReadToolHost({ db, repository: null, github: null, continuity: true });
+    const received: string[] = [];
+    let page = 0;
+    while (page < 20) {
+      const result = await host.execute({ id: 'page-' + page, name: 'store_memory', args: { page, limit: 20 } },
+        { run_id: newRun }) as { entries: Array<{ id: string }>; next_page: number | null };
+      received.push(...result.entries.map(entry => entry.id));
+      if (result.next_page === null) break;
+      page = result.next_page;
+    }
+    expect(received.length).toBeGreaterThanOrEqual(47);
+    expect(new Set(received).size).toBe(received.length);
+    for (const id of inserted) expect(received).toContain(id);
+    expect(received).not.toContain(foreign);
+    expect(page).toBeGreaterThan(0);
+  });
+});
