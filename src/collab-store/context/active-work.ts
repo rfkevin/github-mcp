@@ -144,8 +144,6 @@ export interface ActiveWork {
   /** Derniers checkpoints de l'agent, un par tâche, du plus récent au plus ancien. */
   last_checkpoints: Array<{ task: string | null; seq: number; at: number; channel: 'api' | 'chat'; summary: string }>;
   truncated: { open_api_runs: boolean; last_checkpoints: boolean };
-  page: { open_api_runs: number; last_checkpoints: number };
-  next_page: { open_api_runs: number | null; last_checkpoints: number | null };
 }
 
 async function agentRunsTableExists(db: D1Database): Promise<boolean> {
@@ -162,84 +160,49 @@ function checkpointSummary(payloadJson: string): string {
   }
 }
 
-/** Finite page sizes are not limits on durable context storage. */
-export interface ActiveWorkPageOptions {
-  runPage?: number;
-  checkpointPage?: number;
-  pageSize?: number;
-}
-export const ACTIVE_WORK_PAGE_SIZE_MAX = 100;
-function validPage(value: number | undefined, fallback: number, min: number, max: number): number {
-  const page = value ?? fallback;
-  if (!Number.isSafeInteger(page) || page < min || page > max) throw new Error('active_work_page_invalid');
-  return page;
-}
-
-/** One identity-scoped, paginated WorkSession view for the API agent and the chat. */
-export async function loadActiveWork(db: D1Database, cycleId: string, ids: readonly string[],
-  options: ActiveWorkPageOptions = {}): Promise<ActiveWork> {
+/** Travail en cours de l'agent dans le cycle (lecture seule, bornée, limitée à ses identités). */
+export async function loadActiveWork(db: D1Database, cycleId: string, ids: readonly string[]): Promise<ActiveWork> {
   await ensureSchema(db);
-  const pageSize = validPage(options.pageSize, ACTIVE_WORK_MAX_CHECKPOINTS, 1, ACTIVE_WORK_PAGE_SIZE_MAX);
-  const runPage = validPage(options.runPage, 0, 0, 1_000_000);
-  const checkpointPage = validPage(options.checkpointPage, 0, 0, 1_000_000);
-  const page = { open_api_runs: runPage, last_checkpoints: checkpointPage };
-  const nextNone = { open_api_runs: null, last_checkpoints: null };
   const unique = [...new Set(ids)].filter(Boolean);
-  const empty: ActiveWork = { last_chat_write: null, open_api_runs: [], last_checkpoints: [],
-    truncated: { open_api_runs: false, last_checkpoints: false }, page, next_page: nextNone };
+  const empty: ActiveWork = { last_chat_write: null, open_api_runs: [], last_checkpoints: [], truncated: { open_api_runs: false, last_checkpoints: false } };
   if (unique.length === 0) return empty;
   const placeholders = participantsIn(unique, 2);
-  const limitArg = '?' + (unique.length + 2);
-  const offsetArg = '?' + (unique.length + 3);
+
   const lastWrite = await lastChatWrite(db, cycleId, unique);
-  // Scan ordered journal pages until enough UNIQUE tasks are found.
-  // Unlike the former 50-event snapshot, there is no history cutoff. A task
-  // with thousands of recent checkpoints cannot hide older tasks from C4/D1.
-  type CheckpointRow = { seq: number; at: number; role: string | null; payload_json: string };
-  const seen = new Set<string>();
-  const distinct: CheckpointRow[] = [];
-  const offset = checkpointPage * pageSize;
-  let scanned = 0;
-  const chunk = 200;
-  while (distinct.length <= offset + pageSize) {
-    const { results } = await db.prepare([
-      'SELECT seq, at, role, payload_json FROM events',
-      'WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ')',
-      "AND type = 'checkpoint' AND json_valid(payload_json)",
-      'ORDER BY seq DESC LIMIT ' + limitArg + ' OFFSET ' + offsetArg,
-    ].join(' ')).bind(cycleId, ...unique, chunk, scanned).all<CheckpointRow>();
-    for (const row of results) {
-      const task = taskOfPayload(row.payload_json) ?? '';
-      if (seen.has(task)) continue;
-      seen.add(task);
-      distinct.push(row);
+
+  const { results: checkpointRows } = await db.prepare([
+    'SELECT seq, at, role, payload_json FROM events WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ')',
+    "AND type = 'checkpoint' AND json_valid(payload_json) ORDER BY seq DESC LIMIT 50",
+  ].join(' ')).bind(cycleId, ...unique).all<{ seq: number; at: number; role: string | null; payload_json: string }>();
+  const seenTasks = new Set<string>();
+  const checkpoints: ActiveWork['last_checkpoints'] = [];
+  let checkpointsTruncated = false;
+  for (const row of checkpointRows) {
+    const task = taskOfPayload(row.payload_json);
+    const key = task ?? '';
+    if (seenTasks.has(key)) continue;
+    seenTasks.add(key);
+    if (checkpoints.length >= ACTIVE_WORK_MAX_CHECKPOINTS) {
+      checkpointsTruncated = true;
+      break;
     }
-    scanned += results.length;
-    if (results.length < chunk) break;
+    checkpoints.push({ task, seq: row.seq, at: row.at, channel: row.role === 'api-agent' ? 'api' : 'chat', summary: checkpointSummary(row.payload_json) });
   }
-  const checkpoints: ActiveWork['last_checkpoints'] = distinct.slice(offset, offset + pageSize)
-    .map((row): ActiveWork['last_checkpoints'][number] => ({
-      task: taskOfPayload(row.payload_json), seq: row.seq, at: row.at,
-      channel: row.role === 'api-agent' ? 'api' : 'chat', summary: checkpointSummary(row.payload_json),
-    }));
-  const moreCheckpoints = distinct.length > offset + pageSize;
+
   let runs: ActiveWork['open_api_runs'] = [];
   if (await agentRunsTableExists(db)) {
     const { results } = await db.prepare([
       'SELECT run_id, task_id, task_kind, status, updated_at FROM agent_runs',
       'WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ") AND status IN ('running', 'needs_reconcile')",
-      'ORDER BY updated_at DESC, run_id LIMIT ' + limitArg + ' OFFSET ' + offsetArg,
-    ].join(' ')).bind(cycleId, ...unique, pageSize + 1, runPage * pageSize)
-      .all<ActiveWork['open_api_runs'][number]>();
+      'ORDER BY updated_at DESC, run_id LIMIT ' + (ACTIVE_WORK_MAX_RUNS + 1),
+    ].join(' ')).bind(cycleId, ...unique).all<ActiveWork['open_api_runs'][number]>();
     runs = results;
   }
-  const moreRuns = runs.length > pageSize;
+
   return {
-    last_chat_write: lastWrite, open_api_runs: runs.slice(0, pageSize), last_checkpoints: checkpoints,
-    truncated: { open_api_runs: moreRuns, last_checkpoints: moreCheckpoints }, page,
-    next_page: {
-      open_api_runs: moreRuns ? runPage + 1 : null,
-      last_checkpoints: moreCheckpoints ? checkpointPage + 1 : null,
-    },
+    last_chat_write: lastWrite,
+    open_api_runs: runs.slice(0, ACTIVE_WORK_MAX_RUNS),
+    last_checkpoints: checkpoints,
+    truncated: { open_api_runs: runs.length > ACTIVE_WORK_MAX_RUNS, last_checkpoints: checkpointsTruncated },
   };
 }
