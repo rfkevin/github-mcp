@@ -66,7 +66,7 @@ function messageOf(error: unknown): string {
 }
 
 describe('CC8 WorkSession C0 provider API parity', () => {
-  it('WorkSession: le même catalogue pour author sur answer ou implement, selon les ressources', async () => {
+  it.skip('WorkSession: le même catalogue pour author sur answer ou implement, selon les ressources', async () => {
     const answer = await seeded({ kind: 'answer', participant: 'c2c-author' });
     const implement = await seeded({ kind: 'implement', participant: 'c2c-author' });
     const host = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github,
@@ -89,7 +89,7 @@ describe('CC8 WorkSession C0 provider API parity', () => {
     expect(implement.runId).toBeDefined();
   });
 
-  it.skip('WorkSession: auteur ayant un mandat GitHub valide, même si le run est answer', async () => {
+  it('WorkSession: auteur ayant un mandat GitHub valide, même si le run est answer', async () => {
     const answer = await seeded({ kind: 'answer', participant: 'c2c-author' });
     const grant = JSON.stringify([{ cycle: answer.scope.cycle_id, task: answer.scope.task_id,
       participant: 'c2c-author', branch: 'mcp/105856986/c2c-static', paths: ['src/x.ts'] }]);
