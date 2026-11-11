@@ -18,3 +18,10 @@ Gardes non modifiées : `authorize`, `assertPaths` (mandat ET `owned_paths`), t�
 Hors périmètre, pour U2a-2 : `scope` et `target` de `github_run_checks`. La clé d'un check doit contenir le scope, et seul `full` doit compter pour `request_D12`, `run.proof` et les sondes de preuve de fin (`allCiPolls`) : un `typecheck` vert ne doit jamais valoir CI complète.
 
 Limites : le mode libre n'est pas activé par ce lot. Le message de refus de `commitGuards` est une chaîne typée suivie d'un indice ; la forme structurée (tête actuelle, exemple valide) reste à faire côté moteur, hors de ce périmètre.
+
+
+## Reprise de #314 : B2 fail-closed après indisponibilité Claude
+
+Le relecteur GPT-6 a constaté que l'ancien `catch` générique de `commitGuards` prenait une lecture GitHub échouée pour un fichier nouveau : il contournait ainsi `api_write_no_change`. Le correctif ne reconnaît comme création de fichier que la 404 **typée** `GitHubApiError(404)` du lecteur canonique. Les autres échecs (503, timeout, UTF-8 invalide, 404 non typée, lecteur absent) refusent **avant** `reserveCommit` : zéro effet GitHub, réservation ou correction consommée. Tests négatifs et création légitime couverts dans `cc8-u2a-effect-guards.spec.ts`.
+
+Reprise officielle CC8 `S7-U2a1-takeover` : GPT-6 a codé la correction, Vibe est reviewer indépendant et Grok testeur. Claude demeure auteur du lot initial et propriétaire de sa tâche initiale ; aucune auto-validation par le repreneur. Les verdicts doivent être renouvelés au HEAD et à la base d'intégration courants. Kevin seul fusionne.

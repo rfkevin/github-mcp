@@ -7,6 +7,7 @@ import { authorize, assertPaths, exactGrant, type WritePolicy, type WriteScope }
 import { MAX_EDITS, normalizeEdits, replaceOnce } from './edits';
 import { functionalTestCause, missionOf } from '../mission-quality';
 import { PRECHECK_HINTS } from '../s7-guided';
+import { GitHubApiError } from '../../../github/types';
 import { reserveCommit, finishCommit, recordCheck, correctionsUsed, releaseReservation } from './progress';
 
 export interface ApiChecks {
@@ -45,12 +46,23 @@ async function commitGuards(s: WriteScope, reads: GitHubReads | null, repository
     const cause = functionalTestCause(files);
     if (cause) throw new ToolRefused(cause + ' : ' + (PRECHECK_HINTS[cause] ?? ''));
   }
-  if (!reads) return;
-  let unchanged = 0;
+  // B2 is a security boundary: failed reads cannot establish a real diff.
+  // Only a typed 404 from the canonical GitHub tree reader proves a new path;
+  // timeouts, 403/429/503, corrupt blobs and absent readers MUST fail closed.
+  if (!reads) throw new ToolRefused('api_write_read_unavailable : lecture GitHub requise avant toute réservation de commit.');
+  let changed = false;
   for (const file of files) {
-    try { if ((await reads.getTextFile(repository, file.path, sha)).content === file.content) unchanged++; } catch { /* absent ou illisible : compte comme un changement */ }
+    try {
+      if ((await reads.getTextFile(repository, file.path, sha)).content !== file.content) changed = true;
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) {
+        changed = true; // Verified non-existent path, not a transient read error.
+        continue;
+      }
+      throw new ToolRefused('api_write_read_failed : comparaison au head impossible ; commit refusé sans réservation.');
+    }
   }
-  if (unchanged === files.length) throw new ToolRefused('api_write_no_change : le commit ne change aucun fichier à la tête ' + sha + ' ; proposez un diff réel.');
+  if (!changed) throw new ToolRefused('api_write_no_change : le commit ne change aucun fichier à la tête ' + sha + ' ; proposez un diff réel.');
 }
 
 export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
