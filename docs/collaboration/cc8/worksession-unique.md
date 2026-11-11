@@ -58,14 +58,14 @@ Le réveil ou la transition de fournisseur reprend la mission logique, pas un «
 
 ### Parité des outils et des droits
 
-Créer le catalogue commun à partir de `agent-capabilities.ts` (C0) en déplaçant la logique hors des `READ_TOOLS_BY_KIND`/`WRITE_TOOLS_BY_KIND` et des autorisations d'écriture exclusives `task_kind === implement`. Quand l'agent a le mandat de modifier un dépôt, il peut appeler GitHub, quel que soit le texte de sa mission ; s'il doit relire la PR, il peut obtenir les outils de revue. C0 doit être **effectivement consommé par les deux hôtes**, et non un module pur non connecté.
+Le runtime des **agents IA par API fournisseur** consomme maintenant `agent-capabilities.ts` (C0) et expose un catalogue basé sur les ressources réellement connectées plutôt que sur `READ_TOOLS_BY_KIND` / `WRITE_TOOLS_BY_KIND`. Le serveur re-vérifie les capacités à chaque effet. Les refus `task_kind === implement` ont été retirés des points d'accès GitHub et des appels de contribution/verdict au profit des mandats réels. **Ce raccordement n'est pas encore validé E2E pour les écritures GitHub, et les hôtes chat existants doivent être comparés de bout en bout** : l'égalité du catalogue ne suffit pas.
 
 Les limites qui ne proviennent que du canal sont à retirer. Les droits réels sont égaux sur les deux canaux : pas d'accès aux mémoires privées de tiers, aux dépôts non accordés ou aux actions propriétaire réservées. **Une décision d'autonomie ne constitue pas l'autorisation de facturer des modèles payants.** Ces frontières s'appliquent aussi au chat ; elles ne sont pas des « garde-fous API » supplémentaires.
 
 ## Travail restant — une seule PR de livraison
 
-- **Raccordement effectif des outils :** catalogue C0 commun aux deux hôtes et suppression des gates artificiels basés sur `task_kind`, tout en gardant identité/mandat identiques.
-- **WorkSession durable :** état de mission distinct de l'invocation physique ; coupures, provider quota, CI et clarification donnent une reprise sans perdre l'étape.
+- **Raccordement effectif des outils :** catalogue C0 déjà branché sur l'exécuteur d'agent API; finir la parité sur l'hôte chat, et prouver l'effet GitHub réel `github_write_scope` avec un rôle auteur autorisé depuis `answer` (l'attestation C0 passe, l'effet complet reste un blocage de test).
+- **WorkSession durable :** un 429/503/timeout fournisseur conserve désormais le même `run_id`/l'étape D1 et réessaie avec délai progressif (test 503→succès). Restent : autres erreurs, états `waiting`, continuité indépendante de l'exécuteur et bascule chat→API→chat.
 - **Contexte commun :** finir de relier `unified-context`, `task-dossier`, C4, `active_work` et l'historique complet consultable ; même format dans chat et API.
 - **Mémoire et historique :** confirmer par CI les pages anciennes, ajouter des curseurs/snapshots si les pages peuvent changer pendant une lecture concurrente, traiter la croissance C4 par observation plutôt que blocage artificiel d'une session.
 - **Validation :** test d'identité/rôle égal chat/API, 100+ étapes et >48k tokens cumulés sans arrêt, interruptions avant/après effet GitHub et sans commit doublé, même PR, attente CI + reprise, questions et mémoire visibles, confidentialité d'un autre participant.
