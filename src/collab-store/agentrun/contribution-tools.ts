@@ -67,8 +67,8 @@ export function createContributionTools(db: D1Database): ContributionTools {
     return run;
   }
   async function contribute(call: ToolCall, runId: string, effectKey: string) {
-    const { cycle_id, participant_id, task_kind } = await scope(runId);
-    if (task_kind !== CONTRIBUTION_TASK_KIND) throw new ToolRefused('CONTRIBUTION_KIND_FORBIDDEN');
+    const { cycle_id, participant_id } = await scope(runId);
+    // Phase holders and logical identity determine authority, not the run kind.
     // Rejeu de la même clé d'effet : l'événement d'origine, avant toute relecture de phase
     // (la sortie est alors déjà produite et ne serait plus « attendue »).
     const opId = effectOpId(participant_id, cycle_id, effectKey);

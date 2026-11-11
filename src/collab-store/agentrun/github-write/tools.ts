@@ -161,7 +161,7 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
     return legacy.execute(call, ctx);
   }
   return {
-    names(kind: string): readonly string[] { return kind === 'implement' ? [...legacy.names(kind), ...S7_SCHEMAS.filter(s => !['github_run_checks','github_check_result'].includes(s.name) || s7.checks !== null).map(s => s.name)] : []; },
+    names(kind: string): readonly string[] { return [...legacy.names(kind), ...S7_SCHEMAS.filter(s => !['github_run_checks','github_check_result'].includes(s.name) || s7.checks !== null).map(s => s.name)]; },
     execute,
     async lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult> {
       // Reconciliation is read-only externally, allowed after authorization revocation.

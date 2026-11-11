@@ -80,7 +80,7 @@ export async function exactGrant(db:D1Database,policy:WritePolicy,cycle:string,t
 export async function authorize(db: D1Database, policy: WritePolicy, runId: string, branch: string): Promise<WriteScope> {
   const run = await db.prepare('SELECT participant_id, cycle_id, task_id, task_kind, status, lease_key, generation FROM agent_runs WHERE run_id = ?1')
     .bind(runId).first<{ participant_id: string; cycle_id: string; task_id: string; task_kind: string; status: string; lease_key: string; generation: number }>();
-  if (!run || run.task_kind !== 'implement' || run.status !== 'running') throw new ToolRefused('api_write_run_invalid');
+  if (!run || !run.task_id || run.status !== 'running') throw new ToolRefused('api_write_run_invalid');
   const writers = (policy.writers ?? '').split(',').map(s => s.trim()).filter(Boolean);
   if (!writers.includes(run.participant_id)) throw new ToolRefused('api_writer_not_enabled');
   const grant = await exactGrant(db,policy,run.cycle_id,run.task_id,run.participant_id);

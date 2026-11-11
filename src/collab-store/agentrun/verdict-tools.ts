@@ -152,10 +152,11 @@ export function createVerdictTools(options: VerdictToolHostOptions): VerdictTool
     return run;
   }
   async function verdictOf(call: ToolCall, runId: string): Promise<{ seq: number; type: string; status: string }> {
-    // ① Type du run : seuls review et test portent un verdict (implement, answer… refusés).
-    const { cycle_id, participant_id, task_kind } = await scope(runId);
-    if (task_kind !== 'review' && task_kind !== 'test') throw new ToolRefused('VERDICT_KIND_FORBIDDEN');
-    const kind = task_kind;
+    // Verdict authority comes from the actual reviewer/tester role on the
+    // submitted task, not the kind of the transport invocation.
+    const { cycle_id, participant_id } = await scope(runId);
+    const decision = call.args?.state;
+    const kind: VerdictTaskKind = decision === 'AGREE' || decision === 'CHANGES_REQUESTED' ? 'review' : 'test';
     const args = parseVerdictArgs(kind, call.args ?? {});
     // ② Participant enregistré et actif.
     const participant = await options.db.prepare('SELECT status FROM participants WHERE participant_id = ?1')
@@ -225,16 +226,16 @@ export function createVerdictTools(options: VerdictToolHostOptions): VerdictTool
     },
     async lookup(call, ctx) {
       // Cherche l'événement par sa clé d'idempotence avant tout réessai (contrat d'hôte 7a).
-      const { cycle_id, participant_id, task_kind } = await scope(ctx.run_id);
-      if (task_kind !== 'review' && task_kind !== 'test') return { found: false };
+      const { cycle_id, participant_id } = await scope(ctx.run_id);
       const args = call.args ?? {};
+      const kind: VerdictTaskKind = args.state === 'AGREE' || args.state === 'CHANGES_REQUESTED' ? 'review' : 'test';
       const task = typeof args.task === 'string' && TASK_RE.test(args.task) ? args.task : null;
       const pr = typeof args.pr === 'number' && Number.isSafeInteger(args.pr) && args.pr >= 1 && args.pr <= 100_000_000 ? args.pr : null;
       const head = typeof args.head === 'string' && SHA_RE.test(args.head) ? args.head : null;
       const base = typeof args.base === 'string' && SHA_RE.test(args.base) ? args.base : null;
-      const state = typeof args.state === 'string' && VERDICT_STATES[task_kind].includes(args.state) ? args.state : null;
+      const state = typeof args.state === 'string' && VERDICT_STATES[kind].includes(args.state) ? args.state : null;
       if (!task || !pr || !head || !base || !state) return { found: false };
-      const opId = await verdictOpId(task_kind, cycle_id, participant_id, task, pr, head, base, state);
+      const opId = await verdictOpId(kind, cycle_id, participant_id, task, pr, head, base, state);
       const row = await options.db.prepare('SELECT seq, type FROM events WHERE idempotency_key = ?1')
         .bind('op:' + opId).first<{ seq: number; type: string }>();
       return row ? { found: true, result: { seq: row.seq, type: row.type, status: 'duplicate' } } : { found: false };
