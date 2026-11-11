@@ -169,7 +169,7 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     const f=await fixture();
     const env={AGENT_RUN_MODEL:'workers-ai:@cf/zai-org/glm-4.7-flash',AI:{async run(){return {};}},AGENT_RUN_REPOSITORY:REPO,AGENT_RUN_GITHUB_WRITES:'true'};
     const host=engineFor(env,db,f.reads,f.options.writes)(f.run).tools;
-    await expect(host.execute(f.commit(),f.ctx())).rejects.toThrow('api_writer_not_enabled');
+    await expect(host.execute(f.commit(),f.ctx())).rejects.toThrow('capability_not_held:github.write');
     expect(f.commits()).toBe(0);
   });
   it('configuration and edits fail closed',()=>{
