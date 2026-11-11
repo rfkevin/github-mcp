@@ -108,9 +108,17 @@ describe('CC8 WorkSession C0 provider API parity', () => {
         s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null } },
     }))).toContain('github.write');
     expect(writeHost.list('answer')).toContain('github_write_scope');
-    const effect = await writeHost.execute({ id: 'scope', name: 'github_write_scope', args: {} },
-      { run_id: answer.runId, effect_key: 'a'.repeat(64) });
-    expect(effect).toBeDefined(); // Isolate tool execution from exact receipt formatting.
+    let effect: unknown;
+    try {
+      effect = await writeHost.execute({ id: 'scope', name: 'github_write_scope', args: {} },
+        { run_id: answer.runId, effect_key: 'a'.repeat(64) });
+    } catch (error) {
+      // Workflows can present the exact failure as a structured annotation.
+      console.log('::error file=test/collab-store/agentrun/cc8-worksession-capability-parity.spec.ts,line=111::'
+        + String(error instanceof Error ? error.message : error).replace(/\r?\n/g, ' '));
+      throw error;
+    }
+    expect(effect).toBeDefined();
   });
 
   it('WorkSession: reviewer peut demander un verdict D12 depuis un run answer, sans usurpation de rôle', async () => {
