@@ -65,7 +65,8 @@ export const RESULT_MAX_CHARS = 16 * 1024;
 
 export interface ToolCall { id: string; name: string; args: Record<string, unknown> }
 export interface ModelOutput { text: string; tool_calls: ToolCall[] }
-export interface ModelUsage { tokens: number; cost_cents: number }
+/** Split values are provided by the adapter when reported by the provider. */
+export interface ModelUsage { tokens: number; cost_cents: number; input_tokens?: number | null; output_tokens?: number | null }
 export interface AgentMessage {
   role: 'user' | 'assistant' | 'tool';
   content: string;
@@ -76,7 +77,9 @@ export interface AgentMessage {
 export interface ModelClient {
   complete(input: { messages: AgentMessage[]; tools: string[]; task_kind: string;
     /** CC-8 S1b-2 : budget de temps restant pour les appels modèle de l'étape (ms, optionnel). */
-    budget_left_ms?: number }): Promise<{ output: ModelOutput; usage: ModelUsage }>;
+    budget_left_ms?: number;
+    /** Unspent aggregate input+output tokens prior to contacting the model provider. */
+    budget_left_tokens?: number }): Promise<{ output: ModelOutput; usage: ModelUsage }>;
 }
 
 /** Erreur d'appel modèle qui porte l'usage déjà consommé (comptabilisé quand même). */
@@ -814,7 +817,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
           messages: extra ? [...messages, { role: 'user', content: extra }] : messages,
           tools: guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
             ? guide.tools.filter(name => tools.includes(name)) : tools,
-          task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
+          task_kind: run.task_kind, budget_left_ms: budgetLeftMs,
+          budget_left_tokens: Math.max(0, run.max_tokens - run.tokens_used) });
       }
     } catch (error) {
       const usage = error instanceof ModelCallError ? error.usage : null;
