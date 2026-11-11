@@ -129,4 +129,62 @@ describe('CC8 WorkSession C0 provider API parity', () => {
       .rejects.toThrow(/capability_not_held:review\.verdict/);
   });
 
+  it('WorkSession: un agent auteur API peut créer une branche puis committer depuis answer', async () => {
+    const answer = await seeded({ kind: 'answer', participant: 'c2c-author' });
+    const branchName = 'work';
+    const branch = apiBranch('c2c-author', branchName);
+    const base = 'mcp/105856986/cc3-integration';
+    const baseSha = 'a'.repeat(40);
+    const commitSha = 'c'.repeat(40);
+    let head: string | null = null;
+    let commits = 0;
+    const authorWrites: GitHubWrites = {
+      ...writes,
+      branchHead: async (_repository, requested) => requested === base ? baseSha : requested === branch ? head : null,
+      createBranch: async (_repository, requested, from, expectedBase) => {
+        expect(requested).toBe(branch);
+        expect(from).toBe(base);
+        expect(expectedBase).toBe(baseSha);
+        head = baseSha;
+        return { sha: baseSha };
+      },
+      commitFiles: async (_repository, requested, expected, message, files) => {
+        expect(requested).toBe(branch);
+        expect(expected).toBe(baseSha);
+        expect(message).toContain('Agent-Effect:');
+        expect(files).toHaveLength(1);
+        expect(files[0].path).toBe('src/x.ts');
+        commits++;
+        head = commitSha;
+        return { commit_sha: commitSha };
+      },
+    };
+    const grant = JSON.stringify([{
+      cycle: answer.scope.cycle_id, task: answer.scope.task_id, participant: 'c2c-author',
+      branch, paths: ['src/x.ts'],
+    }]);
+    const host = createReadToolHost({
+      db, repository: 'rfkevin/github-mcp', github, storeWrites: true,
+      continuity: true, unifiedCapabilities: true,
+      githubWrites: { writes: authorWrites, baseBranch: base,
+        s7: { policy: { writers: 'c2c-author', tasks: grant }, reads: github, checks: null } },
+    });
+    const effect = (name: string, args: Record<string, unknown>, n: number) =>
+      host.execute({ id: 'effect-' + n, name, args }, { run_id: answer.runId, effect_key: n.toString(16).repeat(64) });
+
+    expect(await effect('github_write_scope', {}, 1)).toMatchObject({ branch, base_sha: baseSha });
+    expect(await effect('github_create_branch', { name: branchName, base_sha: baseSha }, 2))
+      .toMatchObject({ branch, sha: baseSha });
+    const committed = await effect('github_commit_files', {
+      name: branchName, expected_head_sha: baseSha, message: 'WorkSession parity test',
+      files: [{ path: 'src/x.ts', content: 'actual change', expected_sha: 'b'.repeat(40) }],
+    }, 3);
+    expect(committed).toMatchObject({ branch, commit_sha: commitSha, next_action: 'github_run_checks' });
+    expect(commits).toBe(1);
+    const receipt = await db.prepare('SELECT before_sha, after_sha FROM api_write_commits WHERE cycle=?1 AND task=?2 AND branch=?3')
+      .bind(answer.scope.cycle_id, answer.scope.task_id, branch)
+      .first<{ before_sha: string; after_sha: string | null }>();
+    expect(receipt).toEqual({ before_sha: baseSha, after_sha: commitSha });
+  });
+
 });
