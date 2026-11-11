@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { createRun, runStep, createReadToolHost, type ModelClient, type AgentMessage } from '../../../src/collab-store/agentrun';
+import { createRun, runStep, preemptByChat, createReadToolHost, type ModelClient, type AgentMessage } from '../../../src/collab-store/agentrun';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
@@ -92,4 +92,46 @@ describe('CC8 U2b2 — RED baseline: suspend and resume the SAME authorized Work
     expect((await runStep(db, runId, deps)).outcome).toBe('completed');
     expect(calls).toBe(2);
   });
+});
+
+
+describe('CC8 U2b2 — HALT-equivalent chat fencing and deadline while waiting', () => {
+  for (const mode of ['chat', 'deadline'] as const) {
+    it('does not call the provider again after ' + mode, async () => {
+      await ensureSchema(db);
+      const cycle = 'u2b2-neg-' + crypto.randomUUID();
+      await insertCycleRow(db, cycle, 'P6');
+      await insertPhaseDefinition(db, cycle, 'P6', []);
+      await insertTaskRow(db, { cycle, taskId: 'work', owner: 'u2b2-owner',
+        reviewer: 'u2b2-reviewer', tester: 'u2b2-tester' });
+      const runId = 'u2b2-neg-run-' + crypto.randomUUID();
+      const now = Math.floor(Date.now() / 1000);
+      expect((await createRun(db, { runId, cycleId: cycle, participantId: 'u2b2-owner',
+        taskId: 'work', taskKind: 'implement', prompt: 'Ask first', maxSteps: 6,
+        maxTokens: 48_000, maxCostCents: 0, deadlineAt: now + 500, now })).created).toBe(true);
+      let calls = 0;
+      const model: ModelClient = { async complete() {
+        calls += 1;
+        return { output: calls === 1
+          ? { text: 'Need review', tool_calls: [{ id: 'ask0', name: 'store_ask',
+            args: { question: 'Proceed?', to: 'u2b2-reviewer', task: 'work' } }] }
+          : { text: 'Must not happen before answer', tool_calls: [] },
+          usage: { tokens: 12, cost_cents: 0 } };
+      } };
+      const tools = createReadToolHost({ db, repository: null, github: null, storeWrites: true });
+      const step = (at: number) => runStep(db, runId, {
+        model, tools, now: () => at, workerId: 'u2b2-neg-worker',
+      });
+      expect((await step(now + 1)).outcome).toBe('stepped');
+      expect((await step(now + 2)).outcome).toBe('waiting_for_reply');
+      if (mode === 'chat') {
+        await preemptByChat(db, { cycleId: cycle, participantId: 'u2b2-owner',
+          taskId: 'work', now: now + 3, holdSeconds: 3600 });
+        expect((await step(now + 4)).outcome).toBe('preempted');
+      } else {
+        expect((await step(now + 501)).outcome).toBe('deadline');
+      }
+      expect(calls).toBe(1);
+    });
+  }
 });
