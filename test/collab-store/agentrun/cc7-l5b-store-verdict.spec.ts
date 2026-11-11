@@ -171,9 +171,9 @@ describe('CC-7 L5b — store_verdict contrôlé serveur', () => {
     expect(VERDICT_STATES.review).toEqual(['AGREE', 'CHANGES_REQUESTED']);
     expect(VERDICT_STATES.test).toEqual(['PASS', 'FAIL']);
     const implementRun = await newRun(q.cycle, q.owner, 'implement');
-    expect(await refusal(host.execute(verdictCall(), { run_id: implementRun, effect_key: '4'.repeat(64) }))).toBe('VERDICT_KIND_FORBIDDEN');
+    expect(await refusal(host.execute(verdictCall(), { run_id: implementRun, effect_key: '4'.repeat(64) }))).toBe('VERDICT_ROLE_FORBIDDEN');
     const reviewRun = await newRun(q.cycle, q.reviewer, 'review');
-    expect(await refusal(host.execute(verdictCall({ state: 'PASS' }), { run_id: reviewRun, effect_key: '5'.repeat(64) }))).toBe('VERDICT_KIND_FORBIDDEN');
+    expect(await refusal(host.execute(verdictCall({ state: 'PASS' }), { run_id: reviewRun, effect_key: '5'.repeat(64) }))).toBe('VERDICT_ROLE_FORBIDDEN');
   });
 
   it('rôles : verdict de relecture refusé à l’auteur et au testeur de la tâche', async () => {

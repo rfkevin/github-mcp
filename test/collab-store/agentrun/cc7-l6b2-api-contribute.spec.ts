@@ -60,7 +60,9 @@ describe('CC-7 L6b-2 — store_contribute', () => {
     const off = createReadToolHost({ db, repository: null, github: null, storeWrites: true });
     expect(off.list('design')).not.toContain('store_contribute');
     const reviewRun = await q.run(q.pids[0], 'review');
-    expect(await q.refusal(q.contribute(reviewRun, { task: proposalTaskId(q.pids[0]), content: 'x' }))).toBe('CONTRIBUTION_KIND_FORBIDDEN');
+    // C0 : l'autorité découle de la tâche et du rôle en P1, pas du task_kind.
+    expect(await q.contribute(reviewRun, { task: proposalTaskId(q.pids[0]), content: 'x' }))
+      .toMatchObject({ type: 'proposal.submit', status: 'applied' });
   });
 
   it('un produit mené de P1 à P4 par le seul canal API, chaque dépôt vérifié par le serveur', async () => {

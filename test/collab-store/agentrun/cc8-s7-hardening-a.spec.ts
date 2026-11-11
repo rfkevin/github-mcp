@@ -182,14 +182,15 @@ describe('Lot A — moteur (D1)', () => {
     expect(await row(runId)).toMatchObject({ status: 'failed', stop_reason: 'guided_stop:precheck_failed', tokens_used: 4_000 });
   });
 
-  it('R2 : la reformulation compte dans max_steps — max_steps 1 → step_limit après le refus', async () => {
+  it('R2 : une reformulation correcte peut terminer malgré le max_steps historique de 1', async () => {
     const { runId, grants } = await newRun('r2-limit', 1);
     const model = scripted([commit(JEST), commit(GOOD)]);
     const h = host(happyQueues());
     const outcomes = await drive(runId, guided(model, h, grants));
-    expect(outcomes.at(-1)).toBe('step_limit');
-    expect(model.seen).toHaveLength(1);
-    expect(h.writes()).toEqual(['github_write_scope', 'github_create_branch']);
+    expect(outcomes.at(-1)).toBe('completed');
+    expect(model.seen).toHaveLength(2);
+    expect(h.writes()).toContain('github_commit_files');
+    expect(h.writes()).toContain('github_open_pr');
   });
 
   it('R2 : correction après CI rouge — refus Jest, reprise, CI relancée une seule fois de plus', async () => {

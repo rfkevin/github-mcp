@@ -85,7 +85,7 @@ describe('CC8 U2a — B1 : mission fonctionnelle refusée AU COMMIT (guidé et l
     await expect(f.tools.execute(f.commit([{ path: 'src/demo/x.spec.ts', content: DEMO }]), f.ctx())).rejects.toThrow(/test_tautological : mission fonctionnelle/);
     expect(f.commits()).toBe(0);
     // Aucune réservation consommée : le premier vrai commit n'attend pas de CI rouge.
-    expect(await f.tools.execute(f.commit([{ path: 'src/demo/x.spec.ts', content: REAL }]), f.ctx())).toMatchObject({ corrections_remaining: 3 });
+    expect(await f.tools.execute(f.commit([{ path: 'src/demo/x.spec.ts', content: REAL }]), f.ctx())).toMatchObject({ corrections_completed: 0 });
     expect(f.commits()).toBe(1);
   });
 
@@ -129,7 +129,7 @@ describe('CC8 U2a — B2 : un commit sans changement est refusé avant toute ré
     const f = await fixture();
     await expect(f.tools.execute(f.edit({ path: 'src/demo/a.ts', expected_sha: blob('src/demo/a.ts'), old_text: 'beta', new_text: 'beta' }), f.ctx())).rejects.toThrow('api_write_no_change');
     expect(f.commits()).toBe(0);
-    expect(await f.tools.execute(f.commit([{ path: 'src/demo/new.ts', content: 'export {}' }]), f.ctx())).toMatchObject({ corrections_remaining: 3 });
+    expect(await f.tools.execute(f.commit([{ path: 'src/demo/new.ts', content: 'export {}' }]), f.ctx())).toMatchObject({ corrections_completed: 0 });
   });
 });
 
@@ -151,7 +151,7 @@ describe('CC8 U2a — B2 fail-closed : absence de lecture fiable ne prouve jamai
   it('accepte uniquement une 404 GitHub TYPOLOGIQUEMENT vérifiée comme nouveau fichier', async () => {
     const f = await fixture();
     const out = await f.tools.execute(f.commit([{ path: 'src/demo/new.ts', content: 'export const added = 1;\n' }]), f.ctx());
-    expect(out).toMatchObject({ corrections_remaining: 3 });
+    expect(out).toMatchObject({ corrections_completed: 0 });
     expect(f.commits()).toBe(1);
   });
 });
