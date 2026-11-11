@@ -66,7 +66,7 @@ function messageOf(error: unknown): string {
 }
 
 describe('CC8 WorkSession C0 provider API parity', () => {
-  it.skip('WorkSession: le même catalogue pour author sur answer ou implement, selon les ressources', async () => {
+  it('WorkSession: le même catalogue pour author sur answer ou implement, selon les ressources', async () => {
     const answer = await seeded({ kind: 'answer', participant: 'c2c-author' });
     const implement = await seeded({ kind: 'implement', participant: 'c2c-author' });
     const host = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github,
@@ -109,7 +109,7 @@ describe('CC8 WorkSession C0 provider API parity', () => {
     expect(writeHost.list('answer')).toContain('github_write_scope');
   });
 
-  it.skip('WorkSession: reviewer peut demander un verdict D12 depuis un run answer, sans usurpation de rôle', async () => {
+  it('WorkSession: reviewer peut demander un verdict D12 depuis un run answer, sans usurpation de rôle', async () => {
     const reviewer = await seeded({ kind: 'answer', participant: 'c2c-reviewer' });
     const author = await seeded({ kind: 'answer', participant: 'c2c-author' });
     const host = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github,
