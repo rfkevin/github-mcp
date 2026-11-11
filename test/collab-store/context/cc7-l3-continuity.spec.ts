@@ -129,9 +129,10 @@ describe('CC-7 L3 — outils de continuité du canal API', () => {
   });
 
   it('consigne answer : inchangée sans continuité ; élargie avec passation au format Fait / Reste / Appris', () => {
-    expect(continuityEnabled({})).toBe(false);
-    expect(continuityEnabled({ AGENT_RUN_CONTINUITY: 'TRUE' })).toBe(false);
+    expect(continuityEnabled({})).toBe(true);
+    expect(continuityEnabled({ AGENT_RUN_CONTINUITY: 'TRUE' })).toBe(true);
     expect(continuityEnabled({ AGENT_RUN_CONTINUITY: 'true' })).toBe(true);
+    expect(continuityEnabled({ AGENT_RUN_CONTINUITY: 'false' })).toBe(false);
     expect(answerPrompt('c', 42, false)).toContain('since_seq 41, limit 1');
     const wide = answerPrompt('c', 42, true);
     expect(wide).toContain('since_seq ' + (42 - ANSWER_READ_WINDOW) + ', limit ' + ANSWER_READ_WINDOW);

@@ -137,9 +137,10 @@ export function apiCanImplement(env: { AGENT_RUN_GITHUB_WRITES?: string }): bool
   return env.AGENT_RUN_GITHUB_WRITES === 'true';
 }
 
-/** CC-7 L3 : porte des lectures de continuité, éteinte par défaut (« true » exact seulement). */
+/** CC8 : le planificateur et le moteur partagent la continuité par défaut.
+ * Seul un choix explicite du propriétaire peut désactiver l'injection initiale. */
 export function continuityEnabled(env: { AGENT_RUN_CONTINUITY?: string }): boolean {
-  return env.AGENT_RUN_CONTINUITY === 'true';
+  return env.AGENT_RUN_CONTINUITY !== 'false';
 }
 
 /** Fenêtre de lecture élargie autour d'une question (écarts E1-E3 de l8). */
