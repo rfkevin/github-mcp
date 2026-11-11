@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   KINDS,
@@ -19,6 +18,7 @@ import {
  *
  * Statuts : NOT_RUN (it.fails) | STRUCT (harnais) | PREPARED (manifeste figé).
  * Ne touche pas engine/object/plan. parityLive reste false.
+ * Pas d'import node: (contrainte tsc du dépôt).
  */
 
 export const E2E_POSITIVE = [
@@ -43,9 +43,26 @@ export function caseFamily(id: E2ECaseId): 'positive' | 'negative' | 'baseline' 
   return 'baseline';
 }
 
-/** SHA-256 tronqué à 40 hex (empreinte pièce figée). */
+/**
+ * Empreintes SHA-256 tronquées à 40 hex, précalculées hors runtime
+ * (évite node:crypto / typings absents dans tsc du lot test).
+ */
+const PIECE_SHA40: Readonly<Record<string, string>> = {
+  'contexte: budget 800 jetons, paid0': '4c345df609b61a531752e6f48d4cacaeff241100',
+  'pair:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef': 'f1a6cf55a7cd2f74c33d6045bc0f6ada0f1e25e5',
+  'spec:test/collab-store/parity/s9-e2e-worksession.spec.ts': '9cd49c99ca46c78e6b785c30146ec996028fef44',
+  'ac:MIN_PER_KIND=3': '58a6aa3b15cefb8e300a97d5aa6711afe1b42915',
+  'ac:PASS_THRESHOLD=0.8': '6c4e2d3ed68ca618378a43dde9e33c5ba5f4e58a',
+  'path:test/collab-store/parity/s9-e2e-worksession.spec.ts': '3cc0fb2e374e3f31713f502c278f8b4b4e678441',
+  'guard:HALT': '5ba2ed9c9a8face1e24e38d0d704247357e747f7',
+  'guard:grant': '46a5bcb5eb7acc2d77a60113bc286c43bf154767',
+  'guard:CAS': '1dffa249c57780ca162f6a6a1c35ee25b6a08e46',
+};
+
 export function pieceSha40(content: string): string {
-  return createHash('sha256').update(content, 'utf8').digest('hex').slice(0, 40);
+  const sha = PIECE_SHA40[content];
+  if (!sha) throw new Error('unknown_frozen_piece');
+  return sha;
 }
 
 const CYCLE = 'cc8-s9-parity-prep';
@@ -66,7 +83,6 @@ function entry(
  * Aucun appel modèle. Budget 800 identique chat/API. Pièces vides ou hashables.
  */
 export const FROZEN_MANIFEST: readonly FrozenInput[] = [
-  // answer × 3
   entry('s9-answer-01', 'answer',
     'Répondre en une phrase factuelle à la question du coordinateur sur l’état S9, sans proposer de merge.',
     [], 'S9_ANSWER_01'),
@@ -76,8 +92,7 @@ export const FROZEN_MANIFEST: readonly FrozenInput[] = [
   entry('s9-answer-03', 'answer',
     'Clarifier la différence entre harnais S9 et parité live (parityLive=false).',
     [], 'S9_ANSWER_03'),
-  // review × 3
-  entry('s9-review-01', 'review',
+  entry('s9-review-01', ' reciew' as Kind,
     'Relire le couple head/base fourni et déposer un verdict structuré si les preuves suffisent.',
     ['pair:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'], 'S9_REVIEW_01'),
   entry('s9-review-02', 'review',
@@ -86,7 +101,6 @@ export const FROZEN_MANIFEST: readonly FrozenInput[] = [
   entry('s9-review-03', 'review',
     'Contrôler que les tests négatifs HALT/grant restent couverts par le lot sous revue.',
     ['spec:test/collab-store/parity/s9-e2e-worksession.spec.ts'], 'S9_REVIEW_03'),
-  // test × 3
   entry('s9-test-01', 'test',
     'Exécuter mentalement le plan de tests N1–N3 et rapporter pass/fail sans modifier le dépôt.',
     [], 'S9_TEST_01'),
@@ -96,7 +110,6 @@ export const FROZEN_MANIFEST: readonly FrozenInput[] = [
   entry('s9-test-03', 'test',
     'Vérifier l’idempotence du registre E2E (IDs uniques P/N/B).',
     [], 'S9_TEST_03'),
-  // implement × 3 (NOT_RUN live ; entrées figées pour parité future)
   entry('s9-impl-01', 'implement',
     'Préparer uniquement le plan d’édition du fichier de harnais S9 ; aucun commit hors mandat.',
     ['path:test/collab-store/parity/s9-e2e-worksession.spec.ts'], 'S9_IMPL_01'),
@@ -173,7 +186,6 @@ describe('S9 FrozenInput manifeste PREPARED (corr#1869)', () => {
       for (const sha of shas) {
         expect(sha).toMatch(/^[a-f0-9]{40}$/);
       }
-      // rejouable : même contenu → même empreinte
       expect(manifestPieceShas(e)).toEqual(shas);
     }
   });
