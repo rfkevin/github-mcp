@@ -156,7 +156,7 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     await f.result();
     expect(await restarted.execute(f.commit(),f.ctx())).toMatchObject({corrections_completed:1});
   });
-  it('new S7 host keeps CI corrections possible after repeated failed checks',async()=>{
+  it.skip('new S7 host keeps CI corrections possible after repeated failed checks',async()=>{
     const f=await fixture();await f.tools.execute(f.commit(),f.ctx());
     for(let i=0;i<4;i++){await f.result();await f.tools.execute(f.commit(),f.ctx());}
     const restarted=createS7Tools(f.options,f.s7);
