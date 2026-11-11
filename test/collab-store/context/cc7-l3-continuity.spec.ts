@@ -140,9 +140,9 @@ describe('CC-7 L3 — outils de continuité du canal API', () => {
     expect(answerPrompt('c', 5, true)).toContain('since_seq 0,');
   });
 
-  it('câblage engineFor : continuité seulement si AGENT_RUN_CONTINUITY = true', () => {
+  it('CC8 engineFor : continuité par défaut pour les agents API comme pour le chat', () => {
     const base = { AGENT_RUN_MODEL: 'workers-ai:@cf/zai-org/glm-4.7-flash', AI: { run: async () => ({}) } as never };
-    expect(engineFor(base, db)('r').tools.list('answer')).not.toContain('store_memory');
+    expect(engineFor(base, db)('r').tools.list('answer')).toContain('store_memory');
     expect(engineFor({ ...base, AGENT_RUN_CONTINUITY: 'true' }, db)('r').tools.list('answer')).toContain('store_memory');
   });
 });
