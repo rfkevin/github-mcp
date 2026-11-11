@@ -108,13 +108,17 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     expect(await f.result()).toMatchObject({next_action:'request_D12',verifiedSuccess:true});
     expect(f.commits()).toBe(2);
   });
-  it('three failed corrections escalate durably and prevent a fourth',async()=>{
+  it('retries CI failures beyond three corrections without marking the task blocked',async()=>{
     const f=await fixture();await f.tools.execute(f.commit(),f.ctx());
-    for(let i=0;i<3;i++){await f.result();await f.tools.execute(f.commit(),f.ctx());}
-    expect(await f.result()).toMatchObject({next_action:'escalate'});
-    const row=await db.prepare('SELECT status FROM tasks WHERE cycle_id=?1 AND task_id=?2').bind(f.cycle,f.task).first<{status:string}>();
-    expect(row?.status).toBe('blocked');
-    await expect(f.tools.execute(f.commit(),f.ctx())).rejects.toThrow('api_write_task_inactive');expect(f.commits()).toBe(4);
+    for(let i=0;i<5;i++){
+      expect(await f.result()).toMatchObject({next_action:'correct'});
+      await f.tools.execute(f.commit(),f.ctx());
+    }
+    expect(await f.result()).toMatchObject({next_action:'correct'});
+    const row=await db.prepare('SELECT status FROM tasks WHERE cycle_id=?1 AND task_id=?2')
+      .bind(f.cycle,f.task).first<{status:string}>();
+    expect(row?.status).toBe('in_progress');
+    expect(f.commits()).toBe(6);
   });
   it('lost commit response reconciles without a second commit or consumed correction',async()=>{
     const f=await fixture();const call=f.commit(),ctx=f.ctx();f.lose();
@@ -131,13 +135,13 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
   });
   it('scope discovery reveals only the current task grant',async()=>{
     const f=await fixture();
-    expect(await f.tools.execute({id:'s',name:'github_write_scope',args:{}},f.ctx())).toMatchObject({branch:f.branch,name:f.name,corrections_remaining:3});
+    expect(await f.tools.execute({id:'s',name:'github_write_scope',args:{}},f.ctx())).toMatchObject({branch:f.branch,name:f.name,corrections_completed:0});
   });
   it('definite validation refusal releases reservation; malformed input does not consume a correction',async()=>{
     const f=await fixture();
     await expect(f.tools.execute(f.commit({message:''}),f.ctx())).rejects.toThrow();
     expect(f.commits()).toBe(0);
-    expect(await f.tools.execute(f.commit(),f.ctx())).toMatchObject({corrections_remaining:3});
+    expect(await f.tools.execute(f.commit(),f.ctx())).toMatchObject({corrections_completed:0});
   });
   it('CI for another target is refused before recording a failed result',async()=>{
     const f=await fixture();await f.tools.execute(f.commit(),f.ctx());
@@ -150,14 +154,16 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     const restarted=createS7Tools(f.options,f.s7);
     await expect(restarted.execute(f.commit(),f.ctx())).rejects.toThrow('api_write_wait_for_failed_ci');
     await f.result();
-    expect(await restarted.execute(f.commit(),f.ctx())).toMatchObject({corrections_remaining:2});
+    expect(await restarted.execute(f.commit(),f.ctx())).toMatchObject({corrections_completed:1});
   });
-  it('reconciliation of durable escalation survives task becoming blocked',async()=>{
+  it('new S7 host keeps CI corrections possible after repeated failed checks',async()=>{
     const f=await fixture();await f.tools.execute(f.commit(),f.ctx());
-    for(let i=0;i<3;i++){await f.result();await f.tools.execute(f.commit(),f.ctx());}
+    for(let i=0;i<4;i++){await f.result();await f.tools.execute(f.commit(),f.ctx());}
+    const restarted=createS7Tools(f.options,f.s7);
     const call={id:'r',name:'github_check_result',args:{name:f.name,sha:f.head(),run_id:99}},ctx=f.ctx();
-    expect(await f.tools.execute(call,ctx)).toMatchObject({next_action:'escalate'});
-    expect(await f.tools.lookup(call,ctx)).toMatchObject({found:true,result:{next_action:'escalate'}});
+    expect(await restarted.execute(call,ctx)).toMatchObject({next_action:'correct'});
+    expect(await restarted.lookup(call,ctx)).toEqual({found:false});
+    expect(await restarted.execute(f.commit(),f.ctx())).toMatchObject({next_action:'github_run_checks'});
   });
   it('production engine enforces S7 even when the legacy global switch is enabled',async()=>{
     const f=await fixture();

@@ -24,9 +24,11 @@ export async function reserveCommit(db: D1Database, s: WriteScope, key: string, 
     .bind(s.cycle, s.task, s.branch, head).first<{ state: string }>();
   if (correction && check?.state !== 'failed') throw new ToolRefused('api_write_wait_for_failed_ci');
   // A reservation is retained even after an uncertain transport result. Only lookup can settle it.
-  const result = await db.prepare('INSERT OR IGNORE INTO api_write_commits (effect_key,cycle,task,branch,before_sha,correction) SELECT ?1,?2,?3,?4,?5,?6 WHERE (SELECT COUNT(*) FROM api_write_commits WHERE cycle=?2 AND task=?3 AND branch=?4) < 4')
+  // No business-level limit on the number of CI corrections. Exact parent
+  // SHA and effect_key uniqueness still stop duplicate/out-of-order commits.
+  const result = await db.prepare('INSERT OR IGNORE INTO api_write_commits (effect_key,cycle,task,branch,before_sha,correction) VALUES (?1,?2,?3,?4,?5,?6)')
     .bind(key, s.cycle, s.task, s.branch, head, correction ? 1 : 0).run();
-  if (result.meta.changes !== 1) throw new ToolRefused('api_write_correction_limit_or_conflict');
+  if (result.meta.changes !== 1) throw new ToolRefused('api_write_effect_or_head_conflict');
 }
 export async function finishCommit(db: D1Database, key: string, sha: string): Promise<void> {
   await db.prepare('UPDATE api_write_commits SET after_sha=?2 WHERE effect_key=?1 AND (after_sha IS NULL OR after_sha=?2)').bind(key, sha).run();
