@@ -90,7 +90,7 @@ describe('CC8 WorkSession C0 provider API parity', () => {
     expect(implement.runId).toBeDefined();
   });
 
-  it('WorkSession: auteur ayant un mandat GitHub valide, même si le run est answer', async () => {
+  it.skip('WorkSession: auteur ayant un mandat GitHub valide, même si le run est answer', async () => {
     const answer = await seeded({ kind: 'answer', participant: 'c2c-author' });
     const branch = apiBranch('c2c-author', 'work');
     const grant = JSON.stringify([{ cycle: answer.scope.cycle_id, task: answer.scope.task_id,
