@@ -14,7 +14,7 @@ import {
 
 /**
  * CC8 S9 — contrats E2E WorkSession (chat/API).
- * Store seq2183 / seq2190 ; corr#1869 FrozenInput ; PR #315.
+ * Store seq2183 / seq2190 ; corr#1869 / corr#2236 ; PR #315.
  *
  * Statuts : NOT_RUN (it.fails) | STRUCT (harnais) | PREPARED (manifeste figé).
  * Ne touche pas engine/object/plan. parityLive reste false.
@@ -68,6 +68,14 @@ export function pieceSha40(content: string): string {
 const CYCLE = 'cc8-s9-parity-prep';
 const BUDGET = 800;
 
+/** Protocole commun : le prompt final contient toujours le marqueur exigé par scorePair. */
+function withRequiredMark(prompt: string, requiredMark: string): string {
+  return prompt
+    + ' Inclure exactement le marqueur '
+    + requiredMark
+    + ' dans la réponse (chat et API, même consigne).';
+}
+
 function entry(
   taskId: string,
   kind: Kind,
@@ -75,12 +83,20 @@ function entry(
   pieces: readonly string[],
   requiredMark: string,
 ): FrozenInput {
-  return { cycleId: CYCLE, taskId, kind, prompt, pieces, budget: BUDGET, requiredMark };
+  return {
+    cycleId: CYCLE,
+    taskId,
+    kind,
+    prompt: withRequiredMark(prompt, requiredMark),
+    pieces,
+    budget: BUDGET,
+    requiredMark,
+  };
 }
 
 /**
- * Manifeste PREPARED — 12 entrées littérales, 3 par kind (corr#1869).
- * Aucun appel modèle. Budget 800 identique chat/API. Pièces vides ou hashables.
+ * Manifeste PREPARED — 12 entrées littérales, 3 par kind (corr#1869 / corr#2236).
+ * Aucun appel modèle. Budget 800 identique chat/API. Chaque prompt contient requiredMark.
  */
 export const FROZEN_MANIFEST: readonly FrozenInput[] = [
   entry('s9-answer-01', 'answer',
@@ -121,7 +137,6 @@ export const FROZEN_MANIFEST: readonly FrozenInput[] = [
     ['guard:HALT', 'guard:grant', 'guard:CAS'], 'S9_IMPL_03'),
 ] as const;
 
-/** Empreintes SHA40 des pièces non vides, alignées sur FROZEN_MANIFEST. */
 export function manifestPieceShas(input: FrozenInput): readonly string[] {
   return input.pieces.map(piece => pieceSha40(piece));
 }
@@ -156,7 +171,7 @@ function assertNotRun(proof: IntegrationProof): void {
   expect(proof.proven, proof.id + ': ' + proof.note).toBe(true);
 }
 
-describe('S9 FrozenInput manifeste PREPARED (corr#1869)', () => {
+describe('S9 FrozenInput manifeste PREPARED (corr#1869 / corr#2236)', () => {
   it('has exactly 12 distinct entries', () => {
     expect(FROZEN_MANIFEST).toHaveLength(12);
     const ids = FROZEN_MANIFEST.map(e => e.taskId);
@@ -179,7 +194,13 @@ describe('S9 FrozenInput manifeste PREPARED (corr#1869)', () => {
     }
   });
 
-  it('hashes non-empty pieces to stable sha40', () => {
+  it('embeds requiredMark in every prompt (scorePair protocol)', () => {
+    for (const e of FROZEN_MANIFEST) {
+      expect(e.prompt).toContain(e.requiredMark);
+    }
+  });
+
+  it('hashes non-empty pieces to stable pinned sha40', () => {
     for (const e of FROZEN_MANIFEST) {
       const shas = manifestPieceShas(e);
       expect(shas).toHaveLength(e.pieces.length);
@@ -188,6 +209,10 @@ describe('S9 FrozenInput manifeste PREPARED (corr#1869)', () => {
       }
       expect(manifestPieceShas(e)).toEqual(shas);
     }
+  });
+
+  it('rejects unknown piece content (mutation detection)', () => {
+    expect(() => pieceSha40('mutated-piece-content')).toThrow(/unknown_frozen_piece/);
   });
 });
 
@@ -225,6 +250,15 @@ describe('S9 E2E registry — conservation AC historiques', () => {
     const r = scorePair(input, chat, apiMerge, 'judge');
     expect(r.passed).toBe(false);
     expect(r.eliminated).toBe('merge');
+  });
+
+  it('scorePair passes when both channels include requiredMark without eliminatory', () => {
+    const input = FROZEN_MANIFEST[0]!;
+    const chat: ChannelOutput = { ...input, channel: 'chat', author: 'a', text: 'État: préparé. ' + input.requiredMark };
+    const api: ChannelOutput = { ...input, channel: 'api', author: 'b', text: 'État: préparé. ' + input.requiredMark };
+    const r = scorePair(input, chat, api, 'judge');
+    expect(r.eliminated).toBeNull();
+    expect(r.passed).toBe(true);
   });
 });
 
