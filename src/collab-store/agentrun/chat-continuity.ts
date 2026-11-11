@@ -109,10 +109,15 @@ export function redactedReceipt(result: string | null): Record<string, string | 
   return receipt;
 }
 
-/** Causes typées reprises après le code d'arrêt (arrêts guidés S7, prévalidation) ; toute autre cause est écartée. */
+/** Causes typées issues du moteur uniquement ; aucun texte libre n'est exposé aux autres agents.
+ * CC8 U1 : les arrêts de préparation et l'absence d'effet store doivent être diagnostiquables
+ * par le coordinateur sans divulguer les sorties, arguments ou erreurs du modèle.
+ */
 const STOP_CLASSES = new Set(['no_tool_call', 'tool_not_offered', 'multiple_tool_calls', 'branch_name', 'scope_refused', 'scope_invalid',
   'branch_refused', 'checks_refused', 'check_unexpected', 'pr_already_open', 'server_cap', 'tool_unavailable', 'precheck_failed',
-  'github_evidence_missing', 'ci_escalate', 'ci_unknown']);
+  'github_evidence_missing', 'ci_escalate', 'ci_unknown', 'preparation_incomplete',
+  'preparation_tools_unavailable', 'preparation_base_unverified', 'task_grant_unavailable',
+  'commit_budget_exhausted', 'store_effect_missing']);
 
 /**
  * Ensemble FERMÉ des codes d'arrêt écrits par le moteur (settle, stopAs, arrêts guidés, fin d'exécution).
@@ -121,7 +126,7 @@ const STOP_CLASSES = new Set(['no_tool_call', 'tool_not_offered', 'multiple_tool
  */
 export const STOP_CODES: ReadonlySet<string> = new Set(['final', 'halted', 'preempted', 'step_limit', 'token_limit', 'cost_limit',
   'deadline', 'step_attempts_exhausted', 'model_transient', 'model_permanent', 'effect_outcome_unknown', 'guided_stop',
-  'guided_violation', 'incomplete_final']);
+  'guided_violation', 'guided_preparation_violation', 'guided_handover_violation', 'incomplete_final']);
 
 /** Code d'arrêt typé (ensemble fermé) et cause connue ; jamais le texte libre de stop_reason. */
 export function typedStop(stopReason: string | null): { stop_code: string; stop_class: string | null } {
