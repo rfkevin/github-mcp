@@ -23,6 +23,7 @@ import { reserveNeurons, settleNeurons } from '../executors/run';
 import { providerTimeoutMs } from '../executors/fetch-timeout';
 import { ensureSchema } from '../store/schema';
 import { ModelCallError, type AgentMessage, type ModelClient, type ModelOutput, type ModelUsage, type ToolCall } from './engine';
+import { requireTokenBudget } from './budget-preflight';
 
 /** Description d'un outil exposée au modèle (schéma JSON des arguments). */
 export interface ToolSchema {
@@ -172,6 +173,7 @@ export function createWorkersAiModel(options: WorkersAiModelOptions): ModelClien
       const bound = inputTokenBound(messages, tools);
       // CC-7 L5b (N1) : plafond de sortie par type de tâche quand le canal API fournit le résolveur.
       const maxOutputTokens = effectiveMaxOutputTokens(options, input.task_kind);
+      const preflight = requireTokenBudget(bound, maxOutputTokens, input.budget_left_tokens);
       const worst = neurons(bound, maxOutputTokens);
       const now = options.now?.() ?? new Date();
       await ensureSchema(options.db);
@@ -200,7 +202,9 @@ export function createWorkersAiModel(options: WorkersAiModelOptions): ModelClien
       const inputTokens = parsed.input ?? bound;
       const outputTokens = parsed.output_tokens ?? bytes(JSON.stringify(parsed.output));
       await settleNeurons(options.db, key, worst, neurons(inputTokens, outputTokens));
-      return { output: parsed.output, usage: { tokens: inputTokens + outputTokens, cost_cents: 0 } };
+      return { output: parsed.output, usage: { tokens: inputTokens + outputTokens, cost_cents: 0,
+        input_tokens: parsed.input, output_tokens: parsed.output_tokens,
+        estimated_input_tokens: preflight.estimated_input_tokens } };
     },
   };
 }

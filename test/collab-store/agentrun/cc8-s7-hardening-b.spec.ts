@@ -319,8 +319,9 @@ describe('Lot B R5 — résumé expurgé et modèle servi', () => {
     expect(typedStop('zq7hush: erreur')).toEqual({ stop_code: 'other', stop_class: null });
     expect(typedStop('zq7hush:precheck_failed')).toEqual({ stop_code: 'other', stop_class: 'precheck_failed' });
     for (const code of STOP_CODES) expect(typedStop(code + ': détail libre zq7').stop_code).toBe(code);
-    expect([...STOP_CODES].sort()).toEqual(['cost_limit', 'deadline', 'effect_outcome_unknown', 'final', 'guided_stop', 'guided_violation',
-      'halted', 'incomplete_final', 'model_permanent', 'model_transient', 'preempted', 'step_attempts_exhausted', 'step_limit', 'token_limit']);
+    expect([...STOP_CODES].sort()).toEqual(['cost_limit', 'deadline', 'effect_outcome_unknown', 'final', 'guided_handover_violation',
+      'guided_preparation_violation', 'guided_stop', 'guided_violation', 'halted', 'incomplete_final',
+      'model_permanent', 'model_transient', 'preempted', 'step_attempts_exhausted', 'step_limit', 'token_limit']);
   });
 
   it('modèle servi : chaque essai de maillon tracé (choisi, servi, repli, échec), visible du coordinateur', async () => {
@@ -332,8 +333,8 @@ describe('Lot B R5 — résumé expurgé et modèle servi', () => {
       failure: '', latency_ms: 800, at: T });
     const summary = await redactedRunSummaryFor(db, w.holder, runId);
     expect(summary!.model_calls).toEqual([
-      { n: 2, k: 0, chosen_ref: 'gemini:gemini-3.8-flash', served_ref: 'gemini:gemini-3.8-flash', ok: false, fallback: false, failure: 'transient', latency_ms: 1200 },
-      { n: 2, k: 1, chosen_ref: 'gemini:gemini-3.8-flash', served_ref: 'gemini:gemini-3.5-flash-lite', ok: true, fallback: true, failure: '', latency_ms: 800 },
+      { n: 2, k: 0, chosen_ref: 'gemini:gemini-3.8-flash', served_ref: 'gemini:gemini-3.8-flash', ok: false, fallback: false, failure: 'transient', latency_ms: 1200, input_tokens: null, output_tokens: null, estimated_input_tokens: null },
+      { n: 2, k: 1, chosen_ref: 'gemini:gemini-3.8-flash', served_ref: 'gemini:gemini-3.5-flash-lite', ok: true, fallback: true, failure: '', latency_ms: 800, input_tokens: null, output_tokens: null, estimated_input_tokens: null },
     ]);
     await expect(db.prepare('UPDATE agent_run_model_calls SET ok = 1 WHERE run_id = ?1').bind(runId).run()).rejects.toThrow();
   });

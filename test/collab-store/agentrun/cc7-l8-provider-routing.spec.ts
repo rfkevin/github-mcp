@@ -135,7 +135,8 @@ describe('CC-7 L8 — chemin gratuit (aucune enveloppe, coût 0)', () => {
       usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 6, thoughtsTokenCount: 4 } }]);
     const out = await call(createProviderModel('gemini:gemini-3.5-flash-lite', 'auto', ctx(run.runId, { env: GEMINI_FREE_ENV, fetchImpl: stub.fetchImpl })));
     expect(out.output).toEqual({ text: '', tool_calls: [{ id: 'fc1', name: 'store_context', args: { cycle: 'x' } }] });
-    expect(out.usage).toEqual({ tokens: 50, cost_cents: 0 });
+    expect(out.usage).toMatchObject({ tokens: 50, cost_cents: 0, input_tokens: 40, output_tokens: 10 });
+    expect(out.usage.estimated_input_tokens).toBeGreaterThan(0);
     expect(stub.seen[0].body.generationConfig).toEqual({ maxOutputTokens: 4_096, thinkingConfig: { thinkingLevel: 'minimal' } });
     expect(await stepRow(db, run.runId, 0)).toBeNull();
     expect(await quotaOf(db, 'paid:participant:gemini:cycle:' + run.cycleId)).toBe(0);
