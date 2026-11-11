@@ -143,14 +143,11 @@ function scopeMismatch(id: string, type: string): MemoryStoreError {
 }
 
 /**
- * Token budgets per scope family (plan §4), révisés par CC-7 M2 (décisions de Kevin #1138 §4 / #1139) :
- * enveloppe 5 800 jetons, hypothèse de départ à mesurer (collab_memory_inventory) avant toute hausse.
- * - participant 1500 : mémoire de continuité d'un agent (chat ET API partagent participant:<agent>),
- *   seule mémoire durable d'un agent sans chat ; PLANCHER de configuration (PARTICIPANT_BUDGET_FLOOR),
- *   jamais réduit sans décision de Kevin notifiée au store ;
- * - role 800 : pièges transverses par rôle (owner, reviewer, tester, coordinator, researcher) ;
- * - task 0 : portée GELÉE (FROZEN_SCOPE_FAMILIES) — la reprise d'une tâche passe par active_work (L12) ;
- *   les entrées existantes restent lisibles, rien de nouveau n'est proposé ni activé.
+ * CC8 WorkSession : mémoire C4 persistée sans plafond cumulé de stockage
+ * pour common/project/role/participant. Les fenêtres d'appel au modèle et
+ * les ACL/validations demeurent inchangées ; task reste gelé, l'état des tâches
+ * est suivi en D1 active_work. PARTICIPANT_BUDGET_FLOOR est conservé comme
+ * export historique pour les consommateurs anciens.
  */
 /** Infinity = unlimited stored memory; model-call context windows remain finite. */
 export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {

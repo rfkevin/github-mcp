@@ -361,7 +361,11 @@ describe('CC-5 l7c-3 — câblage', () => {
     const off = engineFor({ AGENT_RUN_MODEL: model, AI: ai, AGENT_RUN_REPOSITORY: REPO }, db, null, writes)('r');
     expect(off.tools.list('implement').some(name => name.startsWith('github_') && name !== 'github_read_file')).toBe(false);
     const noRepo = engineFor({ AGENT_RUN_MODEL: model, AI: ai, AGENT_RUN_GITHUB_WRITES: 'true' }, db, null, writes)('r');
-    expect(noRepo.tools.list('implement')).toEqual(['store_context', 'store_delta', 'store_task_status', 'store_ask', 'store_answer']);
+    expect(noRepo.tools.list('implement')).toEqual(expect.arrayContaining([
+      'store_context', 'store_delta', 'store_task_status', 'store_ask', 'store_answer',
+      'store_memory', 'store_continuity', 'store_handover',
+    ]));
+    expect(noRepo.tools.list('implement').some(name => name.startsWith('github_'))).toBe(false);
     expect(AGENT_RUN_SYSTEM).toContain('jamais de fusion');
   });
 

@@ -19,9 +19,8 @@ import { assessSharedP1Write } from '../../../src/collab-store/memory/p1-indepen
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
 import { opIdClientFor, type StoreEventType } from '../../../src/collab-store/contracts';
 
-// CC-7 M2 (décisions de Kevin #1138 §4 et #1139, GO du 2026-10-31) — budgets et portées de la mémoire :
-// common 1500, project 2000, role 800, participant 1500 (plancher), task 0 gelée ; role:<rôle> servi aussi
-// au coordinateur du cycle, aux chercheurs et, côté API, selon le type d'exécution (parité chat/API).
+// CC-7 M2 : portées historiques, CC8 WorkSession : mémoire durable sans
+// plafond cumulé common/project/role/participant ; task reste gelée.
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 let seq = 0;
 const uniq = (label: string) => `m2-${label}-${Date.now().toString(36)}-${++seq}`;
@@ -91,9 +90,11 @@ async function activateOne(mem: MemoryStore, scope: string, text: string, author
 }
 
 describe('CC-7 M2 — budgets de jetons par portée', () => {
-  it('enveloppe décidée : common 1500, project 2000, role 800, participant 1500, task 0 (5 800 au total)', () => {
-    expect(MEMORY_TOKEN_BUDGETS).toEqual({ common: 1500, project: 2000, role: 800, participant: 1500, task: 0 });
-    expect(Object.values(MEMORY_TOKEN_BUDGETS).reduce((a, b) => a + b, 0)).toBe(5800);
+  it('WorkSession C4 : stockage sans plafond sur quatre familles, task gelé', () => {
+    expect(MEMORY_TOKEN_BUDGETS).toEqual({ common: Infinity, project: Infinity, role: Infinity, participant: Infinity, task: 0 });
+    for (const family of ['common', 'project', 'role', 'participant'])
+      expect(Number.isFinite(MEMORY_TOKEN_BUDGETS[family])).toBe(false);
+    expect(MEMORY_TOKEN_BUDGETS.task).toBe(0);
   });
 
   it('plancher participant : 1500, jamais sous le plancher (agents sans chat compris)', () => {
@@ -101,15 +102,14 @@ describe('CC-7 M2 — budgets de jetons par portée', () => {
     expect(MEMORY_TOKEN_BUDGETS.participant).toBeGreaterThanOrEqual(PARTICIPANT_BUDGET_FLOOR);
   });
 
-  it('role : 800 jetons — 700 acceptés, l’entrée qui dépasse est refusée sans effet', async () => {
+  it('role : une sixième activation autorisée franchit l’ancienne enveloppe sans refus', async () => {
     const mem = new MemoryStore(db);
     const scope = 'role:' + uniq('budget');
-    // Texte borné à 600 caractères (150 jetons) : 5 entrées de 140 jetons = 700, sous la marge de croissance (base 1 → 6).
     for (const letter of ['a', 'b', 'd', 'e', 'f']) await activateOne(mem, scope, letter.repeat(4 * 140));
     const extra = await mem.propose({ scope, kind: 'lesson', text: 'c'.repeat(4 * 120), evidence_refs: ['ev:x'], confidence: 'observed', author_pid: 'agent:a' });
-    const error = await mem.activate(extra.id, 1, 'agent:b', uniq('cycle')).catch((e: unknown) => e);
-    expect(error).toMatchObject({ code: 'MEMORY_BUDGET_EXCEEDED' });
-    expect((await mem.get(extra.id, 1))?.status).toBe('candidate');
+    await mem.activate(extra.id, 1, 'agent:b', uniq('cycle'));
+    expect((await mem.get(extra.id, 1))?.status).toBe('active');
+    expect(await rows(scope)).toBe(6);
   });
 });
 
