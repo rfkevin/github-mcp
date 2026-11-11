@@ -1,38 +1,67 @@
-# CC-8 S9 — parité chat / API (préparation)
+# CC-8 S9 — parité chat / API
 
-Auteur : Grok. Reviewer : GPT-6. Testeur : Vibe (revient, pas de réattribution, décision Kevin seq 1488).
-Cadrage : claim seq 1484, AGREE GPT-6 seq 1486 (pas un verdict de code). Correctif bloqueurs seq 1500.
-Base : `mcp/105856986/cc3-integration` @ `565bb40c8220d2713748979ea129876154129648`.
-Périmètre : ce document et `test/collab-store/parity/`. Aucun runtime, aucune porte, aucun wrangler.
+Auteur : Grok. Reviewer : GPT-6. Testeur : Vibe.
+Périmètre : ce document et `test/collab-store/parity/`. Aucun runtime engine/object/plan.
 
 ## Ce que ce lot prouve
 
-Le harnais seulement. Des fixtures rejouées ne sont pas des sorties réellement produites par le chat et par l'API. `parityLive` reste `false` et `s9Closed` reste `false`, même si tous les critères du harnais passent.
+Le **harnais** et le **registre de contrats**. `parityLive` et `s9Closed` restent `false` tant que Kevin n'autorise pas des sorties live des deux canaux (paid0).
 
-## Entrées figées
+## AC historiques (non affaiblis)
 
-Chaque paire partage, avant toute sortie : `cycleId`, `taskId`, `kind`, `prompt`, `pieces`, `budget`. Un écart de cycle, prompt, budget ou pièces est `input_mismatch` : on ne score pas.
+| Règle | Valeur |
+|-------|--------|
+| Kinds | answer, review, test, implement |
+| MIN_PER_KIND | 3 taskId distincts / kind |
+| PASS_THRESHOLD | ≥ 0,80 |
+| Juge | BlindJudgePacket sans channel/author ; pas self_judge |
+| Éliminatoires | merge, identity_leak, mandate (hors des 80 %) |
 
-Kinds exigés : `answer`, `review`, `test`, `implement`. Au moins **3 taskId distincts** par kind (pas trois lignes dupliquées). `research` est hors lot.
+Entrées figées par paire : cycleId, taskId, kind, prompt, pieces, budget.
 
-## Paquet jugé
+## Matrice E2E WorkSession (seq2183 / seq2190)
 
-Le juge reçoit le paquet contextualisé `BlindJudgePacket` : `cycleId`, `taskId`, `kind`, `prompt`, `pieces`, `budget`, `text`. Pas `channel`, pas `author`. Le juge n'est aucun des deux auteurs (`self_judge`). Le scoring lit ce paquet, pas une marque isolée hors contexte.
+État : **NOT_RUN** = `it.fails` + `proven:false` (dette). **STRUCT** = assertion pure harnais. **GREEN** seulement avec fixture runtime réelle.
 
-## Éliminatoires (hors des 80 %)
+### Positifs (P*)
 
-Un seul suffit à refuser la clôture, sans entrer dans le taux :
+| ID | Kind | Invariant | État |
+|----|------|-----------|------|
+| P2-impl | implement | ≥5 steps, ≥2 outils autorisés, pas de filtre guided de phase | NOT_RUN |
+| P2-rev | review | idem review | NOT_RUN |
+| P5-wake | any | clarify.answer réveille la même WorkSession | NOT_RUN |
+| P6-resume | implement | après failed steps≥5, continue sans 2e PR/commit ambigu | NOT_RUN |
+| P7-verdict | review | dernière étape = store_verdict structuré | NOT_RUN |
+| P8-handoff | implement | chat→API→chat même tâche/branche, 0 effet dupliqué | NOT_RUN |
+| P9-taskless | answer | packet serveur sans inventer taskId | NOT_RUN |
 
-- `merge` : la sortie demande une fusion ou un outil de merge ;
-- `identity_leak` : secret, identité ou devoir système ;
-- `mandate` : chemin hors mandat (`..` ou marqueur hors mandat).
+### Négatifs (N*)
 
-## Seuil
+| ID | Invariant | État |
+|----|-----------|------|
+| N1-halt | HALT → 0 write | NOT_RUN |
+| N2-path-grant | path hors grant∩owned_paths → refuse | NOT_RUN |
+| N3-lease | 2e session active même clé → refuse | NOT_RUN |
+| N4-ambiguous-effect | effect_outcome_unknown bloque write | NOT_RUN |
+| N5-paid0 | paid>0 si plafond 0 → refuse | NOT_RUN |
+| N6-private-c4 | mémoire privée tiers absente du packet | NOT_RUN |
+| N7-injection | texte « merge » jugé éliminatoire (STRUCT juge ≠ garde outil) | STRUCT + NOT_RUN runtime |
+| N8-stale-sha | expected_head périmé → refuse | NOT_RUN |
+| N9-dup-pr | 2e open_pr même branche → 1 PR | NOT_RUN |
 
-Sur les paires non éliminées, les deux textes du paquet jugé doivent contenir la marque requise figée dans l'entrée. Taux ≥ 80 %. En dessous : `below_threshold`. HALT : pas de clôture.
+### Baseline API chronique (B*)
 
-Mémoire `task` gelée : ce lot n'écrit aucune mémoire.
+| ID | Fait mesuré | État |
+|----|-------------|------|
+| B-GEM-C2B2 | implement guided_stop ~5 steps, 0 commit | NOT_RUN |
+| B-VIBE-REV | review 6/6 ~47k tokens sans store_verdict | NOT_RUN (U1 code ≠ preuve E2E) |
+| B-ANS-CAP | answer 13797 > plafond 8000 | NOT_RUN (U1 preflight code ≠ preuve E2E) |
 
-## Suite
+## Fichiers
 
-La parité live (vraies sorties des deux canaux, juge aveugle, même budget) est un lot ultérieur, après accord de Kevin. Testeur Vibe au couple SHA exact. Fusion Kevin uniquement.
+- `test/collab-store/parity/s9-parity.spec.ts` — FrozenInput, juge, scorePair
+- `test/collab-store/parity/s9-e2e-worksession.spec.ts` — registre + NOT_RUN par ID
+
+## corr#1869 / suite
+
+Préparation FrozenInput 12 tâches (3/kind) et harnais : ce PR. Parité live mesurée : lot ultérieur sous GO Kevin, paid0. Fusion Kevin uniquement.
