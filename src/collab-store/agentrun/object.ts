@@ -221,6 +221,7 @@ export function engineFor(env: AgentRunObjectEnv, fallbackDb: D1Database | undef
     (writes.s7.policy.writers ?? '').split(',').map(pid => pid.trim()).includes(g.participant)) : [];
   return (runId, stepDb) => ({ ...makeEngine(runId, stepDb),
     compactHistory: env.AGENT_RUN_CONTEXT_COMPACTION === 'true',
+    salonEnabled: env.SALON_ENABLED === 'true',
     // CC8 S7 (Kevin, 2026-11-06) : mode guidé pour toute exécution sous mandat S7 ; sans mandat, sans effet.
     githubCompletionGrants,
     dynamicGrantFor: writes && env.AGENT_RUN_DYNAMIC_SCOPE ? async target =>

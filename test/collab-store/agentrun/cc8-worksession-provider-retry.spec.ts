@@ -92,4 +92,78 @@ describe('CC8 WorkSession — reprise autonome après interruption du fournisseu
     expect(turns).toBe(101);
   });
 
+  it('trois refus déterministes identiques -> blocage documenté, sans effet extérieur ni plafond global', async () => {
+    await ensureSchema(db);
+    const runId = 'cc8-stuck-' + crypto.randomUUID();
+    const now = 2_000_000_000;
+    expect((await createRun(db, {
+      runId, cycleId: 'cc8-stuck-' + crypto.randomUUID(), participantId: 'cc8-stuck-agent',
+      taskId: 'same-denied', taskKind: 'planning', prompt: 'Try without forcing owner actions.',
+      maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1, now,
+    })).created).toBe(true);
+    let calls = 0;
+    let effects = 0;
+    const deps: EngineDeps = {
+      model: { complete: async () => {
+        calls++;
+        return { output: { text: 'Repeated request', tool_calls: [
+          { id: 'same', name: 'evidence.add', args: { state: 'AGREE', task: 'same-denied' } },
+        ] }, usage: { tokens: 100, cost_cents: 0 } };
+      } },
+      tools: {
+        spec: (_kind, name) => ({ name, effect: 'write' }),
+        list: () => ['evidence.add'],
+        execute: async () => { effects++; return {}; },
+      },
+      now: () => now, workerId: 'stuck-worker', salonEnabled: true,
+    };
+    expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
+    expect(calls).toBe(3);
+    expect(effects).toBe(0);
+    expect(await db.prepare('SELECT status, stop_reason, steps_done FROM agent_runs WHERE run_id=?1').bind(runId)
+      .first()).toMatchObject({ status: 'failed', stop_reason: 'blocked:no_progress:repeated_denial', steps_done: 3 });
+    const journal = await db.prepare("SELECT COUNT(*) AS n FROM agent_run_journal WHERE run_id=?1 AND kind='no_progress'").bind(runId)
+      .first<{ n: number }>();
+    expect(journal?.n).toBe(1);
+    // Salon enabled: handoff is durable, independently of the failed model run.
+    const messages = await db.prepare("SELECT COUNT(*) AS n FROM salon_messages WHERE task_id='same-denied' AND author_pid='cc8-stuck-agent'")
+      .first<{ n: number }>();
+    expect(messages?.n).toBe(1);
+    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
+    expect(calls).toBe(3);
+  });
+
+  it('deux refus suivis d’une action différente autorisée ne déclenchent pas le disjoncteur', async () => {
+    await ensureSchema(db);
+    const runId = 'cc8-recover-' + crypto.randomUUID();
+    const now = 2_000_000_000;
+    expect((await createRun(db, {
+      runId, cycleId: 'cc8-recover-' + crypto.randomUUID(), participantId: 'cc8-recover-agent',
+      taskId: 'recovery', taskKind: 'planning', prompt: 'Recover after a denial.',
+      maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1, now,
+    })).created).toBe(true);
+    let calls = 0;
+    let reads = 0;
+    const deps: EngineDeps = {
+      model: { complete: async () => {
+        calls++;
+        return { output: calls <= 2
+          ? { text: 'Denied action', tool_calls: [{ id: 'bad', name: 'owner.decision', args: {} }] }
+          : calls === 3 ? { text: 'Valid read', tool_calls: [{ id: 'good', name: 'read_progress', args: {} }] }
+            : { text: 'Done', tool_calls: [] }, usage: { tokens: 50, cost_cents: 0 } };
+      } },
+      tools: {
+        spec: (_kind, name) => ({ name, effect: 'read' }),
+        list: () => ['owner.decision', 'read_progress'],
+        execute: async () => { reads++; return { value: 1 }; },
+      },
+      now: () => now, workerId: 'recover-worker',
+    };
+    for (let i = 0; i < 3; i++) expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    expect((await runStep(db, runId, deps)).outcome).toBe('completed');
+    expect(reads).toBe(1);
+    expect(calls).toBe(4);
+  });
 });

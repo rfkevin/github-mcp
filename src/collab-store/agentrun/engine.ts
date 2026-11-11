@@ -39,6 +39,7 @@
  * qui ne fait que constater une condition d'arrêt (HALT, préemption, plafond).
  */
 import { sha256Hex } from '../store/hash';
+import { postSalonMessage } from '../salon';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
@@ -123,6 +124,8 @@ export interface EngineDeps {
   /** CC8: opt-in de compaction des anciens résultats pour le seul contexte fournisseur.
    * Les étapes et effets persistés D1 demeurent intacts (audit, reprise, fencing). */
   compactHistory?: boolean;
+  /** Broadcast a persistent intervention request after proven deterministic non-progress. */
+  salonEnabled?: boolean;
   /** Mandats GitHub de réussite posés par le propriétaire, jamais par le modèle. */
   githubCompletionGrants?: readonly GitHubCompletionGrant[];
   /** Grants D1 are checked on every planning/completion step, never injected by the model. */
@@ -701,6 +704,41 @@ async function runCiPoll(db: D1Database, run: RunRow, pending: PendingCiPoll, de
   return { outcome: 'stepped' };
 }
 
+/** Only consecutive, identical, deterministic refusals count as lack of progress.
+ * Successful reads/writes, changed arguments or transient provider outages reset it.
+ * This is not a mission step/token/retry cap. */
+function deniedFingerprint(output: ModelOutput, results: ResultEntry[]): string | null {
+  if (!output.tool_calls.length || results.length !== output.tool_calls.length) return null;
+  const attempts: Array<{ name: string; args: Record<string, unknown>; error: string }> = [];
+  for (const [i, call] of output.tool_calls.entries()) {
+    const result = results[i];
+    if (!result?.error || result.id !== call.id) return null;
+    let error: unknown;
+    try { error = (JSON.parse(result.content) as { error?: unknown }).error; } catch { return null; }
+    if (typeof error !== 'string' || !/^(tool_(?:not_allowlisted|forbidden_on_api_channel|not_configured)|d12_verdict_forbidden_on_api_channel|capability_not_held:)/.test(error)) return null;
+    attempts.push({ name: call.name, args: call.args, error });
+  }
+  return canonical(attempts);
+}
+
+async function repeatedDeniedWithoutProgress(db: D1Database, runId: string, n: number,
+  output: ModelOutput, results: ResultEntry[]): Promise<boolean> {
+  const current = deniedFingerprint(output, results);
+  if (current === null || n < 2) return false;
+  const { results: previous } = await db.prepare([
+    'SELECT model_output, results FROM agent_run_steps WHERE run_id = ?1',
+    "AND n IN (?2, ?3) AND state = 'completed' ORDER BY n",
+  ].join(' ')).bind(runId, n - 2, n - 1)
+    .all<{ model_output: string | null; results: string | null }>();
+  return previous.length === 2 && previous.every(row => {
+    try {
+      return row.model_output != null && row.results != null
+        && deniedFingerprint(JSON.parse(row.model_output) as ModelOutput,
+          JSON.parse(row.results) as ResultEntry[]) === current;
+    } catch { return false; }
+  });
+}
+
 function normalizeOutput(output: ModelOutput): ModelOutput {
   const calls = Array.isArray(output?.tool_calls) ? output.tool_calls : [];
   return {
@@ -1091,11 +1129,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const provenAtStore = run.task_kind !== 'implement' && output.tool_calls.some(call =>
     ['store_answer', 'store_verdict', 'store_contribute'].includes(call.name))
     && await completionVerified(db, run, deps);
-  const final = output.tool_calls.length === 0 || provenAtPr || provenAtHandover || provenAtStore ? 1 : 0;
-  const verified = provenAtPr || provenAtHandover || provenAtStore
-    || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true);
+  const noProgress = await repeatedDeniedWithoutProgress(db, runId, n, output, results);
+  const final = noProgress || output.tool_calls.length === 0 || provenAtPr || provenAtHandover || provenAtStore ? 1 : 0;
+  const verified = !noProgress && (provenAtPr || provenAtHandover || provenAtStore
+    || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true));
   const completionStatus = verified ? 'completed' : 'failed';
-  const completionReason = verified ? 'final'
+  const completionReason = noProgress ? 'blocked:no_progress:repeated_denial' : verified ? 'final'
     : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
   const [done] = await db.batch([
     db.prepare([
@@ -1112,6 +1151,25 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId, completionStatus, completionReason),
   ]);
   if (done.meta.changes !== 1) return settled(db, runId, now);
+  if (noProgress) {
+    // Durable, idempotent breadcrumb even when the optional salon is unavailable.
+    await db.prepare([
+      "INSERT INTO agent_run_journal (at,kind,run_id,detail)",
+      "SELECT ?2,'no_progress',?1,?3 WHERE EXISTS (SELECT 1 FROM agent_runs",
+      " WHERE run_id=?1 AND status='failed' AND stop_reason=?4)",
+      " AND NOT EXISTS (SELECT 1 FROM agent_run_journal WHERE run_id=?1 AND kind='no_progress')",
+    ].join(' ')).bind(runId, now, JSON.stringify({ step: n, reason: completionReason }), completionReason).run();
+    if (deps.salonEnabled && run.task_id) {
+      try {
+        await postSalonMessage(db, { SALON_ENABLED: 'true' }, {
+          authorPid: run.participant_id, level: 'blocking', taskId: run.task_id,
+          incidentKey: ('no-progress:' + runId).slice(0, 128), now,
+          body: 'WorkSession ' + runId + ' bloquée : même outil et même refus déterministe sur trois étapes consécutives (D1). ' +
+            'Aucun effet externe effectué. Diagnostic : ' + completionReason + '. Intervention/clarification demandée.',
+        });
+      } catch { /* D1 checkpoint already retained; the salon cannot override a terminal state. */ }
+    }
+  }
   if (final) return { outcome: completionStatus };
   // Mode guidé : la limite d'étapes modèle se juge à la prochaine réclamation (une étape serveur peut suivre).
   const status = await settle(db, runId, now, guarded && deps.guidedS7 === true);
