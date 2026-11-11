@@ -144,23 +144,20 @@ describe('CC-7 M1a — frontières dans le lot d’activation réel', () => {
     expect((await mem.get(p.id, 1))?.status).toBe('candidate');
   });
 
-  it('le budget de jetons reste la limite de taille : refus typé avant la règle de croissance, sans pause', async () => {
-    // CC-7 M2 : la portée task est gelée (budget 0) ; le même scénario se joue sur role (800 jetons).
+  it('WorkSession : le stockage C4 dépasse 800 jetons sans supprimer la pause de croissance', async () => {
+    // Les plafonds de stockage sont illimités, mais la croissance reste mesurée.
     const scope = 'role:' + uniq('budget');
-    const budget = MEMORY_TOKEN_BUDGETS.role;
+    expect(MEMORY_TOKEN_BUDGETS.role).toBe(Infinity);
     const mem = new MemoryStore(db);
-    // Cinq entrées de 140 jetons (texte borné à 600 caractères) : 700 jetons, sous le budget
-    // et sous la frontière de croissance (5 entrées actives, base 1 : pause au-delà de 6).
     for (const letter of ['x', 'z', 'w', 'v', 'u']) {
       await activateOne(mem, scope, letter.repeat(4 * 140));
     }
-    expect(budget - 700).toBeLessThan(120);
-    const extra = await mem.propose({ scope, kind: 'fact', text: 'y'.repeat(4 * 120), evidence_refs: ['ev:extra'], confidence: 'observed', author_pid: 'agent:a' });
-    const error = await mem.activate(extra.id, 1, 'agent:b', uniq('cycle')).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(MemoryStoreError);
-    expect(error).toMatchObject({ code: 'MEMORY_BUDGET_EXCEEDED' });
-    expect(await activeCount(scope)).toBe(5);
+    const extra = await mem.propose({ scope, kind: 'fact', text: 'y'.repeat(4 * 120),
+      evidence_refs: ['ev:extra'], confidence: 'observed', author_pid: 'agent:a' });
+    await mem.activate(extra.id, 1, 'agent:b', uniq('cycle'));
+    expect(await activeCount(scope)).toBe(6);
+    expect((await mem.get(extra.id, 1))?.status).toBe('active');
     expect(await mem.isActivationPaused(scope)).toBe(false);
-    expect((await mem.get(extra.id, 1))?.status).toBe('candidate');
+    expect(await growthRequests(scope)).toBe(0);
   });
 });
