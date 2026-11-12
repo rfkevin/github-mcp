@@ -1,7 +1,7 @@
 /** Coordinator bridge to the SAME API/S7 engine used by event wakeups. */
 import { CollabStoreError, type CollabStore } from '../store/collab-store';
 import { isCoordinator } from '../owner/coordinators';
-import { equivalentParticipantIds } from '../identity/families';
+import { equivalentParticipantIds, assertDistinctLogicalParticipants } from '../identity/families';
 import { opIdClientFor, parseOpId } from '../contracts';
 import { exactGrant, type WriteGrant } from './github-write/authorization';
 import { issueDynamicGrant } from './github-write/dynamic-grants';
@@ -90,6 +90,38 @@ async function assignIfMissing(i: LaunchInput, grant: WriteGrant) {
       || targets.includes(t.reviewer_pid) || targets.includes(t.tester_pid))
     deny('TASK_SCOPE_MISMATCH', 'Task owner, status, D12 roles or paths differ from owner grant.');
 }
+/** Fail BEFORE issuing an immutable dynamic grant or an immutable timer.
+ * The store's task.claim/handoff gates still revalidate at the D1 CAS commit.
+ */
+async function preflightAssignment(i:LaunchInput, paths:readonly string[]|null):Promise<void> {
+  const existing=await readTask(i);
+  const coords=await equivalentParticipantIds(i.db,i.coordinator);
+  const targets=await equivalentParticipantIds(i.db,i.participant);
+  if(!existing) {
+    if(!i.reviewer||!i.tester)
+      deny('D12_ASSIGNMENT_REQUIRED','New assignment needs reviewer and tester.');
+    await assertDistinctLogicalParticipants(i.db,[i.participant,i.reviewer,i.tester]);
+    if(coords.includes(i.participant)||coords.includes(i.reviewer)||coords.includes(i.tester))
+      deny('D12_ASSIGNMENT_REQUIRED','Coordinator cannot review, test or author their own assignment.');
+    for(const pid of [i.participant,i.reviewer,i.tester]) {
+      const active=await i.db.prepare("SELECT status FROM participants WHERE participant_id=?1")
+        .bind(pid).first<{status:string}>();
+      if(active?.status!=='active') deny('UNREGISTERED_PARTICIPANT','D12 participant is not active.');
+    }
+    return;
+  }
+  let owned:unknown;
+  try {owned=JSON.parse(existing.owned_paths);}catch {
+    deny('TASK_SCOPE_MISMATCH','Current owned_paths is invalid JSON.');
+  }
+  if(existing.status!=='in_progress'
+    ||(!coords.includes(existing.owner_pid)&&!targets.includes(existing.owner_pid))
+    ||(paths!==null&&JSON.stringify(owned)!==JSON.stringify(paths))
+    ||targets.includes(existing.reviewer_pid)||targets.includes(existing.tester_pid))
+    deny('TASK_SCOPE_MISMATCH','Existing owner, status, D12 roles or files differ from authorized assignment.');
+  await assertDistinctLogicalParticipants(i.db,[i.participant,existing.reviewer_pid,existing.tester_pid]);
+}
+
 /** Never constructs or wakes a run. Only the existing event-driven WorkSession scheduler does. */
 export async function assignCoordinatorWorksession(i:LaunchInput):Promise<LaunchResult> {
   if (!await isCoordinator(i.db,i.coordinator)) deny('COORDINATOR_REQUIRED','Owner-approved coordinator required.');
@@ -104,8 +136,23 @@ export async function assignCoordinatorWorksession(i:LaunchInput):Promise<Launch
     deny('TASK_SCOPE_MISMATCH','Task owner or status differs from assignment.');
   const cycle=await i.db.prepare('SELECT status FROM cycles WHERE cycle_id=?1').bind(i.cycle).first<{status:string}>();
   if(cycle?.status!=='open') deny('CYCLE_NOT_OPEN','Cycle must be open.');
-  if(i.scheduledAt!==undefined&&!Number.isSafeInteger(i.scheduledAt))
-    deny('INVALID_SCHEDULE','scheduled_at must be a safe UTC epoch time in seconds.');
+  // Reject accidental JS-millisecond epochs without limiting normal schedules.
+  if(i.scheduledAt!==undefined&&(!Number.isSafeInteger(i.scheduledAt)
+    ||i.scheduledAt>9_999_999_999))
+    deny('INVALID_SCHEDULE','scheduled_at must be a UTC Unix timestamp in seconds (not milliseconds).');
+  await ensureAgentRunSchema(i.db);
+  const prior=await i.db.prepare('SELECT participant_id,not_before,created_by FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
+    .bind(i.cycle,i.task).first<{participant_id:string;not_before:number;created_by:string}>();
+  if(i.scheduledAt!==undefined&&i.scheduledAt<i.now&&!prior)
+    deny('INVALID_SCHEDULE','A new scheduled_at must not be in the past.');
+  if(prior&&(prior.participant_id!==i.participant||prior.created_by!==i.coordinator
+    ||(i.scheduledAt!==undefined&&prior.not_before!==i.scheduledAt)))
+    deny('SCHEDULE_CONFLICT','An immutable task schedule already exists with different parameters.');
+  // Read-only mandate lookup before grant issuance prevents an orphan grant if task scope is invalid.
+  const policy={writers:i.env.AGENT_RUN_GITHUB_WRITERS,tasks:i.env.AGENT_RUN_GITHUB_TASKS,
+    dynamic:i.env.AGENT_RUN_DYNAMIC_SCOPE};
+  const intendedPaths=i.paths??(await exactGrant(i.db,policy,i.cycle,i.task,i.participant))?.paths??null;
+  await preflightAssignment(i,intendedPaths);
   let grant:WriteGrant;
   try {
     grant=await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,i.coordinator,i.paths,i.acceptance,i.now);
@@ -121,28 +168,31 @@ export async function assignCoordinatorWorksession(i:LaunchInput):Promise<Launch
     ]);
     throw new CollabStoreError('GITHUB_GRANT_REFUSED',allowed.has(error.message)?error.message:'api_grant_refused');
   }
-  await ensureAgentRunSchema(i.db);
-  // An identical replay after the scheduled instant is legitimate; a NEW past timer is not.
-  const already=await i.db.prepare('SELECT not_before FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
-    .bind(i.cycle,i.task).first<{not_before:number}>();
-  if(i.scheduledAt!==undefined&&i.scheduledAt<i.now&&!already)
-    deny('INVALID_SCHEDULE','A new scheduled_at must not be in the past.');
-  if(i.scheduledAt!==undefined)await i.db.prepare(
-    'INSERT OR IGNORE INTO agent_task_schedule(cycle_id,task_id,participant_id,not_before,created_by,created_at) VALUES(?1,?2,?3,?4,?5,?6)')
-    .bind(i.cycle,i.task,i.participant,i.scheduledAt,i.coordinator,i.now).run();
+  // Revalidate the actual immutable grant, not only the candidate paths.
+  await preflightAssignment(i,grant.paths);
+  const due=prior?.not_before??i.scheduledAt??null;
+  // The schedule MUST predate task.claim/task.handoff, because those D1 events
+  // independently wake the planner. After preflight, write both immutable timer
+  // and durable deadline outbox in one D1 batch (no half-created timer intent).
+  if(due!==null&&due>i.now) {
+    const key='worksession-schedule:'+i.cycle+':'+i.task+':'+i.participant;
+    await i.db.batch([
+      i.db.prepare('INSERT OR IGNORE INTO agent_task_schedule(cycle_id,task_id,participant_id,not_before,created_by,created_at) VALUES(?1,?2,?3,?4,?5,?6)')
+        .bind(i.cycle,i.task,i.participant,due,i.coordinator,i.now),
+      i.db.prepare(['INSERT OR IGNORE INTO agent_event_wake_intents',
+        '(event_key,cycle_id,event_type,status,attempts,next_at,created_at,updated_at,last_error)',
+        "VALUES(?1,?2,'task.schedule','queued',0,?3,?4,?4,'')"].join(' '))
+        .bind(key,i.cycle,due,i.now),
+    ]);
+  } else if(i.scheduledAt!==undefined) {
+    // Identical replay after the deadline: the row already exists and is immutable.
+    if(!prior) deny('INVALID_SCHEDULE','A new deadline cannot be in the past.');
+  }
   const existing=await i.db.prepare('SELECT participant_id,not_before,created_by FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
     .bind(i.cycle,i.task).first<{participant_id:string;not_before:number;created_by:string}>();
   if(existing&&(existing.participant_id!==i.participant||existing.created_by!==i.coordinator
     ||(i.scheduledAt!==undefined&&existing.not_before!==i.scheduledAt)))
-    deny('SCHEDULE_CONFLICT','The immutable schedule conflicts with this assignment.');
-  const due=existing?.not_before??null;
-  if(due!==null&&due>i.now){
-    const key='worksession-schedule:'+i.cycle+':'+i.task+':'+i.participant;
-    await i.db.prepare(['INSERT OR IGNORE INTO agent_event_wake_intents',
-      '(event_key,cycle_id,event_type,status,attempts,next_at,created_at,updated_at,last_error)',
-      "VALUES(?1,?2,'task.schedule','queued',0,?3,?4,?4,'')"].join(' '))
-      .bind(key,i.cycle,due,i.now).run();
-  }
+    deny('SCHEDULE_CONFLICT','The schedule changed during assignment; no task handoff was made.');
   await assignIfMissing(i,grant);
   await event(i,'checkpoint','assigned-'+i.task,
     {task:i.task,state:'WORKSESSION_ASSIGNED',participant:i.participant,branch:grant.branch,scheduled_at:due});

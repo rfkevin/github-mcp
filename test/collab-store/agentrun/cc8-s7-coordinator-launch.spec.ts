@@ -40,6 +40,7 @@ import { insertCycleRow, insertPhaseDefinition } from '../a0-helpers';
 import { OWNER_PROOF } from '../coordinator-helpers';
 import { assignCoordinatorWorksession } from '../../../src/collab-store/agentrun/coordinator-launch';
 import { planAgentRuns } from '../../../src/collab-store/agentrun/plan';
+import { drainDurableEventWakes } from '../../../src/collab-store/agentrun/wake-trigger';
 import { leaseKeyOf, preemptByChat, releaseChat } from '../../../src/collab-store/agentrun/engine';
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 let sequence = 0;
@@ -129,6 +130,66 @@ describe('CC8 #320 — one D1 assignment, one WorkSession planner',()=>{
     await expect(assignCoordinatorWorksession({...input,scheduledAt:due+5,opId:s.coordinator+':'+s.cycle+':mutate:1'}))
       .rejects.toMatchObject({code:'SCHEDULE_CONFLICT'});
     expect(await assignCoordinatorWorksession(input)).toMatchObject({status:'scheduled'});
+  });
+
+  it('rejects mismatched task scope without orphaning a schedule or a dynamic wake',async()=>{
+    const s=await setup('orphan');
+    // Coordinator already owns a task whose owned_paths contradict the static grant.
+    const claimed=await s.input.store.appendEvent({
+      cycle_id:s.cycle,type:'task.claim',participant_id:s.coordinator,
+      expected_rev:await s.input.store.currentRevision(s.cycle),
+      payload_json:JSON.stringify({task:{task_id:s.task,owner_pid:s.coordinator,
+        reviewer_pid:s.vibe,tester_pid:s.grok,status:'in_progress',
+        owned_paths:['test/collab-store/agentrun/not-granted.spec.ts']}}),
+      op_id:s.coordinator+':'+s.cycle+':prepare-wrong:1',
+    });
+    expect(claimed.status).toBe('applied');
+    const at=s.input.now+90;
+    await expect(assignCoordinatorWorksession({...s.input,scheduledAt:at}))
+      .rejects.toMatchObject({code:'TASK_SCOPE_MISMATCH'});
+    expect((await db.prepare('SELECT COUNT(*) AS n FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
+      .bind(s.cycle,s.task).first<{n:number}>())?.n).toBe(0);
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM agent_event_wake_intents WHERE cycle_id=?1 AND event_type='task.schedule'")
+      .bind(s.cycle).first<{n:number}>())?.n).toBe(0);
+    // Repair the task's owned paths and assign a DIFFERENT date successfully.
+    const corrected=await s.input.store.appendEvent({
+      cycle_id:s.cycle,type:'task.claim',participant_id:s.coordinator,
+      expected_rev:await s.input.store.currentRevision(s.cycle),
+      payload_json:JSON.stringify({task:{task_id:s.task,owner_pid:s.coordinator,
+        reviewer_pid:s.vibe,tester_pid:s.grok,status:'in_progress',owned_paths:[s.path]}}),
+      op_id:s.coordinator+':'+s.cycle+':prepare-right:1',
+    });
+    expect(corrected.status).toBe('applied');
+    expect(await assignCoordinatorWorksession({...s.input,scheduledAt:at+180,opId:s.coordinator+':'+s.cycle+':retry:1'}))
+      .toMatchObject({status:'scheduled',scheduled_at:at+180});
+  });
+
+  it('rejects millisecond timestamps before creating any schedule or grant',async()=>{
+    const s=await setup('milliseconds');
+    await expect(assignCoordinatorWorksession({...s.input,scheduledAt:s.input.now*1000}))
+      .rejects.toMatchObject({code:'INVALID_SCHEDULE'});
+    expect((await db.prepare('SELECT COUNT(*) AS n FROM agent_task_schedule WHERE cycle_id=?1')
+      .bind(s.cycle).first<{n:number}>())?.n).toBe(0);
+  });
+
+  it('durable task.schedule outbox delivers at due through the normal planner, no cron',async()=>{
+    const s=await setup('wake-due');
+    const due=s.input.now+210;
+    await assignCoordinatorWorksession({...s.input,scheduledAt:due});
+    const early=await drainDurableEventWakes(db,s.runtime,{
+      now:s.input.now+1,deliverer:'test-pre-due',wake:async()=>({accepted:true as const}),
+    });
+    expect(early.next_at).toBe(due);
+    expect((await db.prepare("SELECT status FROM agent_event_wake_intents WHERE cycle_id=?1 AND event_type='task.schedule'")
+      .bind(s.cycle).first<{status:string}>())?.status).toBe('queued');
+    const resumed=await drainDurableEventWakes(db,s.runtime,{
+      now:due+1,deliverer:'test-at-due',wake:async()=>({accepted:true as const}),
+    });
+    expect(resumed.delivered).toBeGreaterThanOrEqual(1);
+    expect((await db.prepare("SELECT status FROM agent_event_wake_intents WHERE cycle_id=?1 AND event_type='task.schedule'")
+      .bind(s.cycle).first<{status:string}>())?.status).toBe('delivered');
+    expect((await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE cycle_id=?1 AND task_id=?2')
+      .bind(s.cycle,s.task).first<{n:number}>())?.n).toBe(1);
   });
 
   it('default mission is scheduled immediately once by the common planner',async()=>{
