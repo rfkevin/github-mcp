@@ -465,9 +465,9 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         if (!kind) continue;
         // #320: explicit timer defers, otherwise launch as soon as eligible.
         if(decision.task_id){
-          const schedule=await db.prepare('SELECT participant_id,not_before FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
-            .bind(cycleId,decision.task_id).first<{participant_id:string;not_before:number}>();
-          if(schedule&&schedule.participant_id===participantId&&schedule.not_before>input.now){deferred+=1;continue;}
+          const schedule=await db.prepare('SELECT not_before FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
+            .bind(cycleId,decision.task_id).first<{not_before:number}>();
+          if(schedule&&schedule.not_before>input.now){deferred+=1;continue;}
         }
         // L12 : le chat de l'agent travaille sur cette tâche — pas d'exécution API en parallèle.
         if (decision.task_id && await chatActive(decision.task_id)) {

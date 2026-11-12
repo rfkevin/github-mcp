@@ -104,10 +104,10 @@ export async function assignCoordinatorWorksession(i:LaunchInput):Promise<Launch
     deny('TASK_SCOPE_MISMATCH','Task owner or status differs from assignment.');
   const cycle=await i.db.prepare('SELECT status FROM cycles WHERE cycle_id=?1').bind(i.cycle).first<{status:string}>();
   if(cycle?.status!=='open') deny('CYCLE_NOT_OPEN','Cycle must be open.');
-  const grant=await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,i.coordinator,i.paths,i.acceptance,i.now);
-  await ensureAgentRunSchema(i.db);
   if(i.scheduledAt!==undefined&&(!Number.isSafeInteger(i.scheduledAt)||i.scheduledAt<i.now))
     deny('INVALID_SCHEDULE','scheduled_at must be a future UTC epoch in seconds.');
+  const grant=await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,i.coordinator,i.paths,i.acceptance,i.now);
+  await ensureAgentRunSchema(i.db);
   if(i.scheduledAt!==undefined)await i.db.prepare(
     'INSERT OR IGNORE INTO agent_task_schedule(cycle_id,task_id,participant_id,not_before,created_by,created_at) VALUES(?1,?2,?3,?4,?5,?6)')
     .bind(i.cycle,i.task,i.participant,i.scheduledAt,i.coordinator,i.now).run();
