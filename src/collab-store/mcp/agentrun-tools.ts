@@ -82,7 +82,7 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
         reviewer:input.reviewer,tester:input.tester,paths:input.paths,acceptance:input.acceptance,
         scheduledAt:input.scheduled_at,opId:input.op_id,now:Math.floor(Date.now()/1000),
       });
-      return collabSuccess(result);
+      return collabSuccess({ ...result });
     }catch(error){return collabFailure(error,'Attribution WorkSession refusée.',{},context.fallback);}
   });
 

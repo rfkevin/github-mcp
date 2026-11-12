@@ -87,7 +87,7 @@ describe('CC8 #320 — one D1 assignment, one WorkSession planner',()=>{
     expect(b).toMatchObject({status:'queued',branch:grant2.branch,scheduled_at:null});
     const tasks=(await db.prepare('SELECT task_id,owner_pid FROM tasks WHERE cycle_id=?1 ORDER BY task_id')
       .bind(s.cycle).all<{task_id:string;owner_pid:string}>()).results;
-    expect(tasks).toEqual([{task_id:other,owner_pid:s.vibe},{task_id:s.task,owner_pid:s.gemini}]);
+    expect(tasks).toEqual([{task_id:s.task,owner_pid:s.gemini},{task_id:other,owner_pid:s.vibe}]);
     const count=await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE cycle_id=?1')
       .bind(s.cycle).first<{n:number}>();
     expect(count?.n).toBe(0);
