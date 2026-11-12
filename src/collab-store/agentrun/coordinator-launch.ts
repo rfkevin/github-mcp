@@ -5,24 +5,21 @@ import { equivalentParticipantIds } from '../identity/families';
 import { opIdClientFor, parseOpId } from '../contracts';
 import { exactGrant, type WriteGrant } from './github-write/authorization';
 import { issueDynamicGrant } from './github-write/dynamic-grants';
-import { apiParticipants, attemptRunId, taskKindMaxSteps, taskKindMaxTokens, taskPrompt, taskKindCostCents } from './plan';
-import { runDeadlineS } from './run-policy';
-import { taskPromptWithServerPacket } from './unified-run-packet';
-import { runCapacity } from './capacity';
-import { ToolRefused, createRun, releaseChat, leaseKeyOf } from './engine';
+import { apiParticipants, taskKindCostCents } from './plan';
+import { ToolRefused } from './engine';
 import { ensureAgentRunSchema } from './schema';
-import type { WakeFn } from './orchestrator';
 import type { AgentRunObjectEnv } from './object';
 
+/** Grants and D1 assignment only; planAgentRuns creates all model runs. */
 export interface LaunchInput {
-  db: D1Database; store: CollabStore; env: AgentRunObjectEnv; coordinator: string;
-  cycle: string; task: string; participant: string;
-  reviewer?: string; tester?: string; paths?: string[]; acceptance?: string[];
-  takeoverChat: boolean; opId: string; now: number; wake: WakeFn;
+  db:D1Database; store:CollabStore; env:AgentRunObjectEnv; coordinator:string;
+  cycle:string; task:string; participant:string;
+  reviewer?:string; tester?:string; paths?:string[]; acceptance?:string[];
+  scheduledAt?:number; opId:string; now:number;
 }
 export interface LaunchResult {
-  status: 'started' | 'existing' | 'wake_pending'; run_id: string; cycle: string;
-  task: string; participant: string; wake_accepted: boolean; cost_cents: 0; detail: string;
+  status:'queued'|'scheduled'; cycle:string; task:string; participant:string;
+  branch:string; scheduled_at:number|null; detail:string;
 }
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 function deny(code: string, message: string): never { throw new CollabStoreError(code, message); }
@@ -82,7 +79,7 @@ async function assignIfMissing(i: LaunchInput, grant: WriteGrant) {
   }
   if (t && coords.includes(t.owner_pid)) {
     await event(i, 'task.handoff', 's7launch-' + i.task + '-handoff',
-      {task:{task_id:i.task,owner_pid:i.participant,next_action:'Run implement API S7 : reprendre la mission sans répéter les effets'}});
+      {task:{task_id:i.task,owner_pid:i.participant,next_action:'WorkSession : reprendre la mission sans répéter les effets'}});
     t = await readTask(i);
   }
   const targets = await equivalentParticipantIds(i.db, i.participant);
@@ -93,93 +90,44 @@ async function assignIfMissing(i: LaunchInput, grant: WriteGrant) {
       || targets.includes(t.reviewer_pid) || targets.includes(t.tester_pid))
     deny('TASK_SCOPE_MISMATCH', 'Task owner, status, D12 roles or paths differ from owner grant.');
 }
-export async function launchCoordinatorImplement(i: LaunchInput): Promise<LaunchResult> {
-  if (!await isCoordinator(i.db, i.coordinator)) deny('COORDINATOR_REQUIRED', 'Owner-approved coordinator required.');
-  const op = parseOpId(i.opId);
-  if (op.client !== opIdClientFor(i.coordinator) || op.cycle !== i.cycle)
-    deny('INVALID_OP_ID', 'Launch op_id must belong to the authenticated coordinator and cycle.');
-  // No implicit grant for an unrelated or wrongly assigned task.
+/** Never constructs or wakes a run. Only the existing event-driven WorkSession scheduler does. */
+export async function assignCoordinatorWorksession(i:LaunchInput):Promise<LaunchResult> {
+  if (!await isCoordinator(i.db,i.coordinator)) deny('COORDINATOR_REQUIRED','Owner-approved coordinator required.');
+  const op=parseOpId(i.opId);
+  if(op.client!==opIdClientFor(i.coordinator)||op.cycle!==i.cycle)
+    deny('INVALID_OP_ID','Assignment op_id must belong to coordinator and cycle.');
   const current=await readTask(i);
-  if (!current && (!i.reviewer||!i.tester||i.reviewer===i.tester
-    || i.reviewer===i.participant||i.tester===i.participant
-    || i.coordinator===i.reviewer||i.coordinator===i.tester||i.coordinator===i.participant))
-    deny('D12_ASSIGNMENT_REQUIRED','Distinct reviewer and tester required before grant issue.');
-  if (current && (current.status!=='in_progress'
-    || (current.owner_pid!==i.coordinator && current.owner_pid!==i.participant)))
-    deny('TASK_SCOPE_MISMATCH','Existing task may not be regranted to another author.');
-  let grant: WriteGrant;
-  try {
-    grant = await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,
-      i.coordinator,i.paths,i.acceptance,i.now);
-  } catch (error) {
-    if (!(error instanceof ToolRefused)) throw error;
-    // Fixed reason allowlist: never expose an unexpected exception's message.
-    const reasons = [
-      'dynamic_policy_invalid', 'dynamic_policy_not_approved', 'dynamic_scope_not_approved',
-      'dynamic_acceptance_invalid', 'dynamic_grant_corrupt', 'dynamic_grant_invalid',
-      'dynamic_cycle_not_open', 'dynamic_coordinator_not_active', 'dynamic_grant_cap_exhausted',
-      'dynamic_branch_conflict', 'dynamic_grant_insert_refused', 'dynamic_grant_expired',
-      'dynamic_grant_conflict', 'api_write_policy_invalid', 'api_task_grant_ambiguous',
-    ];
-    throw new CollabStoreError('GITHUB_GRANT_REFUSED',
-      reasons.includes(error.message) ? error.message : 'api_grant_refused');
-  }
-  if (!i.env.AGENT_RUN) deny('AGENT_RUN_UNAVAILABLE', 'Durable Object binding required.');
-  const c = await i.db.prepare('SELECT status,phase FROM cycles WHERE cycle_id=?1').bind(i.cycle)
-    .first<{status:string;phase:string}>();
-  if (c?.status !== 'open') deny('CYCLE_NOT_OPEN', 'Cycle must be open.');
-  const capacity = await runCapacity(i.db, i.env, i.participant, i.cycle, 'implement', new Date(i.now*1000));
-  if (!capacity.capable) deny('AGENT_NOT_CAPABLE', capacity.reason);
-  await assignIfMissing(i, grant);
+  if(!current&&(!i.reviewer||!i.tester||i.reviewer===i.tester||i.reviewer===i.participant||i.tester===i.participant
+    ||i.coordinator===i.reviewer||i.coordinator===i.tester||i.coordinator===i.participant))
+    deny('D12_ASSIGNMENT_REQUIRED','Separate author, reviewer and tester are required.');
+  if(current&&(current.status!=='in_progress'||(current.owner_pid!==i.coordinator&&current.owner_pid!==i.participant)))
+    deny('TASK_SCOPE_MISMATCH','Task owner or status differs from assignment.');
+  const cycle=await i.db.prepare('SELECT status FROM cycles WHERE cycle_id=?1').bind(i.cycle).first<{status:string}>();
+  if(cycle?.status!=='open') deny('CYCLE_NOT_OPEN','Cycle must be open.');
+  const grant=await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,i.coordinator,i.paths,i.acceptance,i.now);
   await ensureAgentRunSchema(i.db);
-  const rounds = await i.db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id=?1 AND type='round.add'")
-    .bind(i.cycle).first<{n:number}>();
-  // Un GO explicite peut reprendre un run guidé échoué AVANT toute
-  // étape, consommation modèle ou effet externe. Nombre de tentatives libre :
-  // le contrôle de sûreté porte sur l'état D1, pas sur un compteur arbitraire.
-  // Les mêmes identifiants déterministes empêchent de créer un run en double.
-  let attempt = 1;
-  let runId = await attemptRunId('implement',i.cycle,i.participant,i.task,'none',c.phase,rounds?.n??0,attempt);
-  const summary = (status: LaunchResult['status'], accepted: boolean, detail: string): LaunchResult =>
-    ({status,run_id:runId,cycle:i.cycle,task:i.task,participant:i.participant,
-      wake_accepted:accepted,cost_cents:0,detail});
-  for (; Number.isSafeInteger(attempt); attempt++) {
-    runId = await attemptRunId('implement',i.cycle,i.participant,i.task,'none',c.phase,rounds?.n??0,attempt);
-    const existing = await i.db.prepare(
-      'SELECT status,stop_reason,steps_done,tokens_used FROM agent_runs WHERE run_id=?1',
-    ).bind(runId).first<{status:string;stop_reason:string;steps_done:number;tokens_used:number}>();
-    if (!existing) break;
-    if (existing.status !== 'failed' || !existing.stop_reason.startsWith('guided_stop')
-      || existing.steps_done !== 0 || existing.tokens_used !== 0) {
-      return summary('existing',false,existing.status);
-    }
-    const effects = await i.db.prepare('SELECT 1 FROM agent_run_effects WHERE run_id=?1 LIMIT 1')
-      .bind(runId).first();
-    if (effects) return summary('existing',false,'side_effects_present');
+  if(i.scheduledAt!==undefined&&(!Number.isSafeInteger(i.scheduledAt)||i.scheduledAt<i.now))
+    deny('INVALID_SCHEDULE','scheduled_at must be a future UTC epoch in seconds.');
+  if(i.scheduledAt!==undefined)await i.db.prepare(
+    'INSERT OR IGNORE INTO agent_task_schedule(cycle_id,task_id,participant_id,not_before,created_by,created_at) VALUES(?1,?2,?3,?4,?5,?6)')
+    .bind(i.cycle,i.task,i.participant,i.scheduledAt,i.coordinator,i.now).run();
+  const existing=await i.db.prepare('SELECT participant_id,not_before,created_by FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
+    .bind(i.cycle,i.task).first<{participant_id:string;not_before:number;created_by:string}>();
+  if(existing&&(existing.participant_id!==i.participant||existing.created_by!==i.coordinator
+    ||(i.scheduledAt!==undefined&&existing.not_before!==i.scheduledAt)))
+    deny('SCHEDULE_CONFLICT','The immutable schedule conflicts with this assignment.');
+  const due=existing?.not_before??null;
+  if(due!==null&&due>i.now){
+    const key='worksession-schedule:'+i.cycle+':'+i.task+':'+i.participant;
+    await i.db.prepare(['INSERT OR IGNORE INTO agent_event_wake_intents',
+      '(event_key,cycle_id,event_type,status,attempts,next_at,created_at,updated_at,last_error)',
+      "VALUES(?1,?2,'task.schedule','queued',0,?3,?4,?4,'')"].join(' '))
+      .bind(key,i.cycle,due,i.now).run();
   }
-  if (!Number.isSafeInteger(attempt)) deny('INVALID_RUN_ATTEMPT','Attempt exceeds safe integer range.');
-  // Même paquet C4/chat que les réveils automatiques, pas un prompt parallèle.
-  const prompt = await taskPromptWithServerPacket(i.db,
-    {cycleId:i.cycle,participantId:i.participant,taskId:i.task},
-    taskPrompt('implement',i.cycle,i.task,'none'));
-  await event(i,'checkpoint','s7launch-' + i.task + '-go',
-    {task:i.task,state:'COORDINATOR_OWNER_GO',participant:i.participant,branch:grant.branch,
-      run_id:runId,attempt,takeover_chat:i.takeoverChat,cost_cents:0});
-  if (i.takeoverChat) {
-    for (const pid of await equivalentParticipantIds(i.db,i.participant))
-      await releaseChat(i.db,{cycleId:i.cycle,participantId:pid,taskId:i.task,now:i.now});
-  }
-  const created = await createRun(i.db,{
-    runId,cycleId:i.cycle,participantId:i.participant,taskId:i.task,taskKind:'implement',
-    prompt,maxSteps:taskKindMaxSteps('implement'),
-    maxTokens:taskKindMaxTokens('implement',i.env),maxCostCents:0,
-    deadlineAt:i.now+runDeadlineS('implement',0),now:i.now});
-  if (!created.created) {
-    if (created.reason === 'run_exists') return summary('existing',false,'run_exists');
-    deny('RUN_NOT_CREATED',created.reason);
-  }
-  const ack = await i.wake(leaseKeyOf(i.cycle,i.participant,i.task),runId)
-    .catch(()=>({accepted:false as const,reason:'wake_rpc_failed'}));
-  return summary(ack.accepted?'started':'wake_pending',ack.accepted,
-    ack.accepted?'Durable Object accepted alarm':ack.reason);
+  await assignIfMissing(i,grant);
+  await event(i,'checkpoint','assigned-'+i.task,
+    {task:i.task,state:'WORKSESSION_ASSIGNED',participant:i.participant,branch:grant.branch,scheduled_at:due});
+  return {status:due!==null&&due>i.now?'scheduled':'queued',cycle:i.cycle,task:i.task,
+    participant:i.participant,branch:grant.branch,scheduled_at:due,
+    detail:'D1 assignment accepted; automatic planner creates and wakes the run.'};
 }

@@ -17,8 +17,7 @@ import {
   CHAT_HOLD_SECONDS_DEFAULT,
 } from '../agentrun/chat-continuity';
 import { coordinatorRunOverview } from '../agentrun/capacity';
-import { launchCoordinatorImplement } from '../agentrun/coordinator-launch';
-import { wakeViaNamespace } from '../agentrun/object';
+import { assignCoordinatorWorksession } from '../agentrun/coordinator-launch';
 import { previewNextActions } from '../controller/next-actions';
 import { isCoordinator } from '../owner/coordinators';
 
@@ -59,42 +58,32 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
     }
   });
 
-  server.registerTool('collab_launch_implement', {
-    title: 'Lancer un run GitHub S7 sur le moteur API existant (coordinateur)',
-    description: 'Coordinateur owner-approved uniquement. Sous grant GitHub owner exact et budget payant 0, attribue si besoin une tache au modele API (claim coordinateur puis handoff D12), cree un run implement idempotent et programme immediatement le Durable Object. takeover_chat libere explicitement le bail de chat, jamais automatiquement. Retourne le run_id ; ne patiente pas pour CI/PR.',
-    inputSchema: {
-      cycle: z.string().min(1).max(64),
-      task: z.string().min(1).max(64),
-      participant: z.string().min(1).max(128),
-      reviewer: z.string().min(1).max(128).optional(),
-      tester: z.string().min(1).max(128).optional(),
-      paths: z.array(z.string().min(1).max(400)).min(1).max(5).optional(),
-      acceptance: z.array(z.string().min(1).max(350)).min(1).max(4).optional(),
-      takeover_chat: z.boolean().default(false),
-      op_id: z.string().min(1).max(253),
+  server.registerTool('collab_assign_worksession',{
+    title:'Attribuer une WorkSession (exécution automatique)',
+    description:'Attribution et mandat GitHub par coordinateur owner-approved. Aucun run créé ou réveillé ici : '
+      +'le contrôleur/planificateur unique démarre immédiatement par défaut, ou à scheduled_at UTC explicite.',
+    inputSchema:{
+      cycle:z.string().min(1).max(64),task:z.string().min(1).max(64),
+      participant:z.string().min(1).max(128),reviewer:z.string().min(1).max(128).optional(),
+      tester:z.string().min(1).max(128).optional(),
+      paths:z.array(z.string().min(1).max(400)).min(1).max(5).optional(),
+      acceptance:z.array(z.string().min(1).max(350)).min(1).max(4).optional(),
+      scheduled_at:z.number().int().nonnegative().optional(),op_id:z.string().min(1).max(253),
     },
-    outputSchema: outputSchemas.collab_launch_implement,
-    annotations: WRITE,
-  }, async (input) => {
-    try {
-      const identity = await context.identity();
-      const namespace = context.agentRunEnv.AGENT_RUN;
-      if (identity.status !== 'registered' || !namespace) {
-        throw new CollabStoreError('AGENT_RUN_UNAVAILABLE', 'Identite et binding Durable Object requis.');
-      }
-      const result = await launchCoordinatorImplement({
-        db: context.db, store: context.storeNoWake, env: context.agentRunEnv,
-        coordinator: identity.participant_id,
-        cycle: input.cycle, task: input.task, participant: input.participant,
-        reviewer: input.reviewer, tester: input.tester,
-        paths: input.paths, acceptance: input.acceptance, takeoverChat: input.takeover_chat,
-        opId: input.op_id, now: Math.floor(Date.now() / 1000),
-        wake: wakeViaNamespace(namespace),
+    outputSchema:outputSchemas.collab_assign_worksession,annotations:WRITE,
+  },async input=>{
+    try{
+      const identity=await context.identity();
+      if(identity.status!=='registered'||!context.agentRunEnv.AGENT_RUN)
+        throw new CollabStoreError('AGENT_RUN_UNAVAILABLE','Identity and Durable Object binding required.');
+      const result=await assignCoordinatorWorksession({
+        db:context.db,store:context.store,env:context.agentRunEnv,
+        coordinator:identity.participant_id,cycle:input.cycle,task:input.task,participant:input.participant,
+        reviewer:input.reviewer,tester:input.tester,paths:input.paths,acceptance:input.acceptance,
+        scheduledAt:input.scheduled_at,opId:input.op_id,now:Math.floor(Date.now()/1000),
       });
-      return collabSuccess({ ...result });
-    } catch (error) {
-      return collabFailure(error, 'Lancement API S7 refuse.', {}, context.fallback);
-    }
+      return collabSuccess(result);
+    }catch(error){return collabFailure(error,'Attribution WorkSession refusée.',{},context.fallback);}
   });
 
   server.registerTool('collab_list_agent_runs', {
