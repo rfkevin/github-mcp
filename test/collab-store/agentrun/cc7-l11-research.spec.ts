@@ -224,8 +224,10 @@ describe('CC-7 L11 — catalogue MCP', () => {
     expect(await list({ AGENT_RUNS_ENABLED: 'false', AGENT_RUN_RESEARCH: 'true' })).not.toContain('collab_research_assign');
     const on = await list({ AGENT_RUNS_ENABLED: 'true', AGENT_RUN_RESEARCH: 'true' });
     expect(on).toContain('collab_research_assign');
-    // 21 = 18 outils du lot L11 + collab_memory_inventory + collab_memory_growth_simulate (M1b, toujours enregistrés)
-    // + collab_agent_runs_overview (CC-8 S1a 2/3, toujours enregistré).
-    expect(on.length).toBe(22);
+    // Deux outils A1 hérités (collab_dispatch_task, collab_list_executors) ont été retirés
+    // au profit du chemin WorkSession unique : le catalogue recherche passe de 22 à 20.
+    expect(on).not.toContain('collab_dispatch_task');
+    expect(on).not.toContain('collab_list_executors');
+    expect(on.length).toBe(20);
   });
 });

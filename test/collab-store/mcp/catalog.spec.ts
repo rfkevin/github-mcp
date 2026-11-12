@@ -84,6 +84,6 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     const names = result.tools.map(tool => tool.name);
     expect(names).toContain('collab_model_catalog');
     expect(names).toContain('collab_choose_model');
-    expect(names.length).toBe(21);
+    expect(names.length).toBe(19);
   });
 });
