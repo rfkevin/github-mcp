@@ -211,3 +211,40 @@ describe('CC8 WorkSession — reprise autonome après interruption du fournisseu
     expect(await db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId).first())
       .toMatchObject({ status: 'running' });
   });
+
+
+it('des lectures GitHub réellement nouvelles entre les relectures de scope empêchent le faux blocage', async () => {
+  const now = 2_000_000_000;
+  await ensureSchema(db);
+  const runId = 'cc8-scope-reading-' + crypto.randomUUID();
+  expect((await createRun(db, {
+    runId, cycleId: 'cc8-scope-reading-cycle-' + crypto.randomUUID(),
+    participantId: 'gemini', taskId: 'legitimate-research', taskKind: 'implement',
+    prompt: 'Inspect sources before writing a coherent change',
+    maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1200, now,
+  })).created).toBe(true);
+  let index = 0;
+  const head = 'c'.repeat(40);
+  const deps: EngineDeps = {
+    model: { complete: async () => {
+      const n = index++;
+      const name = n === 0 ? 'github_create_branch'
+        : n % 2 === 0 ? 'github_read_file' : 'github_write_scope';
+      return { output: { text: 'Analysing file ' + n, tool_calls: [
+        { id: 'q-' + n, name, args: name === 'github_read_file'
+          ? { path: 'src/example-' + n + '.ts', ref: head } : {} },
+      ] }, usage: { tokens: 20, cost_cents: 0 } };
+    } },
+    tools: {
+      list: () => ['github_write_scope', 'github_create_branch', 'github_read_file'],
+      spec: (_kind, name) => ({ name, effect: name === 'github_read_file' ? 'read' : 'write' }),
+      execute: async call => call.name === 'github_create_branch' ? { branch: 'new-research', sha: head }
+        : call.name === 'github_read_file' ? { sha: head, content: String(call.args.path) }
+          : { branch: 'new-research', base_sha: head, branch_head: head },
+    },
+    now: () => now, workerId: 'scope-reading-worker',
+  };
+  for (let n = 0; n < 14; n++) expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+  expect(await db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId).first())
+    .toMatchObject({ status: 'running' });
+});
