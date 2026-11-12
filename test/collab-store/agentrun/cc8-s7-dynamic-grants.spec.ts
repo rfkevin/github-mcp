@@ -6,8 +6,8 @@ import { ensureAgentRunSchema } from '../../../src/collab-store/agentrun/schema'
 import { registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { insertCycleRow, insertPhaseDefinition } from '../a0-helpers';
 import { OWNER_PROOF } from '../coordinator-helpers';
-import { launchCoordinatorImplement } from '../../../src/collab-store/agentrun/coordinator-launch';
-import { authorize, exactGrant } from '../../../src/collab-store/agentrun/github-write/authorization';
+import { assignCoordinatorWorksession } from '../../../src/collab-store/agentrun/coordinator-launch';
+import { exactGrant } from '../../../src/collab-store/agentrun/github-write/authorization';
 import { issueDynamicGrant, findDynamicGrant, parseDynamicGrantPolicy, DYNAMIC_GRANT_TTL_SECONDS }
   from '../../../src/collab-store/agentrun/github-write/dynamic-grants';
 import { isCoordinator } from '../../../src/collab-store/owner/coordinators';
@@ -86,31 +86,23 @@ describe('CC8 — dynamic D1 GitHub grants, owner bounded, no PR per task',()=>{
     expect(await findDynamicGrant(db,undefined,s.cycle,task,s.gemini)).toBeNull();
   });
 
-  it('un coordinateur lance Gemini puis Vibe : deux tâches, deux grants D1, deux runs concurrents',async()=>{
+  it('coordinator assigns two grants and tasks without manually creating model runs',async()=>{
     const s=await setup('parallel');
-    const a=s.make('dyn-gemini',s.gemini,s.vibe,PREFIX+'dyn-gemini.spec.ts','launch-gemini');
-    const b=s.make('dyn-vibe',s.vibe,s.gemini,PREFIX+'dyn-vibe.spec.ts','launch-vibe');
-    const first=await launchCoordinatorImplement(a);
-    const second=await launchCoordinatorImplement(b);
-    expect(first.status).toBe('started');
-    expect(second.status).toBe('started');
-    expect(first.run_id).not.toBe(second.run_id);
-    expect(s.wakes).toEqual([first.run_id,second.run_id]);
-    const {results}=await db.prepare("SELECT run_id,task_id,participant_id,status,cost_cents FROM agent_runs WHERE run_id IN (?1,?2) ORDER BY task_id")
-      .bind(first.run_id,second.run_id).all<{run_id:string;task_id:string;participant_id:string;status:string;cost_cents:number}>();
-    expect(results).toHaveLength(2);
-    expect(results.map(x=>x.status)).toEqual(['running','running']);
-    expect(results.map(x=>x.cost_cents)).toEqual([0,0]);
+    const a=s.make('dyn-gemini',s.gemini,s.vibe,PREFIX+'dyn-gemini.spec.ts','assign-gemini');
+    const b=s.make('dyn-vibe',s.vibe,s.gemini,PREFIX+'dyn-vibe.spec.ts','assign-vibe');
+    expect((await assignCoordinatorWorksession(a)).status).toBe('queued');
+    expect((await assignCoordinatorWorksession(b)).status).toBe('queued');
     const policy={writers:s.runtime.AGENT_RUN_GITHUB_WRITERS,tasks:s.runtime.AGENT_RUN_GITHUB_TASKS,dynamic:s.policy};
     const grant=await exactGrant(db,policy,s.cycle,'dyn-gemini',s.gemini);
     expect(grant?.paths).toEqual(a.paths);
-    expect((await authorize(db,policy,first.run_id,grant!.branch)).owned_paths).toEqual(a.paths);
-    expect((await launchCoordinatorImplement(a)).status).toBe('existing');
-    expect(s.wakes).toHaveLength(2);
-    await expect(launchCoordinatorImplement({...a,paths:[PREFIX+'changed.spec.ts'],
-      opId:s.coordinator+':'+s.cycle+':launch-mutated:1'})).rejects.toThrow();
-    // Owner can disable the whole dynamic scope in one config change; D1 rows remain but lose authority.
-    await expect(authorize(db,{...policy,dynamic:undefined},first.run_id,grant!.branch)).rejects.toThrow();
+    const runs=await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE cycle_id=?1')
+      .bind(s.cycle).first<{n:number}>();
+    expect(runs?.n).toBe(0);
+    expect((await assignCoordinatorWorksession(a)).status).toBe('queued');
+    expect(s.wakes).toHaveLength(0);
+    await expect(assignCoordinatorWorksession({...a,paths:[PREFIX+'changed.spec.ts'],
+      opId:s.coordinator+':'+s.cycle+':changed:1'})).rejects.toThrow();
+    expect(await exactGrant(db,{...policy,dynamic:undefined},s.cycle,'dyn-gemini',s.gemini)).toBeNull();
   });
 
   it('un coordinateur révoqué reçoit un refus précis',async()=>{
@@ -120,36 +112,26 @@ describe('CC8 — dynamic D1 GitHub grants, owner bounded, no PR per task',()=>{
     await db.prepare("UPDATE coordinators SET status='revoked' WHERE participant_id=?1").bind(s.coordinator).run();
     await expect(issueDynamicGrant(db,s.policy,i)).rejects.toThrow('dynamic_coordinator_not_active');
   });
-  it('le coordinateur peut lancer sous un alias owner-approved ; audit et révocation restent effectifs',async()=>{
+  it('coordinator family alias assigns grant and revocation removes authorization',async()=>{
     const s=await setup('alias'), alias=s.coordinator+'-alias';
     await registerParticipant(db,{participant_id:alias,display_label:alias,
       proof:OWNER_PROOF,op:'s7dyn-register-'+alias});
-    for (const pid of [s.coordinator,alias]) {
-      await db.prepare('INSERT INTO participant_identity_families(participant_id,family_id,event_seq,updated_at) VALUES(?1,?2,NULL,?3)')
-        .bind(pid,'family-'+s.coordinator,NOW()).run();
-    }
+    for(const pid of [s.coordinator,alias])await db.prepare(
+      'INSERT INTO participant_identity_families(participant_id,family_id,event_seq,updated_at) VALUES(?1,?2,NULL,?3)')
+      .bind(pid,'family-'+s.coordinator,NOW()).run();
     expect(await isCoordinator(db,alias)).toBe(true);
-    const input={...s.make('alias-run',s.gemini,s.vibe,PREFIX+'alias.spec.ts','alias-launch'),
-      coordinator:alias,opId:alias+':'+s.cycle+':alias-launch:1'};
-    const first=await launchCoordinatorImplement(input);
-    expect(first.status).toBe('started');
+    const input={...s.make('alias-run',s.gemini,s.vibe,PREFIX+'alias.spec.ts','alias-assign'),
+      coordinator:alias,opId:alias+':'+s.cycle+':alias-assign:1'};
+    expect((await assignCoordinatorWorksession(input)).status).toBe('queued');
     const row=await db.prepare('SELECT created_by FROM api_dynamic_grants WHERE cycle=?1 AND task=?2')
       .bind(s.cycle,input.task).first<{created_by:string}>();
     expect(row?.created_by).toBe(alias);
-    const grant=await findDynamicGrant(db,s.policy,s.cycle,input.task,s.gemini);
-    expect(grant?.paths).toEqual(input.paths);
-    const policy={writers:s.runtime.AGENT_RUN_GITHUB_WRITERS,tasks:'[]',dynamic:s.policy};
-    expect((await authorize(db,policy,first.run_id,grant!.branch)).participant).toBe(s.gemini);
-    expect((await launchCoordinatorImplement(input)).status).toBe('existing');
-    expect(s.wakes).toHaveLength(1);
+    expect((await findDynamicGrant(db,s.policy,s.cycle,input.task,s.gemini))?.paths).toEqual(input.paths);
     await db.prepare("UPDATE coordinators SET status='revoked' WHERE participant_id=?1")
       .bind(s.coordinator).run();
     expect(await isCoordinator(db,alias)).toBe(false);
     expect(await findDynamicGrant(db,s.policy,s.cycle,input.task,s.gemini)).toBeNull();
-    await expect(authorize(db,policy,first.run_id,grant!.branch)).rejects.toThrow('api_task_not_enabled');
-    await expect(issueDynamicGrant(db,s.policy,{cycle:s.cycle,task:input.task,
-      participant:s.gemini,paths:input.paths!,acceptance:input.acceptance,
-      coordinator:alias,now:NOW()})).rejects.toThrow('dynamic_coordinator_not_active');
+    await expect(assignCoordinatorWorksession({...input,opId:alias+':'+s.cycle+':retry:1'})).rejects.toThrow();
   });
 
   it('plafond atomique, rejeu au plafond et conflit immuable sont distingués',async()=>{
@@ -193,7 +175,7 @@ describe('CC8 — dynamic D1 GitHub grants, owner bounded, no PR per task',()=>{
       participant:s.gemini,paths:[PREFIX+'reserved.spec.ts'],coordinator:s.coordinator,now:NOW()});
     let failure:unknown;
     try {
-      await launchCoordinatorImplement(s.make('over-cap',s.gemini,s.vibe,PREFIX+'over-cap.spec.ts','over-cap'));
+      await assignCoordinatorWorksession(s.make('over-cap',s.gemini,s.vibe,PREFIX+'over-cap.spec.ts','over-cap'));
     } catch(error) { failure=error; }
     expect(failure).toBeDefined();
     const result=collabFailure(failure,'Launch refused.');

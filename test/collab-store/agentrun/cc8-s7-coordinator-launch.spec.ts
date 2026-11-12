@@ -38,8 +38,9 @@ import { ensureAgentRunSchema } from '../../../src/collab-store/agentrun/schema'
 import { registerParticipant } from '../../../src/collab-store/owner/decisions';
 import { insertCycleRow, insertPhaseDefinition } from '../a0-helpers';
 import { OWNER_PROOF } from '../coordinator-helpers';
-import { launchCoordinatorImplement } from '../../../src/collab-store/agentrun/coordinator-launch';
-import { leaseKeyOf, preemptByChat } from '../../../src/collab-store/agentrun/engine';
+import { assignCoordinatorWorksession } from '../../../src/collab-store/agentrun/coordinator-launch';
+import { planAgentRuns } from '../../../src/collab-store/agentrun/plan';
+import { leaseKeyOf, preemptByChat, releaseChat } from '../../../src/collab-store/agentrun/engine';
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 let sequence = 0;
 async function setup(label: string) {
@@ -70,128 +71,96 @@ async function setup(label: string) {
     wake:async (_lease:string,id:string)=>{wakeIds.push(id);return {accepted:true as const};}};
   return {coordinator,vibe,gemini,grok,cycle,task,path,grant,runtime,wakeIds,input};
 }
-describe('CC8 S7 direct launch — real D1 handoff, run and lease',()=>{
-
-  it('deux tâches distinctes partent en parallèle : deux runs running et deux wakeups avant toute fin',async()=>{
+describe('CC8 #320 — one D1 assignment, one WorkSession planner',()=>{
+  it('two assignments create D1 tasks and grants, NO run or direct wake',async()=>{
     const s=await setup('parallel');
-    const secondTask='test-parallel-other';
-    const secondPath='test/collab-store/agentrun/s7-direct-parallel-other.spec.ts';
-    const vibeGrant={cycle:s.cycle,task:secondTask,participant:s.vibe,
-      branch:'mcp/105856986/'+s.vibe+'-api-test',paths:[secondPath]};
+    const other='test-parallel-other';
+    const grant2={cycle:s.cycle,task:other,participant:s.vibe,
+      branch:'mcp/105856986/'+s.vibe+'-api-test',paths:['test/collab-store/agentrun/s7-direct-parallel-other.spec.ts']};
     s.runtime.AGENT_RUN_PARTICIPANTS=[s.gemini,s.vibe].join(',');
     s.runtime.AGENT_RUN_GITHUB_WRITERS=[s.gemini,s.vibe].join(',');
-    s.runtime.AGENT_RUN_GITHUB_TASKS=JSON.stringify([s.grant,vibeGrant]);
-    // Lancer B dès que A a reçu son run_id : ne jamais attendre completion de A.
-    const a=await launchCoordinatorImplement(s.input);
-    const b=await launchCoordinatorImplement({...s.input,task:secondTask,participant:s.vibe,
-      reviewer:s.gemini,tester:s.grok,
-      opId:s.coordinator+':'+s.cycle+':launch-other:1'});
-    expect(a.status).toBe('started');
-    expect(b.status).toBe('started');
-    expect(b.run_id).not.toBe(a.run_id);
-    expect(s.wakeIds).toEqual([a.run_id,b.run_id]);
-    const rows=await db.prepare('SELECT run_id,participant_id,task_id,status,cost_cents FROM agent_runs WHERE run_id IN (?1,?2) ORDER BY participant_id')
-      .bind(a.run_id,b.run_id).all<{run_id:string;participant_id:string;task_id:string;status:string;cost_cents:number}>();
-    expect(rows.results).toHaveLength(2);
-    expect(rows.results.map(row=>row.status)).toEqual(['running','running']);
-    expect(rows.results.map(row=>row.cost_cents)).toEqual([0,0]);
-    expect(rows.results.map(row=>row.task_id).sort()).toEqual([s.task,secondTask].sort());
-    const after=await launchCoordinatorImplement({...s.input,task:secondTask,participant:s.vibe,
-      reviewer:s.gemini,tester:s.grok,opId:s.coordinator+':'+s.cycle+':launch-other:1'});
-    expect(after.status).toBe('existing');
-    expect(s.wakeIds).toHaveLength(2);
+    s.runtime.AGENT_RUN_GITHUB_TASKS=JSON.stringify([s.grant,grant2]);
+    const a=await assignCoordinatorWorksession(s.input);
+    const b=await assignCoordinatorWorksession({...s.input,task:other,participant:s.vibe,
+      reviewer:s.gemini,tester:s.grok,opId:s.coordinator+':'+s.cycle+':other:1'});
+    expect(a).toMatchObject({status:'queued',branch:s.grant.branch,scheduled_at:null});
+    expect(b).toMatchObject({status:'queued',branch:grant2.branch,scheduled_at:null});
+    const tasks=(await db.prepare('SELECT task_id,owner_pid FROM tasks WHERE cycle_id=?1 ORDER BY task_id')
+      .bind(s.cycle).all<{task_id:string;owner_pid:string}>()).results;
+    expect(tasks).toEqual([{task_id:other,owner_pid:s.vibe},{task_id:s.task,owner_pid:s.gemini}]);
+    const count=await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE cycle_id=?1')
+      .bind(s.cycle).first<{n:number}>();
+    expect(count?.n).toBe(0);
+    expect(s.wakeIds).toHaveLength(0);
+    // The D1 checkpoint is queued for the common event-pass, not a parallel launch.
+    const queued=await db.prepare("SELECT COUNT(*) AS n FROM agent_event_wake_intents WHERE cycle_id=?1 AND event_type='checkpoint'")
+      .bind(s.cycle).first<{n:number}>();
+    expect(queued?.n).toBe(2);
   });
-  it('Gemini sans chat : handoff sous propre identité puis un run unique',async()=>{
-    const s=await setup('gemini');
-    const first=await launchCoordinatorImplement(s.input);
-    expect(first.status).toBe('started');
-    expect(first.cost_cents).toBe(0);
-    expect(s.wakeIds).toEqual([first.run_id]);
+
+  it('replay does not create another run or wake and keeps D12 assignment',async()=>{
+    const s=await setup('replay');
+    const first=await assignCoordinatorWorksession(s.input);
+    const again=await assignCoordinatorWorksession(s.input);
+    expect(again).toEqual(first);
     const row=await db.prepare('SELECT owner_pid,reviewer_pid,tester_pid,owned_paths FROM tasks WHERE cycle_id=?1 AND task_id=?2')
       .bind(s.cycle,s.task).first<{owner_pid:string;reviewer_pid:string;tester_pid:string;owned_paths:string}>();
-    expect(row?.owner_pid).toBe(s.gemini);
-    expect(row?.reviewer_pid).toBe(s.vibe);
-    expect(row?.tester_pid).toBe(s.grok);
+    expect(row).toMatchObject({owner_pid:s.gemini,reviewer_pid:s.vibe,tester_pid:s.grok});
     expect(JSON.parse(row!.owned_paths)).toEqual([s.path]);
-    const run=await db.prepare('SELECT max_tokens,max_cost_cents,task_kind FROM agent_runs WHERE run_id=?1')
-      .bind(first.run_id).first<{max_tokens:number;max_cost_cents:number;task_kind:string}>();
-    expect(run).toEqual({max_tokens:-1,max_cost_cents:0,task_kind:'implement'});
-    expect((await launchCoordinatorImplement(s.input)).status).toBe('existing');
-    expect(s.wakeIds).toHaveLength(1);
+    const checkpoints=await db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id=?1 AND type='checkpoint'")
+      .bind(s.cycle).first<{n:number}>();
+    expect(checkpoints?.n).toBe(1);
+    expect(s.wakeIds).toHaveLength(0);
   });
-  it('GO explicite : reprend après quatre guided_stop sans effet, même paquet C4 et mandat',async()=>{
-    const s=await setup('resume');
-    (s.runtime as AgentRunObjectEnv & { AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS?: string }).AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS='120000';
-    const first=await launchCoordinatorImplement(s.input);
-    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable' WHERE run_id=?1")
-      .bind(first.run_id).run();
-    const second=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:2'});
-    expect(second.status).toBe('started');
-    expect(second.run_id).not.toBe(first.run_id);
-    const row=await db.prepare('SELECT prompt,max_tokens,max_cost_cents FROM agent_runs WHERE run_id=?1')
-      .bind(second.run_id).first<{prompt:string;max_tokens:number;max_cost_cents:number}>();
-    expect(row?.prompt).toContain('DOSSIER CC8 SERVEUR');
-    expect(row?.max_tokens).toBe(-1);
-    expect(row?.max_cost_cents).toBe(0);
-    const unchanged=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:3'});
-    expect(unchanged).toMatchObject({status:'existing',run_id:second.run_id});
-    expect(s.wakeIds).toHaveLength(2);
-    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable' WHERE run_id=?1")
-      .bind(second.run_id).run();
-    const third=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:4'});
-    expect(third.status).toBe('started');
-    expect(third.run_id).not.toBe(second.run_id);
-    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable' WHERE run_id=?1")
-      .bind(third.run_id).run();
-    const fourth=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:5'});
-    expect(fourth.status).toBe('started');
-    expect(fourth.run_id).not.toBe(third.run_id);
-    expect(s.wakeIds).toHaveLength(4);
+
+  it('scheduled_at is explicit, immutable and adds a durable deadline',async()=>{
+    const s=await setup('timer');
+    const due=s.input.now+600;
+    const input={...s.input,scheduledAt:due};
+    expect(await assignCoordinatorWorksession(input)).toMatchObject({status:'scheduled',scheduled_at:due});
+    const row=await db.prepare('SELECT not_before FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
+      .bind(s.cycle,s.task).first<{not_before:number}>();
+    expect(row?.not_before).toBe(due);
+    const timer=await db.prepare("SELECT next_at,status FROM agent_event_wake_intents WHERE cycle_id=?1 AND event_type='task.schedule'")
+      .bind(s.cycle).first<{next_at:number;status:string}>();
+    expect(timer).toMatchObject({next_at:due,status:'queued'});
+    const early=await planAgentRuns(db,s.runtime,{now:s.input.now+1,limit:10});
+    expect(early.created).toBe(0);
+    await expect(assignCoordinatorWorksession({...input,scheduledAt:due+5,opId:s.coordinator+':'+s.cycle+':mutate:1'}))
+      .rejects.toMatchObject({code:'SCHEDULE_CONFLICT'});
+    expect(await assignCoordinatorWorksession(input)).toMatchObject({status:'scheduled'});
   });
-  it('aucune reprise si le run échoué a commencé à consommer une étape',async()=>{
-    const s=await setup('no-replay');
-    const first=await launchCoordinatorImplement(s.input);
-    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable',steps_done=1 WHERE run_id=?1")
-      .bind(first.run_id).run();
-    const after=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:2'});
-    expect(after).toMatchObject({status:'existing',run_id:first.run_id});
-    expect(s.wakeIds).toHaveLength(1);
+
+  it('chat retains its lease; assignment never takes over the chat',async()=>{
+    const s=await setup('lease');
+    await preemptByChat(db,{cycleId:s.cycle,participantId:s.gemini,taskId:s.task,
+      now:s.input.now,holdSeconds:3600});
+    expect((await assignCoordinatorWorksession(s.input)).status).toBe('queued');
+    const key=leaseKeyOf(s.cycle,s.gemini,s.task);
+    expect((await db.prepare('SELECT holder FROM agent_fences WHERE lease_key=?1')
+      .bind(key).first<{holder:string}>())?.holder).toBe('chat');
+    expect((await planAgentRuns(db,s.runtime,{now:s.input.now+1})).created).toBe(0);
+    await releaseChat(db,{cycleId:s.cycle,participantId:s.gemini,taskId:s.task,now:s.input.now+2});
+    expect((await db.prepare('SELECT holder FROM agent_fences WHERE lease_key=?1')
+      .bind(key).first<{holder:string}>())?.holder).not.toBe('api');
   });
-  it('collab_launch_implement renvoie structuredContent conforme au schéma MCP',async()=>{
-    const s=await setup('mcp-shape');
-    const first=await launchCoordinatorImplement(s.input);
+
+  it('MCP exposes only assignment, not the obsolete manual runner',async()=>{
+    const s=await setup('mcp');
     const handlers=new Map<string,(args:Record<string,unknown>)=>Promise<{structuredContent?:Record<string,unknown>;isError?:boolean}>>();
     const fakeServer={registerTool(name:string,_spec:unknown,handler:(args:Record<string,unknown>)=>Promise<{structuredContent?:Record<string,unknown>;isError?:boolean}>) {
       handlers.set(name,handler);
     }} as unknown as McpServer;
-    const ctx={db,storeNoWake:s.input.store,agentRunEnv:s.runtime,
+    const ctx={db,store:s.input.store,agentRunEnv:s.runtime,
       identity:async()=>({status:'registered',participant_id:s.coordinator})} as unknown as CollabToolContext;
     registerAgentRunTools(fakeServer,ctx);
-    const result=await handlers.get('collab_launch_implement')!({
-      cycle:s.cycle,task:s.task,participant:s.gemini,
-      op_id:s.coordinator+':'+s.cycle+':launch:1',takeover_chat:false,
+    expect(handlers.has('collab_launch_implement')).toBe(false);
+    const response=await handlers.get('collab_assign_worksession')!({
+      cycle:s.cycle,task:s.task,participant:s.gemini,reviewer:s.vibe,tester:s.grok,
+      op_id:s.input.opId,
     });
-    expect(result.isError).toBeFalsy();
-    expect(z.object(outputSchemas.collab_launch_implement).parse(result.structuredContent))
-      .toMatchObject({status:'existing',run_id:first.run_id,cost_cents:0});
-  });
-  it('Vibe chat : bail refuse sans takeover, puis transfert explicite au moteur',async()=>{
-    const s=await setup('vibe');
-    const g={...s.grant,participant:s.vibe,branch:'mcp/105856986/'+s.vibe+'-api-test'};
-    s.runtime.AGENT_RUN_PARTICIPANTS=s.vibe;
-    s.runtime.AGENT_RUN_GITHUB_WRITERS=s.vibe;
-    s.runtime.AGENT_RUN_GITHUB_TASKS=JSON.stringify([g]);
-    await db.prepare("INSERT INTO tasks(task_id,cycle_id,owner_pid,reviewer_pid,tester_pid,status,owned_paths,target_ref,next_action,revision) VALUES(?1,?2,?3,?4,?5,'in_progress',?6,'','',1)")
-      .bind(s.task,s.cycle,s.vibe,s.coordinator,s.grok,JSON.stringify([s.path])).run();
-    await preemptByChat(db,{cycleId:s.cycle,participantId:s.vibe,taskId:s.task,now:s.input.now,holdSeconds:3600});
-    const target={...s.input,participant:s.vibe};
-    await expect(launchCoordinatorImplement(target)).rejects.toMatchObject({code:'RUN_NOT_CREATED'});
-    const answer=await launchCoordinatorImplement({...target,takeoverChat:true,
-      opId:s.coordinator+':'+s.cycle+':launch:2'});
-    expect(answer.status).toBe('started');
-    expect(s.wakeIds).toEqual([answer.run_id]);
-    const fence=await db.prepare('SELECT holder FROM agent_fences WHERE lease_key=?1')
-      .bind(leaseKeyOf(s.cycle,s.vibe,s.task)).first<{holder:string}>();
-    expect(fence?.holder).toBe('api');
+    expect(response.isError).toBeFalsy();
+    expect(z.object(outputSchemas.collab_assign_worksession).parse(response.structuredContent))
+      .toMatchObject({status:'queued',branch:s.grant.branch,scheduled_at:null});
   });
 });
