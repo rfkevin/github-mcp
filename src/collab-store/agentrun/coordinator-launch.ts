@@ -104,10 +104,29 @@ export async function assignCoordinatorWorksession(i:LaunchInput):Promise<Launch
     deny('TASK_SCOPE_MISMATCH','Task owner or status differs from assignment.');
   const cycle=await i.db.prepare('SELECT status FROM cycles WHERE cycle_id=?1').bind(i.cycle).first<{status:string}>();
   if(cycle?.status!=='open') deny('CYCLE_NOT_OPEN','Cycle must be open.');
-  if(i.scheduledAt!==undefined&&(!Number.isSafeInteger(i.scheduledAt)||i.scheduledAt<i.now))
-    deny('INVALID_SCHEDULE','scheduled_at must be a future UTC epoch in seconds.');
-  const grant=await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,i.coordinator,i.paths,i.acceptance,i.now);
+  if(i.scheduledAt!==undefined&&!Number.isSafeInteger(i.scheduledAt))
+    deny('INVALID_SCHEDULE','scheduled_at must be a safe UTC epoch time in seconds.');
+  let grant:WriteGrant;
+  try {
+    grant=await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,i.coordinator,i.paths,i.acceptance,i.now);
+  } catch(error) {
+    if(!(error instanceof ToolRefused)) throw error;
+    // Preserve the former manual bridge's typed, allowlisted refusal, not STORE_UNAVAILABLE.
+    const allowed=new Set([
+      'dynamic_policy_invalid','dynamic_policy_not_approved','dynamic_scope_not_approved',
+      'dynamic_acceptance_invalid','dynamic_grant_corrupt','dynamic_grant_invalid',
+      'dynamic_cycle_not_open','dynamic_coordinator_not_active','dynamic_grant_cap_exhausted',
+      'dynamic_branch_conflict','dynamic_grant_insert_refused','dynamic_grant_expired',
+      'dynamic_grant_conflict','api_write_policy_invalid','api_task_grant_ambiguous',
+    ]);
+    throw new CollabStoreError('GITHUB_GRANT_REFUSED',allowed.has(error.message)?error.message:'api_grant_refused');
+  }
   await ensureAgentRunSchema(i.db);
+  // An identical replay after the scheduled instant is legitimate; a NEW past timer is not.
+  const already=await i.db.prepare('SELECT not_before FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
+    .bind(i.cycle,i.task).first<{not_before:number}>();
+  if(i.scheduledAt!==undefined&&i.scheduledAt<i.now&&!already)
+    deny('INVALID_SCHEDULE','A new scheduled_at must not be in the past.');
   if(i.scheduledAt!==undefined)await i.db.prepare(
     'INSERT OR IGNORE INTO agent_task_schedule(cycle_id,task_id,participant_id,not_before,created_by,created_at) VALUES(?1,?2,?3,?4,?5,?6)')
     .bind(i.cycle,i.task,i.participant,i.scheduledAt,i.coordinator,i.now).run();
