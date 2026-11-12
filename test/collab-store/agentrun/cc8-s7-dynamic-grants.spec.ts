@@ -105,6 +105,36 @@ describe('CC8 — dynamic D1 GitHub grants, owner bounded, no PR per task',()=>{
     expect(await exactGrant(db,{...policy,dynamic:undefined},s.cycle,'dyn-gemini',s.gemini)).toBeNull();
   });
 
+  it('a refused assignment never freezes a dynamic grant or timer; a corrected retry works',async()=>{
+    const s=await setup('orphan-grant');
+    const task='dyn-orphan-grant';
+    const path=PREFIX+'dyn-orphan-grant.spec.ts';
+    const i=s.make(task,s.gemini,s.vibe,path,'wrong-scope');
+    const writeClaim=async(owned:string[],op:string)=>{
+      const result=await i.store.appendEvent({
+        cycle_id:s.cycle,participant_id:s.coordinator,type:'task.claim',
+        expected_rev:await i.store.currentRevision(s.cycle),
+        payload_json:JSON.stringify({task:{task_id:task,owner_pid:s.coordinator,
+          reviewer_pid:s.vibe,tester_pid:s.grok,status:'in_progress',owned_paths:owned}}),
+        op_id:s.coordinator+':'+s.cycle+':'+op+':1',
+      });
+      expect(result.status).toBe('applied');
+    };
+    await writeClaim([PREFIX+'unrelated-orphan.spec.ts'],'wrong-owned-paths');
+    await expect(assignCoordinatorWorksession({...i,scheduledAt:i.now+90}))
+      .rejects.toMatchObject({code:'TASK_SCOPE_MISMATCH'});
+    expect((await db.prepare('SELECT COUNT(*) AS n FROM api_dynamic_grants WHERE cycle=?1 AND task=?2')
+      .bind(s.cycle,task).first<{n:number}>())?.n).toBe(0);
+    expect((await db.prepare('SELECT COUNT(*) AS n FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
+      .bind(s.cycle,task).first<{n:number}>())?.n).toBe(0);
+    await writeClaim([path],'correct-owned-paths');
+    expect(await assignCoordinatorWorksession({...i,scheduledAt:i.now+180,
+      opId:s.coordinator+':'+s.cycle+':corrected:1'}))
+      .toMatchObject({status:'scheduled',scheduled_at:i.now+180});
+    expect((await db.prepare('SELECT COUNT(*) AS n FROM api_dynamic_grants WHERE cycle=?1 AND task=?2')
+      .bind(s.cycle,task).first<{n:number}>())?.n).toBe(1);
+  });
+
   it('un coordinateur révoqué reçoit un refus précis',async()=>{
     const s=await setup('limit');
     const i={cycle:s.cycle,task:'dyn-limit',participant:s.gemini,paths:[PREFIX+'dyn-limit.spec.ts'],
