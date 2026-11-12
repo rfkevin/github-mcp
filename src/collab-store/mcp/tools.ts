@@ -13,7 +13,7 @@ import { MAX_OP_ID_LENGTH, type StoreEventType } from '../contracts';
 import { authorizeAppend, authorizePhaseAdvance } from '../identity';
 import { equivalentParticipantIds } from '../identity/families';
 import { exportCycleState, exportMemoryMarkdown } from '../export';
-import { resolveContextTarget, buildRolePacket, loadContinuity, loadActiveWork, concurrentSession } from '../context';
+import { resolveContextTarget, buildRolePacket, loadContinuity, loadActiveWork, loadActiveWorkPage, concurrentSession } from '../context';
 import { applyChatAutoLease, type ChatLeaseEffect } from '../agentrun/chat-auto-lease';
 import { advanceGuarded } from '../phases/gate';
 import type { Phase } from '../../collab/contracts';
@@ -126,6 +126,9 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       delta_limit: z.number().int().min(1).max(200).optional(),
       c0_baseline_tokens: z.number().int().min(1).max(100_000).optional(),
       approved_budget_tokens: z.number().int().min(1).max(6000).optional(),
+      active_work_run_page: z.number().int().min(0).max(1_000_000).optional(),
+      active_work_checkpoint_page: z.number().int().min(0).max(1_000_000).optional(),
+      active_work_page_size: z.number().int().min(1).max(100).optional(),
     },
     outputSchema: outputSchemas.collab_get_context,
     annotations: READ_ONLY,
@@ -155,7 +158,17 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
       const ownIds = identity.status === 'registered' ? await equivalentParticipantIds(context.db, participantId) : null;
       const continuity = ownIds ? await loadContinuity(context.db, resolved.cycle_id, ownIds) : null;
       // CC-7 L12 : travail en cours du même agent (chat ou API) — reprendre plutôt que recommencer.
-      const activeWork = ownIds ? await loadActiveWork(context.db, resolved.cycle_id, ownIds) : null;
+      const paged = input.active_work_run_page !== undefined
+        || input.active_work_checkpoint_page !== undefined || input.active_work_page_size !== undefined;
+      const activeWork = ownIds
+        ? paged
+          ? await loadActiveWorkPage(context.db, resolved.cycle_id, ownIds, {
+            runPage: input.active_work_run_page,
+            checkpointPage: input.active_work_checkpoint_page,
+            pageSize: input.active_work_page_size,
+          })
+          : await loadActiveWork(context.db, resolved.cycle_id, ownIds)
+        : null;
       let delta: Awaited<ReturnType<typeof context.store.getDelta>> | undefined;
       if (input.include_delta) {
         delta = await context.store.getDelta(

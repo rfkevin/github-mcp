@@ -149,10 +149,11 @@ describe('CC8 S7 — relevés de CI sans modèle', () => {
     const lateModel = scripted([check()]);
     const lateHost = host({ github_check_result: [WAIT, WAIT] });
     await runStep(db, late.runId, { model: lateModel.client, tools: lateHost.tools, now: () => T + 10, workerId: 'w1' });
-    // À 25 s de la deadline : pas de relevé (plancher 30 s).
+    // La deadline métier héritée ne supprime plus le relevé serveur sans modèle.
     await runStep(db, late.runId, { model: lateModel.client, tools: lateHost.tools, now: () => T + 175, workerId: 'w1' });
-    expect(await pollCount(late.runId)).toBe(0);
-    expect(lateHost.calls).toHaveLength(1);
+    expect(await pollCount(late.runId)).toBe(1);
+    expect(lateHost.calls).toHaveLength(2);
+    expect(lateModel.seen).toHaveLength(1);
   });
 
   it('relecture D12 R1 : deux réveils concurrents ne lisent jamais deux fois le même relevé', async () => {

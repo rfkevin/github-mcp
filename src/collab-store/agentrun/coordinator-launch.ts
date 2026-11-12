@@ -82,7 +82,7 @@ async function assignIfMissing(i: LaunchInput, grant: WriteGrant) {
   }
   if (t && coords.includes(t.owner_pid)) {
     await event(i, 'task.handoff', 's7launch-' + i.task + '-handoff',
-      {task:{task_id:i.task,owner_pid:i.participant,next_action:'Run implement API S7, une seule tentative'}});
+      {task:{task_id:i.task,owner_pid:i.participant,next_action:'Run implement API S7 : reprendre la mission sans répéter les effets'}});
     t = await readTask(i);
   }
   const targets = await equivalentParticipantIds(i.db, i.participant);
@@ -134,19 +134,17 @@ export async function launchCoordinatorImplement(i: LaunchInput): Promise<Launch
   await ensureAgentRunSchema(i.db);
   const rounds = await i.db.prepare("SELECT COUNT(*) AS n FROM events WHERE cycle_id=?1 AND type='round.add'")
     .bind(i.cycle).first<{n:number}>();
-  // A1/C2d : un GO explicite peut reprendre un run stoppé par le contrôle guidé
-  // AVANT toute étape ou effet. Trois identités au maximum, comme le planner.
-  // Jamais de reprise automatique après résultat, modèle consommé ou effet GitHub.
-  const runIds = await Promise.all([1, 2, 3].map(attempt =>
-    attemptRunId('implement',i.cycle,i.participant,i.task,'none',c.phase,rounds?.n??0,attempt)));
-  let runId = runIds[0];
+  // Un GO explicite peut reprendre un run guidé échoué AVANT toute
+  // étape, consommation modèle ou effet externe. Nombre de tentatives libre :
+  // le contrôle de sûreté porte sur l'état D1, pas sur un compteur arbitraire.
+  // Les mêmes identifiants déterministes empêchent de créer un run en double.
   let attempt = 1;
+  let runId = await attemptRunId('implement',i.cycle,i.participant,i.task,'none',c.phase,rounds?.n??0,attempt);
   const summary = (status: LaunchResult['status'], accepted: boolean, detail: string): LaunchResult =>
     ({status,run_id:runId,cycle:i.cycle,task:i.task,participant:i.participant,
       wake_accepted:accepted,cost_cents:0,detail});
-  for (let index = 0; index < runIds.length; index++) {
-    runId = runIds[index];
-    attempt = index + 1;
+  for (; Number.isSafeInteger(attempt); attempt++) {
+    runId = await attemptRunId('implement',i.cycle,i.participant,i.task,'none',c.phase,rounds?.n??0,attempt);
     const existing = await i.db.prepare(
       'SELECT status,stop_reason,steps_done,tokens_used FROM agent_runs WHERE run_id=?1',
     ).bind(runId).first<{status:string;stop_reason:string;steps_done:number;tokens_used:number}>();
@@ -158,8 +156,8 @@ export async function launchCoordinatorImplement(i: LaunchInput): Promise<Launch
     const effects = await i.db.prepare('SELECT 1 FROM agent_run_effects WHERE run_id=?1 LIMIT 1')
       .bind(runId).first();
     if (effects) return summary('existing',false,'side_effects_present');
-    if (index === runIds.length - 1) return summary('existing',false,'retry_cap_reached');
   }
+  if (!Number.isSafeInteger(attempt)) deny('INVALID_RUN_ATTEMPT','Attempt exceeds safe integer range.');
   // Même paquet C4/chat que les réveils automatiques, pas un prompt parallèle.
   const prompt = await taskPromptWithServerPacket(i.db,
     {cycleId:i.cycle,participantId:i.participant,taskId:i.task},

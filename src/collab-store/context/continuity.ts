@@ -19,7 +19,7 @@ export const HANDOVER_KIND = 'handover';
 export const HANDOVER_MAX_CHARS = 2400;
 export const CONTINUITY_MAX_RUNS = 5;
 export const CONTINUITY_MAX_NOTES = 5;
-export const CONTINUITY_SUMMARY_CHARS = 1200;
+export const CONTINUITY_SUMMARY_CHARS = 4000;
 
 export interface HandoverNote {
   seq: number;
@@ -51,6 +51,9 @@ export interface Continuity {
   handovers: HandoverNote[];
   /** true = des éléments plus anciens existent au-delà des bornes (jamais une perte silencieuse). */
   truncated: { api_runs: boolean; handovers: boolean };
+  /** Explicit next page exposes older history without injecting it all at once. */
+  next_page?: number | null;
+  page?: number;
 }
 
 const clip = (value: unknown, max: number): string => (typeof value === 'string' ? value.trim().slice(0, max) : '');
@@ -85,8 +88,12 @@ async function agentRunsTableExists(db: D1Database): Promise<boolean> {
   return !!row;
 }
 
-export async function loadContinuity(db: D1Database, cycleId: string, participantIds: readonly string[]): Promise<Continuity> {
+export async function loadContinuity(db: D1Database, cycleId: string, participantIds: readonly string[],
+  options: { page?: number; pageSize?: number } = {}): Promise<Continuity> {
   await ensureSchema(db);
+  const page = Math.min(1_000_000, Math.max(0, Math.floor(options.page ?? 0)));
+  const pageSize = Math.min(100, Math.max(1, Math.floor(options.pageSize ?? CONTINUITY_MAX_NOTES)));
+  const offset = page * pageSize;
   const ids = [...new Set(participantIds)].filter(Boolean);
   const empty: Continuity = { last_visit_seq: 0, last_visit_at: 0, api_runs: [], handovers: [], truncated: { api_runs: false, handovers: false } };
   if (ids.length === 0) return empty;
@@ -103,7 +110,7 @@ export async function loadContinuity(db: D1Database, cycleId: string, participan
   const { results: noteRows } = await db.prepare([
     'SELECT seq, at, role, payload_json FROM events WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ")",
     "AND type = 'checkpoint' AND json_valid(payload_json) AND json_extract(payload_json, '$.kind') = '" + HANDOVER_KIND + "'",
-    'ORDER BY seq DESC LIMIT ' + (CONTINUITY_MAX_NOTES + 1),
+    'ORDER BY seq DESC LIMIT ' + (pageSize + 1) + ' OFFSET ' + offset,
   ].join(' ')).bind(cycleId, ...ids).all<{ seq: number; at: number; role: string | null; payload_json: string }>();
   const handovers: HandoverNote[] = [];
   for (const row of noteRows) {
@@ -116,7 +123,7 @@ export async function loadContinuity(db: D1Database, cycleId: string, participan
     const { results } = await db.prepare([
       'SELECT run_id, task_kind, status, stop_reason, created_at, updated_at, summary FROM agent_runs',
       'WHERE cycle_id = ?1 AND participant_id IN (' + placeholders + ') AND created_at > ?' + (ids.length + 2),
-      'ORDER BY created_at DESC, run_id LIMIT ' + (CONTINUITY_MAX_RUNS + 1),
+      'ORDER BY created_at DESC, run_id LIMIT ' + (pageSize + 1) + ' OFFSET ' + offset,
     ].join(' ')).bind(cycleId, ...ids, lastVisitAt).all<ApiRunTrace>();
     runs = results.map(run => ({ ...run, summary: clip(run.summary, CONTINUITY_SUMMARY_CHARS) }));
   }
@@ -124,8 +131,10 @@ export async function loadContinuity(db: D1Database, cycleId: string, participan
   return {
     last_visit_seq: lastVisitSeq,
     last_visit_at: lastVisitAt,
-    api_runs: runs.slice(0, CONTINUITY_MAX_RUNS),
-    handovers: handovers.slice(0, CONTINUITY_MAX_NOTES),
-    truncated: { api_runs: runs.length > CONTINUITY_MAX_RUNS, handovers: noteRows.length > CONTINUITY_MAX_NOTES },
+    api_runs: runs.slice(0, pageSize),
+    handovers: handovers.slice(0, pageSize),
+    truncated: { api_runs: runs.length > pageSize, handovers: noteRows.length > pageSize },
+    page,
+    next_page: runs.length > pageSize || noteRows.length > pageSize ? page + 1 : null,
   };
 }

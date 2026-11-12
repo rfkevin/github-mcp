@@ -143,21 +143,19 @@ function scopeMismatch(id: string, type: string): MemoryStoreError {
 }
 
 /**
- * Token budgets per scope family (plan §4), révisés par CC-7 M2 (décisions de Kevin #1138 §4 / #1139) :
- * enveloppe 5 800 jetons, hypothèse de départ à mesurer (collab_memory_inventory) avant toute hausse.
- * - participant 1500 : mémoire de continuité d'un agent (chat ET API partagent participant:<agent>),
- *   seule mémoire durable d'un agent sans chat ; PLANCHER de configuration (PARTICIPANT_BUDGET_FLOOR),
- *   jamais réduit sans décision de Kevin notifiée au store ;
- * - role 800 : pièges transverses par rôle (owner, reviewer, tester, coordinator, researcher) ;
- * - task 0 : portée GELÉE (FROZEN_SCOPE_FAMILIES) — la reprise d'une tâche passe par active_work (L12) ;
- *   les entrées existantes restent lisibles, rien de nouveau n'est proposé ni activé.
+ * CC8 WorkSession : mémoire C4 persistée sans plafond cumulé de stockage
+ * pour common/project/role/participant. Les fenêtres d'appel au modèle et
+ * les ACL/validations demeurent inchangées ; task reste gelé, l'état des tâches
+ * est suivi en D1 active_work. PARTICIPANT_BUDGET_FLOOR est conservé comme
+ * export historique pour les consommateurs anciens.
  */
+/** Infinity = unlimited stored memory; model-call context windows remain finite. */
 export const MEMORY_TOKEN_BUDGETS: Record<string, number> = {
-  common: 1500,
-  project: 2000,
-  role: 800,
-  participant: 1500,
-  task: 0,
+  common: Infinity,
+  project: Infinity,
+  role: Infinity,
+  participant: Infinity,
+  task: 0, // Task state and history belong in D1 active_work.
 };
 
 /** CC-7 M2 : plancher du budget participant (décision #1138 §4, demande de Gemini #1131). */
@@ -615,9 +613,10 @@ export class MemoryStore {
         '  AND NOT EXISTS (SELECT 1 FROM memory_entries WHERE id = ?1 AND scope <> ?6)',
         '  AND NOT EXISTS (SELECT 1 FROM quota_counters WHERE day = ?3 AND writes > 0)',
         '  AND COALESCE((SELECT writes FROM quota_counters WHERE day = ?4), 0) < ?5',
-        `  AND COALESCE((SELECT SUM(COALESCE(token_cost, (length(text) + 3) / 4)) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8`,
+        `  AND (?8 IS NULL OR COALESCE((SELECT SUM(COALESCE(token_cost, (length(text) + 3) / 4)) FROM memory_entries WHERE status = 'active' AND scope = ?6), 0) + ?7 <= ?8)`,
         '  THEN 1 ELSE 0 END',
-      ].join(' ')).bind(id, version, pausedKey, capKey, MAX_ACTIVATIONS_PER_CYCLE, row.scope, newTokens, budget),
+      ].join(' ')).bind(id, version, pausedKey, capKey, MAX_ACTIVATIONS_PER_CYCLE, row.scope, newTokens,
+         Number.isFinite(budget) ? budget : null),
       // A03: the cap reservation lives inside the transaction — exactly one
       // increment per applied activation, rolled back with a failed one.
       this.db
@@ -1297,6 +1296,7 @@ export class MemoryStore {
   private async assertBudgetAllows(scope: string, text: string): Promise<void> {
     const family = scopeFamily(scope);
     const budget = MEMORY_TOKEN_BUDGETS[family] ?? 500;
+    if (!Number.isFinite(budget)) return;
     const { results } = await this.db
       .prepare(`SELECT text FROM memory_entries WHERE status = 'active' AND scope = ?1`)
       .bind(scope)

@@ -172,7 +172,7 @@ export function createGitHubWriteTools(options: GitHubWriteToolsOptions): GitHub
   /** S7: le modèle ne peut jamais s'attribuer une autorisation d'écriture. */
   async function authorized(runId: string, paths?: readonly string[]): Promise<void> {
     const run = await scope(runId);
-    if (run.task_kind !== 'implement' || !run.task_id || run.status !== 'running') throw new ToolRefused('api_write_task_not_authorized');
+    if (!run.task_id || run.status !== 'running') throw new ToolRefused('api_write_task_not_authorized');
     // Contrôle au plus près de l'effet : HALT et bail API doivent toujours être valides.
     const fence = await options.db.prepare([
       'SELECT 1 AS allowed FROM agent_runs r JOIN agent_fences f ON f.lease_key = r.lease_key',

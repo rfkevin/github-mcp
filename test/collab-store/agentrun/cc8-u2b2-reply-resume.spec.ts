@@ -129,7 +129,7 @@ describe('CC8 U2b2 — HALT-equivalent chat fencing and deadline while waiting',
           taskId: 'work', now: now + 3, holdSeconds: 3600 });
         expect((await step(now + 4)).outcome).toBe('preempted');
       } else {
-        expect((await step(now + 501)).outcome).toBe('deadline');
+        expect((await step(now + 501)).outcome).toBe('waiting_for_reply');
       }
       expect(calls).toBe(1);
     });
@@ -304,8 +304,8 @@ describe('CC8 U2b2 — crash before wake, recovery and step budget', () => {
   });
 });
 
-describe('CC8 U2b2 — bounded long wait escalation and lease slot release', () => {
-  it('preserves steps, emits a typed owner diagnostic at deadline and frees the DO slot', async () => {
+describe('CC8 U2b2 — long wait persists without arbitrary mission deadline', () => {
+  it('keeps steps, D1 effects and original lease intact beyond the legacy deadline', async () => {
     const { cycle, runId, now, tools } = await waitFixture(
       'long', 'longwait', 'u2b2-long-owner', 'u2b2-long-reviewer', 400);
     const { model, callCount } = askModel('longwait', 'u2b2-long-reviewer');
@@ -331,22 +331,19 @@ describe('CC8 U2b2 — bounded long wait escalation and lease slot release', () 
     expect((await objectWake(deps,runId,lease)).accepted).toBe(true);
     clock=now+401;
     await slot.deleteAlarm();
-    expect((await objectAlarm(deps)).outcome).toBe('deadline');
+    expect((await objectAlarm(deps)).outcome).toBe('waiting_for_reply');
     expect(callCount()).toBe(1);
-    const stopped=(await db.prepare('SELECT status,stop_reason,steps_done,tokens_used FROM agent_runs WHERE run_id=?1')
-      .bind(runId).first<{status:string;stop_reason:string;steps_done:number;tokens_used:number}>())!;
-    expect(stopped).toMatchObject({...original,status:'deadline',stop_reason:'clarification_wait_expired'});
-    const escalations=(await db.prepare("SELECT COUNT(*) AS n FROM agent_run_journal WHERE run_id=?1 AND kind='clarification_escalation'")
-      .bind(runId).first<{n:number}>())!;
-    expect(escalations.n).toBe(1);
-    expect(state.run_id).toBeUndefined(); // finish/forget releases the DO slot
+    const active=(await db.prepare('SELECT status,steps_done,tokens_used FROM agent_runs WHERE run_id=?1')
+      .bind(runId).first<{status:string;steps_done:number;tokens_used:number}>())!;
+    expect(active).toMatchObject({...original,status:'running'});
+    expect(state.run_id).toBe(runId);
     expect((await db.prepare('SELECT next_alarm_at FROM agent_run_alarms WHERE run_id=?1')
-      .bind(runId).first<{next_alarm_at:number|null}>())?.next_alarm_at).toBeNull();
-    expect((await runStep(db,runId,{model,tools,now:()=>now+500,workerId:'late'})).outcome).toBe('deadline');
+      .bind(runId).first<{next_alarm_at:number|null}>())?.next_alarm_at).toBeGreaterThan(now+400);
+    expect((await runStep(db,runId,{model,tools,now:()=>now+500,workerId:'late'})).outcome).toBe('waiting_for_reply');
     expect(callCount()).toBe(1);
-    // Original terminal run no longer blocks a separately authorized handover.
+    // Duplicate run cannot take over the still-active WorkSession.
     expect((await createRun(db,{runId:runId+'-new',cycleId:cycle,participantId:'u2b2-long-owner',
-      taskId:'longwait',taskKind:'implement',prompt:'New explicit authorized continuation',
-      maxSteps:2,maxTokens:100,maxCostCents:0,deadlineAt:now+900,now:now+500})).created).toBe(true);
+      taskId:'longwait',taskKind:'implement',prompt:'Duplicate unauthorized continuation',
+      maxSteps:2,maxTokens:100,maxCostCents:0,deadlineAt:now+900,now:now+500})).created).toBe(false);
   });
 });

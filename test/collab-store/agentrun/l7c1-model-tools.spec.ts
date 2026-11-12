@@ -325,11 +325,17 @@ describe('CC-5 l7c-1 — câblage', () => {
   it('avec AGENT_RUN_MODEL et AI : modèle Workers AI, lecture store seule sans dépôt, consigne commune sans pouvoir d’écriture', async () => {
     const ai = fakeAi([openAi('fin')]);
     const deps = engineFor({ AGENT_RUN_MODEL: MODEL_REF, AI: ai, AGENT_RUN_REPOSITORY: 'pas un dépôt' }, db)('r');
-    expect(deps.tools.list('research')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
+    const offered = deps.tools.list('research');
+    expect(offered).toEqual(expect.arrayContaining(['store_context', 'store_delta', 'store_memory',
+      'store_continuity', 'store_ask', 'store_answer']));
+    expect(new Set(offered).size).toBe(offered.length);
+    // EngineDeps exposes the minimal ToolHost interface; the actual engine host also provides schemas.
+    const runtimeSchemas = (deps.tools as ToolHost & Pick<ReturnType<typeof createReadToolHost>, 'schemas'>).schemas('research');
+    expect(new Set(runtimeSchemas.map(tool => tool.name)).size).toBe(runtimeSchemas.length);
     await deps.model.complete({ messages: [{ role: 'user', content: 'x' }], tools: deps.tools.list('research'), task_kind: 'research' });
     const sent = ai.calls[0].input as { messages: Array<{ role: string; content: string }> };
     expect(sent.messages[0].content).toBe(AGENT_RUN_SYSTEM);
-    expect(AGENT_RUN_SYSTEM).toContain('lecture seule');
+    expect(AGENT_RUN_SYSTEM).toContain('même système MCP');
   });
 
   it('lectures GitHub injectées par la racine du Worker seulement, avec les trois identifiants de l’App', () => {

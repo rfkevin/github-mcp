@@ -190,16 +190,15 @@ describe('CC-5 l7a — coupures et reprise', () => {
     expect(h.commits).toHaveLength(1);
   });
 
-  it('503 : tentative échouée typée, usage compté, aucun nouvel appel sur le même run', async () => {
+  it('503 : la WorkSession reste active, usage compté et appel fournisseur différé', async () => {
     const { input } = await newRun();
     const model = scripted(READ_THEN_COMMIT, { fail: 5 });
     const h = host();
-    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 1))).outcome).toBe('failed');
-    expect(await status(input.runId)).toMatchObject({
-      status: 'failed', tokens_used: 7, stop_reason: 'model_transient: HTTP 503 fournisseur indisponible',
-    });
-    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 2))).outcome).toBe('failed');
+    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 1))).outcome).toBe('retry');
+    expect(await status(input.runId)).toMatchObject({ status: 'running', tokens_used: 7 });
+    expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 2))).outcome).toBe('busy');
     expect(model.state.calls).toBe(1);
+    expect(h.commits).toHaveLength(0);
   });
 });
 
@@ -382,23 +381,23 @@ describe('CC-5 l7a — préemption par le chat et HALT', () => {
 });
 
 describe('CC-5 l7a — plafonds et outils', () => {
-  it('plafond d’étapes, de jetons et échéance vérifiés à chaque étape', async () => {
-    const steps = await newRun({ maxSteps: 1 });
+  it('plafonds métier d’étapes, de jetons et de deadline retirés ; coût toujours contrôlé', async () => {
     const loop: ModelOutput[] = Array.from({ length: 5 }, () => READ_THEN_COMMIT[0]);
-    expect((await runStep(db, steps.input.runId, deps(scripted(loop), host().tools, () => T0 + 1))).outcome).toBe('step_limit');
+    const steps = await newRun({ maxSteps: 1 });
+    expect((await runStep(db, steps.input.runId, deps(scripted(loop), host().tools, () => T0 + 1))).outcome).toBe('stepped');
     const tokens = await newRun({ maxTokens: 150 });
     const model = scripted(loop);
     expect((await runStep(db, tokens.input.runId, deps(model, host().tools, () => T0 + 1))).outcome).toBe('stepped');
-    expect((await runStep(db, tokens.input.runId, deps(model, host().tools, () => T0 + 2))).outcome).toBe('token_limit');
-    expect((await runStep(db, tokens.input.runId, deps(model, host().tools, () => T0 + 3))).outcome).toBe('token_limit');
-    expect(model.state.calls).toBe(2);
+    expect((await runStep(db, tokens.input.runId, deps(model, host().tools, () => T0 + 2))).outcome).toBe('stepped');
+    expect((await runStep(db, tokens.input.runId, deps(model, host().tools, () => T0 + 3))).outcome).toBe('stepped');
+    expect(model.state.calls).toBe(3);
     const late = await newRun({ deadlineAt: T0 + 5 });
-    expect((await runStep(db, late.input.runId, deps(scripted(loop), host().tools, () => T0 + 6))).outcome).toBe('deadline');
+    expect((await runStep(db, late.input.runId, deps(scripted(loop), host().tools, () => T0 + 6))).outcome).toBe('stepped');
     const costly = await newRun();
     expect((await runStep(db, costly.input.runId, deps(scripted(loop, { usage: { tokens: 1, cost_cents: 3 } }), host().tools, () => T0 + 1))).outcome).toBe('cost_limit');
   });
 
-  it('outil hors allowlist, outil interdit au canal API et verdict D12 : refusés sans exécution', async () => {
+  it('outils owner et payload D12 libre refusés même si un hôte les expose', async () => {
     const { input } = await newRun();
     const h = host();
     const model = scripted([{
@@ -411,10 +410,11 @@ describe('CC-5 l7a — plafonds et outils', () => {
     }]);
     expect((await runStep(db, input.runId, deps(model, h.tools, () => T0 + 1))).outcome).toBe('stepped');
     expect(h.log).toEqual([]);
-    const row = await db.prepare('SELECT results FROM agent_run_steps WHERE run_id = ?1 AND n = 0').bind(input.runId).first<{ results: string }>();
-    expect((JSON.parse(row!.results) as { content: string }[]).map(entry => JSON.parse(entry.content).error)).toEqual([
-      'tool_forbidden_on_api_channel', 'tool_forbidden_on_api_channel', 'tool_not_allowlisted', 'd12_verdict_forbidden_on_api_channel',
-    ]);
+    const row = await db.prepare('SELECT results FROM agent_run_steps WHERE run_id = ?1 AND n = 0')
+      .bind(input.runId).first<{ results: string }>();
+    expect((JSON.parse(row!.results) as { content: string }[]).map(entry =>
+      entry.content.startsWith('{"error":') ? JSON.parse(entry.content).error : 'ok'
+    )).toEqual(['tool_forbidden_on_api_channel', 'tool_forbidden_on_api_channel', 'tool_not_allowlisted', 'd12_verdict_forbidden_on_api_channel']);
   });
 
   it('les tables sont append-only : suppression refusée', async () => {

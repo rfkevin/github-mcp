@@ -23,8 +23,10 @@
  *   Un effet resté pending (crash entre l'effet et son enregistrement) n'est
  *   JAMAIS réémis à l'aveugle : `lookup` cherche s'il a eu lieu ; sans réponse
  *   sûre, l'exécution passe en `needs_reconcile`.
- * - Retries bornés : MAX_STEP_ATTEMPTS réclamations par étape, puis `failed`.
- * - Plafonds (R5) vérifiés à chaque étape : étapes, jetons, coût, échéance.
+ * - Reprises techniques d'une WorkSession sans plafond cumulé arbitraire ;
+ *   les réclamations restent soumises au CAS, aux délais par appel et à HALT.
+ * - Coût autorisé et clôture métier vérifiés à chaque étape, sans plafond global
+ *   d'étapes ou de jetons de mission.
  * - Le canal API n'émet aucun verdict D12 LIBRE (L7-6) : outils interdits refusés en
  *   code même si l'hôte les déclare ; toute écriture reste soumise à
  *   `assertNotD12Verdict` SAUF `store_verdict` (L5b, S10) et `store_contribute`
@@ -37,6 +39,7 @@
  * qui ne fait que constater une condition d'arrêt (HALT, préemption, plafond).
  */
 import { sha256Hex } from '../store/hash';
+import { postSalonMessage } from '../salon';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
@@ -53,7 +56,7 @@ import { missionOf, type MissionKind } from './mission-quality';
 import { applyGuidedFill, canonicalGuidedOutput, GUIDED_PRECHECK_TOOL, GUIDED_SERVER_MAX, GUIDED_TOOL, guidedPrecheck, guidedViolation,
   planGuidedS7, PRECHECK_HINTS, guidedBareDependencies, type GuidedStep } from './s7-guided';
 // CC-8 S1b-2 : politique unique de temps (plan v2 seq 1376) — le moteur ne fait que l'appliquer.
-import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_TIMEOUT_MS, stepModelBudgetMs } from './run-policy';
+import { EFFECT_LAUNCH_FLOOR_S, EFFECT_TIMEOUT_MS, STEP_MODEL_BUDGET_FLOOR_MS, STEP_MODEL_BUDGET_MS, STEP_TIMEOUT_MS } from './run-policy';
 
 // CC-8 S1b-2 : dérivée de la politique unique (run-policy.ts), API en secondes conservée.
 export const STEP_TIMEOUT_S = STEP_TIMEOUT_MS / 1000;
@@ -69,7 +72,8 @@ export interface ModelOutput { text: string; tool_calls: ToolCall[] }
 /** U1: enforce an actual terminal opportunity for a structured D12 verdict, not prose.
  * Review and test runs have no mechanical guided server steps. */
 export function reviewVerdictTurn(kind: string, stepsDone: number, maxSteps: number): boolean {
-  return (kind === 'review' || kind === 'test') && stepsDone >= maxSteps - 1;
+  // Legacy finite-run helper; unbounded work sessions never force a last model turn.
+  return maxSteps > 0 && (kind === 'review' || kind === 'test') && stepsDone >= maxSteps - 1;
 }
 /** Split values are provided by the adapter when reported by the provider. */
 export interface ModelUsage { tokens: number; cost_cents: number; input_tokens?: number | null; output_tokens?: number | null; estimated_input_tokens?: number | null }
@@ -120,6 +124,8 @@ export interface EngineDeps {
   /** CC8: opt-in de compaction des anciens résultats pour le seul contexte fournisseur.
    * Les étapes et effets persistés D1 demeurent intacts (audit, reprise, fencing). */
   compactHistory?: boolean;
+  /** Broadcast a persistent intervention request after proven deterministic non-progress. */
+  salonEnabled?: boolean;
   /** Mandats GitHub de réussite posés par le propriétaire, jamais par le modèle. */
   githubCompletionGrants?: readonly GitHubCompletionGrant[];
   /** Grants D1 are checked on every planning/completion step, never injected by the model. */
@@ -174,11 +180,10 @@ const LIVE = [
 /** Plafonds par exécution : ?1 = run_id, ?4 = maintenant. */
 // CC8 S7 mode guidé : max_steps ne compte que les étapes modèle ; une étape serveur est bornée
 // par son plafond propre (GUIDED_SERVER_MAX), les jetons, le coût et la deadline restant communs.
-const SERVER_STEPS = '(SELECT COUNT(*) FROM agent_run_server_steps ss WHERE ss.run_id = ?1)';
-const withinLimits = (server: boolean) => [
+const withinLimits = (_server: boolean) => [
   'EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1',
-  server ? '  AND ' + SERVER_STEPS + ' < ' + GUIDED_SERVER_MAX : '  AND steps_done - ' + SERVER_STEPS + ' < max_steps',
-  '  AND tokens_used < max_tokens AND cost_cents <= max_cost_cents AND ?4 < deadline_at)',
+  // Keep ?4 as the current-time binding used by existing claimStep SQL.
+  '  AND cost_cents <= max_cost_cents AND ?4 >= 0)',
 ].join(' ');
 const WITHIN_LIMITS = withinLimits(false);
 /** CC8 S7 mode guidé : empreinte des effets et relevés de CI d'une exécution (?1 = run_id), pour un arrêt CAS. */
@@ -275,7 +280,8 @@ export async function createRun(db: D1Database, input: CreateRunInput): Promise<
       "FROM agent_fences f WHERE f.lease_key = ?1 AND f.holder = 'api' AND f.updated_at = ?12",
       '  AND NOT ' + HALTED + ' AND NOT EXISTS (' + active + ')',
     ].join(' ')).bind(key, input.runId, input.cycleId, input.participantId, input.taskId, input.taskKind,
-      Math.max(1, input.maxSteps), Math.max(1, input.maxTokens), Math.max(0, input.maxCostCents), input.deadlineAt,
+      input.maxSteps === -1 ? -1 : Math.max(1, input.maxSteps),
+       input.maxTokens === -1 ? -1 : Math.max(1, input.maxTokens), Math.max(0, input.maxCostCents), input.deadlineAt,
       input.prompt, input.now),
     // 7b : outbox de réveil dans le même lot, seulement si l'exécution vient d'être créée par ce lot.
     db.prepare([
@@ -303,16 +309,13 @@ async function getRun(db: D1Database, runId: string): Promise<RunRow | null> {
 }
 
 /** Arrête l'exécution si une condition d'arrêt est vraie ; rend le statut courant. */
-export async function settle(db: D1Database, runId: string, now: number, deferStepLimit = false, awaitingClarification = false): Promise<RunStatus> {
+export async function settle(db: D1Database, runId: string, now: number, _deferStepLimit = false, awaitingClarification = false): Promise<RunStatus> {
   const reason = [
     'CASE WHEN ' + HALTED + " THEN 'halted'",
     '  WHEN NOT EXISTS (SELECT 1 FROM agent_fences f WHERE f.lease_key = agent_runs.lease_key',
     "    AND f.generation = agent_runs.generation AND f.holder = 'api') THEN 'preempted'",
-    // CC8 S7 mode guidé : étapes modèle seulement ; reportable quand la suite peut être une étape serveur.
-    "  WHEN ?3 = 0 AND steps_done - (SELECT COUNT(*) FROM agent_run_server_steps ss WHERE ss.run_id = agent_runs.run_id) >= max_steps THEN 'step_limit'",
-    "  WHEN tokens_used >= max_tokens THEN 'token_limit'",
+    // A logical WorkSession has no aggregate token, step or wall-clock stop.
     "  WHEN cost_cents > max_cost_cents THEN 'cost_limit'",
-    "  WHEN ?2 >= deadline_at THEN 'deadline'",
     "  ELSE 'running' END",
   ].join(' ');
   // The run stays terminal deadline; only its typed reason escalates an unanswered clarification.
@@ -321,7 +324,7 @@ export async function settle(db: D1Database, runId: string, now: number, deferSt
     ? "CASE WHEN (" + reason + ") = 'deadline' THEN 'clarification_wait_expired' ELSE (" + reason + ') END'
     : reason;
   await db.prepare('UPDATE agent_runs SET status = ' + reason + ', stop_reason = ' + stopReason
-    + ", updated_at = ?2 WHERE run_id = ?1 AND status = 'running'").bind(runId, now, deferStepLimit ? 1 : 0).run();
+    + ", updated_at = ?2 WHERE run_id = ?1 AND status = 'running'").bind(runId, now).run();
   return (await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ status: RunStatus }>())!.status;
 }
 
@@ -674,7 +677,7 @@ async function runCiPoll(db: D1Database, run: RunRow, pending: PendingCiPoll, de
   }
   const k = pending.polls + 1;
   // Réclamation de k AVANT toute lecture externe, sous la garde LIVE et le plancher de deadline.
-  const guard = LIVE + ' AND EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1 AND ?6 + ' + CI_POLL_FLOOR_S + ' < deadline_at)';
+  const guard = LIVE + ' AND EXISTS (SELECT 1 FROM agent_runs WHERE run_id = ?1 AND ?6 >= 0)';
   const live = await db.prepare('SELECT 1 AS ok WHERE ' + guard.replaceAll('?6', '?2')).bind(run.run_id, now).first();
   if (!live) return null;
   const claim = { claimed_by: deps.workerId, claimed_at: now };
@@ -699,6 +702,41 @@ async function runCiPoll(db: D1Database, run: RunRow, pending: PendingCiPoll, de
   }
   await completeCiPoll(db, run.run_id, pending, k, claim, 'completed', content, deps.now());
   return { outcome: 'stepped' };
+}
+
+/** Only consecutive, identical, deterministic refusals count as lack of progress.
+ * Successful reads/writes, changed arguments or transient provider outages reset it.
+ * This is not a mission step/token/retry cap. */
+function deniedFingerprint(output: ModelOutput, results: ResultEntry[]): string | null {
+  if (!output.tool_calls.length || results.length !== output.tool_calls.length) return null;
+  const attempts: Array<{ name: string; args: Record<string, unknown>; error: string }> = [];
+  for (const [i, call] of output.tool_calls.entries()) {
+    const result = results[i];
+    if (!result?.error || result.id !== call.id) return null;
+    let error: unknown;
+    try { error = (JSON.parse(result.content) as { error?: unknown }).error; } catch { return null; }
+    if (typeof error !== 'string' || !/^(tool_(?:not_allowlisted|forbidden_on_api_channel|not_configured)|d12_verdict_forbidden_on_api_channel|capability_not_held:)/.test(error)) return null;
+    attempts.push({ name: call.name, args: call.args, error });
+  }
+  return canonical(attempts);
+}
+
+async function repeatedDeniedWithoutProgress(db: D1Database, runId: string, n: number,
+  output: ModelOutput, results: ResultEntry[]): Promise<boolean> {
+  const current = deniedFingerprint(output, results);
+  if (current === null || n < 2) return false;
+  const { results: previous } = await db.prepare([
+    'SELECT model_output, results FROM agent_run_steps WHERE run_id = ?1',
+    "AND n IN (?2, ?3) AND state = 'completed' ORDER BY n",
+  ].join(' ')).bind(runId, n - 2, n - 1)
+    .all<{ model_output: string | null; results: string | null }>();
+  return previous.length === 2 && previous.every(row => {
+    try {
+      return row.model_output != null && row.results != null
+        && deniedFingerprint(JSON.parse(row.model_output) as ModelOutput,
+          JSON.parse(row.results) as ResultEntry[]) === current;
+    } catch { return false; }
+  });
 }
 
 function normalizeOutput(output: ModelOutput): ModelOutput {
@@ -726,16 +764,7 @@ async function claimStep(db: D1Database, run: RunRow, deps: EngineDeps, now: num
     .bind(run.run_id, n).first<StepRow>();
   if (!step) return settled(db, run.run_id, now);
   if (step.state === 'completed' || step.claimed_at + STEP_TIMEOUT_S > now) return { outcome: 'busy' };
-  if (step.attempts >= MAX_STEP_ATTEMPTS) {
-    // Seulement si la réclamation périmée observée est toujours celle-là (aucune reprise entre-temps).
-    await db.prepare([
-      "UPDATE agent_runs SET status = 'failed', stop_reason = 'step_attempts_exhausted', updated_at = ?2",
-      "WHERE run_id = ?1 AND status = 'running' AND EXISTS (SELECT 1 FROM agent_run_steps",
-      "  WHERE run_id = ?1 AND n = ?3 AND claimed_by = ?4 AND claimed_at = ?5 AND attempts = ?6 AND state <> 'completed')",
-    ].join(' ')).bind(run.run_id, now, n, step.claimed_by, step.claimed_at, step.attempts).run();
-    const status = (await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(run.run_id).first<{ status: RunStatus }>())!.status;
-    return { outcome: status === 'running' ? 'busy' : status };
-  }
+  // A reclaimed step remains retryable across technical interruptions.
   const retaken = await db.prepare([
     'UPDATE agent_run_steps SET claimed_by = ?3, claimed_at = ?4, attempts = attempts + 1',
     "WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?5 AND claimed_at = ?6 AND state <> 'completed'",
@@ -807,7 +836,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   // − 30 s, marge avant plafond d'étape) ; chaque appel reçoit ce qui reste (la chaîne de
   // repli décompte elle-même entre maillons), arrêt propre transient sous le plancher de
   // 30 s (v2 point 4) : jamais de coupure au milieu d'un appel ni d'un effet.
-  const budgetLeftMs = stepModelBudgetMs(run.deadline_at * 1000, now * 1000);
+  const budgetLeftMs = Math.min(STEP_MODEL_BUDGET_MS, STEP_TIMEOUT_MS - EFFECT_TIMEOUT_MS);
   if (budgetLeftMs < STEP_MODEL_BUDGET_FLOOR_MS) {
     await stopAs(db, runId, 'failed', 'model_transient: budget d’appels modèle de l’étape épuisé ('
       + Math.max(0, Math.trunc(budgetLeftMs)) + ' ms restants, plan S1b-2 v2 point 4) ; relance d’exécution S1b.', now, claim);
@@ -854,14 +883,11 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         const additional = [extra, replyContext, verdictInstruction].filter(Boolean).join('\n\n');
         // Preserve an approximate full-context+output budget for the terminal verdict call.
         // No paid allowance or D12 bypass; exhausted budgets still refuse before the provider.
-        const verdictReserve = (run.task_kind === 'review' || run.task_kind === 'test') && !verdictTurn
-          ? Math.min(8192, Math.floor(run.max_tokens / 4)) : 0;
         response = await deps.model.complete({
           messages: additional ? [...messages, { role: 'user', content: additional }] : messages,
           tools: verdictTurn ? ['store_verdict'] : guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
             ? guide.tools.filter(name => tools.includes(name)) : tools,
-          task_kind: run.task_kind, budget_left_ms: budgetLeftMs,
-          budget_left_tokens: Math.max(0, run.max_tokens - run.tokens_used - verdictReserve) });
+          task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
       }
     } catch (error) {
       const usage = error instanceof ModelCallError ? error.usage : null;
@@ -869,9 +895,27 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         db.prepare('UPDATE agent_runs SET tokens_used = tokens_used + ?2, cost_cents = cost_cents + ?3, updated_at = ?4 WHERE run_id = ?1')
           .bind(runId, Math.max(0, usage?.tokens ?? 0), Math.max(0, usage?.cost_cents ?? 0), now),
       ]);
-      // Le repli intra-famille est déjà épuisé. Terminer cette tentative avec
-      // son motif typé ; seul le planificateur peut en créer une autre après 900 s.
-      // Ne pas modifier la réclamation : stopAs vérifie encore son identité exacte.
+      // A provider 429/5xx/timeout is an interrupted *call*, not a failed
+      // logical mission. Keep the exact D1 step and tool journal: after a
+      // durable backoff, claimStep reclaims this same step on the same run_id.
+      // No arbitrary attempt ceiling and no new task/branch/PR is created.
+      if (modelFailureKind(error) === 'transient') {
+        const retryAt = deps.now();
+        const delayS = Math.min(300, 30 * 2 ** Math.min(4, Math.max(0, claim.attempts - 1)));
+        const released = await db.prepare([
+          'UPDATE agent_run_steps SET claimed_at = ?4',
+          "WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?5 AND state = 'claimed' AND " + LIVE,
+        ].join(' ')).bind(runId, n, deps.workerId, retryAt - STEP_TIMEOUT_S + delayS, claim.attempts).run();
+        if (released.meta.changes !== 1) return settled(db, runId, retryAt);
+        await db.prepare([
+          "INSERT INTO agent_run_journal (at,kind,run_id,detail) VALUES (?1,'model_retry',?2,?3)",
+        ].join(' ')).bind(retryAt, runId, JSON.stringify({
+          step: n, attempt: claim.attempts, backoff_seconds: delayS, reason: 'provider_transient',
+        })).run();
+        return { outcome: 'retry' };
+      }
+      // An invalid/unauthorized provider request is not retried blindly.
+      // It remains visible for diagnosis; transient errors resume instead.
       await stopAs(db, runId, 'failed', 'model_' + modelFailureKind(error) + ': ' + errorText(error), now, claim);
       return { outcome: 'failed' };
     }
@@ -979,8 +1023,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const results: ResultEntry[] = [];
   for (const [idx, call] of output.tool_calls.entries()) {
     const refused = (reason: string) => results.push({ id: call.id, content: JSON.stringify({ error: reason }), error: true });
-    if (idx >= MAX_TOOL_CALLS_PER_STEP) { refused('too_many_tool_calls'); continue; }
-    if ((API_AGENT_FORBIDDEN as readonly string[]).includes(call.name)) { refused('tool_forbidden_on_api_channel'); continue; }
+    // Owner-only actions and raw D12 submissions cannot be smuggled into the
+    // provider API by an accidentally permissive future tool host.
+    if ((API_AGENT_FORBIDDEN as readonly string[]).includes(call.name)) {
+      refused('tool_forbidden_on_api_channel');
+      continue;
+    }
     const spec = deps.tools.spec(run.task_kind, call.name);
     if (!spec || spec.name !== call.name) { refused('tool_not_allowlisted'); continue; }
     if (spec.effect === 'read') {
@@ -991,19 +1039,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       }
       continue;
     }
-    // CC-7 L5b (S10) : store_verdict est la seule écriture à verdict permise au canal
-    // API — le serveur re-vérifie tout dans verdict-tools (rôle, identité, couple exact
-    // relu, CI au head, preuve de lecture github_diff, idempotence déterministe). Tout
-    // autre appel d'écriture reste soumis au refus D12.
-    // CC-7 L6b-2 : store_contribute porte un état de conception (AGREE/AMEND/OBJECTION) sans PR ni
-    // head/base, re-vérifié serveur contre la phase courante (contribution-tools) : même exception.
+    // A generic write must not carry a free-form D12 verdict; the only exceptions
+    // are the dedicated store_verdict/store_contribute tools, which re-verify
+    // authority server-side at the effect point (role, phase, head/base and CI).
     if (call.name !== 'store_verdict' && call.name !== 'store_contribute') {
-      try {
-        assertNotD12Verdict(call.args);
-      } catch {
-        refused('d12_verdict_forbidden_on_api_channel');
-        continue;
-      }
+      try { assertNotD12Verdict(call.args); }
+      catch { refused('d12_verdict_forbidden_on_api_channel'); continue; }
     }
     // CC-8 S1b-2 (relecture D12 #255, bloquant 1) : garde avant chaque effet — l'effet doit
     // pouvoir FINIR avant le plafond d'étape ET la deadline du run : on réserve son timeout
@@ -1012,8 +1053,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // la relance d'exécution S1b reprend (v2 point 4).
     // Un ancien worker dont la réclamation a été reprise entre-temps ne décide de rien :
     // réclamation fraîche relue, il rend 'busy' — jamais un faux 'failed' au nom d'un autre.
-    if (claimed.claimed_at + STEP_TIMEOUT_S - deps.now() < EFFECT_LAUNCH_FLOOR_S
-      || run.deadline_at - deps.now() < EFFECT_LAUNCH_FLOOR_S) {
+    if (claimed.claimed_at + STEP_TIMEOUT_S - deps.now() < EFFECT_LAUNCH_FLOOR_S) {
       const fresh = await db.prepare('SELECT claimed_by, claimed_at, attempts FROM agent_run_steps WHERE run_id = ?1 AND n = ?2')
         .bind(runId, n).first<{ claimed_by: string; claimed_at: number; attempts: number }>();
       if (!fresh || fresh.claimed_by !== deps.workerId || fresh.claimed_at !== claimed.claimed_at
@@ -1089,11 +1129,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const provenAtStore = run.task_kind !== 'implement' && output.tool_calls.some(call =>
     ['store_answer', 'store_verdict', 'store_contribute'].includes(call.name))
     && await completionVerified(db, run, deps);
-  const final = output.tool_calls.length === 0 || provenAtPr || provenAtHandover || provenAtStore ? 1 : 0;
-  const verified = provenAtPr || provenAtHandover || provenAtStore
-    || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true);
+  const noProgress = await repeatedDeniedWithoutProgress(db, runId, n, output, results);
+  const final = noProgress || output.tool_calls.length === 0 || provenAtPr || provenAtHandover || provenAtStore ? 1 : 0;
+  const verified = !noProgress && (provenAtPr || provenAtHandover || provenAtStore
+    || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true));
   const completionStatus = verified ? 'completed' : 'failed';
-  const completionReason = verified ? 'final'
+  const completionReason = noProgress ? 'blocked:no_progress:repeated_denial' : verified ? 'final'
     : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
   const [done] = await db.batch([
     db.prepare([
@@ -1110,6 +1151,25 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId, completionStatus, completionReason),
   ]);
   if (done.meta.changes !== 1) return settled(db, runId, now);
+  if (noProgress) {
+    // Durable, idempotent breadcrumb even when the optional salon is unavailable.
+    await db.prepare([
+      "INSERT INTO agent_run_journal (at,kind,run_id,detail)",
+      "SELECT ?2,'no_progress',?1,?3 WHERE EXISTS (SELECT 1 FROM agent_runs",
+      " WHERE run_id=?1 AND status='failed' AND stop_reason=?4)",
+      " AND NOT EXISTS (SELECT 1 FROM agent_run_journal WHERE run_id=?1 AND kind='no_progress')",
+    ].join(' ')).bind(runId, now, JSON.stringify({ step: n, reason: completionReason }), completionReason).run();
+    if (deps.salonEnabled && run.task_id) {
+      try {
+        await postSalonMessage(db, { SALON_ENABLED: 'true' }, {
+          authorPid: run.participant_id, level: 'blocking', taskId: run.task_id,
+          incidentKey: ('no-progress:' + runId).slice(0, 128), now,
+          body: 'WorkSession ' + runId + ' bloquée : même outil et même refus déterministe sur trois étapes consécutives (D1). ' +
+            'Aucun effet externe effectué. Diagnostic : ' + completionReason + '. Intervention/clarification demandée.',
+        });
+      } catch { /* D1 checkpoint already retained; the salon cannot override a terminal state. */ }
+    }
+  }
   if (final) return { outcome: completionStatus };
   // Mode guidé : la limite d'étapes modèle se juge à la prochaine réclamation (une étape serveur peut suivre).
   const status = await settle(db, runId, now, guarded && deps.guidedS7 === true);

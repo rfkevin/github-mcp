@@ -1,69 +1,18 @@
-import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { ensureSchema } from '../../../src/collab-store/store/schema';
-import { ensureAgentRunSchema } from '../../../src/collab-store/agentrun/schema';
-import { createRun, type ToolHost } from '../../../src/collab-store/agentrun/engine';
+import type { ToolHost } from '../../../src/collab-store/agentrun/engine';
 import {
   createReadToolHost, requiredUnifiedCapability, runVerifiedClaims, READ_TOOLS_BY_KIND,
-  READ_TOOL_SCHEMAS, CONTINUITY_TOOL_SCHEMAS, type ReadToolHostOptions, type RunScope,
+  READ_TOOL_SCHEMAS, CONTINUITY_TOOL_SCHEMAS, type ReadToolHostOptions,
 } from '../../../src/collab-store/agentrun/read-tools';
 import { resolveUnifiedCapabilities } from '../../../src/collab-store/agentrun/agent-capabilities';
 import { WRITE_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/store-tools';
-import { GITHUB_WRITE_TOOL_SCHEMAS, type GitHubWrites } from '../../../src/collab-store/agentrun/github-tools';
+import { GITHUB_WRITE_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/github-tools';
 import { S7_SCHEMAS } from '../../../src/collab-store/agentrun/github-write/tools';
 import { VERDICT_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/verdict-tools';
 import { CONTRIBUTION_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/contribution-tools';
 import { MODEL_CHOICE_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/model-choice-tools';
 import { RESEARCH_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/research';
-
-const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
-const NOW = 2_000_000_000;
-/** c2c-author/reviewer/tester = titulaires ; c2c-intruder enregistré sans rôle ; c2c-answerer destinataire X13 sans tâche ; c2c-ghost absent de participants. */
-const REGISTERED = ['c2c-author', 'c2c-reviewer', 'c2c-tester', 'c2c-intruder', 'c2c-answerer'];
-
-async function seeded(input: { kind: string; participant: string; ownedPaths?: string; taskless?: boolean }): Promise<{ runId: string; scope: RunScope }> {
-  await ensureSchema(db);
-  await ensureAgentRunSchema(db);
-  for (const id of REGISTERED) {
-    await db.prepare("INSERT OR IGNORE INTO participants (participant_id, display_label, status) VALUES (?1, ?1, 'active')").bind(id).run();
-  }
-  const cycleId = 'cc8-c2c-' + crypto.randomUUID();
-  const taskId = 'c2c-task-' + crypto.randomUUID().slice(0, 8);
-  await db.prepare("INSERT INTO cycles (cycle_id, project, phase, revision, status) VALUES (?1, 'rfkevin/github-mcp', 'P6', 1, 'open')").bind(cycleId).run();
-  await db.prepare([
-    'INSERT INTO tasks (task_id, cycle_id, owner_pid, reviewer_pid, tester_pid,',
-    'status, owned_paths, target_ref, next_action, revision)',
-    "VALUES (?1, ?2, 'c2c-author', 'c2c-reviewer', 'c2c-tester', 'in_progress', ?3, '', 'read source', 1)",
-  ].join(' ')).bind(taskId, cycleId, input.ownedPaths ?? '["src/x.ts"]').run();
-  const runId = 'c2c-run-' + crypto.randomUUID();
-  const created = await createRun(db, {
-    runId, cycleId, participantId: input.participant, taskId: input.taskless ? '' : taskId, taskKind: input.kind,
-    prompt: 'Mission C2c.', maxSteps: 4, maxTokens: 5_000, maxCostCents: 0, deadlineAt: NOW + 900, now: NOW,
-  });
-  expect(created.created).toBe(true);
-  return { runId, scope: { cycle_id: cycleId, participant_id: input.participant, task_id: input.taskless ? '' : taskId, task_kind: input.kind } };
-}
-
-const github = {
-  getTextFile: async () => ({ path: 'src/x.ts', sha: 'b'.repeat(40), content: 'contenu', size: 8 }),
-  getPullRequest: async () => ({ number: 1, state: 'open', head: {}, base: {} }),
-  listCheckRuns: async () => [],
-  compareRefs: async () => ({ status: 'identical', files: [] }),
-};
-
-const writes: GitHubWrites = {
-  branchHead: async () => null,
-  createBranch: async () => ({ sha: 'c'.repeat(40) }),
-  commitFiles: async () => ({ commit_sha: 'd'.repeat(40) }),
-  recentCommits: async () => [],
-  openDraftPullRequest: async () => ({ number: 1, head_sha: 'e'.repeat(40) }),
-  openPullRequest: async () => ({ number: 2, head_sha: 'f'.repeat(40) }),
-  findPullRequest: async () => null,
-};
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+import { db, NOW, seeded, github, writes, messageOf } from './cc8-capability-fixture';
 
 describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () => {
   it("l'allowlist par kind est conservée à l'identique ; deux outils restent hors vocabulaire C0", () => {
@@ -77,12 +26,12 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
       test: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs', 'github_diff'],
       design: ['store_context', 'store_delta'],
     });
-    expect(requiredUnifiedCapability('store_choose_model')).toBeNull();
-    expect(requiredUnifiedCapability('web_fetch_official')).toBeNull();
+    expect(requiredUnifiedCapability('store_choose_model')).toBe('model.choose');
+    expect(requiredUnifiedCapability('web_fetch_official')).toBe('web.read');
   });
 
   it('caractérisation : chaque outil du runtime exige une capacité C0 ou est explicitement hors vocabulaire', () => {
-    const ungated = new Set(['web_fetch_official', 'store_choose_model']);
+    const ungated = new Set<string>();
     const groups = [READ_TOOL_SCHEMAS, CONTINUITY_TOOL_SCHEMAS, WRITE_TOOL_SCHEMAS, GITHUB_WRITE_TOOL_SCHEMAS,
       S7_SCHEMAS, VERDICT_TOOL_SCHEMAS, CONTRIBUTION_TOOL_SCHEMAS, MODEL_CHOICE_TOOL_SCHEMAS, RESEARCH_TOOL_SCHEMAS];
     let mapped = 0;
@@ -180,7 +129,8 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     const configured = optionsFor(noGrant.scope.cycle_id, noGrant.scope.task_id, '[]');
     expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, noGrant.scope, configured))).not.toContain('github.write');
     const h = createReadToolHost(configured);
-    await expect(h.execute({ id: 't', name: 'github_write_scope', args: {} }, { run_id: noGrant.runId }))
+    await expect(h.execute({ id: 't', name: 'github_write_scope', args: {} },
+      { run_id: noGrant.runId, effect_key: 'a'.repeat(64) }))
       .rejects.toThrow(/capability_not_held:github\.write/);
     // Grant statique mais mandat de tâche vide : fail-closed (assertPaths borne chaque effet à grant ∩ owned_paths).
     const emptyMandate = optionsFor(noPaths.scope.cycle_id, noPaths.scope.task_id, grantFor(noPaths.scope.cycle_id, noPaths.scope.task_id));
@@ -246,4 +196,5 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     const off: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true };
     expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, designer.scope, off))).not.toContain('design.contribute');
   });
+
 });

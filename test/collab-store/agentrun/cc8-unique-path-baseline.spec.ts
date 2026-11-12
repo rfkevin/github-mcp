@@ -65,18 +65,11 @@ describe('CC8 E0-0 — comportement avant unification (golden baseline)', () => 
   });
 
   it('capture les plafonds applicatifs actuels, distincts des privilèges des outils', () => {
-    const historical: Record<PlannedTaskKind, [number, number]> = {
-      answer: [8_000, 6],
-      design: [12_000, 6],
-      review: [48_000, 6],
-      test: [48_000, 6],
-      implement: [48_000, 12],
-    };
-    for (const kind of Object.keys(historical) as PlannedTaskKind[]) {
-      expect([taskKindMaxTokens(kind), taskKindMaxSteps(kind)]).toEqual(historical[kind]);
+    for (const kind of KINDS as PlannedTaskKind[]) {
+      expect([taskKindMaxTokens(kind), taskKindMaxSteps(kind)]).toEqual([-1, -1]);
     }
-    expect(taskKindMaxTokens('review', { AGENT_RUN_COST_CENTS_REVIEW: '1' })).toBe(16_000);
-    expect(taskKindMaxTokens('implement', { AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS: '120000' })).toBe(120_000);
+    expect(taskKindMaxTokens('review', { AGENT_RUN_COST_CENTS_REVIEW: '1' })).toBe(-1);
+    expect(taskKindMaxTokens('implement', { AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS: '120000' })).toBe(-1);
   });
 
   it('caractérise la préparation guidée responsable des échecs initiaux (sans la normaliser)', () => {

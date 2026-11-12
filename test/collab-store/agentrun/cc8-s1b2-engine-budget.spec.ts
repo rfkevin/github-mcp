@@ -45,21 +45,21 @@ async function runOneEffect(prefix: string, deadlineAt: number, modelEndsAt: num
 }
 
 describe('CC8 S1b-2 — budget d’appels et garde avant effets (engine, plan seq 1376 point 4)', () => {
-  it('deadline trop proche : garde budget — arrêt propre model_transient, AUCUN appel modèle', async () => {
-    const runId = await freshRun('s1b2-enga', AT + 20); // 20 s < plancher 30 s
+  it('la deadline logique ne bloque pas le modèle ni les outils pendant une session active', async () => {
+    const runId = await freshRun('s1b2-enga', AT + 20);
     const clock = { now: AT + 1 };
+    const executed = { count: 0 };
     let called = 0;
     const model: ModelClient = { complete: async () => {
       called++;
-      return { output: { text: 'x', tool_calls: [] }, usage: { tokens: 1, cost_cents: 0 } };
+      return { output: { text: '', tool_calls: [{ id: 'call-1', name: 'write_tool', args: {} }] },
+        usage: { tokens: 1, cost_cents: 0 } };
     } };
-    const deps: EngineDeps = { model, tools: toolHost({ count: 0 }), now: () => clock.now, workerId: 's1b2-worker' };
-    const result = await runStep(db, runId, deps);
-    expect(result.outcome).toBe('failed');
-    expect(called).toBe(0);
-    const run = await db.prepare('SELECT stop_reason FROM agent_runs WHERE run_id = ?1').bind(runId).first<{ stop_reason: string }>();
-    expect(run?.stop_reason).toContain('model_transient');
-    expect(run?.stop_reason).toContain('budget d’appels modèle de l’étape épuisé');
+    const result = await runStep(db, runId, { model, tools: toolHost(executed), now: () => clock.now,
+      workerId: 's1b2-worker' });
+    expect(result.outcome).toBe('stepped');
+    expect(called).toBe(1);
+    expect(executed.count).toBe(1);
   });
 
   it('marge insuffisante avant un effet : l’effet n’est JAMAIS lancé, arrêt propre transient', async () => {
@@ -95,11 +95,10 @@ describe('CC8 S1b-2 — budget d’appels et garde avant effets (engine, plan se
     expect(r.executed).toBe(1);
   });
 
-  it('deadline du run trop proche alors que le plafond d’étape est large : l’effet n’est JAMAIS lancé (borné par les DEUX)', async () => {
-    // Deadline à AT + 141 (140 s restantes < 150 s) ; plafond d'étape large (591 s), 131 s restantes.
+  it('la deadline d’une ancienne mission n’interdit plus une écriture qui tient dans le temps physique de l’étape', async () => {
     const r = await runOneEffect('s1b2-engd', AT + 141, AT + 10);
-    expect(r.outcome).toBe('failed');
-    expect(r.executed).toBe(0);
-    expect(r.stopReason).toContain('temps insuffisant avant l’effet');
+    expect(r.outcome).toBe('stepped');
+    expect(r.executed).toBe(1);
+    expect(r.stopReason).not.toContain('model_transient');
   });
 });

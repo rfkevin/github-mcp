@@ -156,7 +156,7 @@ describe('CC-7 L11 — outils de l’exécution research', () => {
     const answer = await researchRun('vibe', 'prix', 'answer');
     const shared = await on.execute({ id: 'c2', name: 'store_salon_read', args: {} }, { run_id: answer }) as { messages: Array<{ author: string }> };
     expect(shared.messages.some(m => m.author === 'vibe')).toBe(true);
-    expect(await refusal(on.execute({ id: 'c3', name: 'web_fetch_official', args: { url: 'https://docs.z.ai/' } }, { run_id: answer }))).toBe('unknown_run');
+    expect(await refusal(on.execute({ id: 'c3', name: 'web_fetch_official', args: { url: 'https://docs.z.ai/' } }, { run_id: answer }))).toBe('research_not_configured');
   });
 });
 

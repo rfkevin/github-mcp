@@ -129,6 +129,8 @@ export const outputSchemas = {
         seq: z.number(), at: z.number(), channel: z.enum(['api', 'chat']), done: z.string(), todo: z.string(), learned: z.string(),
       })),
       truncated: z.object({ api_runs: z.boolean(), handovers: z.boolean() }),
+      page: z.number().optional(),
+      next_page: z.number().nullable().optional(),
     }).optional(),
     // CC-7 L12 : travail en cours du même agent (chat ou API), lecture seule et bornée.
     active_work: z.object({
@@ -136,6 +138,8 @@ export const outputSchemas = {
       open_api_runs: z.array(z.object({ run_id: z.string(), task_id: z.string(), task_kind: z.string(), status: z.string(), updated_at: z.number() })),
       last_checkpoints: z.array(z.object({ task: z.string().nullable(), seq: z.number(), at: z.number(), channel: z.enum(['api', 'chat']), summary: z.string() })),
       truncated: z.object({ open_api_runs: z.boolean(), last_checkpoints: z.boolean() }),
+      page: z.object({ open_api_runs: z.number(), last_checkpoints: z.number() }).optional(),
+      next_page: z.object({ open_api_runs: z.number().nullable(), last_checkpoints: z.number().nullable() }).optional(),
     }).optional(),
     delta: z.object({
       events: z.array(z.object(storedEvent)),
@@ -199,7 +203,7 @@ export const outputSchemas = {
     has_more: z.boolean(),
     next_cursor: z.string().optional(),
     scopes: z.array(z.object({
-      scope: z.string(), family: z.string(), budget: z.number(), tokens_active: z.number(),
+      scope: z.string(), family: z.string(), budget: z.number().nullable(), tokens_active: z.number(),
       counts: z.object({ candidate: z.number(), active: z.number(), superseded: z.number(), retired: z.number() }),
       baseline: z.number(), occurrences: z.number(), paused: z.boolean(),
       pauses: z.array(z.object({

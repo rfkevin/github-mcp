@@ -206,10 +206,11 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(forB.some((r) => r.id === priv.id)).toBe(true);
   });
 
-  it('budget blocks further activation', async () => {
+  it('preserves personal memory beyond the former scope token ceiling', async () => {
     const mem = store();
-    let blocked = false;
-    // CC-7 M2 : budget participant 1500 (au lieu de 500) — 150 jetons par entrée, le 11e dépasse.
+    // Each entry is ~150 tokens. Exceed the former 1500-token limit; a
+    // continuity agent must be able to keep adding useful observations.
+    let activated = 0;
     for (let i = 0; i < 12; i++) {
       const p = await mem.propose({
         scope: 'participant:agent:z',
@@ -218,26 +219,25 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
         evidence_refs: ['e' + i],
         author_pid: 'agent:z',
       });
-      try {
-      // CC-7 M2 : un cycle par activation — le plafond de 10 activations par cycle ne doit pas
-      // masquer le budget (atteint au 11e avec 1500 jetons).
-      await mem.activate(p.id, 1, 'agent:z', 'budget-' + i);
-      } catch (err) {
-        if (err instanceof MemoryStoreError && err.code === 'MEMORY_BUDGET_EXCEEDED') {
-          blocked = true;
+      // A legacy growth alarm may pause activations; this test checks the
+      // storage ceiling independently of that separate C4 review workflow.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await mem.activate(p.id, 1, 'agent:z', 'budget-' + i);
+          activated++;
           break;
+        } catch (err) {
+          if (err instanceof MemoryStoreError && err.code === 'ACTIVATION_PAUSED') {
+            const pauseId = await mem.pauseClearRequestId('participant:agent:z');
+            await seedOwner(pauseId);
+            await mem.clearActivationPause(pauseId, 'participant:agent:z');
+            continue;
+          }
+          throw err;
         }
-        if (err instanceof MemoryStoreError && err.code === 'ACTIVATION_PAUSED') {
-          const budgetPauseRef = await mem.pauseClearRequestId('participant:agent:z');
-          await seedOwner(budgetPauseRef);
-          await mem.clearActivationPause(budgetPauseRef, 'participant:agent:z');
-          i -= 1;
-          continue;
-        }
-        throw err;
       }
     }
-    expect(blocked).toBe(true);
+    expect(activated).toBe(12);
   });
 
   it('hypothesis expires at expires_rev of ITS origin cycle only (CR-F04)', async () => {
@@ -852,109 +852,64 @@ describe('CC-3 C4 — memory lifecycle (I4)', () => {
     expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(10);
   });
 
-  it('A03: two candidates for the last budget tokens -> exactly one activation, budget never exceeded', async () => {
+  it('CC8: parallel memory activations are allowed past legacy token budgets', async () => {
     const mem = store();
-    // CC-7 M2 : budget participant porté à 1500 ; la course se joue sur role (800 jetons).
     const scope = 'role:a03-budget';
     const cycle = 'cy-a03-budget';
-    await seedBaseline(scope, 10); // keep the growth alarm out of this race
+    await seedBaseline(scope, 10);
     for (let i = 0; i < 4; i++) {
       const p = await mem.propose({
-        scope,
-        kind: 'lesson',
+        scope, kind: 'lesson',
         text: ('budget filler ' + i + ' ').repeat(60).slice(0, 600),
-        evidence_refs: [`e-budget-${i}`],
-        author_pid: 'agent:a',
+        evidence_refs: [`e-budget-${i}`], author_pid: 'agent:a',
       });
       await mem.activate(p.id, 1, 'agent:b', cycle);
     }
-    const a = await mem.propose({
-      scope,
-      kind: 'lesson',
-      text: 'a'.repeat(600),
-      evidence_refs: ['e-budget-a'],
-      author_pid: 'agent:a',
-    });
-    const b = await mem.propose({
-      scope,
-      kind: 'lesson',
-      text: 'b'.repeat(600),
-      evidence_refs: ['e-budget-b'],
-      author_pid: 'agent:a',
-    });
-    const { winner, loserError } = await raceTwo(
+    const a = await mem.propose({ scope, kind: 'lesson', text: 'a'.repeat(600),
+      evidence_refs: ['e-budget-a'], author_pid: 'agent:a' });
+    const b = await mem.propose({ scope, kind: 'lesson', text: 'b'.repeat(600),
+      evidence_refs: ['e-budget-b'], author_pid: 'agent:a' });
+    // Both used to race for 800 stored tokens. The owner removed that app
+    // ceiling; there are still separate per-cycle identity and revision checks.
+    const [aa, bb] = await Promise.all([
       mem.activate(a.id, 1, 'agent:b', cycle),
       mem.activate(b.id, 1, 'agent:c', cycle),
-    );
-    expect(loserError.code).toBe('MEMORY_BUDGET_EXCEEDED');
-    await expectWinnerActiveLoserCandidate(mem, a, b, winner);
-    // 600 filler tokens + 150 winner tokens = 750 <= 800 budget: the guard
-    // refused the second 150-token activation before the budget could slip.
-    const { results: activeRows } = await bindings.COLLAB_DB_C2.prepare(
-      `SELECT text FROM memory_entries WHERE status = 'active' AND scope = ?1`,
-    )
-      .bind(scope)
-      .all<{ text: string }>();
-    const used = (activeRows ?? []).reduce((sum, r) => sum + Math.ceil(r.text.length / 4), 0);
-    expect(used).toBe(750);
-    // The loser's cap reservation rolled back with its failed transaction.
-    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(5);
+    ]);
+    expect(aa.status).toBe('active');
+    expect(bb.status).toBe('active');
+    const { results } = await bindings.COLLAB_DB_C2.prepare(
+      "SELECT COALESCE(token_cost,-1) AS token_cost FROM memory_entries WHERE status='active' AND scope=?1"
+    ).bind(scope).all<{ token_cost: number }>();
+    expect(results.reduce((sum, r) => sum + r.token_cost, 0)).toBe(900);
+    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(6);
   });
 
-  it('A03: non-BMP budget race -> the guard sums the persisted exact token cost', async () => {
+  it('CC8: non-BMP parallel activations persist exact UTF-16 token accounting', async () => {
     const mem = store();
-    // CC-7 M2 : budget participant porté à 1500 ; la course se joue sur role (800 jetons).
     const scope = 'role:a03-unicode';
     const cycle = 'cy-a03-unicode';
-    await seedBaseline(scope, 100); // keep the growth alarm out of this race
-    // Emoji fillers: one rocket is 2 UTF-16 units in JS but a single code
-    // point for SQLite length(), so the old in-batch guard under-counted
-    // non-BMP text. Used after activation: 4 x 150 + 120 = 720 tokens
-    // (budget 800 for a role scope).
+    await seedBaseline(scope, 100);
     for (const [i, units] of [600, 600, 600, 600, 480].entries()) {
-      const p = await mem.propose({
-        scope,
-        kind: 'lesson',
-        text: '🚀'.repeat(units / 2),
-        evidence_refs: [`e-uni-${i}`],
-        author_pid: 'agent:a',
-      });
+      const p = await mem.propose({ scope, kind: 'lesson',
+        text: '🚀'.repeat(units / 2), evidence_refs: [`e-uni-${i}`], author_pid: 'agent:a' });
       await mem.activate(p.id, 1, 'agent:b', cycle);
     }
-    // Two 60-token candidates (120 emoji = 240 UTF-16 units): each passes the
-    // JS pre-check alone (720 + 60 <= 800), together they exceed the budget
-    // (840 > 800). The transactional guard must refuse the second one using
-    // the persisted exact costs, not the under-counting SQL approximation.
-    const a = await mem.propose({
-      scope,
-      kind: 'lesson',
-      text: '🚀'.repeat(120),
-      evidence_refs: ['e-uni-a'],
-      author_pid: 'agent:a',
-    });
-    const b = await mem.propose({
-      scope,
-      kind: 'lesson',
-      text: '🚀'.repeat(120),
-      evidence_refs: ['e-uni-b'],
-      author_pid: 'agent:a',
-    });
-    const { winner, loserError } = await raceTwo(
+    const a = await mem.propose({ scope, kind: 'lesson', text: '🚀'.repeat(120),
+      evidence_refs: ['e-uni-a'], author_pid: 'agent:a' });
+    const b = await mem.propose({ scope, kind: 'lesson', text: '🚀'.repeat(120),
+      evidence_refs: ['e-uni-b'], author_pid: 'agent:a' });
+    const [aa, bb] = await Promise.all([
       mem.activate(a.id, 1, 'agent:b', cycle),
       mem.activate(b.id, 1, 'agent:c', cycle),
-    );
-    expect(loserError.code).toBe('MEMORY_BUDGET_EXCEEDED');
-    await expectWinnerActiveLoserCandidate(mem, a, b, winner);
-    const { results: activeCosts } = await bindings.COLLAB_DB_C2.prepare(
-      `SELECT COALESCE(token_cost, -1) AS token_cost FROM memory_entries WHERE status = 'active' AND scope = ?1`,
-    )
-      .bind(scope)
-      .all<{ token_cost: number }>();
-    // Exact persisted costs (UTF-16 based), never the code-point approximation.
-    expect((activeCosts ?? []).map((r) => r.token_cost).sort((x, y) => x - y)).toEqual([60, 120, 150, 150, 150, 150]);
-    // 720 + 60 = 780 <= 800: the scope budget holds at the JS contract level.
-    expect((activeCosts ?? []).reduce((sum, r) => sum + r.token_cost, 0)).toBe(780);
-    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(6);
+    ]);
+    expect(aa.status).toBe('active');
+    expect(bb.status).toBe('active');
+    const { results } = await bindings.COLLAB_DB_C2.prepare(
+      "SELECT COALESCE(token_cost,-1) AS token_cost FROM memory_entries WHERE status='active' AND scope=?1"
+    ).bind(scope).all<{ token_cost: number }>();
+    expect(results.map(x => x.token_cost).sort((x, y) => x - y)).toEqual([60, 60, 120, 150, 150, 150, 150]);
+    expect(results.reduce((sum, r) => sum + r.token_cost, 0)).toBe(840);
+    expect(await capWrites(`mem:act:${cycle}:${scope}`)).toBe(7);
   });
 
   it('A03/I4: two candidate versions of one id activated in parallel -> exactly one active version', async () => {

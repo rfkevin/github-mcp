@@ -390,7 +390,8 @@ async function memoryInventory(context: CollabToolContext, input: InventoryInput
     return {
       scope: row.scope,
       family,
-      budget: MEMORY_TOKEN_BUDGETS[family] ?? 500,
+      // Infinity is a storage policy, not JSON: null means unlimited.
+      budget: Number.isFinite(MEMORY_TOKEN_BUDGETS[family] ?? 500) ? (MEMORY_TOKEN_BUDGETS[family] ?? 500) : null,
       tokens_active: row.tokens_active,
       counts: { candidate: row.candidate, active: row.active, superseded: row.superseded, retired: row.retired },
       baseline: counters.get(baselineKey(row.scope)) ?? 0,

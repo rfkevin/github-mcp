@@ -207,9 +207,13 @@ describe('CC-5 l7c-2 — écritures store', () => {
   it('câblage : engineFor réel propose les écritures du type ; consigne commune explicite', () => {
     const ai = { async run() { return {}; } };
     const deps = engineFor({ AGENT_RUN_MODEL: 'workers-ai:@cf/zai-org/glm-4.7-flash', AI: ai }, db)('r');
-    expect(deps.tools.list('answer')).toEqual(['store_context', 'store_delta', 'store_answer', 'store_ask']);
-    expect(deps.tools.list('research')).toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
-    expect(AGENT_RUN_SYSTEM).toContain('in_progress/blocked');
+    for (const kind of ['answer', 'research']) {
+      const offered = deps.tools.list(kind);
+      expect(offered).toEqual(expect.arrayContaining(['store_context', 'store_delta', 'store_memory',
+        'store_continuity', 'store_ask', 'store_answer']));
+      expect(new Set(offered).size).toBe(offered.length);
+    }
+    expect(AGENT_RUN_SYSTEM).toContain('identité, rôle et mandat');
   });
 });
 

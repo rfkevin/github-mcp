@@ -36,7 +36,7 @@ interface InventoryEntry { id: string; version: number; scope: string; status: s
 interface InventoryPause { occurrence: number; reason: string; request_id: string; opened_seq: number; opened_at: number;
   decision: string | null; decided_at: number | null; open: boolean;
   corrective_events: Array<{ seq: number; at: number; type: string; cycle_id: string; id: string }>; corrective_truncated: boolean }
-interface InventoryScope { scope: string; tokens_active: number;
+interface InventoryScope { scope: string; budget: number | null; tokens_active: number;
   counts: { candidate: number; active: number; superseded: number; retired: number };
   baseline: number; occurrences: number; paused: boolean; pauses: InventoryPause[] }
 interface Inventory { entries: InventoryEntry[]; has_more: boolean; next_cursor?: string; scopes: InventoryScope[] }
@@ -76,7 +76,7 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(own.entries[0].token_cost).toBe((await db.prepare('SELECT token_cost FROM memory_entries WHERE id = ?1 AND version = 1')
       .bind(id).first<{ token_cost: number }>())!.token_cost);
     expect(own.scopes).toHaveLength(1);
-    expect(own.scopes[0]).toMatchObject({ scope: privateScope, paused: false, occurrences: 0, baseline: 1 });
+    expect(own.scopes[0]).toMatchObject({ scope: privateScope, budget: null, paused: false, occurrences: 0, baseline: 1 });
     expect(own.scopes[0].counts).toEqual({ candidate: 0, active: 1, superseded: 0, retired: 0 });
     // Client non enregistré : aucun scope participant ne lui est accessible.
     const anon = await client();
@@ -128,8 +128,8 @@ describe('CC-7 M1b — inventaire mémoire ré-exécutable et simulation des seu
     expect(filtered.entries).toHaveLength(2);
     expect(filtered.entries.every(entry => entry.status === 'candidate')).toBe(true);
     expect(filtered.entries[0].id > pageA.entries[1].id).toBe(true);
-    // Rollup du scope projet : 6 candidates, aucun token actif, budget famille project.
-    expect(all.scopes[0]).toMatchObject({ scope, budget: 2000, tokens_active: 0 });
+    // Rollup du scope projet : 6 candidates, aucun token actif ; null = illimité.
+    expect(all.scopes[0]).toMatchObject({ scope, budget: null, tokens_active: 0 });
     expect(all.scopes[0].counts).toEqual({ candidate: 6, active: 0, superseded: 0, retired: 0 });
     // Curseur illisible : refus typé MEMORY_CURSOR_INVALID, jamais une page devinée.
     expect(code(await beta.call('collab_memory_inventory', { scopes: [scope], cursor: '###pas-du-base64###' }))).toBe('MEMORY_CURSOR_INVALID');

@@ -2,7 +2,6 @@ import { ToolRefused, type LookupResult, type ToolCall } from '../engine';
 import { createGitHubWriteTools, apiBranch, type GitHubWriteToolsOptions } from '../github-tools';
 import type { GitHubReads } from '../read-tools';
 import type { ToolSchema } from '../workers-ai-model';
-import { createStoreWriteTools } from '../store-tools';
 import { authorize, assertPaths, exactGrant, type WritePolicy, type WriteScope } from './authorization';
 import { MAX_EDITS, normalizeEdits, replaceOnce } from './edits';
 import { functionalTestCause, missionOf } from '../mission-quality';
@@ -19,7 +18,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const common = { name: { type: 'string' }, sha: { type: 'string', pattern: SHA.source } };
 export const S7_SCHEMAS: readonly ToolSchema[] = [
   { name: 'github_write_scope', description: 'Lire votre mandat serveur : branche, nom, chemins, SHA actuel de la base et corrections restantes. Utiliser base_sha pour github_create_branch, jamais un SHA de fichier.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'github_replace_text', description: 'Remplacement littéral unique au head/blob exacts, dans votre tâche. Une édition (path, expected_sha, old_text, new_text) ou un tableau edits (' + MAX_EDITS + ' au plus, fichiers distincts) appliqué en UN SEUL commit. Un 2e commit n’est accepté qu’après une CI rouge (trois corrections maximum).',
+  { name: 'github_replace_text', description: 'Remplacement littéral unique au head/blob exacts, dans votre tâche. Une édition (path, expected_sha, old_text, new_text) ou un tableau edits (' + MAX_EDITS + ' au plus, fichiers distincts) appliqué en UN SEUL commit. Une correction est autorisée après une CI rouge, sans plafond de corrections par mission.',
     parameters: { type: 'object', properties: { name: common.name, expected_head_sha: common.sha, message: { type: 'string' }, path: { type: 'string' }, expected_sha: common.sha,
       old_text: { type: 'string' }, new_text: { type: 'string' },
       edits: { type: 'array', minItems: 1, maxItems: MAX_EDITS, items: { type: 'object', properties: { path: { type: 'string' }, expected_sha: common.sha, old_text: { type: 'string' }, new_text: { type: 'string' } },
@@ -27,7 +26,7 @@ export const S7_SCHEMAS: readonly ToolSchema[] = [
       required: ['name','expected_head_sha','message'], additionalProperties: false } },
   { name: 'github_run_checks', description: 'Lancer le contrôleur Actions approuvé, périmètre full, au SHA actuel de votre branche. Refus contrôleur = escalade, jamais contournement.',
     parameters: { type: 'object', properties: common, required: ['name','sha'], additionalProperties: false } },
-  { name: 'github_check_result', description: 'Lire la CI corrélée à votre SHA, avec diagnostics bornés. Rouge : corriger puis relancer ; trois corrections épuisées : tâche bloquée et escalade.',
+  { name: 'github_check_result', description: 'Lire la CI corrélée à votre SHA, avec diagnostics bornés. Rouge : corriger puis relancer la CI jusqu’à résolution.',
     parameters: { type: 'object', properties: { ...common, run_id: { type: 'integer', minimum: 1 } }, required: ['name','sha','run_id'], additionalProperties: false } },
 ];
 type Context = { run_id: string; effect_key?: string };
@@ -74,7 +73,6 @@ async function commitGuards(s: WriteScope, reads: GitHubReads | null, repository
 
 export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
   const legacy = createGitHubWriteTools(options);
-  const writes = createStoreWriteTools(options.db);
   async function scope(call: ToolCall, ctx: Context) {
     const run = await options.db.prepare('SELECT participant_id FROM agent_runs WHERE run_id=?1').bind(ctx.run_id).first<{ participant_id: string }>();
     if (!run) throw new ToolRefused('unknown_run');
@@ -102,7 +100,7 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
       const branchHead = await options.writes.branchHead(options.repository, allowed.branch);
       return { branch: allowed.branch, name: allowed.branch.split('-api-')[1], base_branch: options.baseBranch, base_sha: baseSha,
         branch_head: branchHead && SHA.test(branchHead) ? branchHead : null,
-        granted_paths: allowed.paths, task_paths: allowed.owned_paths, corrections_remaining: 3 - await correctionsUsed(options.db, allowed) };
+        granted_paths: allowed.paths, task_paths: allowed.owned_paths, corrections_completed: await correctionsUsed(options.db, allowed) };
     }
     const s = await scope(call, ctx);
     const args = call.args ?? {};
@@ -137,7 +135,7 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
         throw error;
       }
       await finishCommit(options.db, ctx.effect_key, result.commit_sha);
-      return { ...result, next_action: 'github_run_checks', corrections_remaining: 3 - await correctionsUsed(options.db, s) };
+      return { ...result, next_action: 'github_run_checks', corrections_completed: await correctionsUsed(options.db, s) };
     }
     if (call.name === 'github_run_checks' || call.name === 'github_check_result') {
       if (!s7.checks) throw new ToolRefused('api_checks_not_enabled');
@@ -154,23 +152,20 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
       const failed = result.status === 'completed' && ['failure','timed_out','action_required','startup_failure'].includes(result.conclusion ?? '');
       const state = result.verifiedSuccess ? 'passed' : failed ? 'failed' : 'pending';
       await recordCheck(options.db, s, sha, Number(args.run_id), state);
-      const exhausted = failed && await correctionsUsed(options.db, s) >= 3;
-      if (exhausted) await writes.execute({ id: call.id, name: 'store_task_status', args: { task: s.task, status: 'blocked', note: 'S7 : trois corrections CI épuisées au SHA ' + sha + '. Reprise par chat requise.' } }, ctx);
-      return { ...result, next_action: exhausted ? 'escalate' : failed ? 'correct' : result.verifiedSuccess ? 'request_D12' : 'wait', next_poll_seconds: state === 'pending' ? 15 : null };
+      return { ...result, next_action: failed ? 'correct' : result.verifiedSuccess ? 'request_D12' : 'wait', next_poll_seconds: state === 'pending' ? 15 : null };
     }
     return legacy.execute(call, ctx);
   }
   return {
-    names(kind: string): readonly string[] { return kind === 'implement' ? [...legacy.names(kind), ...S7_SCHEMAS.filter(s => !['github_run_checks','github_check_result'].includes(s.name) || s7.checks !== null).map(s => s.name)] : []; },
+    names(kind: string): readonly string[] { return kind === 'implement'
+      ? [...legacy.names(kind), ...S7_SCHEMAS.filter(s => !['github_run_checks','github_check_result'].includes(s.name) || s7.checks !== null).map(s => s.name)]
+      : []; }, // Unified C0 host derives its catalogue from verified resources and roles instead.
     execute,
     async lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult> {
       // Reconciliation is read-only externally, allowed after authorization revocation.
       if (call.name === 'github_run_checks') return s7.checks?.lookup(String(call.args?.sha ?? '')) ?? null;
       if (call.name === 'github_write_scope') return { found: false };
-      if (call.name === 'github_check_result') {
-        const prior = await writes.lookup({ ...call, name: 'store_task_status' }, ctx);
-        return prior?.found ? { found: true, result: { next_action: 'escalate', status: 'blocked' } } : { found: false };
-      } // repeat authoritative read + idempotent state update
+      if (call.name === 'github_check_result') return { found: false }; // Re-read and record idempotently on retry.
       const target = call.name === 'github_replace_text' ? { ...call, name: 'github_commit_files' } : call;
       const result = await legacy.lookup(target, ctx);
       if (result?.found && target.name === 'github_commit_files') {

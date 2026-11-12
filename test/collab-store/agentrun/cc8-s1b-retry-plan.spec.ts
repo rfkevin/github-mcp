@@ -28,27 +28,40 @@ async function seed() {
   return { cycle, participant, askSeq: ask!.seq };
 }
 
-describe('S1b — moteur et planificateur : relances bornées', () => {
-  it('503 : trois tentatives, intervalle de 900 s, aucun doublon ni quatrième run', async () => {
+describe('S1b — une même mission malgré les interruptions du fournisseur', () => {
+  it('HTTP 503 : reprise du même run D1, aucune nouvelle tâche après interruption', async () => {
     const q = await seed();
     const config = { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.participant };
+    expect((await planAgentRuns(db, config, { now: T })).created).toBe(1);
+    const id = await answerAttemptRunId(q.cycle, q.participant, q.askSeq, 'P6', 0, 1);
     let calls = 0;
     const model = { complete: async () => { calls++; throw new ModelCallError('HTTP 503', { tokens: 7, cost_cents: 0 }); } };
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    expect((await runStep(db, id, { model, tools, now: () => T + 1, workerId: 'w' })).outcome).toBe('retry');
+    expect((await planAgentRuns(db, config, { now: T + 902 })).created).toBe(0);
+    expect((await runStep(db, id, { model, tools, now: () => T + 32, workerId: 'w' })).outcome).toBe('retry');
+    const stored = await db.prepare('SELECT status, tokens_used FROM agent_runs WHERE run_id = ?1')
+      .bind(id).first<{status:string; tokens_used:number}>();
+    expect(stored).toMatchObject({ status: 'running', tokens_used: 14 });
+    expect(calls).toBe(2);
+    expect((await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE cycle_id = ?1')
+      .bind(q.cycle).first<{n:number}>())!.n).toBe(1);
+  });
+
+  it('des erreurs transitoires anciennes permettent plus de trois runs, jamais deux au même ID', async () => {
+    const q = await seed();
+    const config = { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.participant };
+    for (let attempt = 1; attempt <= 5; attempt++) {
       const at = T + (attempt - 1) * 901;
       expect((await planAgentRuns(db, config, { now: at })).created).toBe(1);
       const id = await answerAttemptRunId(q.cycle, q.participant, q.askSeq, 'P6', 0, attempt);
       expect((await planAgentRuns(db, config, { now: at })).created).toBe(0);
-      expect((await runStep(db, id, { model, tools, now: () => at + 1, workerId: 'w' })).outcome).toBe('failed');
-      const row = await db.prepare('SELECT stop_reason, tokens_used FROM agent_runs WHERE run_id = ?1')
-        .bind(id).first<{ stop_reason: string; tokens_used: number }>();
-      expect(row).toMatchObject({ stop_reason: 'model_transient: HTTP 503', tokens_used: 7 });
-      expect((await planAgentRuns(db, config, { now: at + 900 })).created).toBe(0);
+      await db.prepare("UPDATE agent_runs SET status='failed', stop_reason='model_transient: legacy', updated_at=?2 WHERE run_id=?1")
+        .bind(id, at+1).run();
+      expect((await planAgentRuns(db, config, { now: at + 899 })).created).toBe(0);
     }
-    expect((await planAgentRuns(db, config, { now: T + 10_000 })).created).toBe(0);
-    expect(calls).toBe(3);
-    expect((await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE cycle_id = ?1')
-      .bind(q.cycle).first<{ n: number }>())!.n).toBe(3);
+    expect((await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE cycle_id=?1')
+      .bind(q.cycle).first<{n:number}>())!.n).toBe(5);
+    expect((await planAgentRuns(db, config, { now: T + 5 * 901 })).created).toBe(1);
   });
 
   it('refus permanent : aucune seconde tentative même après 900 s', async () => {

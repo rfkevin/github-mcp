@@ -115,11 +115,11 @@ describe('CC8 S7 direct launch — real D1 handoff, run and lease',()=>{
     expect(JSON.parse(row!.owned_paths)).toEqual([s.path]);
     const run=await db.prepare('SELECT max_tokens,max_cost_cents,task_kind FROM agent_runs WHERE run_id=?1')
       .bind(first.run_id).first<{max_tokens:number;max_cost_cents:number;task_kind:string}>();
-    expect(run).toEqual({max_tokens:48000,max_cost_cents:0,task_kind:'implement'});
+    expect(run).toEqual({max_tokens:-1,max_cost_cents:0,task_kind:'implement'});
     expect((await launchCoordinatorImplement(s.input)).status).toBe('existing');
     expect(s.wakeIds).toHaveLength(1);
   });
-  it('GO explicite : reprend une tentative guided_stop à zéro effet, 3 essais au plus et paquet C4',async()=>{
+  it('GO explicite : reprend après quatre guided_stop sans effet, même paquet C4 et mandat',async()=>{
     const s=await setup('resume');
     (s.runtime as AgentRunObjectEnv & { AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS?: string }).AGENT_RUN_FREE_IMPLEMENT_MAX_TOKENS='120000';
     const first=await launchCoordinatorImplement(s.input);
@@ -131,7 +131,7 @@ describe('CC8 S7 direct launch — real D1 handoff, run and lease',()=>{
     const row=await db.prepare('SELECT prompt,max_tokens,max_cost_cents FROM agent_runs WHERE run_id=?1')
       .bind(second.run_id).first<{prompt:string;max_tokens:number;max_cost_cents:number}>();
     expect(row?.prompt).toContain('DOSSIER CC8 SERVEUR');
-    expect(row?.max_tokens).toBe(120000);
+    expect(row?.max_tokens).toBe(-1);
     expect(row?.max_cost_cents).toBe(0);
     const unchanged=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:3'});
     expect(unchanged).toMatchObject({status:'existing',run_id:second.run_id});
@@ -143,8 +143,10 @@ describe('CC8 S7 direct launch — real D1 handoff, run and lease',()=>{
     expect(third.run_id).not.toBe(second.run_id);
     await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='guided_stop:task_grant_unavailable' WHERE run_id=?1")
       .bind(third.run_id).run();
-    const capped=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:5'});
-    expect(capped).toMatchObject({status:'existing',run_id:third.run_id,detail:'retry_cap_reached'});
+    const fourth=await launchCoordinatorImplement({...s.input,opId:s.coordinator+':'+s.cycle+':launch:5'});
+    expect(fourth.status).toBe('started');
+    expect(fourth.run_id).not.toBe(third.run_id);
+    expect(s.wakeIds).toHaveLength(4);
   });
   it('aucune reprise si le run échoué a commencé à consommer une étape',async()=>{
     const s=await setup('no-replay');

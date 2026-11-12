@@ -1,11 +1,11 @@
 /**
  * CC-5 l7 (incrément 7c-1) — hôte d'outils en LECTURE SEULE pour les exécutions API.
  *
- * Allowlist deny-by-default figée en code (amendement A2, plan seq 719) : chaque
- * type de tâche n'a que les outils listés dans READ_TOOLS_BY_KIND ; aucun outil
- * d'écriture (effect 'read' partout), donc aucun effet externe en 7c-1. Le
- * moteur refuse en plus API_AGENT_FORBIDDEN et tronque chaque résultat
- * (RESULT_MAX_CHARS) avant de le rendre au modèle comme donnée.
+ * Le catalogue WorkSession unifié présente les outils de lecture et d'écriture
+ * disponibles, sous attestations serveur C0 et contrôles au point d'effet.
+ * L'ancienne allowlist par type de tâche demeure pour les hôtes historiques.
+ * Le moteur refuse en plus les actes réservés au propriétaire et les verdicts
+ * D12 libres ; les résultats remis au modèle sont bornés.
  *
  * CC-7 L5a (S9) : github_diff donne aux types `review` et `test` le couple
  * head/base exact de la soumission (head = SHA de 40 caractères, base = SHA ou
@@ -22,7 +22,7 @@
  */
 import { CollabStore } from '../store/collab-store';
 import { equivalentParticipantIds } from '../identity/families';
-import { loadContinuity, loadVisibleActiveMemory, memoryRolesOf } from '../context';
+import { loadActiveWork, loadActiveWorkPage, loadContinuity, loadVisibleActiveMemory, memoryRolesOf } from '../context';
 
 import { ToolRefused, type LookupResult, type ToolCall, type ToolHost, type ToolSpec } from './engine';
 import type { ToolSchema } from './workers-ai-model';
@@ -68,8 +68,14 @@ export const DIFF_MAX_FILES = 50;
 export const DIFF_PATCH_CHARS = 2000;
 
 export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
-  { name: 'store_context', description: 'Contexte du cycle de cette exécution : phase, révision et tâches où votre participant a un rôle.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'store_context', description: 'Contexte du cycle et active_work partagés avec le chat, registre intégral paginé. full:true permet la lecture non compactée à la demande.',
+    parameters: { type: 'object', properties: {
+      full: { type: 'boolean' }, registry_page: { type: 'integer', minimum: 0 },
+      registry_limit: { type: 'integer', minimum: 1, maximum: 200 },
+      active_work_run_page: { type: 'integer', minimum: 0 },
+      active_work_checkpoint_page: { type: 'integer', minimum: 0 },
+      active_work_page_size: { type: 'integer', minimum: 1, maximum: 100 },
+    }, additionalProperties: false } },
   { name: 'store_delta', description: 'Événements du cycle après since_seq (au plus 50), masqués selon votre participant.',
     parameters: { type: 'object', properties: { since_seq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50 },
       full: { type: 'boolean', description: 'Demander les événements complets si une preuve exacte est nécessaire (opt-in).' } },
@@ -96,10 +102,10 @@ export type ReadToolName = 'store_context' | 'store_delta' | 'github_list_direct
  * mémoire C4 visible du participant et « depuis ta dernière visite » (notes de passation, exécutions précédentes).
  */
 export const CONTINUITY_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
-  { name: 'store_memory', description: 'Mémoire C4 active visible par votre participant (scopes partagés et votre scope personnel), au plus 40 entrées.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'store_continuity', description: 'Continuité de votre participant : dernière visite du chat, ses notes de passation et vos exécutions API précédentes avec leur message final.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'store_memory', description: 'Mémoire C4 visible (personnelle et partagée). Lire page 0 puis next_page, sans perte des anciennes entrées.',
+    parameters: { type: 'object', properties: { page: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false } },
+  { name: 'store_continuity', description: 'Historique chat/API du même participant. Lire page 0 puis next_page pour accéder aux anciennes passations et exécutions.',
+    parameters: { type: 'object', properties: { page: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 } }, additionalProperties: false } },
 ]);
 export type ContinuityToolName = 'store_memory' | 'store_continuity';
 const CONTINUITY_TOOLS: readonly ContinuityToolName[] = ['store_memory', 'store_continuity'];
@@ -198,6 +204,8 @@ const TOOL_UNIFIED_CAPABILITY: Readonly<Record<string, UnifiedCapability>> = Obj
   store_memory_rewrite: 'memory.rewrite',
   store_verdict: 'review.verdict',
   store_contribute: 'design.contribute',
+  web_fetch_official: 'web.read',
+  store_choose_model: 'model.choose',
 });
 const GITHUB_WRITE_CAPABILITY_TOOLS: ReadonlySet<string> = new Set(
   [...GITHUB_WRITE_TOOL_SCHEMAS, ...S7_SCHEMAS].map(schema => schema.name));
@@ -305,9 +313,11 @@ export async function runVerifiedClaims(db: D1Database, run: RunScope, options: 
     question_answer_authorized: options.storeWrites === true,
     memory_propose_scoped: options.storeWrites === true && options.continuity === true,
     memory_rewrite_scoped: options.storeWrites === true && options.continuity === true,
-    design_contribution_authorized: options.contributions === true && run.task_kind === CONTRIBUTION_TASK_KIND,
+    design_contribution_authorized: options.contributions === true,
     verdict_sha_pair_verified: options.verdicts === true && options.repository !== null && options.github !== null
-      && (run.task_kind === 'review' || run.task_kind === 'test'),
+      && (role === 'reviewer' || role === 'tester'),
+    web_read_granted: options.research?.researchEnabled === true,
+    model_choose_granted: options.modelChoice != null,
     // Mandat d'affichage : le grant EXACT statique/dynamique S7 relu ci-dessus ;
     // la branche exacte et les chemins restent gardés À CHAQUE EFFET par les
     // outils S7 (authorize + assertPaths) et les mandats de complétion.
@@ -344,28 +354,36 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
   // CC-7 L9b : choix de modèle par l'agent lui-même, pour tout type de tâche connu.
   const modelChoice = options.modelChoice ? createModelChoiceTools(options.db, options.modelChoice) : null;
   // CC-7 L11 : lecture web officielle et salon (journal partagé), seulement pour le kind research.
-  const research = options.research ? createResearchTools(options.db, options.research) : null;
-  // CC-7 L3 (incrément 2) : proposition de mémoire, seulement avec écritures store ET continuité, types connus.
-  const memoryWrite = (taskKind: string): readonly WriteToolName[] =>
-    writes && options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_memory_propose', 'store_memory_rewrite', 'store_handover'] : [];
-  const writeNames = (taskKind: string): readonly string[] =>
-    [...(writes ? writes.names(taskKind) : []), ...memoryWrite(taskKind), ...(gh ? gh.names(taskKind) : []),
-      ...(verdicts && (taskKind === 'review' || taskKind === 'test') ? ['store_verdict' as const] : []),
-      ...(contributions && taskKind === CONTRIBUTION_TASK_KIND ? ['store_contribute' as const] : []),
-      ...(modelChoice && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? ['store_choose_model' as const] : []),
-      ...(research ? research.writes(taskKind) : [])];
+  const research = options.research ? createResearchTools(options.db, {
+    ...options.research, unifiedCapabilities: options.unifiedCapabilities === true,
+  }) : null;
+  // Unified WorkSession tools depend on the host resources and actual C0
+  // claims, not on API vs chat or a legacy kind string. Claims are checked
+  // again at every effect. Legacy callers keep the old lists until migrated.
+  const unified = options.unifiedCapabilities === true;
+  const memoryWrite = (kind: string): readonly WriteToolName[] =>
+    writes && options.continuity && (unified || Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind))
+      ? ['store_memory_propose', 'store_memory_rewrite', 'store_handover'] : [];
+  const writeNames = (kind: string): readonly string[] =>
+    [...(writes ? (unified ? WRITE_TOOL_SCHEMAS.map(schema => schema.name) : writes.names(kind)) : []),
+      ...memoryWrite(kind),
+      ...(gh ? (unified ? ghSchemas.filter(schema => !options.githubWrites?.s7 || options.githubWrites.s7.checks
+        || !['github_run_checks', 'github_check_result'].includes(schema.name)).map(schema => schema.name) : gh.names(kind)) : []),
+      ...(verdicts && (unified || kind === 'review' || kind === 'test') ? ['store_verdict' as const] : []),
+      ...(contributions && (unified || kind === CONTRIBUTION_TASK_KIND) ? ['store_contribute' as const] : []),
+      ...(modelChoice && (unified || Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind)) ? ['store_choose_model' as const] : []),
+      ...(research ? research.writes(kind) : [])];
   const isGitHubWrite = (name: string) => ghSchemas.some(schema => schema.name === name);
-  const allowed = (taskKind: string): readonly ReadToolName[] => {
-    const tools = Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? READ_TOOLS_BY_KIND[taskKind] : [];
-    // Sans dépôt ou client GitHub, les outils GitHub ne sont pas proposés du tout.
-    return tools.filter(name => !name.startsWith('github_') || (options.repository !== null && options.github !== null
+  const allowed = (kind: string): readonly ReadToolName[] => {
+    const candidate = unified ? READ_TOOL_SCHEMAS.map(schema => schema.name as ReadToolName)
+      : Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind) ? READ_TOOLS_BY_KIND[kind] : [];
+    return candidate.filter(name => !name.startsWith('github_') || (options.repository !== null && options.github !== null
       && (name !== 'github_list_directory' || !!options.github.listDirectory)));
   };
-  // Un type inconnu n'a aucun outil, même en continuité (deny-by-default).
-  const continuityNames = (taskKind: string): readonly ContinuityToolName[] =>
-    options.continuity && Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, taskKind) ? CONTINUITY_TOOLS : [];
-  const readNames = (taskKind: string): readonly string[] =>
-    [...allowed(taskKind), ...continuityNames(taskKind), ...(research ? research.reads(taskKind) : [])];
+  const continuityNames = (kind: string): readonly ContinuityToolName[] =>
+    options.continuity && (unified || Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind)) ? CONTINUITY_TOOLS : [];
+  const readNames = (kind: string): readonly string[] =>
+    [...allowed(kind), ...continuityNames(kind), ...(research ? research.reads(kind) : [])];
   async function scope(runId: string): Promise<RunScope> {
     const run = await options.db.prepare('SELECT cycle_id, participant_id, task_id, task_kind FROM agent_runs WHERE run_id = ?1').bind(runId).first<RunScope>();
     if (!run) throw new ToolRefused('unknown_run');
@@ -376,10 +394,13 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     // unique C0, chaque outil exige sa capacité vérifiée — l'allowlist par kind et les
     // gardes au point d'effet restent inchangés (refus typé, jamais d'élargissement).
     const runScope = await scope(ctx.run_id);
-    if (options.unifiedCapabilities === true) {
+    if (unified) {
       const required = requiredUnifiedCapability(call.name);
       if (required && !hasUnifiedCapability(await runVerifiedClaims(options.db, runScope, options), required)) {
         throw new ToolRefused('capability_not_held:' + required);
+      }
+      if (![...readNames(runScope.task_kind), ...writeNames(runScope.task_kind)].includes(call.name)) {
+        throw new ToolRefused('tool_not_configured');
       }
     }
     if (writes && (WRITE_TOOL_SCHEMAS.some(schema => schema.name === call.name))) return writes.execute(call, ctx);
@@ -396,23 +417,44 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     switch (call.name as ReadToolName) {
       case 'store_context': {
         const mine = await store.getContext(cycle_id, participant_id);
-        if (options.contextCompaction && task_kind === 'implement' && task_id) {
+        // Same durable active_work source consumed by the chat MCP context.
+        // Transport-specific API task_kind never controls what history exists.
+        const ids = options.continuity ? await equivalentParticipantIds(options.db, participant_id) : null;
+        const paged = args.active_work_run_page !== undefined
+          || args.active_work_checkpoint_page !== undefined || args.active_work_page_size !== undefined;
+        const activeWork = ids
+          ? paged
+            ? await loadActiveWorkPage(options.db, cycle_id, ids, {
+              runPage: intArg(args, 'active_work_run_page', 0, 1_000_000, 0),
+              checkpointPage: intArg(args, 'active_work_checkpoint_page', 0, 1_000_000, 0),
+              pageSize: intArg(args, 'active_work_page_size', 1, 100, 5),
+            })
+            : await loadActiveWork(options.db, cycle_id, ids)
+          : null;
+        const shared = activeWork ? { active_work: activeWork } : {};
+        if (options.contextCompaction && !unified && task_kind === 'implement' && task_id && args.full !== true && args.registry_page === undefined) {
           const current = mine.tasks.find(task => task.task_id === task_id);
           if (!current) throw new ToolRefused('api_task_context_not_visible');
           const last = await options.db.prepare('SELECT MAX(seq) AS latest FROM events WHERE cycle_id = ?1')
             .bind(cycle_id).first<{ latest: number | null }>();
           const latestSeq = last?.latest ?? 0;
           return { cycle_id, phase: mine.phase, status: mine.status, revision: mine.revision,
-            task: current, scope: 'task-first', latest_seq: latestSeq,
+            task: current, scope: 'task-first', latest_seq: latestSeq, ...shared,
             recent_since_seq: Math.max(0, latestSeq - 50),
             note: 'Lire store_delta avec since_seq=recent_since_seq puis next_since_seq ; full:true pour les preuves exactes.' };
         }
         if (!options.continuity) return mine;
-        // E1-E3 (l8) : le registre complet du cycle, en lecture, pas seulement les tâches où l'on a un rôle.
+        // Every registry entry is reachable by page; no total-count truncation.
+        const page = intArg(args, 'registry_page', 0, 1_000_000, 0);
+        const limit = intArg(args, 'registry_limit', 1, 200, REGISTRY_MAX_TASKS);
+        const offset = page * limit;
         const all = await store.getContext(cycle_id);
-        const registry = all.tasks.slice(0, REGISTRY_MAX_TASKS).map(task => ({ task_id: task.task_id, status: task.status,
+        const rows = all.tasks.slice(offset, offset + limit);
+        const registry = rows.map(task => ({ task_id: task.task_id, status: task.status,
           owner: task.owner_pid, reviewer: task.reviewer_pid, tester: task.tester_pid, next_action: String(task.next_action ?? '').slice(0, 300) }));
-        return { ...mine, registry, registry_truncated: all.tasks.length > REGISTRY_MAX_TASKS };
+        const hasMore = all.tasks.length > offset + rows.length;
+        return { ...mine, ...shared, registry, registry_truncated: hasMore,
+          registry_page: page, registry_next_page: hasMore ? page + 1 : null, registry_total: all.tasks.length };
       }
       case 'store_delta': {
         const since = intArg(args, 'since_seq', 0, Number.MAX_SAFE_INTEGER);
@@ -482,7 +524,11 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     }
     if (options.continuity && (CONTINUITY_TOOLS as readonly string[]).includes(call.name)) {
       const ids = await equivalentParticipantIds(options.db, participant_id);
-      if (call.name === 'store_continuity') return loadContinuity(options.db, cycle_id, ids);
+      if (call.name === 'store_continuity') {
+        const page = intArg(args, 'page', 0, 1_000_000, 0);
+        const limit = intArg(args, 'limit', 1, 100, 5);
+        return loadContinuity(options.db, cycle_id, ids, { page, pageSize: limit });
+      }
       const cycle = await options.db.prepare('SELECT project FROM cycles WHERE cycle_id = ?1').bind(cycle_id).first<{ project: string | null }>();
       // CC-7 M2 : parité chat/API — l'exécution voit aussi la mémoire du rôle qu'elle tient (type d'exécution)
       // et role:coordinator si l'agent détient le mandat de coordination du cycle.
@@ -492,7 +538,12 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       const roles = await memoryRolesOf(options.db, cycle_id, identities, runRoles(run?.task_kind ?? ''));
       const memory = await loadVisibleActiveMemory(options.db, { participantId: participant_id, participantIds: identities, roles,
         taskId: run?.task_id || null, project: cycle?.project ?? null });
-      return { entries: memory.slice(0, CONTINUITY_MEMORY_LIMIT), truncated: memory.length > CONTINUITY_MEMORY_LIMIT };
+      const page = intArg(args, 'page', 0, 1_000_000, 0);
+      const limit = intArg(args, 'limit', 1, 200, CONTINUITY_MEMORY_LIMIT);
+      const offset = page * limit;
+      const entries = memory.slice(offset, offset + limit);
+      const hasMore = memory.length > offset + entries.length;
+      return { entries, truncated: hasMore, next_page: hasMore ? page + 1 : null, page, total_visible: memory.length };
     }
     throw new ToolRefused('tool_not_allowlisted');
   }
@@ -503,11 +554,12 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       return null;
     },
     list(taskKind: string): string[] {
-      return [...readNames(taskKind), ...writeNames(taskKind)];
+      return [...new Set([...readNames(taskKind), ...writeNames(taskKind)])];
     },
     schemas(taskKind: string): ToolSchema[] {
       const names = new Set<string>([...readNames(taskKind), ...writeNames(taskKind)]);
-      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...ghSchemas, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name));
+      const seen = new Set<string>();
+      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...ghSchemas, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name) && !seen.has(schema.name) && !!seen.add(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.

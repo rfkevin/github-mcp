@@ -94,7 +94,7 @@ describe('CC8 S8c — mandat GitHub du moniteur API', () => {
     const tool = createS7Tools(options, { policy: enabled, reads: null, checks: null });
     await expect(tool.execute(call, ctx)).resolves.toMatchObject({
       branch: BRANCH, base_branch: BASE, base_sha: BASE_SHA, granted_paths: [...PATHS],
-      task_paths: [...PATHS], corrections_remaining: 3,
+      task_paths: [...PATHS], corrections_completed: 0,
     });
     expect(githubCalls).toBe(2); // lecture seule des têtes base et branche, aucun commit.
     await db.prepare("UPDATE tasks SET status='blocked' WHERE cycle_id=?1 AND task_id=?2").bind(cycle, TASK).run();
