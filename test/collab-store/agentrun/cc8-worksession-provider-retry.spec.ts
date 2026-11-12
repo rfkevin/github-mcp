@@ -156,3 +156,95 @@ describe('CC8 WorkSession — reprise autonome après interruption du fournisseu
     expect(calls).toBe(4);
   });
 });
+
+
+  /** Un seul scénario D1, deux chemins distincts ; évite les fixtures GitHub dupliquées. */
+  async function checkScopeScenario(withCommit: boolean) {
+    const now = 2_000_000_000;
+    const runId = 'cc8-scope-' + crypto.randomUUID();
+    await ensureSchema(db);
+    expect((await createRun(db, {
+      runId, cycleId: 'cc8-scope-cycle-' + crypto.randomUUID(),
+      participantId: 'gemini', taskId: withCommit ? 'progress' : 'loop',
+      taskKind: 'implement', prompt: 'Complete the GitHub mission',
+      maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1200, now,
+    })).created).toBe(true);
+    const baseSha = 'a'.repeat(40);
+    const branch = 'mcp/105856986/gemini-api-scope';
+    let turn = 0;
+    const deps: EngineDeps = {
+      model: { complete: async () => {
+        const n = turn++;
+        const name = n === 0 ? 'github_create_branch'
+          : withCommit && n === 4 ? 'github_commit_files' : 'github_write_scope';
+        return { output: { text: 'continuer', tool_calls: [
+          { id: 'tool-' + n, name, args: { step: n } },
+        ] }, usage: { tokens: 10, cost_cents: 0 } };
+      } },
+      tools: {
+        list: () => ['github_write_scope', 'github_create_branch', 'github_commit_files'],
+        spec: (_kind, name) => ({ name, effect: 'write' }),
+        execute: async call => call.name === 'github_create_branch' ? { branch, sha: baseSha }
+          : call.name === 'github_commit_files' ? { commit_sha: 'b'.repeat(40) }
+            : { branch, base_sha: baseSha, branch_head: baseSha },
+      },
+      now: () => now, workerId: 'scope-agent', salonEnabled: !withCommit,
+    };
+    return { runId, deps };
+  }
+
+  it('cinq consultations du mandat sans commit déclenchent un blocage documenté', async () => {
+    const { runId, deps } = await checkScopeScenario(false);
+    for (let i = 0; i < 5; i++) expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
+    expect(await db.prepare('SELECT status,stop_reason,steps_done FROM agent_runs WHERE run_id=?1')
+      .bind(runId).first()).toMatchObject({
+        status: 'failed', stop_reason: 'blocked:no_progress:repeated_scope_without_commit', steps_done: 6,
+      });
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM agent_run_journal WHERE run_id=?1 AND kind='no_progress'")
+      .bind(runId).first<{ n: number }>()).toMatchObject({ n: 1 });
+  });
+
+  it('un commit intermédiaire remet à zéro les répétitions sans limiter la mission', async () => {
+    const { runId, deps } = await checkScopeScenario(true);
+    for (let i = 0; i < 9; i++) expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    expect(await db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId).first())
+      .toMatchObject({ status: 'running' });
+  });
+
+
+it('des lectures GitHub réellement nouvelles entre les relectures de scope empêchent le faux blocage', async () => {
+  const now = 2_000_000_000;
+  await ensureSchema(db);
+  const runId = 'cc8-scope-reading-' + crypto.randomUUID();
+  expect((await createRun(db, {
+    runId, cycleId: 'cc8-scope-reading-cycle-' + crypto.randomUUID(),
+    participantId: 'gemini', taskId: 'legitimate-research', taskKind: 'implement',
+    prompt: 'Inspect sources before writing a coherent change',
+    maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1200, now,
+  })).created).toBe(true);
+  let index = 0;
+  const head = 'c'.repeat(40);
+  const deps: EngineDeps = {
+    model: { complete: async () => {
+      const n = index++;
+      const name = n === 0 ? 'github_create_branch'
+        : n % 2 === 0 ? 'github_read_file' : 'github_write_scope';
+      return { output: { text: 'Analysing file ' + n, tool_calls: [
+        { id: 'q-' + n, name, args: name === 'github_read_file'
+          ? { path: 'src/example-' + n + '.ts', ref: head } : {} },
+      ] }, usage: { tokens: 20, cost_cents: 0 } };
+    } },
+    tools: {
+      list: () => ['github_write_scope', 'github_create_branch', 'github_read_file'],
+      spec: (_kind, name) => ({ name, effect: name === 'github_read_file' ? 'read' : 'write' }),
+      execute: async call => call.name === 'github_create_branch' ? { branch: 'new-research', sha: head }
+        : call.name === 'github_read_file' ? { sha: head, content: String(call.args.path) }
+          : { branch: 'new-research', base_sha: head, branch_head: head },
+    },
+    now: () => now, workerId: 'scope-reading-worker',
+  };
+  for (let n = 0; n < 14; n++) expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+  expect(await db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId).first())
+    .toMatchObject({ status: 'running' });
+});

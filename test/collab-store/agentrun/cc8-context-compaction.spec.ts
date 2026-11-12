@@ -44,3 +44,38 @@ describe('CC8 S7 — compaction de la vue fournisseur, sans toucher au journal D
     expect(messages.at(-1)?.tool_call_id).toBe('last');
   });
 });
+
+
+  it('garde les jalons de branche et commit même lorsque leurs anciens tours sont éliminés', () => {
+    const base = 'a'.repeat(40);
+    const branch = 'mcp/105856986/gemini-api-c4';
+    const milestones = [
+      makeStep('scope', 'github_write_scope', { branch, base_sha: base, branch_head: null }),
+      makeStep('create', 'github_create_branch', { branch, sha: base }),
+      makeStep('commit', 'github_commit_files', { commit_sha: 'b'.repeat(40) }),
+    ];
+    const filler = Array.from({ length: 75 }, (_, i) => makeStep(String(i), 'github_read_file',
+      { content: 'PRIVATE_SOURCE_' + i, sha: base }));
+    const last = makeStep('last', 'github_read_file', { content: 'new', sha: base });
+    const messages = providerMessagesFromHistory('mission', [...milestones, ...filler, last], true);
+    const context = messages[0].content;
+    expect(context).toContain('Jalons déjà exécutés');
+    expect(context).toContain(branch);
+    expect(context).toContain('github');
+    expect(context).toContain('b'.repeat(40));
+    expect(context).not.toContain('PRIVATE_SOURCE_0');
+    expect(context.length).toBeLessThan(4500);
+  });
+  it('ne transforme jamais une CI rouge ou un outil refusé en réussite portable', () => {
+    const failed = (id: string, tool: string, result: unknown) => ({
+      model_output: JSON.stringify({ text: '', tool_calls: [{ id, name: tool, args: {} }] }),
+      results: JSON.stringify([{ id, content: JSON.stringify(result), error: true }]),
+    });
+    const steps = [
+      failed('x', 'github_create_branch', { error: 'rejected', sha: 'e'.repeat(40) }),
+      makeStep('y', 'github_check_result', { status: 'completed', verifiedSuccess: false }),
+      makeStep('z', 'github_read_file', { content: 'ok' }),
+    ];
+    const compact = providerMessagesFromHistory('mission', steps, true);
+    expect(compact[0].content).not.toContain('Jalons déjà exécutés');
+  });

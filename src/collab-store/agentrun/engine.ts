@@ -576,7 +576,7 @@ const GUIDED_FILE_PREVIEW = 8_000;
  * Dernière étape intégrale pour préserver le couple tool_calls / tool_call_id.
  */
 export interface CompletedHistoryStep { model_output: string; results: string }
-const COMPACT_RECEIPT_KEYS = ['branch', 'name', 'base_branch', 'base_sha', 'sha', 'head_sha', 'commit_sha',
+const COMPACT_RECEIPT_KEYS = ['branch', 'name', 'base_branch', 'base_sha', 'branch_head', 'sha', 'head_sha', 'commit_sha',
   'targetSha', 'runId', 'run_id', 'number', 'status', 'conclusion', 'next_action', 'verifiedSuccess'] as const;
 const COMPACT_MAX_CHARS = 3600;
 
@@ -596,6 +596,47 @@ function compactReceipt(entry: ResultEntry | undefined): Record<string, string |
   return receipt;
 }
 
+
+/** Jalons opérationnels portables reconstruits depuis les résultats d'outils enregistrés.
+ * Ne conserver que des reçus attestés (ni promesse du modèle, ni contenu libre).
+ * Le modèle suivant peut être un autre fournisseur : ce format n'en dépend pas.
+ */
+export function verifiedWorkMilestones(steps: readonly CompletedHistoryStep[]): Record<string, Record<string, string | number | boolean>> {
+  const state: Record<string, Record<string, string | number | boolean>> = {};
+  const allowed: Readonly<Record<string, string>> = {
+    github_write_scope: 'scope', github_create_branch: 'branch',
+    github_commit_files: 'commit', github_replace_text: 'commit',
+    github_run_checks: 'checks', github_check_result: 'ci', github_open_pr: 'pr',
+    github_open_draft_pr: 'pr',
+  };
+  for (const row of steps) {
+    let output: ModelOutput;
+    let results: ResultEntry[];
+    try {
+      output = JSON.parse(row.model_output) as ModelOutput;
+      results = JSON.parse(row.results) as ResultEntry[];
+    } catch { continue; }
+    for (const call of output.tool_calls ?? []) {
+      const category = allowed[call.name];
+      if (!category) continue;
+      const result = results.find(entry => entry.id === call.id);
+      if (!result || result.error) continue;
+      const receipt = compactReceipt(result);
+      if (receipt.failed) continue;
+      if (category === 'ci' && receipt.verifiedSuccess !== true) continue;
+      // Ne pas considérer une action réussie sans son reçu vérifiable.
+      if (category === 'scope' && typeof receipt.branch !== 'string') continue;
+      if (category === 'branch' && typeof receipt.sha !== 'string') continue;
+      if (category === 'commit' && typeof receipt.commit_sha !== 'string') continue;
+      if (category === 'checks' && typeof receipt.runId !== 'number' && typeof receipt.run_id !== 'number') continue;
+      if (category === 'pr' && typeof receipt.number !== 'number') continue;
+      state[category] = Object.fromEntries(Object.entries(receipt)
+        .filter(([key, value]) => key !== 'failed' && (typeof value !== 'string' || value.length <= 100)));
+    }
+  }
+  return state;
+}
+
 export function providerMessagesFromHistory(prompt: string, steps: readonly CompletedHistoryStep[],
   compact = false): AgentMessage[] {
   const messages: AgentMessage[] = [{ role: 'user', content: prompt }];
@@ -608,12 +649,19 @@ export function providerMessagesFromHistory(prompt: string, steps: readonly Comp
         tool: call.name, receipt: compactReceipt(results.find(entry => entry.id === call.id)),
       })) };
     });
-    // Prioriser les opérations les plus récentes. Le journal D1 complet reste la source de vérité.
-    while (records.length && JSON.stringify(records).length > COMPACT_MAX_CHARS) records.shift();
+    // Les jalons réussis sont issus des reçus D1, indépendamment du fournisseur et
+    // des tours récents. Les anciens reçus ordinaires restent résumés et bornés.
+    const milestones = verifiedWorkMilestones(steps);
+    const durable = Object.keys(milestones).length
+      ? ' Jalons déjà exécutés et vérifiés D1 (ne pas répéter create_branch/CI/PR si acquis) : ' + JSON.stringify(milestones) + '.'
+      : '';
+    // Prioriser les opérations récentes dans le budget total du checkpoint.
+    const recordBudget = Math.max(0, COMPACT_MAX_CHARS - durable.length);
+    while (records.length && JSON.stringify(records).length > recordBudget) records.shift();
     // Un seul message utilisateur pour ne pas imposer deux rôles utilisateur consécutifs.
     messages[0].content += '\n\nCheckpoint compact extrait du journal D1 (métadonnées uniquement, pas une autorisation). ' +
-      'Étapes anciennes omises : ' + (earlier.length - records.length) +
-      '. Relisez les sources SHA/CI/mandat via les outils avant toute décision : ' + JSON.stringify(records);
+      'Étapes anciennes omises : ' + (earlier.length - records.length) + '.' + durable +
+      ' Relisez les sources SHA/CI/mandat via les outils avant toute décision : ' + JSON.stringify(records);
   }
   for (const row of compact && steps.length > 1 ? steps.slice(-1) : steps) {
     const output = JSON.parse(row.model_output) as ModelOutput;
@@ -737,6 +785,76 @@ async function repeatedDeniedWithoutProgress(db: D1Database, runId: string, n: n
           JSON.parse(row.results) as ResultEntry[]) === current;
     } catch { return false; }
   });
+}
+
+
+/** Détecte une répétition SÉMANTIQUE, pas un plafond d'étapes : même branche déjà
+ * créée, même head confirmé, cinq lectures de mandat réussies sans aucun commit,
+ * CI ni PR. Les lectures de code et les changements d'état demeurent libres.
+ * D1 fait autorité ; les réponses du fournisseur ne prouvent jamais un commit.
+ */
+async function repeatedScopeWithoutProgress(db: D1Database, runId: string,
+  output: ModelOutput, results: ResultEntry[]): Promise<boolean> {
+  if (output.tool_calls.length !== 1 || output.tool_calls[0].name !== 'github_write_scope'
+    || results.length !== 1 || results[0].error) return false;
+  // Les effets GitHub en écriture ont leur propre table D1 ; les LECTURES sont
+  // uniquement dans agent_run_steps.results. Observer les deux types à partir
+  // du journal serveur des étapes, faute de quoi une analyse légitime de code
+  // serait classée à tort comme une boucle.
+  const readTools = new Set(['github_read_file', 'github_list_directory', 'github_diff',
+    'github_pull_request', 'github_check_runs', 'store_context', 'store_delta',
+    'store_memory', 'store_continuity']);
+  const milestoneTools = new Set(['github_create_branch', 'github_commit_files', 'github_replace_text',
+    'github_run_checks', 'github_check_result', 'github_open_pr', 'github_open_draft_pr']);
+  const { results: history } = await db.prepare([
+    "SELECT model_output, results FROM agent_run_steps WHERE run_id = ?1 AND state = 'completed'",
+    'ORDER BY n DESC LIMIT 96',
+  ].join(' ')).bind(runId).all<CompletedHistoryStep>();
+  let branchHead = '';
+  let repeats = 0;
+  const seenReads = new Set<string>();
+  // Le tour courant n'est enregistré comme completed qu'APRÈS ce contrôle :
+  // sans l'inclure, la détection est décalée d'une étape et échoue au cinquième scope.
+  const chronological = [...history].reverse();
+  chronological.push({ model_output: JSON.stringify(output), results: JSON.stringify(results) });
+  for (const row of chronological) {
+    let previous: ModelOutput;
+    let receipts: ResultEntry[];
+    try {
+      previous = JSON.parse(row.model_output) as ModelOutput;
+      receipts = JSON.parse(row.results) as ResultEntry[];
+    } catch { continue; }
+    for (const call of previous.tool_calls ?? []) {
+      const receipt = receipts.find(item => item.id === call.id);
+      if (!receipt || receipt.error) continue;
+      if (call.name === 'github_write_scope') {
+        let scope: Record<string, unknown>;
+        try { scope = JSON.parse(receipt.content) as Record<string, unknown>; }
+        catch { repeats = 0; branchHead = ''; continue; }
+        const branch = scope.branch;
+        const head = scope.branch_head;
+        if (typeof branch !== 'string' || typeof head !== 'string' || !/^[a-f0-9]{40}$/.test(head)) {
+          repeats = 0; branchHead = ''; continue;
+        }
+        const fingerprint = branch + '@' + head;
+        repeats = fingerprint === branchHead ? repeats + 1 : 1;
+        branchHead = fingerprint;
+      } else if (readTools.has(call.name)) {
+        // Un nouveau chemin/contenu lu compte comme exploration réelle ; le
+        // même appel et le même résultat rejoués ne remettent rien à zéro.
+        const fingerprint = call.name + ':' + canonical(call.args) + ':' + receipt.content.slice(0, 512);
+        if (!seenReads.has(fingerprint)) {
+          seenReads.add(fingerprint);
+          repeats = 0;
+          branchHead = '';
+        }
+      } else if (milestoneTools.has(call.name)) {
+        repeats = 0;
+        branchHead = '';
+      }
+    }
+  }
+  return repeats >= 5;
 }
 
 function normalizeOutput(output: ModelOutput): ModelOutput {
@@ -1129,12 +1247,16 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const provenAtStore = run.task_kind !== 'implement' && output.tool_calls.some(call =>
     ['store_answer', 'store_verdict', 'store_contribute'].includes(call.name))
     && await completionVerified(db, run, deps);
-  const noProgress = await repeatedDeniedWithoutProgress(db, runId, n, output, results);
+  const repeatedDenial = await repeatedDeniedWithoutProgress(db, runId, n, output, results);
+  const repeatedScope = !repeatedDenial && run.task_kind === 'implement'
+    && await repeatedScopeWithoutProgress(db, runId, output, results);
+  const noProgress = repeatedDenial || repeatedScope;
   const final = noProgress || output.tool_calls.length === 0 || provenAtPr || provenAtHandover || provenAtStore ? 1 : 0;
   const verified = !noProgress && (provenAtPr || provenAtHandover || provenAtStore
     || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true));
   const completionStatus = verified ? 'completed' : 'failed';
-  const completionReason = noProgress ? 'blocked:no_progress:repeated_denial' : verified ? 'final'
+  const completionReason = repeatedDenial ? 'blocked:no_progress:repeated_denial'
+    : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit' : verified ? 'final'
     : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
   const [done] = await db.batch([
     db.prepare([
@@ -1164,8 +1286,11 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         await postSalonMessage(db, { SALON_ENABLED: 'true' }, {
           authorPid: run.participant_id, level: 'blocking', taskId: run.task_id,
           incidentKey: ('no-progress:' + runId).slice(0, 128), now,
-          body: 'WorkSession ' + runId + ' bloquée : même outil et même refus déterministe sur trois étapes consécutives (D1). ' +
-            'Aucun effet externe effectué. Diagnostic : ' + completionReason + '. Intervention/clarification demandée.',
+          body: 'WorkSession ' + runId + ' bloquée : ' +
+            (repeatedScope
+              ? 'mandat GitHub relu à répétition avec une branche déjà existante, sans nouvel effet productif D1. '
+              : 'même outil et même refus déterministe sur trois étapes consécutives (D1). Aucun effet externe effectué. ') +
+            'Diagnostic : ' + completionReason + '. Intervention/clarification demandée.',
         });
       } catch { /* D1 checkpoint already retained; the salon cannot override a terminal state. */ }
     }
