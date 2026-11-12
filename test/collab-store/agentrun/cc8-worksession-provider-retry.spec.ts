@@ -158,70 +158,55 @@ describe('CC8 WorkSession — reprise autonome après interruption du fournisseu
 });
 
 
-  it('cinq consultations du même mandat après branche créée, sans commit, sont un blocage sémantique', async () => {
+  /** Un seul scénario D1, deux chemins distincts ; évite les fixtures GitHub dupliquées. */
+  async function checkScopeScenario(withCommit: boolean) {
     const now = 2_000_000_000;
+    const runId = 'cc8-scope-' + crypto.randomUUID();
     await ensureSchema(db);
-    const runId = 'cc8-scope-loop-' + crypto.randomUUID();
     expect((await createRun(db, {
-      runId, cycleId: 'cc8-scope-' + crypto.randomUUID(), participantId: 'gemini', taskId: 'loop',
-      taskKind: 'implement', prompt: 'Commit a functional change', maxSteps: -1,
-      maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1200, now,
+      runId, cycleId: 'cc8-scope-cycle-' + crypto.randomUUID(),
+      participantId: 'gemini', taskId: withCommit ? 'progress' : 'loop',
+      taskKind: 'implement', prompt: 'Complete the GitHub mission',
+      maxSteps: -1, maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1200, now,
     })).created).toBe(true);
-    const sha = 'a'.repeat(40);
-    const branch = 'mcp/105856986/gemini-api-scope-loop';
-    let turns = 0;
-    const deps: EngineDeps = {
-      model: { complete: async () => {
-        const n = turns++;
-        return { output: { text: 'continuer', tool_calls: [{ id: 'tool-' + n,
-          name: n === 1 ? 'github_create_branch' : 'github_write_scope', args: {} }] },
-          usage: { tokens: 10, cost_cents: 0 } };
-      } },
-      tools: {
-        list: () => ['github_write_scope', 'github_create_branch'],
-        spec: (_kind, name) => ({ name, effect: 'write' }),
-        execute: async (call) => call.name === 'github_create_branch'
-          ? { branch, sha }
-          : { branch, base_sha: sha, branch_head: turns < 2 ? null : sha },
-      },
-      now: () => now, workerId: 'scope-loop-worker', salonEnabled: true,
-    };
-    for (let i = 0; i < 6; i++) expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
-    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
-    const stored = await db.prepare('SELECT status,stop_reason,steps_done FROM agent_runs WHERE run_id=?1').bind(runId).first();
-    expect(stored).toMatchObject({ status: 'failed',
-      stop_reason: 'blocked:no_progress:repeated_scope_without_commit', steps_done: 7 });
-    expect(await db.prepare("SELECT COUNT(*) AS n FROM agent_run_journal WHERE run_id=?1 AND kind='no_progress'")
-      .bind(runId).first<{n:number}>()).toMatchObject({ n: 1 });
-  });
-
-  it('un commit intermédiaire remet à zéro la répétition de scope sans stopper le travail', async () => {
-    const now = 2_000_000_000;
-    await ensureSchema(db);
-    const runId = 'cc8-scope-progress-' + crypto.randomUUID();
-    expect((await createRun(db, {
-      runId, cycleId: 'cc8-scope-progress-' + crypto.randomUUID(), participantId: 'gemini', taskId: 'progress',
-      taskKind: 'implement', prompt: 'Long legitimate work', maxSteps: -1,
-      maxTokens: -1, maxCostCents: 0, deadlineAt: now + 1200, now,
-    })).created).toBe(true);
-    const sha = 'a'.repeat(40);
+    const baseSha = 'a'.repeat(40);
+    const branch = 'mcp/105856986/gemini-api-scope';
     let turn = 0;
     const deps: EngineDeps = {
       model: { complete: async () => {
         const n = turn++;
-        return { output: { text: 'step', tool_calls: [{ id: 't-' + n,
-          name: n === 0 ? 'github_create_branch' : n === 4 ? 'github_commit_files' : 'github_write_scope',
-          args: { n } }] }, usage: { tokens: 1, cost_cents: 0 } };
+        const name = n === 0 ? 'github_create_branch'
+          : withCommit && n === 4 ? 'github_commit_files' : 'github_write_scope';
+        return { output: { text: 'continuer', tool_calls: [
+          { id: 'tool-' + n, name, args: { step: n } },
+        ] }, usage: { tokens: 10, cost_cents: 0 } };
       } },
       tools: {
         list: () => ['github_write_scope', 'github_create_branch', 'github_commit_files'],
         spec: (_kind, name) => ({ name, effect: 'write' }),
-        execute: async call => call.name === 'github_create_branch' ? { branch: 'test', sha }
+        execute: async call => call.name === 'github_create_branch' ? { branch, sha: baseSha }
           : call.name === 'github_commit_files' ? { commit_sha: 'b'.repeat(40) }
-            : { branch: 'test', branch_head: sha, base_sha: sha },
+            : { branch, base_sha: baseSha, branch_head: baseSha },
       },
-      now: () => now, workerId: 'scope-progress-worker',
+      now: () => now, workerId: 'scope-agent', salonEnabled: !withCommit,
     };
+    return { runId, deps };
+  }
+
+  it('cinq consultations du mandat sans commit déclenchent un blocage documenté', async () => {
+    const { runId, deps } = await checkScopeScenario(false);
+    for (let i = 0; i < 5; i++) expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    expect((await runStep(db, runId, deps)).outcome).toBe('failed');
+    expect(await db.prepare('SELECT status,stop_reason,steps_done FROM agent_runs WHERE run_id=?1')
+      .bind(runId).first()).toMatchObject({
+        status: 'failed', stop_reason: 'blocked:no_progress:repeated_scope_without_commit', steps_done: 6,
+      });
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM agent_run_journal WHERE run_id=?1 AND kind='no_progress'")
+      .bind(runId).first<{ n: number }>()).toMatchObject({ n: 1 });
+  });
+
+  it('un commit intermédiaire remet à zéro les répétitions sans limiter la mission', async () => {
+    const { runId, deps } = await checkScopeScenario(true);
     for (let i = 0; i < 9; i++) expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
     expect(await db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId).first())
       .toMatchObject({ status: 'running' });
