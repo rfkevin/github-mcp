@@ -131,6 +131,38 @@ describe('CC8 #320 — one D1 assignment, one WorkSession planner',()=>{
     expect(await assignCoordinatorWorksession(input)).toMatchObject({status:'scheduled'});
   });
 
+  it('default mission is scheduled immediately once by the common planner',async()=>{
+    const s=await setup('immediate');
+    await assignCoordinatorWorksession(s.input);
+    const first=await planAgentRuns(db,s.runtime,{now:s.input.now+1,limit:3});
+    expect(first.created).toBe(1);
+    const running=await db.prepare('SELECT run_id,task_kind,status FROM agent_runs WHERE cycle_id=?1 AND task_id=?2')
+      .bind(s.cycle,s.task).first<{run_id:string;task_kind:string;status:string}>();
+    expect(running).toMatchObject({task_kind:'implement',status:'running'});
+    expect(running!.run_id).toMatch(/^api-implement-/);
+    expect((await planAgentRuns(db,s.runtime,{now:s.input.now+2,limit:3})).created).toBe(0);
+    expect(s.wakeIds).toHaveLength(0);
+  });
+
+  it('future schedule executes once when due, and an identical late replay stays valid',async()=>{
+    const s=await setup('due-once');
+    const due=s.input.now+180;
+    const input={...s.input,scheduledAt:due};
+    await assignCoordinatorWorksession(input);
+    expect((await planAgentRuns(db,s.runtime,{now:due-1,limit:3})).created).toBe(0);
+    const planned=await planAgentRuns(db,s.runtime,{now:due+1,limit:3});
+    expect(planned.created).toBe(1);
+    const row=await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE cycle_id=?1 AND task_id=?2')
+      .bind(s.cycle,s.task).first<{n:number}>();
+    expect(row?.n).toBe(1);
+    expect((await planAgentRuns(db,s.runtime,{now:due+2,limit:3})).created).toBe(0);
+    const late=await assignCoordinatorWorksession({...input,now:due+10});
+    expect(late).toMatchObject({status:'queued',scheduled_at:due});
+    await expect(assignCoordinatorWorksession({...input,scheduledAt:due+20,
+      now:due+10,opId:s.coordinator+':'+s.cycle+':alter-schedule:1'}))
+      .rejects.toMatchObject({code:'SCHEDULE_CONFLICT'});
+  });
+
   it('chat retains its lease; assignment never takes over the chat',async()=>{
     const s=await setup('lease');
     await preemptByChat(db,{cycleId:s.cycle,participantId:s.gemini,taskId:s.task,
