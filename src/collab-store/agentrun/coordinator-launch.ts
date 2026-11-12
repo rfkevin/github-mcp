@@ -148,13 +148,14 @@ export async function assignCoordinatorWorksession(i:LaunchInput):Promise<Launch
   if(prior&&(prior.participant_id!==i.participant||prior.created_by!==i.coordinator
     ||(i.scheduledAt!==undefined&&prior.not_before!==i.scheduledAt)))
     deny('SCHEDULE_CONFLICT','An immutable task schedule already exists with different parameters.');
-  // Read-only mandate lookup before grant issuance prevents an orphan grant if task scope is invalid.
-  const policy={writers:i.env.AGENT_RUN_GITHUB_WRITERS,tasks:i.env.AGENT_RUN_GITHUB_TASKS,
-    dynamic:i.env.AGENT_RUN_DYNAMIC_SCOPE};
-  const intendedPaths=i.paths??(await exactGrant(i.db,policy,i.cycle,i.task,i.participant))?.paths??null;
-  await preflightAssignment(i,intendedPaths);
   let grant:WriteGrant;
   try {
+    // The read-only preflight can also reject a corrupt dynamic grant; map that
+    // ToolRefused identically to grantForLaunch instead of leaking STORE_UNAVAILABLE.
+    const policy={writers:i.env.AGENT_RUN_GITHUB_WRITERS,tasks:i.env.AGENT_RUN_GITHUB_TASKS,
+      dynamic:i.env.AGENT_RUN_DYNAMIC_SCOPE};
+    const intendedPaths=i.paths??(await exactGrant(i.db,policy,i.cycle,i.task,i.participant))?.paths??null;
+    await preflightAssignment(i,intendedPaths);
     grant=await grantForLaunch(i.db,i.env,i.cycle,i.task,i.participant,i.coordinator,i.paths,i.acceptance,i.now);
   } catch(error) {
     if(!(error instanceof ToolRefused)) throw error;
