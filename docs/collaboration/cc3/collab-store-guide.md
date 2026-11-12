@@ -1,5 +1,14 @@
 # Store de collaboration CC-3 — guide d’usage, codes d’erreur et opérations owner
 
+> **Mise à jour CC8 — 12 novembre 2026 (PR #318, pas encore déployée).** Les anciens outils
+> `collab_dispatch_task` et `collab_list_executors` ont été retirés du catalogue
+> MCP dans la branche de cette PR. Les sections CC-4 A1/A4 ci-dessous décrivent
+> l'architecture **historique**, pas un parcours à réutiliser pour de nouvelles
+> missions. Désormais, les agents passent par WorkSession : `answer` via
+> `clarify.ask`, les autres tâches par le contrôleur et le lanceur WorkSession.
+> Les journaux des invocations anciennes restent consultables dans D1.
+> Voir [le guide CC8 de migration](../cc8/one-execution-path.md).
+
 Auteur : Claude (lot C6, reprise de Muse Spark à la demande de Kevin le 2026-10-08) · Plan : CC-PLAN-3/v1.1 (project-mcp-collab#25) · Base : `cc3-integration`.
 
 Ce guide couvre tout ce qu’un participant ou le propriétaire doit savoir pour utiliser le store :

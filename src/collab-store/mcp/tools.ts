@@ -17,9 +17,6 @@ import { resolveContextTarget, buildRolePacket, loadContinuity, loadActiveWork, 
 import { applyChatAutoLease, type ChatLeaseEffect } from '../agentrun/chat-auto-lease';
 import { advanceGuarded } from '../phases/gate';
 import type { Phase } from '../../collab/contracts';
-import { dispatchCoordinatorTask } from '../coordinator/tasks';
-import { listExecutorProfiles } from '../executors/profiles';
-import { isCoordinator } from '../owner/coordinators';
 import { registerDelegationTools } from './delegation-tools';
 import { registerControllerTools } from './controller-tools';
 import { registerAgentRunTools } from './agentrun-tools';
@@ -55,63 +52,6 @@ export function registerCollabStoreTools(server: McpServer, context: CollabToolC
   if (context.flags.agentRunsEnabled && context.flags.researchEnabled) registerResearchTools(server, context);
   const collabFailure = (error: unknown, fallback: string, extra: Record<string, unknown> = {}) =>
     failure(error, fallback, extra, context.fallback);
-
-  server.registerTool('collab_dispatch_task', {
-    title: 'Confier une tâche à un worker gratuit (CC-4 A4)',
-    description: 'Coordinateur owner-approved uniquement. Crée une invocation A1 dans coordinator-tasks puis l’exécute immédiatement sur un endpoint actif gratuit. task_kind est une liste serveur fixe ; brief (<=2000) et materials (<=60000) sont bornés et non fiables. Même op_id = aucun second appel fournisseur et aucune restitution de la sortie précédente.',
-    inputSchema: {
-      endpoint_id: z.string().min(1).max(128),
-      task_kind: z.string().min(1).max(64),
-      brief: z.string().min(1).max(3000),
-      materials: z.string().max(65536),
-      max_tokens: z.number().int().min(1).max(2048),
-      op_id: z.string().min(1).max(MAX_OP_ID_LENGTH),
-    },
-    outputSchema: outputSchemas.collab_dispatch_task,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-  }, async (input) => {
-    try {
-      const identity = await context.identity();
-      const result = await dispatchCoordinatorTask(context.db, context.executor.factory, {
-        participant_id: identity.participant_id,
-        endpoint_id: input.endpoint_id,
-        task_kind: input.task_kind,
-        brief: input.brief,
-        materials: input.materials,
-        max_tokens: input.max_tokens,
-        op_id: input.op_id,
-        daily_cap: context.executor.dailyCap,
-        neuron_budget: context.executor.neuronBudget,
-        now: context.executor.now,
-      });
-      return collabSuccess({ ...result });
-    } catch (error) {
-      return collabFailure(error, 'Délégation au worker impossible.');
-    }
-  });
-
-  server.registerTool('collab_list_executors', {
-    title: 'Fiches des workers disponibles (CC-4 A4)',
-    description: 'Lecture seule réservée au coordinateur owner-approved : endpoints, provider/modèle, capacités, quotas restants, statistiques A1 des 7 derniers jours et notes owner.',
-    inputSchema: {},
-    outputSchema: outputSchemas.collab_list_executors,
-    annotations: READ_ONLY,
-  }, async () => {
-    try {
-      const identity = await context.identity();
-      if (!await isCoordinator(context.db, identity.participant_id)) {
-        throw new CollabStoreError('COORDINATOR_REQUIRED', 'Le rôle coordinateur actif est requis pour lire les fiches exécutants.');
-      }
-      const executors = await listExecutorProfiles(context.db, {
-        dailyCap: context.executor.dailyCap,
-        neuronBudget: context.executor.neuronBudget,
-        now: context.executor.now,
-      });
-      return collabSuccess({ executors });
-    } catch (error) {
-      return collabFailure(error, 'Fiches exécutants indisponibles.');
-    }
-  });
 
   server.registerTool('collab_get_context', {
     title: 'Contexte de cycle (store CC-3)',
