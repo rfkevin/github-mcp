@@ -813,7 +813,11 @@ async function repeatedScopeWithoutProgress(db: D1Database, runId: string,
   let branchHead = '';
   let repeats = 0;
   const seenReads = new Set<string>();
-  for (const row of [...history].reverse()) {
+  // Le tour courant n'est enregistré comme completed qu'APRÈS ce contrôle :
+  // sans l'inclure, la détection est décalée d'une étape et échoue au cinquième scope.
+  const chronological = [...history].reverse();
+  chronological.push({ model_output: JSON.stringify(output), results: JSON.stringify(results) });
+  for (const row of chronological) {
     let previous: ModelOutput;
     let receipts: ResultEntry[];
     try {
