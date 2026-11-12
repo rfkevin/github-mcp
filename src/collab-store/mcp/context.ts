@@ -6,15 +6,10 @@ import { CollabStore, CollabStoreError, type StoreOptions } from '../store/colla
 import { collabDailyWriteLimit, type CollabStoreEnv } from '../store/config';
 import { resolveTokenParticipant, type ParticipantIdentity } from '../identity';
 import { parseFallbackState, storeFallback, type StoreFallback } from '../export/fallback';
-import {
-  parseDailyCap, parseNeuronBudget, providerAdapterFactory,
-  type AdapterFactory, type ProviderAdapterEnv,
-} from '../executors/run';
 import type { PolicyEnv } from '../agentrun/model-policy';
 import type { AgentRunObjectEnv } from '../agentrun/object';
 
-export interface CollabExecutionEnv extends CollabStoreEnv, ProviderAdapterEnv {
-  EXECUTOR_DAILY_CAP?: string;
+export interface CollabExecutionEnv extends CollabStoreEnv {
   WORKERS_AI_DAILY_NEURONS?: string;
   /** CC-7 L4 : porte du salon d'équipe (« true » exact seulement). */
   SALON_ENABLED?: string;
@@ -50,7 +45,6 @@ export interface CollabToolContext {
   /** CC-3 C6 : repli explicite en lecture seule renvoyé avec STORE_UNAVAILABLE (R4). */
   fallback: StoreFallback;
   db: D1Database;
-  executor: { factory: AdapterFactory; dailyCap: number; neuronBudget: number; now: () => Date };
   /** CC-7 L4 : variables de porte lues à la construction (salon) ; CC-7 L9a : exécutions API. */
   flags: { salonEnabled: boolean; agentRunsEnabled: boolean; researchEnabled: boolean };
   /** CC-7 L9a : vue réduite du Worker pour le catalogue des modèles (aucune valeur de secret). */
@@ -83,12 +77,6 @@ export function createCollabToolContext(
   });
   let resolved: Promise<ParticipantIdentity> | undefined;
   return { actor, store, storeNoWake, scopes, db, fallback: storeFallback(parseFallbackState(env.COLLAB_FALLBACK_STATE)),
-    executor: {
-      factory: providerAdapterFactory(env),
-      dailyCap: parseDailyCap(env.EXECUTOR_DAILY_CAP),
-      neuronBudget: parseNeuronBudget(env.WORKERS_AI_DAILY_NEURONS),
-      now,
-    },
     flags: { salonEnabled: env.SALON_ENABLED === 'true', agentRunsEnabled: env.AGENT_RUNS_ENABLED === 'true',
       researchEnabled: env.AGENT_RUN_RESEARCH === 'true' },
     models: modelEnvOf(env),

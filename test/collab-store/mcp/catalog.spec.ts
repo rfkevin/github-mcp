@@ -18,7 +18,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     expect(names).toContain('github_collab_context');
   });
 
-  it('le scope collab: expose les 19 outils du store, dont la délégation owner CC-5, L3d, la continuité chat l7e et l\'inventaire mémoire M1b', async () => {
+  it('le scope collab: expose les 17 outils du store, dont la délégation owner CC-5, L3d, la continuité chat l7e et l\'inventaire mémoire M1b', async () => {
     // AGENT_RUNS_ENABLED explicitement éteint (défaut du Worker) : la config vitest l'allume pour les suites agentrun (CC-7 L9a).
     const fixture = createOAuthFixture({ COLLAB_DB: bindings.COLLAB_DB_C2, COLLAB_STORE_ENABLED: 'true', AGENT_RUNS_ENABLED: 'false' });
     const session = await fixture.mcpSession('mcp:read collab: offline_access', 'http://localhost:4321/callback',
@@ -26,9 +26,11 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     const response = await fixture.send('/collab/mcp', { method: 'POST', headers: session.headers,
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
     const result = fixture.rpcResult(await response.text()) as { tools: Array<{ name: string }> };
-    expect(result.tools.map(tool => tool.name).sort())
-      .toEqual(['collab_agent_run_summary', 'collab_agent_runs_overview', 'collab_append_event', 'collab_delegate_owner', 'collab_dispatch_task', 'collab_export',
-        'collab_get_context', 'collab_get_delta', 'collab_launch_implement', 'collab_list_agent_runs', 'collab_list_executors',
+    const names = result.tools.map(tool => tool.name).sort();
+    expect(names).not.toContain('collab_dispatch_task');
+    expect(names).not.toContain('collab_list_executors');
+    expect(names).toEqual(['collab_agent_run_summary', 'collab_agent_runs_overview', 'collab_append_event', 'collab_delegate_owner', 'collab_export',
+        'collab_get_context', 'collab_get_delta', 'collab_launch_implement', 'collab_list_agent_runs',
         'collab_memory_growth_simulate', 'collab_memory_inventory', 'collab_next_actions',
         'collab_phase_adjust', 'collab_phase_advance', 'collab_preempt_agent_run', 'collab_release_agent_run', 'collab_request_correction']);
   });
@@ -66,7 +68,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     expect(names).toContain('collab_salon_pending_wakes');
     expect(names).toContain('collab_salon_ack_wake');
     expect(names.filter(n => n.startsWith('collab_salon_'))).toHaveLength(4);
-    expect(names.length).toBe(23);
+    expect(names.length).toBe(21);
   });
 
   // CC-7 L9a : porte AGENT_RUNS_ENABLED allumée → catalogue des modèles et choix de modèle (catalogue défaut inclut le lanceur S7).
