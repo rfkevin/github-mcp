@@ -1,11 +1,18 @@
-# CC8: lancement S7 depuis le coordinateur
+# CC8 — Attribution WorkSession (migration S7 / issue #320)
 
-Le planificateur S7 et ses Durable Objects restent inchangés. Le nouvel outil collab_launch_implement cree un run via createRun puis appelle directement le meme wake RPC. Il retourne un vrai run_id et un statut de prise en charge, PAS une preuve de succes fonctionnel.
+> **Ancien parcours historique.** Le lancement manuel `collab_launch_implement` et sa création directe de run ont été remplacés. Ce document ne doit plus servir d'instruction de lancement. Voir [le chemin d'exécution unique](one-execution-path.md).
 
-Les grants owner de cc3-test restreignent cycle, tache, agent, branche et fichiers. Toute depense de modele payant est refusee. Le coordinateur peut enchaîner autant de demandes indépendantes que l'autorisent les grants owner et les quotas : il déclenche A, puis B, puis C **sans attendre le résultat du modèle pour A ou B**. Les Durable Objects sont indexés par clé de bail (cycle, participant, tâche) : plusieurs runs distincts peuvent être `running` simultanément, chacun avec son propre run_id, son scope et son arrêt. Les demandes sont enregistrées l'une après l'autre afin de préserver le CAS D1, mais leur **exécution est concurrente**. Seules les tâches réellement dépendantes attendent un verdict préalable. En cas d'échec d'une tâche, les autres ne sont pas annulées. Le coordinateur vérifie ensuite les preuves GitHub et CI de chacune.
+## Nouveau comportement
 
-Gemini sans chat : le coordinateur fait un task.claim TEMPORAIRE sous sa propre identite, puis task.handoff a Gemini en respectant D12. Aucun evenement ne se fait passer pour Gemini. Vibe : son ancien task.claim a pris un bail chat d'une heure. Le parametre takeover_chat=true, seulement sous ordre explicite de Kevin, libere le bail sur cette tache apres journal checkpoint. Sans takeover, createRun refuse le lancement.
+Le coordinateur **attribue** la mission, il ne crée ni ne réveille de modèle. L'outil MCP `collab_assign_worksession` vérifie les autorisations GitHub owner-approved, les chemins de la tâche, le réviseur et le testeur D12 distincts, puis écrit les événements `task.claim`, `task.handoff` et `checkpoint` en D1. Un seul circuit exécute la mission : `planAgentRuns` → `createRun` idempotent → outbox durable → Durable Object, cron en secours.
 
-Les run IDs sont deterministes, et un rejeu n'effectue pas de seconde tentative. Les protections HALT, fence, scope GitHub, correction D1 et CI au SHA restent celles du moteur existant. Aucune fusion automatique et aucun effet sur master.
+Sans `scheduled_at`, les tâches disponibles démarrent au premier passage du planificateur. Le champ `scheduled_at` accepte uniquement une échéance UTC explicite ; elle est conservée sans mutation dans `agent_task_schedule`, et aucun run n'est créé avant l'échéance. Un rejeu identique ne fabrique pas de second run. Un bail de chat actif, HALT, l'absence de capacité modèle ou une dépendance non satisfaite peut différer le départ : le coordinateur consulte alors `collab_agent_runs_overview` et le contexte D1.
 
-Apres CI4/4, double avis D12 et fusion owner, verifier le deploy cc3-test avant l'utilisation. Appeler collab_launch_implement sur S7-compare-vibe-1 (takeover_chat=true), puis sur S7-compare-gemini-1 (reviewer=vibe, tester=grok). Lire les deux run_ids puis les etapes GitHub, commits, CI et PR. Ne pas relancer sans nouveau GO.
+## Invariants conservés
+
+- Aucun agent ne contourne le bail chat par `takeover_chat` : cette ancienne option du lancement manuel est supprimée.
+- Le mandat GitHub (statique ou dynamique) est validé séparément du déclenchement WorkSession ; il ne provient jamais d'une simple instruction textuelle.
+- Le coût modèle payant, les chemins autorisés et les protections D12 restent vérifiés côté serveur. Aucune fusion automatique, aucun effet sur `master`.
+- Le statut `queued` signifie « attribution enregistrée », pas « run terminé » ; contrôler l'identifiant de run, les effets D1, les commits, la CI au SHA exact et les validations indépendantes.
+
+**Migration des clients :** ne plus appeler `collab_launch_implement` ; appeler `collab_assign_worksession` pour une tâche nécessitant un mandat GitHub, ou utiliser les événements du contrôleur/une question `clarify.ask` pour un `answer` automatique. Ne créer ni `collab_launch_answer` ni autre deuxième moteur.
