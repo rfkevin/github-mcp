@@ -797,54 +797,57 @@ async function repeatedScopeWithoutProgress(db: D1Database, runId: string,
   output: ModelOutput, results: ResultEntry[]): Promise<boolean> {
   if (output.tool_calls.length !== 1 || output.tool_calls[0].name !== 'github_write_scope'
     || results.length !== 1 || results[0].error) return false;
-  // Inspecter également les lectures utiles : un agent qui découvre de nouveaux
-  // fichiers ne doit jamais être pris pour une boucle d'initialisation.
-  // Résultats bornés (SHA/aperçu), jamais de contenu privé renvoyé au modèle.
+  // Les effets GitHub en écriture ont leur propre table D1 ; les LECTURES sont
+  // uniquement dans agent_run_steps.results. Observer les deux types à partir
+  // du journal serveur des étapes, faute de quoi une analyse légitime de code
+  // serait classée à tort comme une boucle.
   const readTools = new Set(['github_read_file', 'github_list_directory', 'github_diff',
-    'github_pull_request', 'github_check_runs', 'store_delta', 'store_memory', 'store_continuity']);
+    'github_pull_request', 'github_check_runs', 'store_context', 'store_delta',
+    'store_memory', 'store_continuity']);
+  const milestoneTools = new Set(['github_create_branch', 'github_commit_files', 'github_replace_text',
+    'github_run_checks', 'github_check_result', 'github_open_pr', 'github_open_draft_pr']);
   const { results: history } = await db.prepare([
-    "SELECT tool, status, CASE WHEN tool = 'github_write_scope' THEN result ELSE NULL END AS result,",
-    "args, CASE WHEN tool != 'github_write_scope' THEN SUBSTR(result, 1, 512) ELSE NULL END AS sample",
-    'FROM agent_run_effects WHERE run_id = ?1',
-    "AND tool IN ('github_write_scope','github_create_branch','github_commit_files','github_replace_text',",
-    "'github_run_checks','github_check_result','github_open_pr','github_open_draft_pr',",
-    "'github_read_file','github_list_directory','github_diff','github_pull_request','github_check_runs',",
-    "'store_delta','store_memory','store_continuity')",
-    'ORDER BY n DESC, idx DESC LIMIT 96',
-  ].join(' ')).bind(runId).all<{ tool: string; status: string; result: string | null; args: string | null; sample: string | null }>();
+    "SELECT model_output, results FROM agent_run_steps WHERE run_id = ?1 AND state = 'completed'",
+    'ORDER BY n DESC LIMIT 96',
+  ].join(' ')).bind(runId).all<CompletedHistoryStep>();
   let branchHead = '';
   let repeats = 0;
   const seenReads = new Set<string>();
-  // Progression chronologique : un nouveau reçu de lecture remet le compteur à
-  // zéro. Rejouer le MÊME fichier ou le MÊME delta ne permet pas de contourner
-  // la détection d'une véritable boucle.
-  for (const effect of [...history].reverse()) {
-    if (effect.tool === 'github_write_scope') {
-      if (effect.status !== 'completed' || !effect.result) { repeats = 0; branchHead = ''; continue; }
-      let scope: Record<string, unknown>;
-      try { scope = JSON.parse(effect.result) as Record<string, unknown>; }
-      catch { repeats = 0; branchHead = ''; continue; }
-      const branch = scope.branch;
-      const head = scope.branch_head;
-      if (typeof branch !== 'string' || typeof head !== 'string' || !/^[a-f0-9]{40}$/.test(head)) {
-        repeats = 0; branchHead = ''; continue;
-      }
-      const fingerprint = branch + '@' + head;
-      repeats = fingerprint === branchHead ? repeats + 1 : 1;
-      branchHead = fingerprint;
-    } else if (readTools.has(effect.tool)) {
-      if (effect.status !== 'completed') continue;
-      const fingerprint = effect.tool + ':' + (effect.args ?? '') + ':' + (effect.sample ?? '');
-      if (!seenReads.has(fingerprint)) {
-        seenReads.add(fingerprint);
+  for (const row of [...history].reverse()) {
+    let previous: ModelOutput;
+    let receipts: ResultEntry[];
+    try {
+      previous = JSON.parse(row.model_output) as ModelOutput;
+      receipts = JSON.parse(row.results) as ResultEntry[];
+    } catch { continue; }
+    for (const call of previous.tool_calls ?? []) {
+      const receipt = receipts.find(item => item.id === call.id);
+      if (!receipt || receipt.error) continue;
+      if (call.name === 'github_write_scope') {
+        let scope: Record<string, unknown>;
+        try { scope = JSON.parse(receipt.content) as Record<string, unknown>; }
+        catch { repeats = 0; branchHead = ''; continue; }
+        const branch = scope.branch;
+        const head = scope.branch_head;
+        if (typeof branch !== 'string' || typeof head !== 'string' || !/^[a-f0-9]{40}$/.test(head)) {
+          repeats = 0; branchHead = ''; continue;
+        }
+        const fingerprint = branch + '@' + head;
+        repeats = fingerprint === branchHead ? repeats + 1 : 1;
+        branchHead = fingerprint;
+      } else if (readTools.has(call.name)) {
+        // Un nouveau chemin/contenu lu compte comme exploration réelle ; le
+        // même appel et le même résultat rejoués ne remettent rien à zéro.
+        const fingerprint = call.name + ':' + canonical(call.args) + ':' + receipt.content.slice(0, 512);
+        if (!seenReads.has(fingerprint)) {
+          seenReads.add(fingerprint);
+          repeats = 0;
+          branchHead = '';
+        }
+      } else if (milestoneTools.has(call.name)) {
         repeats = 0;
         branchHead = '';
       }
-    } else if (effect.status === 'completed') {
-      // Branche, commit, CI ou PR réellement créée : nouvelle étape productive,
-      // donc pas de blocage. Une create_branch refusée ne remet rien à zéro.
-      repeats = 0;
-      branchHead = '';
     }
   }
   return repeats >= 5;
