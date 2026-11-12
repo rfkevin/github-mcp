@@ -29,8 +29,8 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     const names = result.tools.map(tool => tool.name).sort();
     expect(names).not.toContain('collab_dispatch_task');
     expect(names).not.toContain('collab_list_executors');
-    expect(names).toEqual(['collab_agent_run_summary', 'collab_agent_runs_overview', 'collab_append_event', 'collab_delegate_owner', 'collab_export',
-        'collab_get_context', 'collab_get_delta', 'collab_launch_implement', 'collab_list_agent_runs',
+    expect(names).toEqual(['collab_agent_run_summary', 'collab_agent_runs_overview', 'collab_append_event', 'collab_assign_worksession', 'collab_delegate_owner', 'collab_export',
+        'collab_get_context', 'collab_get_delta', 'collab_list_agent_runs',
         'collab_memory_growth_simulate', 'collab_memory_inventory', 'collab_next_actions',
         'collab_phase_adjust', 'collab_phase_advance', 'collab_preempt_agent_run', 'collab_release_agent_run', 'collab_request_correction']);
   });

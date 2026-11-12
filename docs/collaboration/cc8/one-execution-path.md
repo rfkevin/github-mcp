@@ -15,9 +15,12 @@ qui créait un diagnostic séparé sans contexte WorkSession.
   participant (ou une question X13). L'historique de la question, les
   informations C4 autorisées et le dossier serveur sont assemblés dans
   `plan.ts` et `unified-run-packet.ts`.
-- `review`, `test`, `design` et `implement` passent également par
-  les planificateurs WorkSession ; `collab_launch_implement` reste
-  disponible pour le mandat GitHub explicite du coordinateur.
+- `review`, `test`, `design` et `implement` passent aussi par le seul
+  planificateur WorkSession. Le coordinateur émet `collab_assign_worksession`
+  pour autoriser et attribuer le mandat D1 : **aucun autre code ne crée de run**.
+- Sans `scheduled_at`, le travail démarre dès qu'il est exécutable ; un timer
+  explicite est enregistré dans D1 et déclenche l'outbox à l'échéance.
+  HALT, les dépendances, les droits et un bail chat actif restent prioritaires.
 - Pour un **diagnostic** d'incident, demander au participant un
   `clarify.ask` ciblé avec les références vérifiables au run et au store.
   Le passage en `answer` automatique utilise WorkSession. Une tâche
@@ -33,9 +36,10 @@ qui créait un diagnostic séparé sans contexte WorkSession.
   effacée, et aucun fournisseur n'est privilégié.
 - Les contrôles de mandat, d'identité, HALT, CAS, D12, coûts et
   permissions GitHub du WorkSession restent inchangés.
-- Les clients anciens qui utilisaient `collab_dispatch_task` doivent
-  migrer vers `clarify.ask` + WorkSession (réponse) ou vers les
-  tâches du contrôleur. L'ancien nom ne déclenche plus aucun appel API.
+- Les anciens clients utilisant `collab_dispatch_task` migrent vers `clarify.ask`
+  pour `answer` ou vers les tâches du contrôleur. Ceux qui utilisaient
+  `collab_launch_implement` doivent émettre `collab_assign_worksession` ;
+  aucun déclencheur manuel parallèle n'est conservé.
 - Cette PR ne modifie pas le code déployé tant qu'elle n'a pas été
   validée, revue et fusionnée dans `cc3-integration`. La PR #317
   de continuité portable reste indépendante.

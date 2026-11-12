@@ -43,10 +43,10 @@ const packetMemory = {
 };
 
 export const outputSchemas = {
-  collab_launch_implement: {
-    status: z.enum(['started', 'existing', 'wake_pending']),
-    run_id: z.string(), cycle: z.string(), task: z.string(), participant: z.string(),
-    wake_accepted: z.boolean(), cost_cents: z.literal(0), detail: z.string(),
+  collab_assign_worksession: {
+    status: z.enum(['queued', 'scheduled']),
+    cycle: z.string(), task: z.string(), participant: z.string(), branch: z.string(),
+    scheduled_at: z.number().nullable(), detail: z.string(),
   },
   collab_get_context: {
     cycle_id: z.string(),

@@ -99,8 +99,13 @@ export interface StoreContextTask {
 
 /** S8 B : prédicat pur partagé pour l'enregistrement transactionnel du réveil. */
 export const DURABLE_WAKE_EVENT_TYPES = ['clarify.ask', 'clarify.answer', 'evidence.add', 'task.claim', 'task.status',
-  'task.handoff', 'owner.decision', 'round.add'] as const;
+  'task.handoff', 'owner.decision', 'round.add', 'checkpoint'] as const;
 export function durableWakeWorthy(type: string, payloadJson: string): boolean {
+  if(type==='checkpoint'){
+    try{const p=JSON.parse(payloadJson) as {state?:unknown;task?:unknown};
+      return p.state==='WORKSESSION_ASSIGNED'&&typeof p.task==='string'&&p.task.length>0;
+    }catch{return false;}
+  }
   if (type === 'clarify.ask' || type === 'clarify.answer') {
     try {
       const payload = JSON.parse(payloadJson) as { to?: unknown; ask_seq?: unknown };

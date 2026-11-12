@@ -164,6 +164,12 @@ const TABLES = [
     'created_by TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,',
     'PRIMARY KEY(cycle,task,participant)',
     ')'].join(' '),
+  // #320: optional immutable schedule; no row = immediate eligibility.
+  ['CREATE TABLE IF NOT EXISTS agent_task_schedule (',
+    'cycle_id TEXT NOT NULL, task_id TEXT NOT NULL, participant_id TEXT NOT NULL,',
+    'not_before INTEGER NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL,',
+    'PRIMARY KEY(cycle_id,task_id)',
+    ')'].join(' '),
   // CC8 S7 lot B R5 (#282) : chaque essai de maillon d'un appel modèle — maillon choisi, maillon servi, repli.
   ['CREATE TABLE IF NOT EXISTS agent_run_model_calls (',
     '  run_id TEXT NOT NULL,',
@@ -187,10 +193,11 @@ const TABLES = [
 
 const NO_DELETE = ['agent_fences', 'agent_runs', 'agent_run_steps', 'agent_run_effects', 'agent_run_wakeups',
   'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal', 'agent_run_reads', 'agent_run_server_steps',
-  'agent_run_proofs', 'agent_run_model_calls', 'agent_run_call_usage', 'api_dynamic_grants'].map(table =>
+  'agent_run_proofs', 'agent_run_model_calls', 'agent_run_call_usage', 'api_dynamic_grants', 'agent_task_schedule'].map(table =>
   'CREATE TRIGGER IF NOT EXISTS ' + table + '_no_delete BEFORE DELETE ON ' + table
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END");
 
+const TASK_SCHEDULE_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_task_schedule_no_update BEFORE UPDATE ON agent_task_schedule BEGIN SELECT RAISE(ABORT, 'append-only'); END";
 const DYNAMIC_GRANTS_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS api_dynamic_grants_no_update BEFORE UPDATE ON api_dynamic_grants BEGIN SELECT RAISE(ABORT, 'append-only'); END";
 
 const JOURNAL_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_journal_no_update BEFORE UPDATE ON agent_run_journal"
@@ -209,5 +216,5 @@ const PROOFS_FINAL = "CREATE TRIGGER IF NOT EXISTS agent_run_proofs_final BEFORE
   + " WHEN OLD.status <> 'pending' OR NEW.run_id <> OLD.run_id BEGIN SELECT RAISE(ABORT, 'append-only'); END";
 
 export async function ensureAgentRunSchema(db: D1Database): Promise<void> {
-  await db.batch([...TABLES, ...NO_DELETE, DYNAMIC_GRANTS_APPEND_ONLY, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY, MODEL_CALLS_APPEND_ONLY, CALL_USAGE_APPEND_ONLY, PROOFS_FINAL].map(sql => db.prepare(sql)));
+  await db.batch([...TABLES, ...NO_DELETE, DYNAMIC_GRANTS_APPEND_ONLY, TASK_SCHEDULE_APPEND_ONLY, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY, MODEL_CALLS_APPEND_ONLY, CALL_USAGE_APPEND_ONLY, PROOFS_FINAL].map(sql => db.prepare(sql)));
 }
