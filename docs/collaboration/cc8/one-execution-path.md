@@ -43,3 +43,28 @@ qui créait un diagnostic séparé sans contexte WorkSession.
 - Cette PR ne modifie pas le code déployé tant qu'elle n'a pas été
   validée, revue et fusionnée dans `cc3-integration`. La PR #317
   de continuité portable reste indépendante.
+
+
+## Recadrage en cours de WorkSession et arrêt individuel (13 novembre 2026)
+
+Le coordinateur, ou le participant propriétaire de la WorkSession, dispose de deux contrôles
+distincts du HALT global :
+
+- `collab_steer_agent_run({run_id,op_id,message})` enregistre un nouveau message D1
+  immuable et idempotent. Sans créer de deuxième run, le moteur le livre lors
+  du prochain **appel fournisseur** autorisé. Le message arrivé pendant un appel
+  en vol n'interrompt pas cet appel et sera vu à l'appel suivant. Les messages
+  livrés sont reconstruits dans le contexte du même run et conservés lors de
+  la compaction de l'historique. Le HALT global peut rester actif pendant l'envoi,
+  mais il empêche le moteur de consommer le message avant reprise.
+- `collab_stop_agent_run({run_id,reason})` place le run ciblé en état terminal
+  `halted` avec `individual_stop:` dans `stop_reason`, invalide la génération
+  de son bail et évite de lancer de nouveaux outils. Aucun autre run et aucun
+  drapeau `owner_flags.halt` ne sont modifiés. Un appel fournisseur ou un effet
+  externe déjà lancé avant l'arrêt ne peut pas être annulé rétroactivement.
+
+Les deux outils vérifient l'identité du participant ou le mandat de coordination
+au sein du cycle. Le premier fournit le recadrage conversationnel demandé par
+Kevin, y compris lorsqu'un coordinateur détecte une stagnation ; la détection
+automatique de non-progression doit distinguer vraies lectures nouvelles et
+répétitions, pour ne pas imposer de plafond arbitraire de jetons/étapes.
