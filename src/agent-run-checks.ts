@@ -7,6 +7,33 @@ import { safeDiagnostic } from './mcp/tools/github/reports';
 import { ToolRefused } from './collab-store/agentrun/engine';
 import type { ApiChecks } from './collab-store/agentrun/github-write/tools';
 
+/**
+ * The standard CI workflow logs progress at the beginning and compile/test errors
+ * near the END. Return the last error-bearing lines, not the first 2 KB of setup.
+ * The provider receives only a bounded, redacted excerpt; never the entire log.
+ */
+export function focusedCiFailureExcerpt(rawLog: string, maxBytes = 2000): string {
+  const normalized = rawLog.replace(/\x1b\[[0-9;]*m/g, '').replace(/\r\n?/g, '\n');
+  const lines = normalized.split('\n');
+  const relevant = /(?:\berror\b|\bfatal\b|\bfail(?:ed|ure)?\b|TS\d{4}|cannot find module|module not found|could not resolve|npm ERR!)/i;
+  const hits: number[] = [];
+  for (let i = 0; i < lines.length; i++) if (relevant.test(lines[i])) hits.push(i);
+  const selected = new Set<number>();
+  if (hits.length > 0) {
+    for (const i of hits.slice(-12)) {
+      if (i > 0) selected.add(i - 1);
+      selected.add(i);
+      if (i + 1 < lines.length) selected.add(i + 1);
+    }
+  } else {
+    for (let i = Math.max(0, lines.length - 14); i < lines.length; i++) selected.add(i);
+  }
+  const excerpt = [...selected].sort((a, b) => a - b).map(i => lines[i]).join('\n');
+  // Tail-first truncation preserves the actual error even with long setup output.
+  const bytes = new TextEncoder().encode(excerpt);
+  return safeDiagnostic(new TextDecoder().decode(bytes.slice(-Math.max(1, maxBytes))), maxBytes);
+}
+
 export interface ApiChecksEnv {
   GITHUB_APP_ID?: string; GITHUB_INSTALLATION_ID?: string; GITHUB_PRIVATE_KEY?: string;
   GITHUB_CHECKS_CONFIG?: string; AGENT_RUN_CHECKS?: string;
@@ -48,8 +75,10 @@ export function apiChecksFrom(env: ApiChecksEnv, repository: string): ApiChecks 
       const failedJobs = jobs.filter(j => j.conclusion === 'failure' || j.conclusion === 'timed_out').slice(0, 2);
       const diagnostics = await Promise.all(failedJobs.map(async job => {
         let excerpt = '';
-        try { excerpt = safeDiagnostic(await reads.actions.getJobLogs(repository, job.id), 2000); } catch { excerpt = '[logs indisponibles]'; }
-        return { job: safeDiagnostic(job.name, 200), excerpt };
+        try { excerpt = focusedCiFailureExcerpt(await reads.actions.getJobLogs(repository, job.id)); } catch { excerpt = '[logs indisponibles]'; }
+        const failed_steps = (job.steps ?? []).filter(step => step.conclusion === 'failure' || step.conclusion === 'timed_out')
+          .slice(0, 8).map(step => safeDiagnostic(step.name, 120));
+        return { job: safeDiagnostic(job.name, 200), failed_steps, excerpt };
       }));
       const checks = await reads.actions.listCheckRuns(repository, sha);
       const annotations = [];
