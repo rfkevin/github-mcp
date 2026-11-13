@@ -19,6 +19,7 @@ import {
 import { coordinatorRunOverview } from '../agentrun/capacity';
 import { assignCoordinatorWorksession } from '../agentrun/coordinator-launch';
 import { runControlTarget, steerAgentRun, stopAgentRun } from '../agentrun/run-control';
+import { runProgress } from '../agentrun/run-progress';
 import { previewNextActions } from '../controller/next-actions';
 import { isCoordinator } from '../owner/coordinators';
 
@@ -169,7 +170,8 @@ export function registerAgentRunTools(server: McpServer, context: CollabToolCont
       const participantId = await registered(context, 'collab_agent_run_summary');
       const summary = await runSummaryForParticipant(context.db, participantId, input.run_id);
       const redacted = await redactedRunSummaryFor(context.db, participantId, input.run_id);
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ summary, redacted }) }] };
+      const progress = redacted ? await runProgress(context.db, input.run_id) : null;
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ summary, redacted, progress }) }] };
     } catch (error) {
       return collabFailure(error, 'Résumé d’exécution impossible.', {}, context.fallback);
     }
