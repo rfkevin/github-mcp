@@ -73,7 +73,7 @@ function workSessionNextAction(grant: WriteGrant): string {
     'Chemins attribués : ' + grant.paths.join(', '),
     ...(acceptance.length ? ['Critères d’acceptation :', ...acceptance.map((item, index) => (index + 1) + '. ' + item)] : []),
     'Lire les sources au SHA exact, vérifier les résultats CI et ouvrir une PR sans fusion.',
-  ].join('\\n');
+  ].join('\n');
 }
 async function assignIfMissing(i: LaunchInput, grant: WriteGrant) {
   let t = await readTask(i);
