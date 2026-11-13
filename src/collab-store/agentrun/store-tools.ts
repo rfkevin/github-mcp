@@ -38,8 +38,8 @@ export const WRITE_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
   { name: 'store_ask', description: 'Poser une question dans le cycle, éventuellement adressée à un participant ou à un rôle d’une tâche.',
     parameters: { type: 'object', properties: { question: { type: 'string', maxLength: 2000 }, to: { type: 'string' }, task: { type: 'string' } },
       required: ['question'], additionalProperties: false } },
-  { name: 'store_answer', description: 'Répondre à une question du cycle (ask_seq = seq de la question).',
-    parameters: { type: 'object', properties: { ask_seq: { type: 'integer', minimum: 1 }, answer: { type: 'string', maxLength: 4000 } },
+  { name: 'store_answer', description: 'Répondre à une question du cycle (ask_seq = seq de la question). Même limite que collab_append_event : 65 536 caractères pour le JSON complet, sans plafond supplémentaire sur answer.',
+    parameters: { type: 'object', properties: { ask_seq: { type: 'integer', minimum: 1 }, answer: { type: 'string' } },
       required: ['ask_seq', 'answer'], additionalProperties: false } },
   { name: 'store_task_status', description: 'Signaler l’avancement d’une tâche où votre participant a un rôle : in_progress ou blocked seulement.',
     parameters: { type: 'object', properties: { task: { type: 'string' }, status: { type: 'string', enum: ['in_progress', 'blocked'] },
@@ -136,7 +136,11 @@ function eventFor(call: ToolCall, participantId: string): { type: 'clarify.ask' 
     case 'store_answer': {
       const askSeq = args.ask_seq;
       if (typeof askSeq !== 'number' || !Number.isSafeInteger(askSeq) || askSeq < 1) throw new ToolRefused('ask_seq : entier ≥ 1 requis.');
-      return { type: 'clarify.answer', payload: { ask_seq: askSeq, answer: text(args, 'answer', 4000)! } };
+      // Parité chat/API : seul validateAgentEvent borne la longueur du JSON entier.
+      // Garder la validation de forme, sans plafond propre à l'outil WorkSession.
+      const answer = args.answer;
+      if (typeof answer !== 'string' || !answer.trim()) throw new ToolRefused('answer_required');
+      return { type: 'clarify.answer', payload: { ask_seq: askSeq, answer } };
     }
     case 'store_task_status': {
       const task = args.task;

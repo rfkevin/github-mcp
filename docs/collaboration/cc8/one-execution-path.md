@@ -85,3 +85,21 @@ modèle, moteur de tâche ou seconde journalisation ajoutés. Les effets externe
 portent un code fermé, notamment `answer_length_invalid` pour `store_answer` trop long ;
 une cause non reconnue n'est jamais divulguée en texte libre. Les verdicts des agents
 restent à confronter aux traces ; une auto-déclaration ne vaut pas preuve d'outil exécuté.
+
+
+## Parité de taille des réponses (13 novembre 2026)
+
+Le chat utilise `collab_append_event` et l'API utilise l'outil ergonomique `store_answer` ;
+**les deux chemins aboutissent déjà au même `CollabStore.appendEvent`**. L'API dérive
+son identité et son op_id de son run, avec des garde-fous d'exécution, tandis que le chat
+passe par son identité MCP. Il ne faut pas créer un second moteur ni remplacer ces
+adaptateurs par un nouveau canal.
+
+`store_answer` n'impose plus 4 000 caractères à la réponse : le validateur commun
+`validateAgentEvent` est l'unique autorité de taille, avec 65 536 caractères **pour
+le JSON complet** `payload_json`, métadonnées (`ask_seq`, clés, échappements) comprises.
+Une réponse individuelle peut donc être légèrement plus courte que 65 536 caractères.
+Les deux voies continuent à appliquer les mêmes protections du store (CAS, quota,
+adressage des questions, cycle clos) et à retourner `EVENT_FIELD_TOO_LONG` si le
+JSON dépasse ce plafond. Un contenu plus long nécessite une évolution explicite du
+contrat de stockage commun, pas une limite supplémentaire propre aux API.
