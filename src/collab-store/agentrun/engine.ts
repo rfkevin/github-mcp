@@ -1159,6 +1159,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
 
   // 2. Outils.
   const results: ResultEntry[] = [];
+  const pendingSteer = async () => Boolean(await db.prepare('SELECT 1 AS x FROM agent_run_messages WHERE run_id=?1 AND delivered_step IS NULL LIMIT 1').bind(runId).first<{ x: number }>());
   for (const [idx, call] of output.tool_calls.entries()) {
     // Un arrêt individuel ou HALT posé pendant l'appel fournisseur doit empêcher
     // TOUT nouveau lancement d'outil, y compris une lecture non mutante.
@@ -1166,6 +1167,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       claimHeld('?2', '?3', '?4')).bind(runId, n, deps.workerId, claim.attempts).first();
     if (!stillLive) return settled(db, runId, deps.now());
     const refused = (reason: string) => results.push({ id: call.id, content: JSON.stringify({ error: reason }), error: true });
+    // La consigne arrivée durant l'appel fournisseur prime sur une décision d'outil périmée.
+    if (await pendingSteer()) { refused('superseded_by_live_message'); continue; }
     // Owner-only actions and raw D12 submissions cannot be smuggled into the
     // provider API by an accidentally permissive future tool host.
     if ((API_AGENT_FORBIDDEN as readonly string[]).includes(call.name)) {
@@ -1276,7 +1279,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const repeatedScope = !repeatedDenial && run.task_kind === 'implement'
     && await repeatedScopeWithoutProgress(db, runId, output, results);
   const noProgress = repeatedDenial || repeatedScope;
-  const final = noProgress || output.tool_calls.length === 0 || provenAtPr || provenAtHandover || provenAtStore ? 1 : 0;
+  const persistedProof = provenAtPr || provenAtHandover || provenAtStore;
+  const final = persistedProof || (!await pendingSteer() && (noProgress || output.tool_calls.length === 0)) ? 1 : 0;
   const verified = !noProgress && (provenAtPr || provenAtHandover || provenAtStore
     || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true));
   const completionStatus = verified ? 'completed' : 'failed';
