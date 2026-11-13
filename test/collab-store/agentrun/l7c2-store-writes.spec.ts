@@ -11,6 +11,8 @@ import { engineFor, AGENT_RUN_SYSTEM } from '../../../src/collab-store/agentrun/
 import { previewNextActions } from '../../../src/collab-store/controller';
 import { parseOpId } from '../../../src/collab-store/contracts/phases';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
+import { STORE_EVENT_PAYLOAD_MAX_CHARS } from '../../../src/collab-store/contracts/agent-events';
+import { WRITE_TOOL_SCHEMAS } from '../../../src/collab-store/agentrun/store-tools';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { createRun } from '../../../src/collab-store/agentrun/engine';
 import { insertCycleRow, insertEventRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
@@ -123,6 +125,86 @@ describe('CC-5 l7c-2 — écritures store', () => {
     expect(answers[0].idempotency_key).toBe('op:' + effectOpId('p-resp', q.cycle, effect.effect_key));
     expect(JSON.parse(effect.result)).toMatchObject({ seq: answers[0].seq, type: 'clarify.answer', status: 'applied' });
     expect((await previewNextActions(db, q.cycle, 'p-resp')).mine.some(d => d.action === 'answer_question')).toBe(false);
+  });
+
+  it('parité chat/API : une longue réponse (> 4 000 caractères) traverse le même appendEvent', async () => {
+    const answer = 'Une analyse technique complète. '.repeat(210);
+    expect(answer.length).toBeGreaterThan(4_000);
+    const schema = WRITE_TOOL_SCHEMAS.find(s => s.name === 'store_answer')!;
+    const fields = schema.parameters as { properties: { answer: { type: string; maxLength?: number } } };
+    expect(fields.properties.answer.type).toBe('string');
+    expect(fields.properties.answer.maxLength).toBeUndefined();
+
+    const qApi = await seedQuestion('long-api', 'p-resp');
+    const runId = await newRun(qApi.cycle, 'p-resp', 'answer', T, qApi.askSeq);
+    const host = createReadToolHost({ db, repository: null, github: null, storeWrites: true });
+    const result = await runStep(db, runId, {
+      model: scripted([{ text: '', tool_calls: [
+        { id: 'a', name: 'store_answer', args: { ask_seq: qApi.askSeq, answer } },
+      ] }]),
+      tools: host, now: () => T, workerId: 'parity-worker',
+    });
+    expect(result.outcome).toBe('completed');
+    const fromApi = await eventsOf(qApi.cycle, 'clarify.answer');
+    expect(fromApi).toHaveLength(1);
+    expect(JSON.parse(fromApi[0].payload_json)).toEqual({ ask_seq: qApi.askSeq, answer });
+
+    const qChat = await seedQuestion('long-chat', 'p-resp');
+    const store = new CollabStore(db);
+    const fromChat = await store.appendEvent({
+      cycle_id: qChat.cycle, type: 'clarify.answer', participant_id: 'p-resp',
+      expected_rev: await store.currentRevision(qChat.cycle),
+      payload_json: JSON.stringify({ ask_seq: qChat.askSeq, answer }),
+      op_id: 'p-resp:' + qChat.cycle + ':chat-long-answer:1',
+    });
+    expect(fromChat.status).toBe('applied');
+    const chatEvent = await eventsOf(qChat.cycle, 'clarify.answer');
+    expect(chatEvent).toHaveLength(1);
+    expect(JSON.parse(chatEvent[0].payload_json)).toEqual({ ask_seq: qChat.askSeq, answer });
+  });
+
+  it('parité au plafond JSON du store : accepte exactement le maximum et refuse le dépassement sur les deux voies', async () => {
+    const qApi = await seedQuestion('max-api', 'p-resp');
+    const runId = await newRun(qApi.cycle, 'p-resp', 'answer');
+    const tools = createStoreWriteTools(db);
+    const envelopeSize = JSON.stringify({ ask_seq: qApi.askSeq, answer: '' }).length;
+    const answer = 'x'.repeat(STORE_EVENT_PAYLOAD_MAX_CHARS - envelopeSize);
+    expect(JSON.stringify({ ask_seq: qApi.askSeq, answer }).length).toBe(STORE_EVENT_PAYLOAD_MAX_CHARS);
+    await expect(tools.execute(
+      { id: 'a', name: 'store_answer', args: { ask_seq: qApi.askSeq, answer } },
+      { run_id: runId, effect_key: KEY('a') },
+    )).resolves.toMatchObject({ status: 'applied' });
+    expect((await eventsOf(qApi.cycle, 'clarify.answer'))[0].payload_json.length)
+      .toBe(STORE_EVENT_PAYLOAD_MAX_CHARS);
+
+    const qOverApi = await seedQuestion('over-api', 'p-resp');
+    const overRun = await newRun(qOverApi.cycle, 'p-resp', 'answer');
+    const over = 'x'.repeat(STORE_EVENT_PAYLOAD_MAX_CHARS + 1);
+    expect(await refusal(tools.execute(
+      { id: 'a', name: 'store_answer', args: { ask_seq: qOverApi.askSeq, answer: over } },
+      { run_id: overRun, effect_key: KEY('b') },
+    ))).toBe('EVENT_FIELD_TOO_LONG');
+    expect(await eventsOf(qOverApi.cycle, 'clarify.answer')).toHaveLength(0);
+
+    const qChat = await seedQuestion('over-chat', 'p-resp');
+    const store = new CollabStore(db);
+    await expect(store.appendEvent({
+      cycle_id: qChat.cycle, type: 'clarify.answer', participant_id: 'p-resp',
+      expected_rev: await store.currentRevision(qChat.cycle),
+      payload_json: JSON.stringify({ ask_seq: qChat.askSeq, answer: over }),
+      op_id: 'p-resp:' + qChat.cycle + ':chat-over-answer:1',
+    })).rejects.toMatchObject({ code: 'EVENT_FIELD_TOO_LONG' });
+    expect(await eventsOf(qChat.cycle, 'clarify.answer')).toHaveLength(0);
+  });
+
+  it('réponse API vide refusée sans écriture ni échec ambigu', async () => {
+    const q = await seedQuestion('empty-api', 'p-resp');
+    const runId = await newRun(q.cycle, 'p-resp', 'answer');
+    expect(await refusal(createStoreWriteTools(db).execute(
+      { id: 'a', name: 'store_answer', args: { ask_seq: q.askSeq, answer: '   ' } },
+      { run_id: runId, effect_key: KEY('c') },
+    ))).toBe('answer_required');
+    expect(await eventsOf(q.cycle, 'clarify.answer')).toHaveLength(0);
   });
 
   it('rejeu de la même clé d’effet : événement original (duplicate), aucune seconde écriture ; lookup avant et après', async () => {

@@ -5,6 +5,9 @@
 import { StateContractError, parseRevision } from '../../collab/contracts';
 import { validateEventType, type StoreEvent } from './events';
 
+/** Limite unique du JSON d'un événement ; s'applique aux chats ET aux agents API. */
+export const STORE_EVENT_PAYLOAD_MAX_CHARS = 65_536;
+
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const PARTICIPANT_RE = /^[a-z0-9][a-z0-9:_-]{0,127}$/i;
 // Review GPT-6 R1 : '.' admis (segment client canonique d'un participant à ':').
@@ -55,7 +58,7 @@ export function validateAgentEvent(event: StoreEvent): StoreEvent {
       'idempotency_key',
     );
   }
-  const payload = nonEmpty(event.payload_json, 'payload_json', 65536);
+  const payload = nonEmpty(event.payload_json, 'payload_json', STORE_EVENT_PAYLOAD_MAX_CHARS);
   try {
     JSON.parse(payload);
   } catch {
