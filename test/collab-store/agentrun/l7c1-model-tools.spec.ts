@@ -195,6 +195,9 @@ describe('CC-5 l7c-1 — hôte d’outils en lecture seule', () => {
     }
     expect(accumulated).toBe('x'.repeat(40_000));
     expect(github.calls).toHaveLength(4);
+    const prefetched = await host.execute({ id: 'server', name: 'github_read_file',
+      args: { path: 'README.md', ref: 'main' } }, { run_id: run.runId, prefetch: true }) as { content: string };
+    expect(prefetched.content).toHaveLength(40_000);
     expect(JSON.parse(steps[1][1].content).events[0]).toMatchObject({ type: 'checkpoint' });
     // Le modèle a reçu en messages les résultats tronqués, comme données.
     const third = ai.calls[2].input as { messages: Array<{ role: string; content: string }> };
@@ -241,6 +244,12 @@ describe('CC-5 l7c-1 — hôte d’outils en lecture seule', () => {
       }
     }
     expect(collected).toHaveLength(7);
+    const internal = await host.execute({ id: 'pre', name: 'github_diff',
+      args: { base: 'b'.repeat(40), head: 'a'.repeat(40) } },
+      { run_id: run.runId, prefetch: true }) as { files: Array<{ patch: string; patch_truncated: boolean }> };
+    expect(internal.files).toHaveLength(7);
+    expect(internal.files[0]).toMatchObject({ patch_truncated: true });
+    expect(internal.files[0].patch).toHaveLength(2_000);
   });
 
   it('refus en code : outil inconnu, outil interdit au canal API, arguments invalides, dépôt imposé par l’hôte', async () => {

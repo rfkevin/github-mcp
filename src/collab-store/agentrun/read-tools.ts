@@ -492,6 +492,9 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const ref = stringArg(args, 'ref', REF_RE);
         const file = await options.github!.getTextFile(options.repository!, path, ref);
         await journalRead(options.db, ctx.run_id, 'github_read_file', SHA_RE.test(ref) ? ref : '');
+        // La prélecture serveur guidée doit inspecter le contenu entier (vérification S7),
+        // jamais seulement la première page destinée au contexte du fournisseur.
+        if (ctx.prefetch === true) return { path: file.path, sha: file.sha, size: file.size, content: file.content };
         const offset = intArg(args, 'offset', 0, Number.MAX_SAFE_INTEGER, 0);
         const limit = intArg(args, 'limit_chars', 1, GITHUB_FILE_PAGE_CHARS, GITHUB_FILE_PAGE_CHARS);
         const content = file.content.slice(offset, offset + limit);
@@ -524,6 +527,17 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         // V1b : la preuve porte sur le COUPLE lu (head:base), jamais sur le head seul (diffReadRef).
         await journalRead(options.db, ctx.run_id, ctx.prefetch === true ? 'github_diff_prefetch' : 'github_diff', diffReadRef(head, base));
         const raw = Array.isArray(comparison.files) ? comparison.files as Array<Record<string, unknown>> : [];
+        // Les contrôles guidés doivent conserver leur enveloppe de preuve historique
+        // (jusqu'à 50 fichiers, patchs limités avec indicateur de coupe).
+        if (ctx.prefetch === true) {
+          const files = raw.slice(0, DIFF_MAX_FILES).map(file => {
+            const patch = typeof file.patch === 'string' ? file.patch : '';
+            return { filename: file.filename, status: file.status, additions: file.additions, deletions: file.deletions,
+              patch: patch.slice(0, DIFF_PATCH_CHARS), patch_truncated: patch.length > DIFF_PATCH_CHARS };
+          });
+          return { base, head, status: comparison.status, ahead_by: comparison.ahead_by, behind_by: comparison.behind_by,
+            total_commits: comparison.total_commits, files, files_truncated: raw.length > DIFF_MAX_FILES };
+        }
         // Pagination avant réinjection au modèle : les pages suivantes restent consultables.
         const fileOffset = intArg(args, 'file_offset', 0, Number.MAX_SAFE_INTEGER, 0);
         const fileLimit = intArg(args, 'file_limit', 1, GITHUB_DIFF_PAGE_FILES, GITHUB_DIFF_PAGE_FILES);

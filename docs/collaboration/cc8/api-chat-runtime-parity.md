@@ -27,3 +27,7 @@ un refus du modèle ou une expiration de WorkSession.
 La réponse `store_answer` à 4 000 caractères est traitée séparément par la
 PR #324 ; elle devra être fusionnée par Kevin indépendamment de ce lot.
 Pas de promotion production ou de nouveau système d'écriture.
+
+Les prélectures internes `prefetch:true` du contrôleur S7 conservent le contenu de
+fichier entier et le diff borné historique de preuve (50 fichiers, 2 000 caractères
+par patch avec indicateur), indépendamment des pages fournies au modèle.
