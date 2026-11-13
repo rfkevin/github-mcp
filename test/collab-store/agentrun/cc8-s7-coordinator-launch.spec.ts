@@ -23,10 +23,12 @@ describe('CC8 S7 direct API bridge — deny by default', () => {
     await expect(get({...config,AGENT_RUN_GITHUB_TASKS:'[]'})).rejects.toThrow();
     await expect(get({...config,AGENT_RUN_GITHUB_TASKS:JSON.stringify([{...grant,branch:'main'}])})).rejects.toThrow();
   });
-  it('refuses disabled API writing or any paid implement budget',async()=>{
+  it('refuses missing writing rights but permits an owner-configured paid implement budget',async()=>{
     await expect(get({...config,AGENT_RUNS_ENABLED:'false'})).rejects.toThrow();
     await expect(get({...config,AGENT_RUN_GITHUB_WRITERS:''})).rejects.toThrow();
-    await expect(get({...config,AGENT_RUN_COST_CENTS_IMPLEMENT:'1'} as AgentRunObjectEnv)).rejects.toThrow();
+    await expect(get({...config,AGENT_RUN_COST_CENTS_IMPLEMENT:'1'} as AgentRunObjectEnv)).resolves.toEqual(grant);
+    await expect(get({...config,AGENT_RUN_COST_CENTS_IMPLEMENT:'1',AGENT_RUN_GITHUB_TASKS:'[]'} as AgentRunObjectEnv))
+      .rejects.toThrow();
   });
 });
 

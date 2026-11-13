@@ -76,3 +76,18 @@ Les limites qui ne proviennent que du canal sont à retirer. Les droits réels s
 **Réussite =** un agent API accomplit une vraie mission de bout en bout, dispose des mêmes capacités que l'agent chat doté du même mandat, et reprend seul après interruption sans perdre sa mémoire ni répéter ses effets.
 
 Une PR verte de tests statiques, une fonction de dossier non utilisée ou une hausse numérique de plafond n'est pas la fin du chantier.
+
+
+## Critères de mission lisibles dans le store (CC8 — correctif post-pilotes Vibe/Gemini)
+
+Le grant GitHub D1 reste l'autorité des permissions et des critères d'acceptation immuables.
+À l'attribution via `collab_assign_worksession`, `coordinator-launch.ts` recopie **dans le journal canonique `task.claim/task.handoff` et la tâche matérialisée `tasks.next_action`** le type de mission, les chemins et les critères. Les deux canaux lisent déjà `task.next_action` via `collab_get_context` / `buildRolePacket` ; aucun autre registre ni exécuteur n'est ajouté.
+
+Le résultat `github_write_scope` renvoie aussi `mission` et `acceptance` du **même grant déjà autorisé** après vérification serveur, en complément de `branch`, `base_sha`, `task_paths` et `granted_paths`. Une donnée textuelle ne crée jamais de droits : l'autorisation de chaque effet relit toujours `exactGrant`, `tasks.owned_paths`, le bail, HALT et le scope.
+
+La visibilité est garantie pour les **nouvelles attributions** effectuées après déploiement. Les anciennes attributions dont la tâche est déjà au nom de l'agent gardent leur ancien `next_action` et nécessitent une réattribution explicite ou une lecture directe du mandat après contrôle ; aucun remplacement silencieux de l'historique n'est fait. Les pilotes Vibe/Gemini déjà terminés ne deviennent pas rétrospectivement valides. Les autres blocages (erreurs d'arguments GitHub, reprise après `superseded_by_live_message`, CI, validité réelle du code) doivent être testés et corrigés séparément.
+
+
+### Missions payantes : même autorisation GitHub, mêmes contrôles de coût
+
+Le lanceur n'interdit plus par principe `IMPLEMENT` quand le propriétaire finance ce type de run. Son rôle est d'attribuer un grant GitHub, sans appeler de modèle ni facturer de tokens ; le planificateur unique vérifie toujours la capacité du fournisseur, le plafond `AGENT_RUN_COST_CENTS_IMPLEMENT`, l'enveloppe payante du participant (jour et cycle), la clé et les mandats d'écriture. En l'absence de clé ou de budget, **aucun modèle payant ne devient abordable** et le planificateur ne lance pas de session payante. Un nombre différent de zéro pour `AGENT_RUN_COST_CENTS_IMPLEMENT` est une configuration globale, à décider par le propriétaire ; cette PR ne fixe aucune valeur ni ne crée de dépense.

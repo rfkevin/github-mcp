@@ -11,6 +11,7 @@ import { exactGrant } from '../../../src/collab-store/agentrun/github-write/auth
 import { issueDynamicGrant, findDynamicGrant, parseDynamicGrantPolicy, DYNAMIC_GRANT_TTL_SECONDS }
   from '../../../src/collab-store/agentrun/github-write/dynamic-grants';
 import { isCoordinator } from '../../../src/collab-store/owner/coordinators';
+import { buildRolePacket } from '../../../src/collab-store/context/packet';
 import { collabFailure } from '../../../src/collab-store/mcp/result';
 import type { AgentRunObjectEnv } from '../../../src/collab-store/agentrun/object';
 
@@ -114,6 +115,30 @@ describe('CC8 — dynamic D1 GitHub grants, owner bounded, no PR per task',()=>{
     await expect(assignCoordinatorWorksession({...a,paths:[PREFIX+'changed.spec.ts'],
       opId:s.coordinator+':'+s.cycle+':changed:1'})).rejects.toThrow();
     expect(await exactGrant(db,{...policy,dynamic:undefined},s.cycle,'dyn-gemini',s.gemini)).toBeNull();
+  });
+
+  it('rend les critères d’acceptation lisibles dans le store et le même packet chat/API',async()=>{
+    const s=await setup('mission-context'),task='dyn-mission-context';
+    const acceptance=[
+      'Tester la fonction réelle en important le module source.',
+      'Vérifier le résultat par une assertion non tautologique et ouvrir une PR après CI.',
+    ];
+    const input={...s.make(task,s.gemini,s.vibe,PREFIX+'dyn-mission-context.spec.ts','mission-context'),acceptance};
+    expect((await assignCoordinatorWorksession(input)).status).toBe('queued');
+    const context=await input.store.getContext(s.cycle,s.gemini);
+    const taskView=context.tasks.find(item=>item.task_id===task);
+    expect(taskView?.owner_pid).toBe(s.gemini);
+    for(const item of acceptance) expect(taskView?.next_action).toContain(item);
+    const packet=await buildRolePacket(db,{cycle:s.cycle,participant_id:s.gemini,task},
+      {c0BaselineTokens:12_000});
+    for(const item of acceptance) expect(packet.task?.next_action).toContain(item);
+    const delta=await input.store.getDelta(s.cycle,0,30,s.gemini);
+    const handoff=delta.events.find(item=>item.type==='task.handoff');
+    expect(handoff).toBeDefined();
+    for(const item of acceptance) expect(handoff?.payload_json).toContain(item);
+    expect((await assignCoordinatorWorksession(input)).status).toBe('queued');
+    expect((await input.store.getContext(s.cycle,s.gemini)).tasks.find(item=>item.task_id===task)?.next_action)
+      .toBe(taskView?.next_action);
   });
 
   it('a refused assignment never freezes a dynamic grant or timer; a corrected retry works',async()=>{
