@@ -5,7 +5,7 @@
  */
 import { cycleMandateEpoch } from '../coordinator/mandate';
 import { ensureAgentRunSchema } from './schema';
-import { redactedToolAttempts, typedToolFailure } from './tool-trace';
+import { redactedToolAttempts, safeToolName, typedToolFailure } from './tool-trace';
 import { preemptByChat, releaseChat, runSummary, leaseKeyOf } from './engine';
 
 export const CHAT_HOLD_SECONDS_DEFAULT = 900;
@@ -212,8 +212,8 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
       tokens: t.tokens, cost_cents: t.cost_cents,
     })),
     effects: effects.map(e => ({ n: e.n, idx: e.idx,
-      // e.tool est une sortie modèle non fiable : ne jamais l'exposer tel quel ici.
-      status: e.status, receipt: redactedReceipt(e.result),
+      // Préserve le champ historique `tool`, mais le normalise par allowlist.
+      tool: safeToolName(e.tool), status: e.status, receipt: redactedReceipt(e.result),
       failure_code: e.status === 'failed' ? typedToolFailure(e.result) : null })),
     ci_polls: polls.map(p => ({ n: p.n, idx: p.idx, k: p.k, status: p.status, receipt: redactedReceipt(p.result) })),
     model_choices: choices.map(c => ({ n: c.n, ref: c.ref, chosen_by: c.chosen_by, effort: c.effort })),

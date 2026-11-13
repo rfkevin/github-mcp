@@ -54,7 +54,8 @@ export function typedToolFailure(raw: string | null): string | null {
   const message = jsonObject(raw)?.error;
   if (typeof message !== 'string') return 'other';
   if (EXACT_ERRORS.has(message)) return message;
-  if (message === 'store_answer : texte de 1 à 4000 caractères requis.') return 'answer_length_invalid';
+  if (message === 'answer : texte de 1 à 4000 caractères requis.'
+    || message === 'store_answer : texte de 1 à 4000 caractères requis.') return 'answer_length_invalid';
   if (message === 'ask_seq : entier ≥ 1 requis.') return 'ask_seq_invalid';
   return 'other';
 }
@@ -64,6 +65,9 @@ function toolIdentity(value: unknown): { tool: string; kind: SafeToolAttempt['ki
   if (typeof value === 'string' && WRITE_NAMES.has(value)) return { tool: value, kind: 'write' };
   return { tool: 'unknown_tool', kind: 'unknown' };
 }
+
+/** Aucun nom provenant d'un modèle ne traverse la frontière sans être classé. */
+export function safeToolName(value: unknown): string { return toolIdentity(value).tool; }
 
 /** Compare chaque appel MODELE aux reçus D1 par id, puis aux effets D1 par index. */
 export function redactedToolAttempts(

@@ -18,11 +18,11 @@ describe('CC8 — audit expurgé des vrais appels outils', () => {
     ] });
     const results = JSON.stringify([
       { id: 'a', content: secret },
-      { id: 'b', content: JSON.stringify({ error: 'store_answer : texte de 1 à 4000 caractères requis.' }), error: true },
+      { id: 'b', content: JSON.stringify({ error: 'answer : texte de 1 à 4000 caractères requis.' }), error: true },
       { id: 'c', content: secret, error: true },
     ]);
     const attempts = redactedToolAttempts(calls, results, [
-      { idx: 1, status: 'failed', result: JSON.stringify({ error: 'store_answer : texte de 1 à 4000 caractères requis.' }) },
+      { idx: 1, status: 'failed', result: JSON.stringify({ error: 'answer : texte de 1 à 4000 caractères requis.' }) },
     ]);
     expect(attempts).toEqual([
       { index: 0, tool: 'github_read_file', kind: 'read', status: 'receipt_ok', failure_code: null },
@@ -59,13 +59,13 @@ describe('CC8 — audit expurgé des vrais appels outils', () => {
       'VALUES (?1,0,?2,?3,?4,1,?5,?6,500,0)',
     ].join(' ')).bind(runId, 'completed', 'worker', now, output, JSON.stringify([
       { id: 'r1', content: 'PRIVATE_GITHUB_RESULT_NEVER_EXPOSE' },
-      { id: 'w1', content: JSON.stringify({ error: 'store_answer : texte de 1 à 4000 caractères requis.' }), error: true },
+      { id: 'w1', content: JSON.stringify({ error: 'answer : texte de 1 à 4000 caractères requis.' }), error: true },
     ])).run();
     await db.prepare([
       'INSERT INTO agent_run_effects (effect_key,run_id,n,idx,tool,args,status,updated_at,result)',
       "VALUES (?1,?2,0,1,'store_answer',?3,'failed',?4,?5)",
     ].join(' ')).bind('test-' + crypto.randomUUID(), runId, 'PRIVATE_ARGS_NEVER_EXPOSE', now,
-      JSON.stringify({ error: 'store_answer : texte de 1 à 4000 caractères requis.' })).run();
+      JSON.stringify({ error: 'answer : texte de 1 à 4000 caractères requis.' })).run();
     const summary = await redactedRunSummary(db,runId);
     expect(summary?.step_traces[0]).toMatchObject({
       tool_calls_requested: 2, tool_results_recorded: true, tool_attempts_omitted: 0,
@@ -74,7 +74,7 @@ describe('CC8 — audit expurgé des vrais appels outils', () => {
         { tool: 'store_answer', status: 'effect_failed', failure_code: 'answer_length_invalid' },
       ],
     });
-    expect(summary?.effects[0]).toMatchObject({ status: 'failed', failure_code: 'answer_length_invalid' });
+    expect(summary?.effects[0]).toMatchObject({ tool: 'store_answer', status: 'failed', failure_code: 'answer_length_invalid' });
     const serial = JSON.stringify(summary);
     for(const s of ['PRIVATE_PROMPT_', 'PRIVATE_OUTPUT_', 'PRIVATE_ARGS_', 'PRIVATE_GITHUB_RESULT_'])
       expect(serial).not.toContain(s);
