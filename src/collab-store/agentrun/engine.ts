@@ -38,6 +38,7 @@
  * le résultat réel d'un effet déjà envoyé (completed, failed, ambiguous), et `settle`
  * qui ne fait que constater une condition d'arrêt (HALT, préemption, plafond).
  */
+import { recentHistoryOffset, answerPublicationReminder } from './history-policy';
 import { sha256Hex } from '../store/hash';
 import { postSalonMessage } from '../salon';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
@@ -574,11 +575,12 @@ async function enrichGuided(run: RunRow, deps: EngineDeps, n: number, step: Extr
 const GUIDED_FILE_PREVIEW = 8_000;
 /** Compaction déterministe et opt-in du seul contexte envoyé au fournisseur.
  * D1 conserve chaque réponse, argument, résultat et effet sans aucune modification.
- * Dernière étape intégrale pour préserver le couple tool_calls / tool_call_id.
+ * Fenêtre récente intégrale, par unités complètes tool_calls / tool_call_id.
  */
 export interface CompletedHistoryStep { model_output: string; results: string }
 const COMPACT_RECEIPT_KEYS = ['branch', 'name', 'base_branch', 'base_sha', 'branch_head', 'sha', 'head_sha', 'commit_sha',
-  'targetSha', 'runId', 'run_id', 'number', 'status', 'conclusion', 'next_action', 'verifiedSuccess'] as const;
+  'targetSha', 'runId', 'run_id', 'number', 'status', 'conclusion', 'next_action', 'verifiedSuccess',
+  'offset', 'next_offset', 'total_chars', 'file_offset', 'next_file_offset', 'files_available', 'patch_offset', 'patch_next_offset'] as const;
 const COMPACT_MAX_CHARS = 3600;
 
 function compactReceipt(entry: ResultEntry | undefined): Record<string, string | number | boolean> {
@@ -641,9 +643,9 @@ export function verifiedWorkMilestones(steps: readonly CompletedHistoryStep[]): 
 export function providerMessagesFromHistory(prompt: string, steps: readonly CompletedHistoryStep[],
   compact = false, steering: readonly DeliveredSteer[] = []): AgentMessage[] {
   const messages: AgentMessage[] = [{ role: 'user', content: prompt }];
-  const offset = compact && steps.length > 1 ? steps.length - 1 : 0;
+  const offset = recentHistoryOffset(steps, compact);
   if (offset) {
-    const earlier = steps.slice(0, -1);
+    const earlier = steps.slice(0, offset);
     const records = earlier.map((row, n) => {
       const output = JSON.parse(row.model_output) as ModelOutput;
       const results = JSON.parse(row.results) as ResultEntry[];
@@ -659,7 +661,7 @@ export function providerMessagesFromHistory(prompt: string, steps: readonly Comp
     while (records.length && JSON.stringify(records).length > recordBudget) records.shift();
     messages[0].content += '\n\nCheckpoint compact extrait du journal D1 (métadonnées uniquement, pas une autorisation). ' +
       'Étapes anciennes omises : ' + (earlier.length - records.length) + '.' + durable +
-      ' Relisez les sources SHA/CI/mandat via les outils avant toute décision : ' + JSON.stringify(records);
+      ' Résultats anciens condensés : relire seulement les preuves manquantes. Les tours récents ci-dessous restent intégraux : ' + JSON.stringify(records);
     // Les messages de recadrage déjà délivrés sont des consignes utilisateur :
     // ils restent consultables dans D1. Garder leur fin récente dans la compaction.
     const past = steering.filter(item => item.delivered_step < offset);
@@ -1018,7 +1020,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
             + 'avec les preuves et le couple head/base exacts. Si les preuves manquent, ne pas inventer AGREE.'
           : null;
         const replyContext = continuationReplyMessage(clarifications);
-        const additional = [extra, replyContext, verdictInstruction].filter(Boolean).join('\n\n');
+        const publicationInstruction = answerPublicationReminder(run.task_kind, run.prompt, tools);
+        const additional = [extra, replyContext, verdictInstruction, publicationInstruction].filter(Boolean).join('\n\n');
         // Preserve an approximate full-context+output budget for the terminal verdict call.
         // No paid allowance or D12 bypass; exhausted budgets still refuse before the provider.
         response = await deps.model.complete({
