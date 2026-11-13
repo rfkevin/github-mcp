@@ -66,6 +66,10 @@ export interface GitHubReads {
 /** CC-7 L5a : bornes du diff rendu au modèle (fichiers et patchs, S9). */
 export const DIFF_MAX_FILES = 50;
 export const DIFF_PATCH_CHARS = 2000;
+/** Les pages bornées empêchent la coupe opaque de RESULT_MAX_CHARS du moteur. */
+export const GITHUB_FILE_PAGE_CHARS = 12_000;
+export const GITHUB_DIFF_PAGE_FILES = 3;
+export const GITHUB_DIFF_PAGE_PATCH_CHARS = 4_000;
 
 export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
   { name: 'store_context', description: 'Contexte du cycle et active_work partagés avec le chat, registre intégral paginé. full:true permet la lecture non compactée à la demande.',
@@ -83,14 +87,18 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
   { name: 'github_list_directory', description: 'Explorer un dossier du dépôt GitHub autorisé, sans lire les fichiers : jusqu’à 80 entrées. Utiliser ref SHA de base pendant la préparation.',
     parameters: { type: 'object', properties: { path: { type: 'string', description: 'Dossier depuis la racine, chaîne vide pour racine.' }, ref: { type: 'string' } },
       required: ['path', 'ref'], additionalProperties: false } },
-  { name: 'github_read_file', description: 'Lire un fichier texte du dépôt autorisé à une référence (branche ou SHA).',
-    parameters: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' } }, required: ['path', 'ref'], additionalProperties: false } },
+  { name: 'github_read_file', description: 'Lire un fichier à une référence SHA ou branche, par pages de 12 000 caractères. Relire avec next_offset pour obtenir tout le fichier.',
+    parameters: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' },
+      offset: { type: 'integer', minimum: 0 }, limit_chars: { type: 'integer', minimum: 1, maximum: GITHUB_FILE_PAGE_CHARS } },
+      required: ['path', 'ref'], additionalProperties: false } },
   { name: 'github_pull_request', description: 'Lire une PR du dépôt autorisé (titre, état, head et base).',
     parameters: { type: 'object', properties: { number: { type: 'integer', minimum: 1 } }, required: ['number'], additionalProperties: false } },
   { name: 'github_check_runs', description: 'Contrôles CI d’un commit exact (SHA de 40 caractères) du dépôt autorisé.',
     parameters: { type: 'object', properties: { sha: { type: 'string' } }, required: ['sha'], additionalProperties: false } },
-  { name: 'github_diff', description: 'Diff entre une base (SHA ou branche) et un head exact (SHA de 40 caractères) du dépôt autorisé : fichiers, statuts et patchs bornés.',
-    parameters: { type: 'object', properties: { base: { type: 'string' }, head: { type: 'string', pattern: '^[a-f0-9]{40}$' } },
+  { name: 'github_diff', description: 'Diff base/head exact, paginé : next_file_offset pour la liste entière, patch_next_offset par fichier pour les patchs complets.',
+    parameters: { type: 'object', properties: { base: { type: 'string' }, head: { type: 'string', pattern: '^[a-f0-9]{40}$' },
+      file_offset: { type: 'integer', minimum: 0 }, file_limit: { type: 'integer', minimum: 1, maximum: GITHUB_DIFF_PAGE_FILES },
+      patch_offset: { type: 'integer', minimum: 0 }, patch_chars: { type: 'integer', minimum: 1, maximum: GITHUB_DIFF_PAGE_PATCH_CHARS } },
       required: ['base', 'head'], additionalProperties: false } },
 ]);
 
@@ -484,7 +492,13 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const ref = stringArg(args, 'ref', REF_RE);
         const file = await options.github!.getTextFile(options.repository!, path, ref);
         await journalRead(options.db, ctx.run_id, 'github_read_file', SHA_RE.test(ref) ? ref : '');
-        return { path: file.path, sha: file.sha, size: file.size, content: file.content };
+        const offset = intArg(args, 'offset', 0, Number.MAX_SAFE_INTEGER, 0);
+        const limit = intArg(args, 'limit_chars', 1, GITHUB_FILE_PAGE_CHARS, GITHUB_FILE_PAGE_CHARS);
+        const content = file.content.slice(offset, offset + limit);
+        const next = offset + content.length;
+        return { path: file.path, sha: file.sha, size: file.size, content, offset,
+          total_chars: file.content.length, next_offset: next < file.content.length ? next : null,
+          truncated: next < file.content.length };
       }
       case 'github_pull_request': {
         const number = intArg(args, 'number', 1, 10_000_000);
@@ -510,14 +524,24 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         // V1b : la preuve porte sur le COUPLE lu (head:base), jamais sur le head seul (diffReadRef).
         await journalRead(options.db, ctx.run_id, ctx.prefetch === true ? 'github_diff_prefetch' : 'github_diff', diffReadRef(head, base));
         const raw = Array.isArray(comparison.files) ? comparison.files as Array<Record<string, unknown>> : [];
-        // L5a : le diff est borné avant d'entrer dans le contexte du modèle (données, jamais instructions).
-        const files = raw.slice(0, DIFF_MAX_FILES).map(file => {
+        // Pagination avant réinjection au modèle : les pages suivantes restent consultables.
+        const fileOffset = intArg(args, 'file_offset', 0, Number.MAX_SAFE_INTEGER, 0);
+        const fileLimit = intArg(args, 'file_limit', 1, GITHUB_DIFF_PAGE_FILES, GITHUB_DIFF_PAGE_FILES);
+        const patchOffset = intArg(args, 'patch_offset', 0, Number.MAX_SAFE_INTEGER, 0);
+        const patchChars = intArg(args, 'patch_chars', 1, GITHUB_DIFF_PAGE_PATCH_CHARS, DIFF_PATCH_CHARS);
+        const files = raw.slice(fileOffset, fileOffset + fileLimit).map(file => {
           const patch = typeof file.patch === 'string' ? file.patch : '';
+          const content = patch.slice(patchOffset, patchOffset + patchChars);
+          const nextPatch = patchOffset + content.length;
           return { filename: file.filename, status: file.status, additions: file.additions, deletions: file.deletions,
-            patch: patch.slice(0, DIFF_PATCH_CHARS), patch_truncated: patch.length > DIFF_PATCH_CHARS };
+            patch: content, patch_offset: patchOffset, patch_total_chars: patch.length,
+            patch_next_offset: nextPatch < patch.length ? nextPatch : null,
+            patch_truncated: nextPatch < patch.length };
         });
+        const nextFile = fileOffset + files.length;
         return { base, head, status: comparison.status, ahead_by: comparison.ahead_by, behind_by: comparison.behind_by,
-          total_commits: comparison.total_commits, files, files_truncated: raw.length > DIFF_MAX_FILES };
+          total_commits: comparison.total_commits, files, file_offset: fileOffset, files_available: raw.length,
+          next_file_offset: nextFile < raw.length ? nextFile : null, files_truncated: nextFile < raw.length };
       }
       default:
         break;

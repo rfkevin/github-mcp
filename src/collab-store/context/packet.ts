@@ -10,6 +10,8 @@ import { equivalentParticipantIds } from '../identity/families';
 export { toProjectScopeKey };
 
 export const DEFAULT_PACKET_BUDGET = 6000;
+/** Référence C0 commune à l'outil chat et à l'amorçage de WorkSession API. */
+export const DEFAULT_C0_BASELINE_TOKENS = 12_000;
 export const OPEN_QUESTIONS_BUDGET = 300;
 
 export interface PacketOptions {

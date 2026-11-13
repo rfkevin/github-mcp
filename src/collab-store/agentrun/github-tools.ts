@@ -52,9 +52,10 @@ export type GitHubWriteToolName = 'github_create_branch' | 'github_commit_files'
 /** Espace de noms des branches API, figé en code (A3). */
 export const API_BRANCH_NAMESPACE = 'mcp/105856986';
 export const DEFAULT_API_BASE_BRANCH = 'mcp/105856986/cc3-integration';
-export const MAX_COMMIT_FILES = 20;
-export const MAX_FILE_CHARS = 100_000;
-export const MAX_COMMIT_CHARS = 400_000;
+/** Le même périmètre de taille qu'un github_commit_changes du chat. */
+export const MAX_COMMIT_FILES = 50;
+export const MAX_FILE_CHARS = 1_000_000;
+export const MAX_COMMIT_CHARS = 1_000_000;
 const SHA_RE = /^[a-f0-9]{40}$/;
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const PARTICIPANT_RE = /^[a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?$/;
