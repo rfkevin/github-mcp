@@ -85,27 +85,3 @@ modèle, moteur de tâche ou seconde journalisation ajoutés. Les effets externe
 portent un code fermé, notamment `answer_length_invalid` pour `store_answer` trop long ;
 une cause non reconnue n'est jamais divulguée en texte libre. Les verdicts des agents
 restent à confronter aux traces ; une auto-déclaration ne vaut pas preuve d'outil exécuté.
-
-
-## Parité chat/API — contexte, lectures GitHub et écritures (13 novembre 2026)
-
-- Le packet de rôle des WorkSessions API se construit désormais avec la même
-  référence C0 par défaut que `collab_get_context` chat (12 000 tokens C0, soit
-  3 000 tokens de packet estimés). L'injection initiale `answer` autorise jusqu'à
-  12 000 octets JSON ; les lectures explicites restent disponibles avec les droits
-  serveur, sans changement de visibilité privée C4.
-- `github_read_file` côté API renvoie des pages de 12 000 caractères et un
-  `next_offset`. Il faut suivre ce curseur pour lire un fichier long au complet,
-  plutôt que recevoir une coupe opaque du moteur à 16 384 caractères. Les pages
-  sont relues depuis la même référence (de préférence un SHA immuable).
-- `github_diff` renvoie 3 fichiers par page (`next_file_offset`) et les patchs
-  segmentés (`patch_next_offset`). Une revue doit parcourir les pages pertinentes
-  ; le serveur GitHub peut encore omettre les patchs de fichiers sensibles.
-- `github_commit_files` API adopte la même enveloppe que le client chat :
-  50 fichiers et 1 000 000 de caractères de contenu cumulés. La limitation des
-  chemins à la tâche, le SHA attendu, l'idempotence et le contrôle de bail restent.
-
-Cette PR ne modifie pas les plafonds de sortie imposés par les fournisseurs,
-les deadlines WorkSession ni les règles owner/D12. Les ajuster nécessite de
-vérifier la route et les capacités réelles de chaque modèle, puis une reprise
-transactionnelle de run ; les augmenter arbitrairement n'assure pas la parité.

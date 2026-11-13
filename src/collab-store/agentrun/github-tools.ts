@@ -127,7 +127,7 @@ function files(args: Record<string, unknown>): Array<{ path: string; content: st
   const raw = args.files;
   if (!Array.isArray(raw) || raw.length < 1 || raw.length > MAX_COMMIT_FILES) throw new ToolRefused('files : 1 à ' + MAX_COMMIT_FILES + ' fichiers.');
   const seen = new Set<string>();
-  let total = 0;
+  let totalBytes = 0;
   return raw.map(entry => {
     const item = (entry ?? {}) as Record<string, unknown>;
     const path = item.path;
@@ -139,8 +139,9 @@ function files(args: Record<string, unknown>): Array<{ path: string; content: st
     if (seen.has(path)) throw new ToolRefused('path en double.');
     seen.add(path);
     if (typeof content !== 'string' || content.length > MAX_FILE_CHARS) throw new ToolRefused('content : texte de ' + MAX_FILE_CHARS + ' caractères au plus.');
-    total += content.length;
-    if (total > MAX_COMMIT_CHARS) throw new ToolRefused('commit_too_large');
+    // Le plafond commun au chat est en octets UTF-8.
+    totalBytes += new TextEncoder().encode(content).byteLength;
+    if (totalBytes > MAX_COMMIT_CHARS) throw new ToolRefused('commit_too_large');
     const expected = item.expected_sha;
     if (expected !== undefined && (typeof expected !== 'string' || !SHA_RE.test(expected))) throw new ToolRefused('expected_sha invalide.');
     return { path, content, ...(expected ? { expectedSha: expected } : {}) };

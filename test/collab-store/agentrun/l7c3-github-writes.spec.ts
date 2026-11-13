@@ -181,6 +181,8 @@ describe('CC-5 l7c-3 — parcours et refus', () => {
       .toContain('content');
     expect(await refusal(input([{ path: 'src/parity/extra.ts', content: 'x'.repeat(1_000_000) },
       { path: 'src/parity/second.ts', content: 'x' }], 'e'))).toBe('commit_too_large');
+    expect(await refusal(input([{ path: 'src/parity/extra.ts', content: 'é'.repeat(600_000) }], 'f')))
+      .toBe('commit_too_large');
   });
 
 
