@@ -54,7 +54,7 @@ describe('CC8 — recadrage conversationnel et arrêt ciblé sans second moteur'
     expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
     expect((await runStep(db, runId, deps)).outcome).toBe('completed');
     expect(calls).toBe(2);
-    expect(reads).toEqual(['github_read_file']);
+    expect(reads).toEqual([]); // la première décision d'outil est périmée par le message en vol
     expect(JSON.stringify(seen[0])).not.toContain('Ne répète pas les lectures');
     expect(JSON.stringify(seen[1])).toContain('Ne répète pas les lectures');
     const messages = await db.prepare('SELECT delivered_step,body FROM agent_run_messages WHERE run_id=?1')
@@ -63,6 +63,28 @@ describe('CC8 — recadrage conversationnel et arrêt ciblé sans second moteur'
     expect(messages.results[0].delivered_step).toBe(1);
     expect((await db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE run_id=?1').bind(runId)
       .first<{ n: number }>())!.n).toBe(1);
+  });
+
+  it('garde le run ouvert lorsqu’une réponse finale est supplantée pendant sa génération', async () => {
+    const { runId, now } = await newRun('last-answer');
+    let calls = 0;
+    const model: ModelClient = { async complete(input) {
+      calls++;
+      if (calls === 1) {
+        await steerAgentRun(db, { runId, sender: 'gpt6', opId: 'last-message',
+          message: 'Corrige ton analyse avant de répondre.', now });
+        return { output: { text: 'Première réponse périmée', tool_calls: [] },
+          usage: { tokens: 8, cost_cents: 0 } };
+      }
+      expect(JSON.stringify(input.messages)).toContain('Corrige ton analyse');
+      return { output: { text: 'Réponse corrigée', tool_calls: [] },
+        usage: { tokens: 9, cost_cents: 0 } };
+    } };
+    const deps = { model, tools: host([]), now: () => now + 1, workerId: 'answer-worker' };
+    expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    expect((await runControlTarget(db, runId))?.status).toBe('running');
+    expect((await runStep(db, runId, deps)).outcome).toBe('completed');
+    expect(calls).toBe(2);
   });
 
   it('un arrêt individuel interdit un nouveau fournisseur sur le run ciblé, pas sur les autres', async () => {

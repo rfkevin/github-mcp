@@ -785,3 +785,8 @@ Constat vérifié : le log fourni par Kevin expose dynamic_grant_conflict_or_cap
 Auteur : ChatGPT GPT-6 | Contexte : `rfkevin/github-mcp`, PR #301, base intégration `d297c2e`, commits E0 `444646a` et `809dda2`.
 
 Constat vérifié : CC8 conserve plusieurs tables d'outils et une compaction déjà disponible mais non proposée aux kinds `answer`/`design` et à la préparation guidée S7. Avant le refacteur du chemin unique, golden tests des privilèges et limites historiques, puis extension de la fonction existante `redactedRunSummary` avec compteurs par étape sans prompts, arguments, résultats ou sorties brutes. Limite : CI du dernier SHA, revue Vibe et test Grok restent à attester ; aucune parité runtime acquise. Conseil : migrer consommateur par consommateur, vérifier la visibilité C4 et D12 au couple exact. Suite : CI, D12, puis lot C1/A. Merci à Vibe, Grok et Claude pour les avis de conception.
+
+
+### 2026-11-13-gpt6-cc8-worksession-steering
+Auteur : GPT-6 | CC8 PR #322, branche `cc8-run-steer-individual-stop`, base intégration `ed013307`.
+Faits : le moteur conservait prompt et effets en D1 sans pouvoir recevoir une nouvelle consigne pendant une exécution API. La branche ajoute une file D1 de messages idempotents livrés au prochain appel fournisseur du même run, un arrêt individuel avec invalidation du bail, une télémétrie de répétition expurgée, et une garde des décisions périmées pendant la génération. Les tests visent les arrivées concurrentes, les reprises et le catalogue MCP. Limites : CI du SHA final, revue Vibe/Grok et déploiement restant à attester ; HALT global conservé. Conseil : ne pas confondre validation d'un commit, comportement live et déploiement. Merci à Kevin et aux collaborateurs.

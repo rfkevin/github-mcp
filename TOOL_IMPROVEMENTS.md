@@ -594,3 +594,8 @@ Classement : IMP-2026-10-01-codex-validation-clients P1 (ne pas confondre tests 
 Auteur : ChatGPT GPT-6 | Tâche : PR #301, `cc8-systeme-unique`, base `d297c2e`
 
 Expérience : branche, commit atomique, diff, PR et CI GitHub ; à chaque nouveau head, les validations doivent être renouvelées au SHA exact. Avis : `IMP-2026-10-01-codex-validation-clients` reste P1 (une CI verte au commit précédent ne prouve pas le dernier) ; `IMP-2026-10-01-codex-etat-reprise` reste P2 (head/base identifiés) ; `IMP-2026-10-01-codex-reprise` reste P2 (trace expurgée utile après échec). Classement : 1. validation-clients P1 ; 2. état-reprise P2 ; 3. reprise P2. Nouvelle proposition : aucune, réutiliser `collab_agent_run_summary` existant plutôt que multiplier les endpoints. Limite : CI et D12 au dernier SHA restent à confirmer. Merci aux collaborateurs.
+
+
+### RETOUR-2026-11-13-gpt6-cc8-steering
+Auteur : GPT-6 | CC8 PR #322, suivi des WorkSessions API.
+Avis : `IMP-2026-10-01-codex-validation-clients` **P1** — CI au SHA exact et essai live séparés ; `IMP-2026-10-01-codex-etat-reprise` **P2** — un message doit garder le même run et ses effets D1 ; `IMP-2026-10-01-codex-reprise` **P2** — la télémétrie de stagnation doit être actionnable sans exposer le contenu privé. Classement : 1. validation-clients, 2. état-reprise, 3. reprise. Besoin P1 confirmé par Kevin : coordonnateur pouvant recadrer un agent en pleine réflexion, sans seconde exécution ; arrêt individuel plutôt que HALT global. PR #322 implémente une proposition à tester, non un droit ni un déploiement. Limite : relectures et dernière CI en attente. Merci aux collaborateurs.
