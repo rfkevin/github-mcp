@@ -462,7 +462,7 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
             // Permanent authorization, budget and routing refusals remain terminal.
             const reason = error instanceof Error ? error.message : String(error);
             if (priorProviderTransient && candidate.ref !== ref
-              && !/MODEL_ROUTE_REFUSED|MODEL_BUDGET_EXHAUSTED|PAID_ENVELOPE_NOT_FUNDED|token_preflight_refused|\\b(?:401|403)\\b/i.test(reason)) {
+              && !/MODEL_ROUTE_REFUSED|MODEL_BUDGET_EXHAUSTED|PAID_ENVELOPE_NOT_FUNDED|token_preflight_refused|\b(?:401|403)\b/i.test(reason)) {
               throw new ModelCallError('FALLBACK_AFTER_TRANSIENT: primary ' + ref
                 + ' unavailable, fallback ' + candidate.ref + ' rejected this request; retry primary after backoff.',
                 { tokens: spentTokens, cost_cents: spentCents });
