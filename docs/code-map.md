@@ -184,3 +184,9 @@ test n’a été perdu ou dupliqué. Les anciennes suites `oauth.spec.ts`,
 - `src/collab-store/agentrun/chat-continuity.ts` (`redactedRunSummary`) : résumé expurgé existant, enrichi des plafonds et compteurs par étape sans sortie brute du modèle.
 - `test/collab-store/agentrun/cc8-e0-redacted-trace.spec.ts` : tests D1 des traces, confidentialité et refus de lecture croisée.
 - Conserver les gardes par acte GitHub, D12, HALT et CAS pendant le passage au chemin unique.
+
+
+## CC8 — recent evidence and publication continuity (#326)
+
+- `src/collab-store/agentrun/history-policy.ts` : suffixe récent de tours complets sous budget de vue UTF-8 ; rappel ANSWER au ask_seq exact, raccordé dans `engine.ts`.
+- Tests : `test/collab-store/agentrun/cc8-recent-evidence.spec.ts`, `cc8-context-compaction.spec.ts`, `cc8-c2a-unified-compaction.spec.ts` ; contrat `docs/collaboration/cc8/recent-evidence-continuity.md`.
