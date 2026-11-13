@@ -183,6 +183,15 @@ const TABLES = [
     '  at INTEGER NOT NULL,',
     '  PRIMARY KEY (run_id, n, k)',
     ')'].join(' '),
+  // CC8 : consignes conversationnelles adressées à un run déjà actif.
+  // Le contenu est immuable ; seule l'étape de première livraison est assignée.
+  ['CREATE TABLE IF NOT EXISTS agent_run_messages (',
+    'message_id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    'run_id TEXT NOT NULL, op_id TEXT NOT NULL, sender_pid TEXT NOT NULL,',
+    'body TEXT NOT NULL, created_at INTEGER NOT NULL, delivered_step INTEGER,',
+    'UNIQUE(run_id,op_id)',
+    ')'].join(' '),
+  'CREATE INDEX IF NOT EXISTS agent_run_messages_run ON agent_run_messages (run_id,delivered_step,message_id)',
   // U1 : nouveau registre de mesures. Ne change pas les lignes existantes du journal D1.
   ['CREATE TABLE IF NOT EXISTS agent_run_call_usage (',
     '  run_id TEXT NOT NULL, n INTEGER NOT NULL, k INTEGER NOT NULL,',
@@ -193,7 +202,7 @@ const TABLES = [
 
 const NO_DELETE = ['agent_fences', 'agent_runs', 'agent_run_steps', 'agent_run_effects', 'agent_run_wakeups',
   'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal', 'agent_run_reads', 'agent_run_server_steps',
-  'agent_run_proofs', 'agent_run_model_calls', 'agent_run_call_usage', 'api_dynamic_grants', 'agent_task_schedule'].map(table =>
+  'agent_run_proofs', 'agent_run_model_calls', 'agent_run_call_usage', 'api_dynamic_grants', 'agent_task_schedule', 'agent_run_messages'].map(table =>
   'CREATE TRIGGER IF NOT EXISTS ' + table + '_no_delete BEFORE DELETE ON ' + table
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END");
 
@@ -215,6 +224,15 @@ const CALL_USAGE_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_call_usag
 const PROOFS_FINAL = "CREATE TRIGGER IF NOT EXISTS agent_run_proofs_final BEFORE UPDATE ON agent_run_proofs"
   + " WHEN OLD.status <> 'pending' OR NEW.run_id <> OLD.run_id BEGIN SELECT RAISE(ABORT, 'append-only'); END";
 
+// Les messages ne sont jamais modifiés : seule leur livraison peut être fixée une fois.
+const RUN_MESSAGES_IMMUTABLE = [
+  'CREATE TRIGGER IF NOT EXISTS agent_run_messages_immutable BEFORE UPDATE ON agent_run_messages',
+  'WHEN NEW.message_id <> OLD.message_id OR NEW.run_id <> OLD.run_id OR NEW.op_id <> OLD.op_id',
+  'OR NEW.sender_pid <> OLD.sender_pid OR NEW.body <> OLD.body OR NEW.created_at <> OLD.created_at',
+  'OR OLD.delivered_step IS NOT NULL OR NEW.delivered_step IS NULL OR NEW.delivered_step < 0',
+  "BEGIN SELECT RAISE(ABORT, 'append-only'); END",
+].join(' ');
+
 export async function ensureAgentRunSchema(db: D1Database): Promise<void> {
-  await db.batch([...TABLES, ...NO_DELETE, DYNAMIC_GRANTS_APPEND_ONLY, TASK_SCHEDULE_APPEND_ONLY, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY, MODEL_CALLS_APPEND_ONLY, CALL_USAGE_APPEND_ONLY, PROOFS_FINAL].map(sql => db.prepare(sql)));
+  await db.batch([...TABLES, ...NO_DELETE, DYNAMIC_GRANTS_APPEND_ONLY, TASK_SCHEDULE_APPEND_ONLY, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY, MODEL_CALLS_APPEND_ONLY, CALL_USAGE_APPEND_ONLY, PROOFS_FINAL, RUN_MESSAGES_IMMUTABLE].map(sql => db.prepare(sql)));
 }
