@@ -10,6 +10,7 @@ import {
 } from '../../../src/collab-store/agentrun/orchestrator';
 import { engineFor, AGENT_RUN_SYSTEM } from '../../../src/collab-store/agentrun/object';
 import { CollabStore } from '../../../src/collab-store/store/collab-store';
+import { GITHUB_FILE_PAGE_CHARS } from '../../../src/collab-store/agentrun/read-tools';
 import { githubReadsFrom } from '../../../src/agent-run-object';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
@@ -160,7 +161,7 @@ describe('CC-5 l7c-1 — hôte d’outils en lecture seule', () => {
     expect(noRepo.list('research')).toEqual(['store_context', 'store_delta']);
   });
 
-  it('parcours moteur réel : contexte et delta du SEUL participant de l’exécution, résultat tronqué, puis fin', async () => {
+  it('parcours moteur réel : contexte et delta propres, fichier paginé sans perte, puis fin', async () => {
     const run = await newRun(T);
     await seedCycle(run.cycleId);
     const github = fakeGithub();
@@ -180,13 +181,75 @@ describe('CC-5 l7c-1 — hôte d’outils en lecture seule', () => {
       .map(row => JSON.parse(row.results) as Array<{ id: string; content: string }>);
     // Les arguments du modèle ne choisissent ni le cycle ni le participant.
     expect(JSON.parse(steps[0][0].content)).toMatchObject({ cycle_id: run.cycleId });
-    expect(steps[1][0].content.length).toBeLessThanOrEqual(16 * 1024 + 20);
-    expect(steps[1][0].content.endsWith('…[tronqué]')).toBe(true);
-    expect(github.calls).toEqual(['file:rfkevin/github-mcp:README.md@main']);
+    const first = JSON.parse(steps[1][0].content) as { content: string; next_offset: number | null; total_chars: number; truncated: boolean };
+    expect(first).toMatchObject({ total_chars: 40_000, next_offset: GITHUB_FILE_PAGE_CHARS, truncated: true });
+    expect(steps[1][0].content).not.toContain('…[tronqué]');
+    let accumulated = first.content;
+    let next = first.next_offset;
+    while (next !== null) {
+      const part = await host.execute({ id: 'next', name: 'github_read_file',
+        args: { path: 'README.md', ref: 'main', offset: next } }, { run_id: run.runId }) as
+        { content: string; next_offset: number | null };
+      accumulated += part.content;
+      next = part.next_offset;
+    }
+    expect(accumulated).toBe('x'.repeat(40_000));
+    expect(github.calls).toHaveLength(4);
+    const prefetched = await host.execute({ id: 'server', name: 'github_read_file',
+      args: { path: 'README.md', ref: 'main' } }, { run_id: run.runId, prefetch: true }) as { content: string };
+    expect(prefetched.content).toHaveLength(40_000);
     expect(JSON.parse(steps[1][1].content).events[0]).toMatchObject({ type: 'checkpoint' });
     // Le modèle a reçu en messages les résultats tronqués, comme données.
     const third = ai.calls[2].input as { messages: Array<{ role: string; content: string }> };
     expect(third.messages.filter(m => m.role === 'tool').length).toBe(3);
+  });
+
+  it('github_diff : reconstruit intégralement les pages et portions de patch', async () => {
+    const run = await newRun(T + 240, 'review');
+    const github = {
+      ...fakeGithub(),
+      async compareRefs() {
+        return { status: 'ahead', ahead_by: 1, behind_by: 0, total_commits: 1,
+          files: Array.from({ length: 7 }, (_, i) => ({
+            filename: 'src/' + i + '.ts', status: 'modified', additions: 1, deletions: 0,
+            patch: String(i).repeat(8_100),
+          })) };
+      },
+    };
+    const host = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github });
+    const collected: string[] = [];
+    for (let offset = 0; offset < 7; offset += 3) {
+      const result = await host.execute({ id: 'diff', name: 'github_diff',
+        args: { base: 'b'.repeat(40), head: 'a'.repeat(40), file_offset: offset } }, { run_id: run.runId }) as {
+        files: Array<{ filename: string; patch: string; patch_next_offset: number | null; patch_total_chars: number }>;
+        files_available: number; next_file_offset: number | null;
+      };
+      expect(result.files_available).toBe(7);
+      expect(result.next_file_offset).toBe(offset + result.files.length < 7 ? offset + result.files.length : null);
+      for (const file of result.files) {
+        let patch = file.patch;
+        let cursor = file.patch_next_offset;
+        const fileIndex = Number(file.filename.slice(4, -3));
+        while (cursor !== null) {
+          const more = await host.execute({ id: 'patch-next', name: 'github_diff',
+            args: { base: 'b'.repeat(40), head: 'a'.repeat(40),
+              file_offset: fileIndex, file_limit: 1, patch_offset: cursor } }, { run_id: run.runId }) as {
+            files: Array<{ patch: string; patch_next_offset: number | null }>;
+          };
+          patch += more.files[0].patch;
+          cursor = more.files[0].patch_next_offset;
+        }
+        expect(patch).toBe(String(fileIndex).repeat(8_100));
+        collected.push(file.filename);
+      }
+    }
+    expect(collected).toHaveLength(7);
+    const internal = await host.execute({ id: 'pre', name: 'github_diff',
+      args: { base: 'b'.repeat(40), head: 'a'.repeat(40) } },
+      { run_id: run.runId, prefetch: true }) as { files: Array<{ patch: string; patch_truncated: boolean }> };
+    expect(internal.files).toHaveLength(7);
+    expect(internal.files[0]).toMatchObject({ patch_truncated: true });
+    expect(internal.files[0].patch).toHaveLength(2_000);
   });
 
   it('refus en code : outil inconnu, outil interdit au canal API, arguments invalides, dépôt imposé par l’hôte', async () => {

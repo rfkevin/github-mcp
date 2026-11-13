@@ -14,6 +14,7 @@ import { authorizeAppend, authorizePhaseAdvance } from '../identity';
 import { equivalentParticipantIds } from '../identity/families';
 import { exportCycleState, exportMemoryMarkdown } from '../export';
 import { resolveContextTarget, buildRolePacket, loadContinuity, loadActiveWork, loadActiveWorkPage, concurrentSession } from '../context';
+import { DEFAULT_C0_BASELINE_TOKENS } from '../context/packet';
 import { applyChatAutoLease, type ChatLeaseEffect } from '../agentrun/chat-auto-lease';
 import { advanceGuarded } from '../phases/gate';
 import type { Phase } from '../../collab/contracts';
@@ -28,7 +29,7 @@ import { registerMemoryTools } from './memory-tools';
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
 /** Default C0 baseline for packet budget when the caller does not pass one. */
-const DEFAULT_C0_BASELINE = 12_000;
+const DEFAULT_C0_BASELINE = DEFAULT_C0_BASELINE_TOKENS;
 
 export function createCollabServer(context: CollabToolContext): McpServer {
   const server = new McpServer({ name: 'collab-store', version: '0.1.0' }, {

@@ -4,7 +4,7 @@
  * déduits d'un argument du modèle. Les sources GitHub ne sont PAS préchargées ici :
  * aucune référence URL ne vaut une preuve de lecture.
  */
-import { buildRolePacket, loadOpenQuestions, loadVisibleActiveMemory, memoryRolesOf } from '../context/packet';
+import { buildRolePacket, loadOpenQuestions, loadVisibleActiveMemory, memoryRolesOf, DEFAULT_C0_BASELINE_TOKENS } from '../context/packet';
 import { equivalentParticipantIds } from '../identity/families';
 import { loadActiveWork } from '../context/active-work';
 import { ensureSchema } from '../store/schema';
@@ -27,7 +27,7 @@ export async function taskPromptWithServerPacket(
   // filtrée dans buildRolePacket avec les identités équivalentes et le rôle D12.
   const packet = await buildRolePacket(db, {
     cycle: scope.cycleId, participant_id: scope.participantId, task: scope.taskId,
-  }, { c0BaselineTokens: 6_400, approvedBudgetTokens: 1_600 });
+  }, { c0BaselineTokens: DEFAULT_C0_BASELINE_TOKENS });
   if (!packet.task || packet.task.task_id !== scope.taskId) {
     // Contrat existant de la résolution C4, déjà documenté dans le guide store.
     throw new CollabStoreError('TASK_NOT_HELD', 'Dossier serveur refusé : tâche non attribuée au participant.');
@@ -59,7 +59,8 @@ export async function taskPromptWithServerPacket(
 /** CC8 U2b — answer sans tâche. Ne jamais sélectionner arbitrairement une tâche
  * lorsqu'un participant détient plusieurs mandats : mêmes règles de visibilité
  * mémoire C4, questions X13 et checkpoints propres que le chat, sans rôle D12. */
-export const ANSWER_CYCLE_PACKET_MAX_BYTES = 6_000;
+/** Budget de préchargement approximativement équivalent au packet chat par défaut. */
+export const ANSWER_CYCLE_PACKET_MAX_BYTES = DEFAULT_C0_BASELINE_TOKENS;
 export async function answerPromptWithServerPacket(db: D1Database,
   scope: { cycleId: string; participantId: string }, prompt: string): Promise<string> {
   await ensureSchema(db);

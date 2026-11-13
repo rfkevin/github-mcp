@@ -1,7 +1,8 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
-import { taskPromptWithServerPacket } from '../../../src/collab-store/agentrun/unified-run-packet';
+import { taskPromptWithServerPacket, ANSWER_CYCLE_PACKET_MAX_BYTES } from '../../../src/collab-store/agentrun/unified-run-packet';
+import { DEFAULT_C0_BASELINE_TOKENS } from '../../../src/collab-store/context/packet';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 
@@ -29,6 +30,11 @@ async function seeded() {
 }
 
 describe('CC8 C2b1 — packet commun chat/API injecté au prompt des tâches', () => {
+  it('même référence C0 pour le packet chat et WorkSession', () => {
+    expect(DEFAULT_C0_BASELINE_TOKENS).toBe(12_000);
+    expect(ANSWER_CYCLE_PACKET_MAX_BYTES).toBe(DEFAULT_C0_BASELINE_TOKENS);
+  });
+
   it('injecte rôle et mémoire autorisés du serveur, sans données personnelles tierces', async () => {
     const { cycleId, taskId } = await seeded();
     const prompt = await taskPromptWithServerPacket(db, {
@@ -38,6 +44,7 @@ describe('CC8 C2b1 — packet commun chat/API injecté au prompt des tâches', (
     expect(prompt).toContain('DOSSIER CC8 SERVEUR');
     expect(prompt).toContain('"role":"owner"');
     expect(prompt).toContain('AUTHOR_PRIVATE_C2B1');
+    expect(prompt).toContain('"max_tokens":3000');
     expect(prompt).toContain('COMMON_VISIBLE_C2B1');
     expect(prompt).not.toContain('OTHER_PRIVATE_C2B1');
     expect(prompt).toContain('Sources GitHub NON PRÉCHARGÉES');

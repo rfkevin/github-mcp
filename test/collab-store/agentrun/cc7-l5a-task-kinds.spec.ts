@@ -190,16 +190,43 @@ describe('CC-7 L5a — outils review, github_diff et github_open_pr', () => {
     const host = createReadToolHost({ db, repository: REPO, github });
     const call = (args: Record<string, unknown>) => host.execute({ id: 'd', name: 'github_diff', args }, { run_id: runId });
     expect(await refusal(call({ base: BASE, head: 'main' }))).toContain('head');
+    // API : 3 fichiers par défaut ; accéder ensuite à toute la liste et au patch entier.
     const diff = await call({ base: BASE, head: HEAD }) as {
-      files: Array<{ patch: string; patch_truncated: boolean }>; files_truncated: boolean; total_commits: number;
+      files: Array<{ patch: string; patch_truncated: boolean; patch_next_offset: number | null }>;
+      files_truncated: boolean; next_file_offset: number | null; files_available: number;
+      total_commits: number;
     };
-    expect(diff.files).toHaveLength(DIFF_MAX_FILES);
+    expect(diff.files).toHaveLength(3);
+    expect(diff.files_available).toBe(DIFF_MAX_FILES + 1);
+    expect(diff.next_file_offset).toBe(3);
     expect(diff.files_truncated).toBe(true);
     expect(diff.files[0].patch.length).toBe(DIFF_PATCH_CHARS);
     expect(diff.files[0].patch_truncated).toBe(true);
-    expect(diff.files[DIFF_MAX_FILES - 1].patch_truncated).toBe(false);
+    expect(diff.files[0].patch_next_offset).toBe(DIFF_PATCH_CHARS);
+    const patchTail = await call({ base: BASE, head: HEAD, file_offset: 0, file_limit: 1,
+      patch_offset: DIFF_PATCH_CHARS }) as {
+        files: Array<{ patch: string; patch_next_offset: number | null }>;
+      };
+    expect(patchTail.files[0].patch).toBe('p'.repeat(1000));
+    expect(patchTail.files[0].patch_next_offset).toBeNull();
+    const last = await call({ base: BASE, head: HEAD, file_offset: DIFF_MAX_FILES, file_limit: 1 }) as {
+      files: Array<{ filename: string }>; files_truncated: boolean; next_file_offset: number | null;
+    };
+    expect(last.files.map(f => f.filename)).toEqual(['f50.txt']);
+    expect(last.files_truncated).toBe(false);
+    expect(last.next_file_offset).toBeNull();
     expect(diff.total_commits).toBe(1);
-    expect(github.calls).toEqual(['diff:' + REPO + ':' + BASE + '..' + HEAD]);
+    // Prelecture du contrôleur S7 : contrat historique conservé, toujours avec indicateurs de coupe.
+    const internal = await host.execute({ id: 'pre', name: 'github_diff', args: { base: BASE, head: HEAD } },
+      { run_id: runId, prefetch: true }) as {
+        files: Array<{ patch: string; patch_truncated: boolean }>; files_truncated: boolean;
+      };
+    expect(internal.files).toHaveLength(DIFF_MAX_FILES);
+    expect(internal.files[0].patch.length).toBe(DIFF_PATCH_CHARS);
+    expect(internal.files[0].patch_truncated).toBe(true);
+    expect(internal.files[DIFF_MAX_FILES - 1].patch_truncated).toBe(false);
+    expect(internal.files_truncated).toBe(true);
+    expect(github.calls).toHaveLength(4);
   });
 
   it('github_open_pr : PR prête avec pied de page D12, lookup au draft false, seconde ouverture = conflit certain', async () => {

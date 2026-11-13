@@ -52,9 +52,10 @@ export type GitHubWriteToolName = 'github_create_branch' | 'github_commit_files'
 /** Espace de noms des branches API, figé en code (A3). */
 export const API_BRANCH_NAMESPACE = 'mcp/105856986';
 export const DEFAULT_API_BASE_BRANCH = 'mcp/105856986/cc3-integration';
-export const MAX_COMMIT_FILES = 20;
-export const MAX_FILE_CHARS = 100_000;
-export const MAX_COMMIT_CHARS = 400_000;
+/** Le même périmètre de taille qu'un github_commit_changes du chat. */
+export const MAX_COMMIT_FILES = 50;
+export const MAX_FILE_CHARS = 1_000_000;
+export const MAX_COMMIT_CHARS = 1_000_000;
 const SHA_RE = /^[a-f0-9]{40}$/;
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const PARTICIPANT_RE = /^[a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?$/;
@@ -126,7 +127,7 @@ function files(args: Record<string, unknown>): Array<{ path: string; content: st
   const raw = args.files;
   if (!Array.isArray(raw) || raw.length < 1 || raw.length > MAX_COMMIT_FILES) throw new ToolRefused('files : 1 à ' + MAX_COMMIT_FILES + ' fichiers.');
   const seen = new Set<string>();
-  let total = 0;
+  let totalBytes = 0;
   return raw.map(entry => {
     const item = (entry ?? {}) as Record<string, unknown>;
     const path = item.path;
@@ -138,8 +139,9 @@ function files(args: Record<string, unknown>): Array<{ path: string; content: st
     if (seen.has(path)) throw new ToolRefused('path en double.');
     seen.add(path);
     if (typeof content !== 'string' || content.length > MAX_FILE_CHARS) throw new ToolRefused('content : texte de ' + MAX_FILE_CHARS + ' caractères au plus.');
-    total += content.length;
-    if (total > MAX_COMMIT_CHARS) throw new ToolRefused('commit_too_large');
+    // Le plafond commun au chat est en octets UTF-8.
+    totalBytes += new TextEncoder().encode(content).byteLength;
+    if (totalBytes > MAX_COMMIT_CHARS) throw new ToolRefused('commit_too_large');
     const expected = item.expected_sha;
     if (expected !== undefined && (typeof expected !== 'string' || !SHA_RE.test(expected))) throw new ToolRefused('expected_sha invalide.');
     return { path, content, ...(expected ? { expectedSha: expected } : {}) };
