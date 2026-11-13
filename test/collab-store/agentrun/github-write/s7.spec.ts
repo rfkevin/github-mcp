@@ -63,6 +63,16 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     f.options.writes.branchHead=async()=> 'invalid';
     await expect(f.tools.execute(call,f.ctx())).rejects.toThrow('api_base_head_unavailable');
   });
+  it('expose la mission fonctionnelle au modèle dans github_write_scope sans élargir ses droits',async()=>{
+    const f=await fixture();
+    const acceptance=['Tester la fonction source réelle.', 'Prouver le résultat par un test Vitest.'];
+    f.policy.tasks=JSON.stringify([{cycle:f.cycle,task:f.task,participant:f.participant,
+      branch:f.branch,paths:['src/demo/'],mission:'functional',acceptance}]);
+    expect(await f.tools.execute({id:'mission',name:'github_write_scope',args:{}},f.ctx()))
+      .toMatchObject({branch:f.branch,mission:'functional',acceptance,granted_paths:['src/demo/']});
+    expect(await f.tools.execute({id:'scope',name:'github_write_scope',args:{}},f.ctx()))
+      .toMatchObject({task_paths:['src/demo/']});
+  });
   it('rejects either missing permission, wrong branch and changed ownership before GitHub',async()=>{
     const f=await fixture();
     await expect(authorize(db,{},f.run,f.branch)).rejects.toThrow('api_writer_not_enabled');

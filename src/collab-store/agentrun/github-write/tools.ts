@@ -17,7 +17,7 @@ export interface S7Options { policy: WritePolicy; reads: GitHubReads | null; che
 const SHA = /^[a-f0-9]{40}$/;
 const common = { name: { type: 'string' }, sha: { type: 'string', pattern: SHA.source } };
 export const S7_SCHEMAS: readonly ToolSchema[] = [
-  { name: 'github_write_scope', description: 'Lire votre mandat serveur : branche, nom, chemins, SHA actuel de la base et corrections restantes. Utiliser base_sha pour github_create_branch, jamais un SHA de fichier.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'github_write_scope', description: 'Lire votre mandat serveur et ses critères d’acceptation : mission, acceptance, branche, nom, chemins, SHA actuel de la base et corrections restantes. Utiliser base_sha pour github_create_branch, jamais un SHA de fichier. La mission est également lisible dans le store (task.next_action), sans accorder de nouvelles permissions.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'github_replace_text', description: 'Remplacement littéral unique au head/blob exacts, dans votre tâche. Une édition (path, expected_sha, old_text, new_text) ou un tableau edits (' + MAX_EDITS + ' au plus, fichiers distincts) appliqué en UN SEUL commit. Une correction est autorisée après une CI rouge, sans plafond de corrections par mission.',
     parameters: { type: 'object', properties: { name: common.name, expected_head_sha: common.sha, message: { type: 'string' }, path: { type: 'string' }, expected_sha: common.sha,
       old_text: { type: 'string' }, new_text: { type: 'string' },
@@ -100,7 +100,8 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
       const branchHead = await options.writes.branchHead(options.repository, allowed.branch);
       return { branch: allowed.branch, name: allowed.branch.split('-api-')[1], base_branch: options.baseBranch, base_sha: baseSha,
         branch_head: branchHead && SHA.test(branchHead) ? branchHead : null,
-        granted_paths: allowed.paths, task_paths: allowed.owned_paths, corrections_completed: await correctionsUsed(options.db, allowed) };
+        granted_paths: allowed.paths, task_paths: allowed.owned_paths, mission: allowed.mission ?? 'pilot',
+        acceptance: allowed.acceptance ?? [], corrections_completed: await correctionsUsed(options.db, allowed) };
     }
     const s = await scope(call, ctx);
     const args = call.args ?? {};
