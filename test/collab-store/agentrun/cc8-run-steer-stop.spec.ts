@@ -109,3 +109,34 @@ describe('CC8 — recadrage conversationnel et arrêt ciblé sans second moteur'
     expect(row?.body).toBe('Consigne A');
   });
 });
+
+describe('CC8 — diagnostic de stagnation, jamais arrêt automatique', () => {
+  it('repère les lectures identiques répétées puis oublie le soupçon quand les lectures changent', async () => {
+    const { runId, now } = await newRun('progress');
+    const { runProgress } = await import('../../../src/collab-store/agentrun/run-progress');
+    const reads: string[] = [];
+    let calls = 0;
+    const model: ModelClient = { async complete() {
+      calls++;
+      return { output: { text: 'Analyse encore en cours',
+        tool_calls: [{ id: 'call-' + calls, name: 'github_read_file',
+          args: { path: calls <= 4 ? 'same.ts' : 'new.ts', ref: 'head' } }] },
+      usage: { tokens: 6, cost_cents: 0 } };
+    } };
+    const deps = { model, tools: host(reads), now: () => now + 1, workerId: 'progress-worker' };
+    for (let i = 0; i < 4; i++) {
+      expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    }
+    const repeated = await runProgress(db,runId);
+    expect(repeated?.consecutive_same_result).toBe(4);
+    expect(repeated?.candidate_stagnation).toBe(true);
+    expect(repeated?.unique_call_intents).toBe(1);
+    expect((await runStep(db, runId, deps)).outcome).toBe('stepped');
+    const changed = await runProgress(db,runId);
+    expect(changed?.candidate_stagnation).toBe(false);
+    expect(changed?.consecutive_same_result).toBe(1);
+    expect(changed?.unique_call_intents).toBe(2);
+    expect(changed?.last_tool).toBe('github_read_file');
+    expect(calls).toBe(5); // aucun plafond ou arrêt automatique ajouté
+  });
+});
