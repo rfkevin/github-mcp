@@ -55,6 +55,10 @@ describe('CC8 — recadrage conversationnel et arrêt ciblé sans second moteur'
     expect((await runStep(db, runId, deps)).outcome).toBe('completed');
     expect(calls).toBe(2);
     expect(reads).toEqual([]); // la première décision d'outil est périmée par le message en vol
+    const stale = await db.prepare('SELECT results FROM agent_run_steps WHERE run_id=?1 AND n=0').bind(runId)
+      .first<{results:string}>();
+    expect(stale?.results).toContain('reissue_tool_if_still_needed');
+    expect(stale?.results).toContain('effect_executed');
     expect(JSON.stringify(seen[0])).not.toContain('Ne répète pas les lectures');
     expect(JSON.stringify(seen[1])).toContain('Ne répète pas les lectures');
     const messages = await db.prepare('SELECT delivered_step,body FROM agent_run_messages WHERE run_id=?1')

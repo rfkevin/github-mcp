@@ -5,6 +5,7 @@ describe('CC8 S1b — classification fail-closed', () => {
   it.each(['HTTP 503 Service Unavailable', 'HTTP 502', 'HTTP 504', '429 Too Many Requests', 'fetch failed',
     'network error', 'ETIMEDOUT', 'AbortError', 'request timeout',
     'workers_ai_error: 8004: Internal server error', 'HTTP 500 Internal Server Error',
+    'FALLBACK_AFTER_TRANSIENT: primary unavailable, fallback rejected',
     'gemini_error: Fournisseur sans réponse après 60000 ms.',
     'zai_error: Fournisseur sans réponse après 90000 ms.'])('transient : %s', message => {
     expect(modelFailureKind(new Error(message))).toBe('transient');

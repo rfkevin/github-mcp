@@ -345,6 +345,7 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
         model = build(ref, route.tier, participantEnvelope(env as PolicyEnv, run.participant_id));
       }
       let lastError: unknown;
+      let priorProviderTransient = false;
       // A retry chain is ONE model step. Failed upstream calls already consume its token budget.
       let spentTokens = 0;
       let spentCents = 0;
@@ -454,10 +455,24 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
               run_id: ctx.runId, at: outcome.at, ok: false, latency_ms: outcome.latencyMs });
           }
           if (!transient) {
+            // An OPTIONAL fallback can reject a valid primary-model conversation
+            // (e.g. HTTP 400 on its own tool schema). When the primary just failed
+            // transiently, the entire work step is retryable on the primary:
+            // do not turn a provider outage into a terminal WorkSession failure.
+            // Permanent authorization, budget and routing refusals remain terminal.
+            const reason = error instanceof Error ? error.message : String(error);
+            if (!isProbe && priorProviderTransient && candidate.ref !== ref
+              && /(?:\b400\b|invalid (?:tool|function|schema|request)|unsupported (?:tool|function|schema)|workers_ai_error:\s*8004:\s*Invalid request)/i.test(reason)
+              && !/MODEL_ROUTE_REFUSED|MODEL_BUDGET_EXHAUSTED|PAID_ENVELOPE_NOT_FUNDED|token_preflight_refused|\b(?:401|403)\b/i.test(reason)) {
+              throw new ModelCallError('FALLBACK_AFTER_TRANSIENT: primary ' + ref
+                + ' unavailable, fallback ' + candidate.ref + ' rejected this request; retry primary after backoff.',
+                { tokens: spentTokens, cost_cents: spentCents });
+            }
             if (error instanceof ModelCallError) throw new ModelCallError(error.message,
               { tokens: spentTokens, cost_cents: spentCents });
             throw error;
           }
+          priorProviderTransient = true;
         }
       }
       // 2e relecture D12 #255 : zéro appel parce que chaque bail de sonde était détenu —

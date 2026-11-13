@@ -1171,7 +1171,15 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     if (!stillLive) return settled(db, runId, deps.now());
     const refused = (reason: string) => results.push({ id: call.id, content: JSON.stringify({ error: reason }), error: true });
     // La consigne arrivée durant l'appel fournisseur prime sur une décision d'outil périmée.
-    if (await pendingSteer()) { refused('superseded_by_live_message'); continue; }
+    if (await pendingSteer()) {
+      // No stale effect is executed. The next call sees the pending steer and this
+      // actionable receipt; it must decide anew whether the tool is still needed.
+      results.push({ id: call.id, error: true, content: JSON.stringify({
+        error: 'superseded_by_live_message', effect_executed: false,
+        next_action: 'read_next_coordinator_message_and_replan; reissue_tool_if_still_needed',
+      }) });
+      continue;
+    }
     // Owner-only actions and raw D12 submissions cannot be smuggled into the
     // provider API by an accidentally permissive future tool host.
     if ((API_AGENT_FORBIDDEN as readonly string[]).includes(call.name)) {
