@@ -17,8 +17,8 @@ describe('CC8 S7 — compaction de la vue fournisseur, sans toucher au journal D
 
   it('compacte les anciens résultats et conserve la dernière paire appel/réponse intacte', () => {
     const base = 'a'.repeat(40);
-    const steps = [makeStep('a', 'store_context', { registry: 'X'.repeat(12000), password: 'NE_PAS_EXPOSER' }),
-      makeStep('b', 'github_write_scope', { branch: 'mcp/105856986/vibe-api-s7-live', base_sha: base }),
+    const steps = [makeStep('a', 'store_context', { registry: 'X'.repeat(60000), password: 'NE_PAS_EXPOSER' }),
+      makeStep('b', 'github_write_scope', { branch: 'mcp/105856986/vibe-api-s7-live', base_sha: base, padding: 'Y'.repeat(60000) }),
       makeStep('c', 'github_create_branch', { branch: 'mcp/105856986/vibe-api-s7-live', sha: base })];
     const compact = providerMessagesFromHistory('mission', steps, true);
     const full = providerMessagesFromHistory('mission', steps, false);
@@ -36,7 +36,7 @@ describe('CC8 S7 — compaction de la vue fournisseur, sans toucher au journal D
 
   it('borne la taille du checkpoint sans perdre le dernier résultat', () => {
     const earlier = Array.from({ length: 70 }, (_, i) => makeStep(String(i), 'github_check_result',
-      { branch: 'test-' + i, status: 'completed', sha: 'b'.repeat(40), next_action: 'wait' }));
+      { branch: 'test-' + i, status: 'completed', sha: 'b'.repeat(40), next_action: 'wait', padding: 'X'.repeat(1000) }));
     const last = makeStep('last', 'github_check_result', { verifiedSuccess: true, sha: 'c'.repeat(40) });
     const messages = providerMessagesFromHistory('mission', [...earlier, last], true);
     expect(messages[0].content.length).toBeLessThan(3900);
@@ -55,7 +55,7 @@ describe('CC8 S7 — compaction de la vue fournisseur, sans toucher au journal D
       makeStep('commit', 'github_commit_files', { commit_sha: 'b'.repeat(40) }),
     ];
     const filler = Array.from({ length: 75 }, (_, i) => makeStep(String(i), 'github_read_file',
-      { content: 'PRIVATE_SOURCE_' + i, sha: base }));
+      { content: 'PRIVATE_SOURCE_' + i + 'X'.repeat(1000), sha: base }));
     const last = makeStep('last', 'github_read_file', { content: 'new', sha: base });
     const messages = providerMessagesFromHistory('mission', [...milestones, ...filler, last], true);
     const context = messages[0].content;
