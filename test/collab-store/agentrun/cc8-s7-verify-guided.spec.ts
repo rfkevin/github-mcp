@@ -161,7 +161,7 @@ describe('Vérification guidée — moteur (D1)', () => {
     expect(text).toContain('CI au head : ci=success.');
   });
 
-  it('compaction : à la 3e étape, un gros résultat de lecture de la 1re étape n’est plus renvoyé au modèle', async () => {
+  it('continuité : à la 3e étape, les deux lectures récentes restent disponibles pour le verdict', async () => {
     const runId = await verifyRun('test');
     const big = 'CONTENU-VOLUMINEUX-' + 'z'.repeat(6_000);
     const read = (id: string, path: string): ModelOutput => ({ text: '', tool_calls: [{ id, name: 'github_read_file', args: { path, ref: HEAD } }] });
@@ -170,7 +170,8 @@ describe('Vérification guidée — moteur (D1)', () => {
       github_read_file: [{ path: 'src/a.ts', content: big }, { path: 'src/b.ts', content: 'petit' }], store_verdict: [{ status: 'applied' }] });
     await drive(runId, { model: m.client, tools: h.tools, now: () => T + 10, workerId: 'w1', guidedVerify: true, compactHistory: true });
     expect(JSON.stringify(m.seen[1].messages)).toContain('CONTENU-VOLUMINEUX'); // étape 2 : dernière étape intacte
-    expect(JSON.stringify(m.seen[2].messages)).not.toContain('CONTENU-VOLUMINEUX'); // étape 3 : étape 1 compactée
+    expect(JSON.stringify(m.seen[2].messages)).toContain(big); // les deux tours tiennent dans la fenêtre récente
+    expect(m.seen[2].messages.filter(message => message.role === 'tool').map(message => message.tool_call_id)).toEqual(['r1', 'r2']);
     expect(injected(m.seen[2]).content).toContain('CONTEXTE DE VÉRIFICATION'); // le contexte serveur reste présent
   });
 

@@ -86,7 +86,7 @@ describe('CC8 E0-0 — comportement avant unification (golden baseline)', () => 
       results: JSON.stringify([{ id, content: JSON.stringify(result) }]),
     });
     const steps = [
-      step('old', { data: 'SECRET_ANCIEN', sha: 'a'.repeat(40), status: 'completed' }),
+      step('old', { data: 'SECRET_ANCIEN', padding: 'x'.repeat(60_000), sha: 'a'.repeat(40), status: 'completed' }),
       step('new', { current: 'VERIFICATION_EN_COURS', sha: 'b'.repeat(40) }),
     ];
     const full = providerMessagesFromHistory('mission', steps, false);

@@ -96,7 +96,11 @@ describe('CC8 S7 post-merge — complétion implement prouvée par les effets D1
     const milestones = verifiedWorkMilestones(steps.results);
     expect(milestones.pr).toMatchObject({ number: 331 });
     expect(milestones.commit).toMatchObject({ commit_sha: COMMIT });
-    const compact = providerMessagesFromHistory('Mission post-merge.', steps.results, true);
+    // Force actual eviction: a short successful mission now remains fully visible.
+    const longLastTurn: CompletedHistoryStep = {
+      model_output: JSON.stringify({ text: 'recent analysis '.repeat(5_000), tool_calls: [] }), results: '[]',
+    };
+    const compact = providerMessagesFromHistory('Mission post-merge.', [...steps.results, longLastTurn], true);
     expect(compact[0].content).toContain('Jalons déjà exécutés');
     expect(compact[0].content).toContain(BRANCH);
     expect(compact[0].content).toContain(COMMIT);
