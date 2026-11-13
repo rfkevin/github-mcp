@@ -5,7 +5,7 @@ import { equivalentParticipantIds, assertDistinctLogicalParticipants } from '../
 import { opIdClientFor, parseOpId } from '../contracts';
 import { exactGrant, type WriteGrant } from './github-write/authorization';
 import { issueDynamicGrant } from './github-write/dynamic-grants';
-import { apiParticipants, taskKindCostCents } from './plan';
+import { apiParticipants } from './plan';
 import { ToolRefused } from './engine';
 import { ensureAgentRunSchema } from './schema';
 import type { AgentRunObjectEnv } from './object';
@@ -32,7 +32,8 @@ export async function grantForLaunch(db: D1Database, env: AgentRunObjectEnv, cyc
   if (!apiParticipants(env.AGENT_RUN_PARTICIPANTS).includes(pid)
       || !(env.AGENT_RUN_GITHUB_WRITERS ?? '').split(',').map(s => s.trim()).includes(pid))
     deny('WRITER_NOT_GRANTED', 'Agent has no API writing permission.');
-  if (taskKindCostCents(env, 'implement') !== 0) deny('PAID_RUN_FORBIDDEN', 'Only zero-cost implement runs are allowed.');
+  // No channel-specific paid ban: the existing owner-controlled kind limit, per-agent
+  // envelope and model capacity are checked by the single WorkSession planner.
   const policy={writers:env.AGENT_RUN_GITHUB_WRITERS,
     tasks:env.AGENT_RUN_GITHUB_TASKS,dynamic:env.AGENT_RUN_DYNAMIC_SCOPE};
   const existing=await exactGrant(db,policy,cycle,task,pid);
