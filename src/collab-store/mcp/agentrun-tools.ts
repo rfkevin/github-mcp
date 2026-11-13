@@ -18,6 +18,7 @@ import {
 } from '../agentrun/chat-continuity';
 import { coordinatorRunOverview } from '../agentrun/capacity';
 import { assignCoordinatorWorksession } from '../agentrun/coordinator-launch';
+import { runControlTarget, steerAgentRun, stopAgentRun } from '../agentrun/run-control';
 import { previewNextActions } from '../controller/next-actions';
 import { isCoordinator } from '../owner/coordinators';
 
@@ -33,6 +34,55 @@ async function registered(context: CollabToolContext, tool: string): Promise<str
 }
 
 export function registerAgentRunTools(server: McpServer, context: CollabToolContext): void {
+  const authorizeControl = async (actor: string, runId: string) => {
+    const target = await runControlTarget(context.db, runId);
+    if (!target) throw new CollabStoreError('RUN_UNKNOWN', 'Exécution API introuvable.');
+    const view = await previewNextActions(context.db, target.cycle_id, actor);
+    if (target.participant_id !== actor && !view.coordinator && !await isCoordinator(context.db, actor)) {
+      throw new CollabStoreError('RUN_CONTROL_FORBIDDEN', 'Seul le participant ou le coordinateur peut contrôler cette exécution.');
+    }
+    return target;
+  };
+
+  server.registerTool('collab_steer_agent_run', {
+    title: 'Envoyer une consigne à une WorkSession en cours',
+    description: 'Recadrer un agent API actif sans nouveau run, sans préemption et sans perdre son historique. Le message est conservé en D1 et injecté au prochain appel modèle de ce run. Autorisé au participant ou coordinateur ; possible pendant HALT pour être livré après reprise.',
+    inputSchema: { run_id: z.string().min(1).max(128), op_id: z.string().min(1).max(253),
+      message: z.string().trim().min(1).max(4000) },
+    annotations: WRITE,
+  }, async input => {
+    try {
+      const actor = await registered(context, 'collab_steer_agent_run');
+      await authorizeControl(actor, input.run_id);
+      const result = await steerAgentRun(context.db, {
+        runId: input.run_id, sender: actor, opId: input.op_id, message: input.message,
+        now: Math.floor(Date.now() / 1000),
+      });
+      return collabSuccess(result);
+    } catch (error) {
+      return collabFailure(error, 'Message au run refusé.', {}, context.fallback);
+    }
+  });
+
+  server.registerTool('collab_stop_agent_run', {
+    title: 'Arrêter une seule exécution API',
+    description: 'Arrêt TERMINAL ciblé par run_id : ne déclenche aucun nouveau modèle, ne pose pas HALT global et préserve les checkpoints D1. Fence l’ancienne génération : les effets déjà déclenchés avant l’arrêt ne peuvent pas être annulés. Autorisé au participant ou coordinateur, même pendant HALT global.',
+    inputSchema: { run_id: z.string().min(1).max(128), reason: z.string().trim().min(1).max(300) },
+    annotations: WRITE,
+  }, async input => {
+    try {
+      const actor = await registered(context, 'collab_stop_agent_run');
+      await authorizeControl(actor, input.run_id);
+      const result = await stopAgentRun(context.db, {
+        runId: input.run_id, sender: actor, reason: input.reason,
+        now: Math.floor(Date.now() / 1000),
+      });
+      return collabSuccess(result);
+    } catch (error) {
+      return collabFailure(error, 'Arrêt individuel refusé.', {}, context.fallback);
+    }
+  });
+
   server.registerTool('collab_agent_runs_overview', {
     title: 'Vue du coordinateur sur les exécutions API (CC-8 S1a)',
     description: 'Lecture seule, coordinateur seulement (mandat du cycle ou coordinateur owner-approved, sinon COORDINATOR_REQUIRED) : '
