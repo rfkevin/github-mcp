@@ -1287,6 +1287,9 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const completionReason = repeatedDenial ? 'blocked:no_progress:repeated_denial'
     : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit' : verified ? 'final'
     : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
+  // La conclusion est conditionnée DANS le batch à l'absence de nouveau message.
+  // Une preuve métier déjà inscrite dans D1 reste cependant définitive.
+  const terminalGuard = "(?4 = 1 AND (?9 = 1 OR NOT EXISTS (SELECT 1 FROM agent_run_messages WHERE run_id=?1 AND delivered_step IS NULL)))";
   const [done] = await db.batch([
     db.prepare([
       "UPDATE agent_run_steps SET state = 'completed', results = ?4, completed_at = ?5",
@@ -1294,15 +1297,18 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     ].join(' ')).bind(runId, n, deps.workerId, JSON.stringify(results), now, claimed.attempts),
     db.prepare([
       'UPDATE agent_runs SET steps_done = steps_done + 1, updated_at = ?3,',
-      "  status = CASE WHEN ?4 = 1 THEN ?7 ELSE status END,",
-      "  stop_reason = CASE WHEN ?4 = 1 THEN ?8 ELSE stop_reason END,",
-      '  summary = CASE WHEN ?4 = 1 THEN ?5 ELSE summary END',
+      '  status = CASE WHEN ' + terminalGuard + ' THEN ?7 ELSE status END,' ,
+      '  stop_reason = CASE WHEN ' + terminalGuard + ' THEN ?8 ELSE stop_reason END,' ,
+      '  summary = CASE WHEN ' + terminalGuard + ' THEN ?5 ELSE summary END',
       'WHERE run_id = ?1 AND steps_done = ?2 AND EXISTS (SELECT 1 FROM agent_run_steps',
       "  WHERE run_id = ?1 AND n = ?2 AND state = 'completed' AND claimed_by = ?6 AND completed_at = ?3)",
-    ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId, completionStatus, completionReason),
+    ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId, completionStatus, completionReason,
+      persistedProof ? 1 : 0),
   ]);
   if (done.meta.changes !== 1) return settled(db, runId, now);
-  if (noProgress) {
+  const recordedStatus = (await db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId)
+    .first<{ status: RunStatus }>())?.status ?? 'running';
+  if (noProgress && recordedStatus === 'failed') {
     // Durable, idempotent breadcrumb even when the optional salon is unavailable.
     await db.prepare([
       "INSERT INTO agent_run_journal (at,kind,run_id,detail)",
@@ -1324,7 +1330,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       } catch { /* D1 checkpoint already retained; the salon cannot override a terminal state. */ }
     }
   }
-  if (final) return { outcome: completionStatus };
+  if (final && recordedStatus !== 'running') return { outcome: recordedStatus };
   // Mode guidé : la limite d'étapes modèle se juge à la prochaine réclamation (une étape serveur peut suivre).
   const status = await settle(db, runId, now, guarded && deps.guidedS7 === true);
   return { outcome: status === 'running' ? 'stepped' : status };
