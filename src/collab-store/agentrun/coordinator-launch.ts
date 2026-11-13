@@ -63,6 +63,18 @@ async function event(i: LaunchInput, type: 'task.claim'|'task.handoff'|'checkpoi
   if (out.status === 'stale') deny('STALE', 'Cycle changed; retry after reading its delta.');
   if (out.status === 'quota_exhausted') deny('QUOTA_EXHAUSTED', 'Store daily quota exhausted.');
 }
+/** The immutable grant is mirrored in the EXISTING task journal and materialized
+ * next_action, which both chat and API already read through buildRolePacket.
+ * It is mission data, NOT a substitute for the effect-time GitHub authorization. */
+function workSessionNextAction(grant: WriteGrant): string {
+  const acceptance = grant.acceptance ?? [];
+  return [
+    'WorkSession ' + grant.task + ' — mission ' + (grant.mission ?? 'pilot') + '.',
+    'Chemins attribués : ' + grant.paths.join(', '),
+    ...(acceptance.length ? ['Critères d’acceptation :', ...acceptance.map((item, index) => (index + 1) + '. ' + item)] : []),
+    'Lire les sources au SHA exact, vérifier les résultats CI et ouvrir une PR sans fusion.',
+  ].join('\\n');
+}
 async function assignIfMissing(i: LaunchInput, grant: WriteGrant) {
   let t = await readTask(i);
   const coords = await equivalentParticipantIds(i.db, i.coordinator);
@@ -74,12 +86,12 @@ async function assignIfMissing(i: LaunchInput, grant: WriteGrant) {
     // Existing store contract: owner claims under THEIR OWN identity; no Gemini impersonation.
     await event(i, 'task.claim', 's7launch-' + i.task + '-claim',
       {task:{task_id:i.task,owner_pid:i.coordinator,reviewer_pid:i.reviewer,tester_pid:i.tester,
-        status:'in_progress',owned_paths:grant.paths,next_action:'Delegation S7 par le coordinateur'}});
+        status:'in_progress',owned_paths:grant.paths,next_action:workSessionNextAction(grant)}});
     t = await readTask(i);
   }
   if (t && coords.includes(t.owner_pid)) {
     await event(i, 'task.handoff', 's7launch-' + i.task + '-handoff',
-      {task:{task_id:i.task,owner_pid:i.participant,next_action:'WorkSession : reprendre la mission sans répéter les effets'}});
+      {task:{task_id:i.task,owner_pid:i.participant,next_action:workSessionNextAction(grant)}});
     t = await readTask(i);
   }
   const targets = await equivalentParticipantIds(i.db, i.participant);
