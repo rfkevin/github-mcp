@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createRoutedModel, type ProviderModelContext } from '../../../src/collab-store/agentrun';
 import { GEMINI_CC3_TEST_PUBLIC_ORIGIN } from '../../../src/collab-store/executors/gemini';
 import { executorError } from '../../../src/collab-store/executors/fetch-timeout';
+import { modelFailureKind } from '../../../src/collab-store/agentrun/model-failure';
 import { freshRun } from './cc7-l2-paid-harness';
 import { ensureModelPolicySchema } from '../../../src/collab-store/agentrun/model-policy';
 
@@ -63,6 +64,22 @@ describe('CC8 S1b — incident Gemini 503, repli pendant le même appel', () => 
     expect(after[0].err - before[0].err).toBe(1);
     expect(after[1].ok - before[1].ok).toBe(1);
     expect((await db.prepare('SELECT status FROM agent_runs WHERE run_id = ?1').bind(run.runId).first<{status:string}>())?.status).not.toBe('failed');
+  });
+  it('retry primary when transient primary then permanently incompatible fallback, without bypassing cost policy',async()=>{
+    const run = await freshRun(db, 's1b-primary-fallback-bad', 1_983_100_000, 10_000, 'gemini');
+    const seen: string[]=[];
+    const fetchImpl = (async(input: RequestInfo | URL)=>{
+      const url=String(input);seen.push(url);
+      if(url.includes('gemini-3.8-flash')) return new Response('{"error":{"message":"unavailable"}}',{status:503});
+      if(url.includes('gemini-3.6-flash')) return new Response('{"error":{"message":"invalid tool schema"}}',{status:400});
+      throw Error('unexpected model');
+    }) as typeof fetch;
+    let caught:unknown;
+    try{await client(run.runId,fetchImpl).complete(message);}catch(error){caught=error;}
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('FALLBACK_AFTER_TRANSIENT');
+    expect(modelFailureKind(caught)).toBe('transient');
+    expect(seen).toHaveLength(2);
   });
 });
 

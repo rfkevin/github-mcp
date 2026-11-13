@@ -82,6 +82,22 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     await expect(f.tools.execute(f.commit(),f.ctx())).rejects.toThrow('api_write_task_inactive');
     expect(f.commits()).toBe(0);
   });
+  it('uses the immutable granted GitHub branch despite a guessed model name',async()=>{
+    const f=await fixture();
+    let actualBranch = '';
+    f.options.writes.createBranch=async(_repo,branch)=>{actualBranch=branch;return {sha:H};};
+    expect(await f.tools.execute({id:'branch',name:'github_create_branch',
+      args:{name:'guessed-other-name',base_sha:H}},f.ctx()))
+      .toMatchObject({branch:f.branch,sha:H});
+    expect(actualBranch).toBe(f.branch);
+    expect(await f.tools.execute(f.commit({name:'guessed-other-name'}),f.ctx()))
+      .toMatchObject({next_action:'github_run_checks'});
+    expect(f.commits()).toBe(1);
+    f.policy.tasks=undefined;
+    await expect(f.tools.execute(f.commit({name:'guessed-other-name'}),f.ctx()))
+      .rejects.toThrow('api_task_not_enabled');
+    expect(f.commits()).toBe(1);
+  });
   it('rejects paths outside either grant or task, traversal and prefix siblings',async()=>{
     const f=await fixture();
     for(const path of ['src/demo2/a.ts','src/demo/../secret','src/demo\\secret','/src/demo/a.ts','.github/workflows/x.yml']){

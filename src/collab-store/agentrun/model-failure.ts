@@ -6,6 +6,9 @@ export function modelFailureKind(error: unknown): FailureKind {
   // TEMPS d'étape, transitoire) contient le motif du budget argent (permanent) : sans borne de
   // mot, l'arrêt de repli de temps était classé permanent par erreur.
   if (/MODEL_ROUTE_REFUSED|\bMODEL_BUDGET_EXHAUSTED\b|PAID_ENVELOPE_NOT_FUNDED|MODEL_ROUTE_NONE|MODEL_PROVIDER_UNSUPPORTED|MODEL_.*UNSUPPORTED|\b(?:400|401|403|404)\b/i.test(value)) return 'permanent';
+  // A fallback rejecting a previously transient primary's conversation cannot
+  // make the primary provider's outage permanently terminal.
+  if (/^FALLBACK_AFTER_TRANSIENT:/i.test(value)) return 'transient';
   // CC-8 S1b-2 : CIRCUIT_OPEN (tous les maillons du participant en pause coupe-circuit) et
   // STEP_MODEL_BUDGET_EXHAUSTED (budget d'appels de l'étape épuisé) = indisponibilité
   // temporaire → la relance d’exécution S1b recrée l’exécution proprement.

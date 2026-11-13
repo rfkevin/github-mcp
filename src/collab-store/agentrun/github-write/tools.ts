@@ -73,11 +73,25 @@ async function commitGuards(s: WriteScope, reads: GitHubReads | null, repository
 
 export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
   const legacy = createGitHubWriteTools(options);
-  async function scope(call: ToolCall, ctx: Context) {
-    const run = await options.db.prepare('SELECT participant_id FROM agent_runs WHERE run_id=?1').bind(ctx.run_id).first<{ participant_id: string }>();
+  /** The branch name is an output of the immutable task grant, NOT a choice of the model.
+   * A guessed `name` must never select another branch or consume a whole model turn in a
+   * misleading api_task_not_enabled loop. authorize still checks the grant, owner, fence
+   * and HALT at the effect point. */
+  function grantedName(s: { branch: string; participant: string }): string {
+    const prefix = 'mcp/105856986/' + s.participant + '-api-';
+    if (!s.branch.startsWith(prefix)) throw new ToolRefused('api_granted_branch_invalid');
+    const name = s.branch.slice(prefix.length);
+    if (apiBranch(s.participant, name) !== s.branch) throw new ToolRefused('api_granted_branch_invalid');
+    return name;
+  }
+  async function scope(_call: ToolCall, ctx: Context) {
+    const run = await options.db.prepare('SELECT participant_id,cycle_id,task_id FROM agent_runs WHERE run_id=?1')
+      .bind(ctx.run_id).first<{ participant_id: string; cycle_id: string; task_id: string }>();
     if (!run) throw new ToolRefused('unknown_run');
-    const branch = apiBranch(run.participant_id, call.args?.name);
-    return authorize(options.db, s7.policy, ctx.run_id, branch);
+    const grant = await exactGrant(options.db, s7.policy, run.cycle_id, run.task_id, run.participant_id);
+    if (!grant) throw new ToolRefused('api_task_not_enabled');
+    grantedName(grant); // validate the branch namespace before any effect
+    return authorize(options.db, s7.policy, ctx.run_id, grant.branch);
   }
   async function head(branch: string, sha: unknown): Promise<string> {
     if (typeof sha !== 'string' || !SHA.test(sha)) throw new ToolRefused('api_write_sha_invalid');
@@ -105,7 +119,8 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
     }
     const s = await scope(call, ctx);
     const args = call.args ?? {};
-    let target = call;
+    // Every GitHub effect uses the branch frozen by the server, never a guessed model name.
+    let target: ToolCall = { ...call, args: { ...args, name: grantedName(s) } };
     if (call.name === 'github_replace_text') {
       if (!s7.reads) throw new ToolRefused('api_edit_unavailable');
       const edits = normalizeEdits(args);
@@ -117,7 +132,7 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
         if (file.sha !== edit.expected_sha) throw new ToolRefused('api_edit_blob_changed');
         files.push({ path: edit.path, content: replaceOnce(file.content, edit.old_text, edit.new_text), expected_sha: file.sha });
       }
-      target = { id: call.id, name: 'github_commit_files', args: { name: args.name, expected_head_sha: sha, message: args.message, files } };
+      target = { id: call.id, name: 'github_commit_files', args: { name: grantedName(s), expected_head_sha: sha, message: args.message, files } };
     }
     if (target.name === 'github_commit_files') {
       const changes = target.args?.files;
@@ -155,7 +170,7 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
       await recordCheck(options.db, s, sha, Number(args.run_id), state);
       return { ...result, next_action: failed ? 'correct' : result.verifiedSuccess ? 'request_D12' : 'wait', next_poll_seconds: state === 'pending' ? 15 : null };
     }
-    return legacy.execute(call, ctx);
+    return legacy.execute(target, ctx);
   }
   return {
     names(kind: string): readonly string[] { return kind === 'implement'
@@ -167,7 +182,17 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
       if (call.name === 'github_run_checks') return s7.checks?.lookup(String(call.args?.sha ?? '')) ?? null;
       if (call.name === 'github_write_scope') return { found: false };
       if (call.name === 'github_check_result') return { found: false }; // Re-read and record idempotently on retry.
-      const target = call.name === 'github_replace_text' ? { ...call, name: 'github_commit_files' } : call;
+      // Lookup must reconcile the same canonical branch used at execution, even if
+      // the original model guessed a different name. No effect is executed here.
+      let target = call.name === 'github_replace_text' ? { ...call, name: 'github_commit_files' } : call;
+      try {
+        const run = await options.db.prepare('SELECT participant_id,cycle_id,task_id FROM agent_runs WHERE run_id=?1')
+          .bind(ctx.run_id).first<{ participant_id: string; cycle_id: string; task_id: string }>();
+        if (run) {
+          const grant = await exactGrant(options.db, s7.policy, run.cycle_id, run.task_id, run.participant_id);
+          if (grant) target = { ...target, args: { ...target.args, name: grantedName(grant) } };
+        }
+      } catch { /* Revoked or unreadable grant: fail closed to existing reconciliation path. */ }
       const result = await legacy.lookup(target, ctx);
       if (result?.found && target.name === 'github_commit_files') {
         const value = result.result as { commit_sha?: string };
