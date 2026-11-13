@@ -225,9 +225,9 @@ describe('CC-7 L11 — catalogue MCP', () => {
     const on = await list({ AGENT_RUNS_ENABLED: 'true', AGENT_RUN_RESEARCH: 'true' });
     expect(on).toContain('collab_research_assign');
     // Deux outils A1 hérités (collab_dispatch_task, collab_list_executors) ont été retirés
-    // au profit du chemin WorkSession unique : le catalogue recherche passe de 22 à 20.
+    // au profit du chemin WorkSession unique ; les 2 contrôles steer/stop remontent le catalogue à 22.
     expect(on).not.toContain('collab_dispatch_task');
     expect(on).not.toContain('collab_list_executors');
-    expect(on.length).toBe(20);
+    expect(on.length).toBe(22);
   });
 });
