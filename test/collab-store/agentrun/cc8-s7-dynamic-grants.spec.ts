@@ -63,6 +63,17 @@ describe('CC8 — dynamic D1 GitHub grants, owner bounded, no PR per task',()=>{
     }))).toThrow();
   });
 
+  it('Claude utilise le même parcours de mandat GitHub borné que Vibe et Gemini',()=>{
+    const policy=parseDynamicGrantPolicy(JSON.stringify({
+      cycle:'cc8-systeme-unique',participants:['gemini','vibe','claude'],
+      path_prefixes:[PREFIX],max_paths:1,max_grants:30,
+    }));
+    expect(policy?.participants).toEqual(['gemini','vibe','claude']);
+    expect(policy?.path_prefixes).toEqual([PREFIX]);
+    expect(policy?.max_paths).toBe(1);
+    expect(policy?.max_grants).toBe(30);
+  });
+
   it('grant immuable + redémarrage et même intention idempotents ; sortie de périmètre refusée',async()=>{
     const s=await setup('frozen'),task='dyn-frozen';
     const path=PREFIX+'dyn-frozen.spec.ts';
