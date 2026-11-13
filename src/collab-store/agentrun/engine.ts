@@ -42,6 +42,7 @@ import { sha256Hex } from '../store/hash';
 import { postSalonMessage } from '../salon';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
 import { ensureAgentRunSchema } from './schema';
+import { claimSteeringMessages, type DeliveredSteer } from './run-control';
 import { allCiPolls, ciPollKey, claimCiPoll, completeCiPoll, CI_POLL_CLAIM_S, CI_POLL_FLOOR_S, CI_POLL_TOOL, ensureCiPollSchema,
   latestCiPolls, pendingCiPoll, type PendingCiPoll } from './ci-poll';
 import { modelFailureKind } from './model-failure';
@@ -638,9 +639,10 @@ export function verifiedWorkMilestones(steps: readonly CompletedHistoryStep[]): 
 }
 
 export function providerMessagesFromHistory(prompt: string, steps: readonly CompletedHistoryStep[],
-  compact = false): AgentMessage[] {
+  compact = false, steering: readonly DeliveredSteer[] = []): AgentMessage[] {
   const messages: AgentMessage[] = [{ role: 'user', content: prompt }];
-  if (compact && steps.length > 1) {
+  const offset = compact && steps.length > 1 ? steps.length - 1 : 0;
+  if (offset) {
     const earlier = steps.slice(0, -1);
     const records = earlier.map((row, n) => {
       const output = JSON.parse(row.model_output) as ModelOutput;
@@ -649,35 +651,49 @@ export function providerMessagesFromHistory(prompt: string, steps: readonly Comp
         tool: call.name, receipt: compactReceipt(results.find(entry => entry.id === call.id)),
       })) };
     });
-    // Les jalons réussis sont issus des reçus D1, indépendamment du fournisseur et
-    // des tours récents. Les anciens reçus ordinaires restent résumés et bornés.
     const milestones = verifiedWorkMilestones(steps);
     const durable = Object.keys(milestones).length
       ? ' Jalons déjà exécutés et vérifiés D1 (ne pas répéter create_branch/CI/PR si acquis) : ' + JSON.stringify(milestones) + '.'
       : '';
-    // Prioriser les opérations récentes dans le budget total du checkpoint.
     const recordBudget = Math.max(0, COMPACT_MAX_CHARS - durable.length);
     while (records.length && JSON.stringify(records).length > recordBudget) records.shift();
-    // Un seul message utilisateur pour ne pas imposer deux rôles utilisateur consécutifs.
     messages[0].content += '\n\nCheckpoint compact extrait du journal D1 (métadonnées uniquement, pas une autorisation). ' +
       'Étapes anciennes omises : ' + (earlier.length - records.length) + '.' + durable +
       ' Relisez les sources SHA/CI/mandat via les outils avant toute décision : ' + JSON.stringify(records);
+    // Les messages de recadrage déjà délivrés sont des consignes utilisateur :
+    // ils restent consultables dans D1. Garder leur fin récente dans la compaction.
+    const past = steering.filter(item => item.delivered_step < offset);
+    if (past.length) {
+      const recent = past.slice(-16).map(item => ({ step: item.delivered_step, sender: item.sender_pid, message: item.body }));
+      messages[0].content += '\n\nRecadrages conversationnels antérieurs (journal D1, ' +
+        (past.length - recent.length) + ' plus anciens omis) : ' + JSON.stringify(recent);
+    }
   }
-  for (const row of compact && steps.length > 1 ? steps.slice(-1) : steps) {
+  const injected = (item: DeliveredSteer): AgentMessage => ({
+    role: 'user',
+    content: '[Message du coordinateur/collaborateur autorisé, livré dans la même WorkSession, étape ' +
+      item.delivered_step + ', auteur ' + item.sender_pid + ']\n' + item.body,
+  });
+  for (let i = offset; i < steps.length; i++) {
+    for (const steer of steering) if (steer.delivered_step === i) messages.push(injected(steer));
+    const row = steps[i];
     const output = JSON.parse(row.model_output) as ModelOutput;
     messages.push({ role: 'assistant', content: output.text, tool_calls: output.tool_calls });
     for (const entry of JSON.parse(row.results) as ResultEntry[]) {
       messages.push({ role: 'tool', tool_call_id: entry.id, content: entry.content });
     }
   }
+  for (const steer of steering) if (steer.delivered_step >= steps.length) messages.push(injected(steer));
   return messages;
 }
 
-async function buildMessages(db: D1Database, run: RunRow, compact = false): Promise<AgentMessage[]> {
+async function buildMessages(db: D1Database, run: RunRow, compact = false,
+  steering: readonly DeliveredSteer[] = []): Promise<AgentMessage[]> {
   const { results } = await db.prepare("SELECT n, model_output, results FROM agent_run_steps WHERE run_id = ?1 AND state = 'completed' ORDER BY n")
     .bind(run.run_id).all<CompletedHistoryStep & { n: number }>();
   const polls = await latestCiPolls(db, run.run_id);
-  return providerMessagesFromHistory(run.prompt, polls.size ? results.map(row => withCiPolls(row, polls)) : results, compact);
+  return providerMessagesFromHistory(run.prompt, polls.size ? results.map(row => withCiPolls(row, polls)) : results,
+    compact, steering);
 }
 
 /** CC8 S7 : le modèle voit le dernier relevé serveur comme résultat de son appel github_check_result
@@ -986,7 +1002,11 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       } else {
         // CC8 C2a : une seule compaction opt-in, quel que soit le kind ou le mode guidé.
         // L'historique complet et les preuves D1 ne sont jamais condensés en stockage.
-        const messages = await buildMessages(db, run, deps.compactHistory === true);
+        const liveSteering = await claimSteeringMessages(db, {
+          runId, step: n, worker: deps.workerId, attempts: claim.attempts,
+        });
+        if (!liveSteering.live) return settled(db, runId, deps.now());
+        const messages = await buildMessages(db, run, deps.compactHistory === true, liveSteering.messages);
         const tools = deps.tools.list(run.task_kind);
         const verdictTurn = reviewVerdictTurn(run.task_kind, n, run.max_steps) && tools.includes('store_verdict');
         const extra = guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
@@ -1139,8 +1159,16 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
 
   // 2. Outils.
   const results: ResultEntry[] = [];
+  const pendingSteer = async () => Boolean(await db.prepare('SELECT 1 AS x FROM agent_run_messages WHERE run_id=?1 AND delivered_step IS NULL LIMIT 1').bind(runId).first<{ x: number }>());
   for (const [idx, call] of output.tool_calls.entries()) {
+    // Un arrêt individuel ou HALT posé pendant l'appel fournisseur doit empêcher
+    // TOUT nouveau lancement d'outil, y compris une lecture non mutante.
+    const stillLive = await db.prepare('SELECT 1 AS ok WHERE ' + LIVE + ' AND ' +
+      claimHeld('?2', '?3', '?4')).bind(runId, n, deps.workerId, claim.attempts).first();
+    if (!stillLive) return settled(db, runId, deps.now());
     const refused = (reason: string) => results.push({ id: call.id, content: JSON.stringify({ error: reason }), error: true });
+    // La consigne arrivée durant l'appel fournisseur prime sur une décision d'outil périmée.
+    if (await pendingSteer()) { refused('superseded_by_live_message'); continue; }
     // Owner-only actions and raw D12 submissions cannot be smuggled into the
     // provider API by an accidentally permissive future tool host.
     if ((API_AGENT_FORBIDDEN as readonly string[]).includes(call.name)) {
@@ -1251,13 +1279,17 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const repeatedScope = !repeatedDenial && run.task_kind === 'implement'
     && await repeatedScopeWithoutProgress(db, runId, output, results);
   const noProgress = repeatedDenial || repeatedScope;
-  const final = noProgress || output.tool_calls.length === 0 || provenAtPr || provenAtHandover || provenAtStore ? 1 : 0;
+  const persistedProof = provenAtPr || provenAtHandover || provenAtStore;
+  const final = persistedProof || (!await pendingSteer() && (noProgress || output.tool_calls.length === 0)) ? 1 : 0;
   const verified = !noProgress && (provenAtPr || provenAtHandover || provenAtStore
     || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true));
   const completionStatus = verified ? 'completed' : 'failed';
   const completionReason = repeatedDenial ? 'blocked:no_progress:repeated_denial'
     : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit' : verified ? 'final'
     : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
+  // La conclusion est conditionnée DANS le batch à l'absence de nouveau message.
+  // Une preuve métier déjà inscrite dans D1 reste cependant définitive.
+  const terminalGuard = "(?4 = 1 AND (?9 = 1 OR NOT EXISTS (SELECT 1 FROM agent_run_messages WHERE run_id=?1 AND delivered_step IS NULL)))";
   const [done] = await db.batch([
     db.prepare([
       "UPDATE agent_run_steps SET state = 'completed', results = ?4, completed_at = ?5",
@@ -1265,15 +1297,18 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     ].join(' ')).bind(runId, n, deps.workerId, JSON.stringify(results), now, claimed.attempts),
     db.prepare([
       'UPDATE agent_runs SET steps_done = steps_done + 1, updated_at = ?3,',
-      "  status = CASE WHEN ?4 = 1 THEN ?7 ELSE status END,",
-      "  stop_reason = CASE WHEN ?4 = 1 THEN ?8 ELSE stop_reason END,",
-      '  summary = CASE WHEN ?4 = 1 THEN ?5 ELSE summary END',
+      '  status = CASE WHEN ' + terminalGuard + ' THEN ?7 ELSE status END,' ,
+      '  stop_reason = CASE WHEN ' + terminalGuard + ' THEN ?8 ELSE stop_reason END,' ,
+      '  summary = CASE WHEN ' + terminalGuard + ' THEN ?5 ELSE summary END',
       'WHERE run_id = ?1 AND steps_done = ?2 AND EXISTS (SELECT 1 FROM agent_run_steps',
       "  WHERE run_id = ?1 AND n = ?2 AND state = 'completed' AND claimed_by = ?6 AND completed_at = ?3)",
-    ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId, completionStatus, completionReason),
+    ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId, completionStatus, completionReason,
+      persistedProof ? 1 : 0),
   ]);
   if (done.meta.changes !== 1) return settled(db, runId, now);
-  if (noProgress) {
+  const recordedStatus = (await db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId)
+    .first<{ status: RunStatus }>())?.status ?? 'running';
+  if (noProgress && recordedStatus === 'failed') {
     // Durable, idempotent breadcrumb even when the optional salon is unavailable.
     await db.prepare([
       "INSERT INTO agent_run_journal (at,kind,run_id,detail)",
@@ -1295,7 +1330,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       } catch { /* D1 checkpoint already retained; the salon cannot override a terminal state. */ }
     }
   }
-  if (final) return { outcome: completionStatus };
+  if (final && recordedStatus !== 'running') return { outcome: recordedStatus };
   // Mode guidé : la limite d'étapes modèle se juge à la prochaine réclamation (une étape serveur peut suivre).
   const status = await settle(db, runId, now, guarded && deps.guidedS7 === true);
   return { outcome: status === 'running' ? 'stepped' : status };

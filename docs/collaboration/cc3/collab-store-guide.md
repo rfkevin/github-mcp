@@ -120,6 +120,20 @@ Choisissez un `request_id` **nouveau** pour chaque demande, unique dans tout le 
 - **Codes** : `GITHUB_GRANT_REFUSED`, `INVALID_SCHEDULE`, `SCHEDULE_CONFLICT`, `AGENT_RUN_UNAVAILABLE`, `AGENT_RUN_DISABLED`, `INVALID_RUN_TARGET`, `WRITER_NOT_GRANTED`, `PAID_RUN_FORBIDDEN`, `TASK_NOT_GRANTED`, `D12_ASSIGNMENT_REQUIRED`, `TASK_SCOPE_MISMATCH`, `CYCLE_NOT_OPEN`, `INVALID_OP_ID`, `COORDINATOR_REQUIRED`, `STALE`, `QUOTA_EXHAUSTED`.
 - **Vérification** : consulter `collab_agent_runs_overview` et les preuves D1/CI au SHA exact après le passage du planificateur, et non inférer une exécution réussie de `queued`. Voir l'[issue #320](https://github.com/rfkevin/github-mcp/issues/320).
 
+### `collab_steer_agent_run`
+- **But** : le coordinateur ou le participant concerné recadre un agent API **sans nouvelle exécution**, pendant la même WorkSession. Permet d'intervenir sur une boucle de lectures, un mauvais raisonnement ou une consigne supplémentaire, comme lors d'une conversation.
+- **Entrée** : `run_id`, `op_id` idempotent (maximum 253 caractères) et `message` (1–4 000 caractères).
+- **Effet** : enregistrement immuable et ordonné dans `agent_run_messages` (D1). Le message est livré au **prochain appel du fournisseur**, à une frontière d'étape sous garde de bail. Un appel déjà en cours n'est pas annulé ; il ne voit pas rétroactivement le message. Même `run_id`, mêmes checkpoints, outils et droits. Un crash ou une reprise de la même étape conserve la livraison unique ; aucun deuxième run.
+- **HALT** : message acceptée pendant un HALT global si le run est encore `running`, mais jamais consommé tant que HALT reste posé.
+- **Autorisation** : identité serveur uniquement, participant du run ou coordinateur autorisé du cycle ; refus `RUN_CONTROL_FORBIDDEN`. Run inexistant : `RUN_UNKNOWN`. Run déjà terminé : `RUN_NOT_RUNNING`. Message invalide : `RUN_MESSAGE_INVALID`. Rejeu différent sous le même `op_id` : `IDEMPOTENCY_CONFLICT`.
+- **Sortie** : `queued` ou `duplicate`. Le coordinateur lit `collab_agent_run_summary` (champ `progress`, signaux de répétition sans révéler les arguments/résultats) avant de recadrer ; ce signal ne bloque pas automatiquement les travaux longs.
+
+### `collab_stop_agent_run`
+- **But** : arrêt terminal **d'un seul run**, sans toucher à `owner_flags.halt`, aux autres WorkSessions, ni aux modèles actifs des autres participants.
+- **Entrée** : `run_id`, `reason` (1–300 caractères). Identité serveur : participant concerné ou coordinateur autorisé (`RUN_CONTROL_FORBIDDEN` sinon).
+- **Effet** : `agent_runs.status=halted`, `stop_reason=individual_stop:<raison>` ; génération du bail `agent_fences` invalidée, rendant inopérantes les écritures et les nouveaux effets d'une étape en vol. L'historique D1 et les preuves existantes restent accessibles. Un outil ou appel fournisseur déjà lancé **avant** l'arrêt peut encore terminer : ce n'est pas une annulation rétroactive.
+- **Idempotence** : `stopped` ou `already_stopped` ; run inexistant `RUN_UNKNOWN`, run déjà terminé autrement `RUN_NOT_RUNNING`. Disponible même quand HALT global est posé pour isoler le blocage et préparer la reprise de l'automatisation.
+
 ### `collab_list_executors`
 - **Qui** : coordinateur owner-approved actif (`COORDINATOR_REQUIRED` sinon). Lecture seule.
 - **Sortie** : une fiche par endpoint avec principal, provider/modèle, statut, capacités et plafond de jetons ; quota d’appels du jour restant et, pour Workers AI, budget neurons restant ; statistiques des invocations A1 des 7 derniers jours (nombre, succès/échecs, codes d’erreur, latence moyenne/p95) ; notes owner points forts/faibles.

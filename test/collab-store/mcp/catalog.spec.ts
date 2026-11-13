@@ -32,7 +32,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     expect(names).toEqual(['collab_agent_run_summary', 'collab_agent_runs_overview', 'collab_append_event', 'collab_assign_worksession', 'collab_delegate_owner', 'collab_export',
         'collab_get_context', 'collab_get_delta', 'collab_list_agent_runs',
         'collab_memory_growth_simulate', 'collab_memory_inventory', 'collab_next_actions',
-        'collab_phase_adjust', 'collab_phase_advance', 'collab_preempt_agent_run', 'collab_release_agent_run', 'collab_request_correction']);
+        'collab_phase_adjust', 'collab_phase_advance', 'collab_preempt_agent_run', 'collab_release_agent_run', 'collab_request_correction', 'collab_steer_agent_run', 'collab_stop_agent_run']);
   });
 
   it('sans le scope collab:, /collab/mcp refuse l\'accès', async () => {
@@ -68,7 +68,7 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     expect(names).toContain('collab_salon_pending_wakes');
     expect(names).toContain('collab_salon_ack_wake');
     expect(names.filter(n => n.startsWith('collab_salon_'))).toHaveLength(4);
-    expect(names.length).toBe(21);
+    expect(names.length).toBe(23);
   });
 
   // CC-7 L9a : porte AGENT_RUNS_ENABLED allumée → catalogue des modèles et choix de modèle (catalogue défaut inclut le lanceur S7).
@@ -84,6 +84,6 @@ describe('CC-3 C2 — isolement des catalogues /collab/mcp', () => {
     const names = result.tools.map(tool => tool.name);
     expect(names).toContain('collab_model_catalog');
     expect(names).toContain('collab_choose_model');
-    expect(names.length).toBe(19);
+    expect(names.length).toBe(21);
   });
 });
