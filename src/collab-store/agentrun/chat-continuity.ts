@@ -5,6 +5,7 @@
  */
 import { cycleMandateEpoch } from '../coordinator/mandate';
 import { ensureAgentRunSchema } from './schema';
+import { redactedToolAttempts, typedToolFailure } from './tool-trace';
 import { preemptByChat, releaseChat, runSummary, leaseKeyOf } from './engine';
 
 export const CHAT_HOLD_SECONDS_DEFAULT = 900;
@@ -204,9 +205,16 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
       model_output_recorded: t.model_output !== null,
       tool_calls_requested: toolCallCount(t.model_output),
       tool_results_recorded: t.results !== null,
+      // Les compteurs préexistants restent inchangés ; les noms et verdicts sont
+      // issus des reçus D1, pas des déclarations de l'agent. Aucune donnée libre.
+      tool_attempts: redactedToolAttempts(t.model_output, t.results, effects.filter(e => e.n === t.n)),
+      tool_attempts_omitted: Math.max(0, (toolCallCount(t.model_output) ?? 0) - 64),
       tokens: t.tokens, cost_cents: t.cost_cents,
     })),
-    effects: effects.map(e => ({ n: e.n, idx: e.idx, tool: e.tool, status: e.status, receipt: redactedReceipt(e.result) })),
+    effects: effects.map(e => ({ n: e.n, idx: e.idx,
+      // e.tool est une sortie modèle non fiable : ne jamais l'exposer tel quel ici.
+      status: e.status, receipt: redactedReceipt(e.result),
+      failure_code: e.status === 'failed' ? typedToolFailure(e.result) : null })),
     ci_polls: polls.map(p => ({ n: p.n, idx: p.idx, k: p.k, status: p.status, receipt: redactedReceipt(p.result) })),
     model_choices: choices.map(c => ({ n: c.n, ref: c.ref, chosen_by: c.chosen_by, effort: c.effort })),
     model_calls: calls.map(c => ({ n: c.n, k: c.k, chosen_ref: c.chosen_ref, served_ref: c.ref, ok: c.ok === 1,
