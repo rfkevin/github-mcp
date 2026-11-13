@@ -6,6 +6,7 @@ import {
   type GitHubWrites, type ModelClient, type ModelOutput,
 } from '../../../src/collab-store/agentrun';
 import { engineFor, apiBaseBranch, AGENT_RUN_SYSTEM } from '../../../src/collab-store/agentrun/object';
+import { GITHUB_WRITE_TOOL_SCHEMAS, MAX_COMMIT_FILES, MAX_FILE_CHARS, MAX_COMMIT_CHARS } from '../../../src/collab-store/agentrun/github-tools';
 import { githubWritesFrom } from '../../../src/agent-run-object';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
@@ -150,6 +151,39 @@ describe('CC-5 l7c-3 — allowlist et branche de l’agent', () => {
 });
 
 describe('CC-5 l7c-3 — parcours et refus', () => {
+  it('parité des tailles GitHub chat/API : 50 fichiers et 1 Mo cumulés, refus avant écriture', async () => {
+    expect([MAX_COMMIT_FILES, MAX_FILE_CHARS, MAX_COMMIT_CHARS]).toEqual([50, 1_000_000, 1_000_000]);
+    const schema = GITHUB_WRITE_TOOL_SCHEMAS.find(s => s.name === 'github_commit_files')!;
+    const props = schema.parameters as { properties: { files: {
+      maxItems: number; items: { properties: { content: { maxLength: number } } };
+    } } };
+    expect(props.properties.files.maxItems).toBe(50);
+    expect(props.properties.files.items.properties.content.maxLength).toBe(1_000_000);
+    const gh = fakeGitHub();
+    const runId = await newRun('vibe');
+    await db.prepare("UPDATE tasks SET owned_paths = ?2 WHERE cycle_id = ?1 AND task_id = 'l7'")
+      .bind('l7c3-cycle-' + n, JSON.stringify(['src/parity/'])).run();
+    const tools = createGitHubWriteTools({ db, repository: REPO, writes: gh.writes, baseBranch: BASE });
+    const files = Array.from({ length: 50 }, (_, i) => ({
+      path: 'src/parity/' + i + '.ts', content: 'x'.repeat(20_000),
+    }));
+    await tools.execute({ id: 'b', name: 'github_create_branch', args: { name: 'parity', base_sha: BASE_SHA } },
+      { run_id: runId, effect_key: KEY('a') });
+    const input = (f: typeof files, key: string) => tools.execute({
+      id: 'c', name: 'github_commit_files', args: {
+        name: 'parity', expected_head_sha: BASE_SHA, message: 'parity', files: f,
+      },
+    }, { run_id: runId, effect_key: KEY(key) });
+    expect(await input(files, 'b')).toMatchObject({ commit_sha: expect.any(String) });
+    expect(await refusal(input([...files, { path: 'src/parity/extra.ts', content: 'x' }], 'c')))
+      .toContain('fichiers');
+    expect(await refusal(input([{ path: 'src/parity/extra.ts', content: 'x'.repeat(1_000_001) }], 'd')))
+      .toContain('content');
+    expect(await refusal(input([{ path: 'src/parity/extra.ts', content: 'x'.repeat(1_000_000) },
+      { path: 'src/parity/second.ts', content: 'x' }], 'e'))).toBe('commit_too_large');
+  });
+
+
   it('parcours moteur réel : branche, commit tracé, PR brouillon vers la base de l’hôte ; arguments étrangers ignorés', async () => {
     const gh = fakeGitHub();
     const runId = await newRun('grok');
