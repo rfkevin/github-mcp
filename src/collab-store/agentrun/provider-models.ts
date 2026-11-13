@@ -461,7 +461,8 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
             // do not turn a provider outage into a terminal WorkSession failure.
             // Permanent authorization, budget and routing refusals remain terminal.
             const reason = error instanceof Error ? error.message : String(error);
-            if (priorProviderTransient && candidate.ref !== ref
+            if (!isProbe && priorProviderTransient && candidate.ref !== ref
+              && /(?:\b400\b|invalid (?:tool|function|schema|request)|unsupported (?:tool|function|schema)|workers_ai_error:\s*8004:\s*Invalid request)/i.test(reason)
               && !/MODEL_ROUTE_REFUSED|MODEL_BUDGET_EXHAUSTED|PAID_ENVELOPE_NOT_FUNDED|token_preflight_refused|\b(?:401|403)\b/i.test(reason)) {
               throw new ModelCallError('FALLBACK_AFTER_TRANSIENT: primary ' + ref
                 + ' unavailable, fallback ' + candidate.ref + ' rejected this request; retry primary after backoff.',
