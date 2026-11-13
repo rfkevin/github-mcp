@@ -68,3 +68,20 @@ au sein du cycle. Le premier fournit le recadrage conversationnel demandé par
 Kevin, y compris lorsqu'un coordinateur détecte une stagnation ; la détection
 automatique de non-progression doit distinguer vraies lectures nouvelles et
 répétitions, pour ne pas imposer de plafond arbitraire de jetons/étapes.
+
+
+## Audit vérifiable des outils API (CC8, 13 novembre 2026)
+
+La vue `collab_agent_run_summary` du propriétaire ou coordinateur autorisé expose désormais,
+pour les 64 dernières étapes D1, `step_traces[].tool_attempts` (nom parmi une liste fermée,
+nature lecture/écriture, indice, statut de reçu ou d'effet, cause typée connue). Les
+arguments, identifiants d'appel, contenus de réponse, prompts et erreurs brutes restent
+exclus. Les noms inconnus deviennent `unknown_tool`; les erreurs non reconnues deviennent
+`other`. `tool_calls_requested` reste le total réel, avec `tool_attempts_omitted` si plus de
+64 appels par étape. `receipt_ok` signifie **reçu enregistré**, pas réussite métier vérifiée.
+
+Ce diagnostic exploite les étapes et effets D1 déjà persistés : aucune table, limite de
+modèle, moteur de tâche ou seconde journalisation ajoutés. Les effets externes `failed`
+portent un code fermé, notamment `answer_length_invalid` pour `store_answer` trop long ;
+une cause non reconnue n'est jamais divulguée en texte libre. Les verdicts des agents
+restent à confronter aux traces ; une auto-déclaration ne vaut pas preuve d'outil exécuté.
