@@ -443,6 +443,8 @@ async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps)
   const grants = await runGrants(run,deps);
   if (grants.length === 0) return !deps.dynamicGrantFor; // Dynamic mode fail closed without grant.
   if (grants.length !== 1) return false; // Ambiguïté = pas de succès.
+  // Une attestation auteur vérifiée sur la PR/CI existante n'exige aucun nouveau commit.
+  if (await storeCompletionVerified(db, run)) return true;
   return githubCompletionSatisfied(await runEvidence(db, run.run_id), grants[0].branch);
 }
 
