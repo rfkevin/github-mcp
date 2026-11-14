@@ -1285,8 +1285,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     && output.tool_calls.some(call => call.name === 'store_handover')
     && (await runEvidence(db, run.run_id)).some(e=>e.tool==='store_handover' && e.status==='completed')
     && await completionVerified(db,run,deps);
-  const provenAtStore = run.task_kind !== 'implement' && output.tool_calls.some(call =>
-    ['store_answer', 'store_verdict', 'store_contribute'].includes(call.name))
+  const provenAtStore = output.tool_calls.some(call =>
+    ['store_answer', 'store_verdict', 'store_contribute', 'store_no_change_submit'].includes(call.name))
     && await completionVerified(db, run, deps);
   const repeatedDenial = await repeatedDeniedWithoutProgress(db, runId, n, output, results);
   const repeatedScope = !repeatedDenial && run.task_kind === 'implement'
