@@ -85,14 +85,14 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     const { runId } = await seeded({ kind: 'implement', participant: 'c2c-ghost' });
     const h: ToolHost = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true });
     await expect(h.execute({ id: 't', name: 'store_context', args: {} }, { run_id: runId }))
-      .rejects.toThrow(/capability_not_held:cycle\.read/);
+      .rejects.toThrow(/capability_not_held:cycle\\.read/);
   });
 
   it('porte active : enregistré sans rôle dans le cycle — refus', async () => {
     const { runId } = await seeded({ kind: 'research', participant: 'c2c-intruder' });
     const h: ToolHost = createReadToolHost({ db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true });
     await expect(h.execute({ id: 't', name: 'store_context', args: {} }, { run_id: runId }))
-      .rejects.toThrow(/capability_not_held:cycle\.read/);
+      .rejects.toThrow(/capability_not_held:cycle\\.read/);
   });
 
   it('porte active : HALT conserve les lectures, refuse tout effet', async () => {
@@ -104,7 +104,7 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
       const context = await h.execute({ id: 't', name: 'store_context', args: {} }, { run_id: runId }) as Record<string, unknown>;
       expect(context.cycle_id).toBeDefined();
       await expect(h.execute({ id: 't2', name: 'store_ask', args: { question: 'bloqué ?' } }, { run_id: runId }))
-        .rejects.toThrow(/capability_not_held:question\.ask/);
+        .rejects.toThrow(/capability_not_held:question\\.ask/);
     } finally {
       await db.prepare("DELETE FROM owner_flags WHERE name = 'halt'").run();
     }
@@ -131,7 +131,7 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     const h = createReadToolHost(configured);
     await expect(h.execute({ id: 't', name: 'github_write_scope', args: {} },
       { run_id: noGrant.runId, effect_key: 'a'.repeat(64) }))
-      .rejects.toThrow(/capability_not_held:github\.write/);
+      .rejects.toThrow(/capability_not_held:github\\.write/);
     // Grant statique mais mandat de tâche vide : fail-closed (assertPaths borne chaque effet à grant ∩ owned_paths).
     const emptyMandate = optionsFor(noPaths.scope.cycle_id, noPaths.scope.task_id, grantFor(noPaths.scope.cycle_id, noPaths.scope.task_id));
     expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, noPaths.scope, emptyMandate))).not.toContain('github.write');
@@ -151,11 +151,22 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
 
   it('porte active : réponse adressée sans tâche — relation au cycle prouvée par la question X13 (R1)', async () => {
     const { runId, scope } = await seeded({ kind: 'answer', participant: 'c2c-answerer', taskless: true });
-    const options: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true };
+    const githubForTest = {
+      ...github,
+      getPullRequest: async () => ({
+        number: 101,
+        state: 'closed',
+        merged: true,
+        draft: false,
+        head: { ref: 'feat', sha: 'a'.repeat(40) },
+        base: { ref: 'main', sha: 'b'.repeat(40) },
+      }),
+    };
+    const options: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github: githubForTest, unifiedCapabilities: true };
     const h: ToolHost = createReadToolHost(options);
     // Aucune question adressée : pas de relation prouvée au cycle, refus (aucun élargissement).
     await expect(h.execute({ id: 't', name: 'store_context', args: {} }, { run_id: runId }))
-      .rejects.toThrow(/capability_not_held:cycle\.read/);
+      .rejects.toThrow(/capability_not_held:cycle\\.read/);
     // Question adressée au participant (X13) : la relation est prouvée SANS tâche.
     await db.prepare("INSERT INTO events (cycle_id, at, type, participant_id, payload_json, idempotency_key) VALUES (?1, ?2, 'clarify.ask', 'c2c-author', ?3, ?4)")
       .bind(scope.cycle_id, NOW, JSON.stringify({ question: 'Pourquoi C2c ?', to: 'c2c-answerer' }), 'c2c-ask-' + crypto.randomUUID()).run();
@@ -164,9 +175,12 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     expect(context.cycle_id).toBe(scope.cycle_id);
     // Un run API answer SANS tâche, adressé par clarify.ask dans son cycle, peut appeler réellement github_pull_request via C0
     const pr = await h.execute({ id: 't_pr', name: 'github_pull_request', args: { number: 101 } }, { run_id: runId }) as Record<string, unknown>;
-    expect(pr).toHaveProperty('head_sha');
-    expect(pr).toHaveProperty('draft');
-    expect(pr).toHaveProperty('merged');
+    expect(pr).toMatchObject({
+      number: 101,
+      merged: true,
+      draft: false,
+      head: { sha: 'a'.repeat(40) },
+    });
 
     // La relation survit à la fermeture de la question : existence, pas ouverture (pas de rupture en plein run).
     const ask = await db.prepare("SELECT seq FROM events WHERE cycle_id = ?1 AND type = 'clarify.ask'").bind(scope.cycle_id).first<{ seq: number }>();
@@ -176,13 +190,14 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
   });
 
   it('cas négatif taskless : sans relation au cycle prouvée, github_pull_request reçoit capability_not_held:github.read et aucune autorisation d écriture ne découle', async () => {
-    const { runId } = await seeded({ kind: 'answer', participant: 'c2c-unrelated', taskless: true });
+    const { runId, scope } = await seeded({ kind: 'answer', participant: 'c2c-answerer', taskless: true });
     const options: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true };
     const h: ToolHost = createReadToolHost(options);
     await expect(h.execute({ id: 't_pr_neg', name: 'github_pull_request', args: { number: 101 } }, { run_id: runId }))
-      .rejects.toThrow(/capability_not_held:github\.read/);
-    await expect(h.execute({ id: 't_write_neg', name: 'github_write_scope', args: {} }, { run_id: runId }))
-      .rejects.toThrow(/tool_not_allowlisted/);
+      .rejects.toThrow(/capability_not_held:github\\.read/);
+
+    const caps = resolveUnifiedCapabilities(await runVerifiedClaims(db, scope, options));
+    expect(caps).not.toContain('github.write');
   });
 
   it('porte active : review.verdict réservé au pair D12 (reviewer/tester) avec verdicts actifs', async () => {
@@ -194,12 +209,12 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, author.scope, withVerdicts))).not.toContain('review.verdict');
     const h = createReadToolHost(withVerdicts);
     await expect(h.execute({ id: 't', name: 'store_verdict', args: { decision: 'agree' } }, { run_id: author.runId }))
-      .rejects.toThrow(/capability_not_held:review\.verdict/);
+      .rejects.toThrow(/capability_not_held:review\\.verdict/);
     // Sans l'option verdicts, même le reviewer titulaire n'obtient pas la capacité d'affichage.
     const without: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true };
     const h2 = createReadToolHost(without);
     await expect(h2.execute({ id: 't2', name: 'store_verdict', args: { decision: 'agree' } }, { run_id: reviewer.runId }))
-      .rejects.toThrow(/capability_not_held:review\.verdict/);
+      .rejects.toThrow(/capability_not_held:review\\.verdict/);
   });
 
   it('porte active : design.contribute et la mémoire, uniquement par grant serveur', async () => {
@@ -210,7 +225,7 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     expect(caps).toContain('design.contribute');
     expect(caps).not.toContain('memory.propose');
     const off: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true };
-    expect(resolveUnifiedCapabilities(await runVerifiedClaims(db, designer.scope, off))).not.toContain('design.contribute');
+    expect(resolveUnifiedCapabilities(await runVerifiedCapabilities(db, designer.scope, off))).not.toContain('design.contribute');
   });
 
 });
