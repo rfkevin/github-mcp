@@ -95,5 +95,5 @@ export function registerControllerTools(server: McpServer, context: CollabToolCo
       catch { /* le drain D1 reprend même si le hook échoue */ }
     }
     return result;
-  })));
+  }));
 }
