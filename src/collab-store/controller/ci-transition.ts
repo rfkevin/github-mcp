@@ -63,7 +63,7 @@ export function nativeCiState(checks: readonly CiCheck[], head: string,
 }
 
 async function apply(db: D1Database, target: { cycle: string; task: string; owner: string; key: string;
-  kind: 'correction.request' | 'run.reconcile'; payload_json: string; now: number }): Promise<boolean> {
+  kind: 'correction.request' | 'run.reconcile'; payload_json: string; now: number; seenEventSeq: number }): Promise<boolean> {
   const existing = await db.prepare('SELECT seq FROM events WHERE idempotency_key=?1').bind(target.key).first();
   if (existing) return false;
   await assertAutomationRunning(db);
@@ -80,11 +80,19 @@ async function apply(db: D1Database, target: { cycle: string; task: string; owne
     'AND NOT ' + HALT_ACTIVE_SQL,
     "AND EXISTS (SELECT 1 FROM tasks WHERE cycle_id=?1 AND task_id=?4 AND owner_pid=?5",
     "AND status NOT IN ('done','verified','blocked'))",
+    // Aucun autre fait de la même tâche ne doit avoir été ajouté depuis nos lectures,
+    // y compris une correction humaine ou une nouvelle soumission de l'auteur.
+    "AND NOT EXISTS (SELECT 1 FROM events WHERE cycle_id=?1 AND seq>?6",
+    "AND type IN ('correction.request','run.proof','run.reconcile') AND json_valid(payload_json)",
+    "AND json_extract(payload_json,'$.task')=?4)",
+    "AND NOT EXISTS (SELECT 1 FROM events WHERE cycle_id=?1 AND seq>?6",
+    "AND type='evidence.add' AND participant_id=?5 AND json_valid(payload_json)",
+    "AND json_extract(payload_json,'$.task')=?4)",
     'THEN 1 ELSE 0 END',
   ].join(' ');
   try {
     await db.batch([
-      db.prepare(guard).bind(target.cycle, target.key, rev, target.task, target.owner),
+      db.prepare(guard).bind(target.cycle, target.key, rev, target.task, target.owner, target.seenEventSeq),
       db.prepare([
         'INSERT INTO events(cycle_id,at,type,participant_id,session_id,role,payload_json,expected_rev,idempotency_key,evidence_ref)',
         "VALUES (?1,?2,?3,'agentrun','','server',?4,?5,?6,'')",
@@ -149,6 +157,7 @@ export async function reconcileNativeCi(db: D1Database, input: CiTransitionInput
       "AND json_extract(payload_json,'$.task')=?3",
     ].join(' ')).bind(proof.cycle_id,'agentrun',p.task).first<{seq:number|null}>();
     const pending = !!latest && latest.seq > (latestSubmission?.seq ?? 0);
+    const seenEventSeq = Math.max(proof.seq, latest?.seq ?? 0, latestSubmission?.seq ?? 0);
     if (state.state === 'failed') {
       if (pending) return ignored('existing_correction_pending');
       const payload = { task:p.task, origin:'github_native_ci', pr:input.number,
@@ -157,7 +166,7 @@ export async function reconcileNativeCi(db: D1Database, input: CiTransitionInput
         reason:'CI native post-run échouée' };
       const result = await apply(db,{ cycle:proof.cycle_id,task:p.task,owner:task.owner_pid,
         key:['nativeci','fail',proof.cycle_id,p.task,input.head,String(state.checkId)].join(':'),
-        kind:'correction.request',payload_json:JSON.stringify(payload),now:input.now });
+        kind:'correction.request',payload_json:JSON.stringify(payload),now:input.now,seenEventSeq });
       return result ? {status:'applied',kind:'correction.request',task:p.task,cycle:proof.cycle_id,payload_json:JSON.stringify(payload)}
         : ignored('duplicate_or_concurrent');
     }
@@ -174,7 +183,7 @@ export async function reconcileNativeCi(db: D1Database, input: CiTransitionInput
       check_id:state.checkId };
     const result = await apply(db,{cycle:proof.cycle_id,task:p.task,owner:task.owner_pid,
       key:['nativeci','green',proof.cycle_id,p.task,String(latest!.seq),input.head].join(':'),
-      kind:'run.reconcile',payload_json:JSON.stringify(payload),now:input.now});
+      kind:'run.reconcile',payload_json:JSON.stringify(payload),now:input.now,seenEventSeq});
     return result ? {status:'applied',kind:'run.reconcile',task:p.task,cycle:proof.cycle_id,payload_json:JSON.stringify(payload)}
       : ignored('duplicate_or_concurrent');
   }
