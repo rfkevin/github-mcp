@@ -13,6 +13,8 @@ import { SALON_PATH, handleSalonRequest, type SalonRouteEnv } from './collab-sto
 import { controllerCronEnabled, runScheduledControllers } from './collab-store/controller/scheduled';
 import { WEBHOOK_PATH, handleGitHubWebhook, type WebhookEnv } from './collab-store/controller/webhook';
 import { agentRunPass } from './collab-store/agentrun/orchestrator';
+import { githubReadsFrom } from './agent-run-object';
+import { parseRequiredChecks } from './collab-store/agentrun/verdict-tools';
 // CC-8 S8a : réveil événementiel des canaux (même passage que le webhook, bail anti-rafale D1).
 import { eventWake } from './collab-store/agentrun/wake-trigger';
 import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './collab-store/agentrun/object';
@@ -50,7 +52,32 @@ export default {
     }
     // CC-5 l3d 2d — webhook GitHub du contrôleur, hors OAuth (signature HMAC). Éteint : 404 habituel plus bas.
     if (new URL(request.url).pathname === WEBHOOK_PATH) {
-      const webhook = await handleGitHubWebhook(request, env as unknown as WebhookEnv, ctx);
+      const githubReads = githubReadsFrom(env);
+      const ciRepository = (env as {AGENT_RUN_REPOSITORY?: string}).AGENT_RUN_REPOSITORY;
+      const wakeCi = eventWake(env as unknown as AgentRunObjectEnv, ctx);
+      const webhook = await handleGitHubWebhook(request, env as unknown as WebhookEnv, ctx, {
+        ...(githubReads && ciRepository ? { ci: {
+          repository: ciRepository,
+          reads: {
+            getPullRequest: (repository: string, number: number) =>
+              githubReads.getPullRequest(repository, number),
+            listCheckRuns: async (repository: string, head: string) =>
+              (await githubReads.listCheckRuns(repository, head)).flatMap(value => {
+                if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+                const x = value as Record<string, unknown>;
+                if (!Number.isSafeInteger(x.id) || typeof x.name !== 'string'
+                  || typeof x.status !== 'string') return [];
+                return [{
+                  id: x.id as number, name: x.name, status: x.status,
+                  conclusion: typeof x.conclusion === 'string' ? x.conclusion : null,
+                  ...(typeof x.head_sha === 'string' ? { head_sha: x.head_sha } : {}),
+                }];
+              }),
+          },
+          requiredChecks: parseRequiredChecks((env as { AGENT_RUN_REQUIRED_CHECKS?: string }).AGENT_RUN_REQUIRED_CHECKS),
+          onApplied: wakeCi,
+        } } : {}),
+      });
       // Même cadence que le contrôleur : seulement quand la livraison lance un passage (202 accepted).
       if (webhook?.status === 202 && (await webhook.clone().json() as { outcome?: string }).outcome === 'accepted') {
         scheduleAgentRunPass(env, ctx);

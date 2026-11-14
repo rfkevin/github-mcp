@@ -28,6 +28,7 @@
  */
 import { ensureSchema } from '../store/schema';
 import { runScheduledControllers } from './scheduled';
+import { reconcileNativeCi, type CiReadOnly } from './ci-transition';
 
 export const WEBHOOK_PATH = '/github/webhook';
 export const WEBHOOK_BODY_MAX = 256 * 1024;
@@ -54,6 +55,28 @@ export interface WebhookEnv {
 }
 
 export type WebhookOutcome = 'accepted' | 'coalesced' | 'ignored' | 'pong' | 'duplicate';
+export interface NativeCiHook {
+  repository: string;
+  reads: CiReadOnly;
+  requiredChecks?: readonly string[];
+  onApplied?: (event: { type: string; payload_json: string }) => void;
+}
+/** Un webhook signé ne suffit jamais : le gestionnaire relit la PR et ses checks via GitHub. */
+export function nativeCiCandidate(event: string, payload: unknown, repository: string,
+  requiredChecks: readonly string[] = []): { number: number; head: string } | null {
+  if (event !== 'check_run' || !payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const repo = p.repository as { full_name?: unknown } | undefined;
+  const check = p.check_run as { name?: unknown; head_sha?: unknown; pull_requests?: unknown } | undefined;
+  if (repo?.full_name !== repository || p.action !== 'completed'
+    || typeof check?.name !== 'string'
+    || (requiredChecks.length > 0 && !requiredChecks.includes(check.name))
+    || typeof check.head_sha !== 'string' || !/^[a-f0-9]{40}$/.test(check.head_sha)
+    || !Array.isArray(check.pull_requests)) return null;
+  const number = (check.pull_requests[0] as { number?: unknown } | undefined)?.number;
+  return typeof number === 'number' && Number.isSafeInteger(number) && number > 0
+    ? { number, head: check.head_sha } : null;
+}
 
 export function webhookEnabled(env: WebhookEnv): boolean {
   return env.CONTROLLER_WEBHOOK_ENABLED === 'true' && env.COLLAB_STORE_ENABLED === 'true' && !!env.COLLAB_DB
@@ -159,7 +182,7 @@ async function recordDelivery(db: D1Database, deliveryId: string, event: string,
  * retombe sur le 404 habituel : son existence n'est pas révélée).
  */
 export async function handleGitHubWebhook(request: Request, env: WebhookEnv, ctx: { waitUntil(promise: Promise<unknown>): void },
-  options: { now?: () => Date } = {}): Promise<Response | null> {
+  options: { now?: () => Date; ci?: NativeCiHook } = {}): Promise<Response | null> {
   if (!webhookEnabled(env)) return null;
   if (request.method !== 'POST') return reply(405, { error: 'method_not_allowed' });
   const body = await readBounded(request);
@@ -194,6 +217,22 @@ export async function handleGitHubWebhook(request: Request, env: WebhookEnv, ctx
   const at = Math.floor(now().getTime() / 1000);
   const runnable = (WEBHOOK_EVENTS as readonly string[]).includes(event);
   const outcome = await recordDelivery(db, deliveryId, event, at, runnable);
+  // Les événements check_run sont traités MEME si le contrôleur les regroupe
+  // dans sa fenêtre de cadence : sinon le rerun vert peut être perdu.
+  const candidate = options.ci && outcome !== 'duplicate' && outcome !== 'ignored'
+    ? nativeCiCandidate(event, payload, options.ci.repository, options.ci.requiredChecks) : null;
+  if (candidate && options.ci) {
+    const ci = options.ci;
+    ctx.waitUntil(reconcileNativeCi(db, {
+      repository: ci.repository, number: candidate.number, head: candidate.head,
+      reads: ci.reads, requiredChecks: ci.requiredChecks, now: at,
+    }).then(result => {
+      if (result.status === 'applied') {
+        try { ci.onApplied?.({ type: result.kind, payload_json: result.payload_json }); }
+        catch { /* l'outbox D1 garde la livraison du réveil */ }
+      }
+    }).catch(() => undefined));
+  }
   if (outcome === 'accepted') {
     // Même passage que le Cron, sans le chercheur L5 (déjà quotidien et indépendant des événements GitHub).
     ctx.waitUntil(runScheduledControllers(db, { now, research: false, salonEnabled: env.SALON_ENABLED === 'true' }).catch(() => undefined));
