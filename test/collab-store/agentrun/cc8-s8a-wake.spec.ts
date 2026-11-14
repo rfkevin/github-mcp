@@ -94,6 +94,7 @@ describe('CC-8 S8a — unitaire : types réveil et bail anti-rafale', () => {
     expect(wakeWorthy('checkpoint', '{}')).toBe(false);
     expect(wakeWorthy('checkpoint', JSON.stringify({state:'WORKSESSION_ASSIGNED',task:'demo'}))).toBe(true);
     expect(wakeWorthy('checkpoint', JSON.stringify({state:'WORKSESSION_ASSIGNED'}))).toBe(false);
+    expect(wakeWorthy('correction.request', JSON.stringify({task:'s9'}))).toBe(true);
     expect(wakeWorthy('memory.propose', '{}')).toBe(false);
     expect(wakeWorthy('proposal.submit', '{}')).toBe(false);
   });

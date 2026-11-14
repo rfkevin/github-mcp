@@ -88,8 +88,8 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     f.options.writes.createBranch=async(_repo,branch)=>{actualBranch=branch;return {sha:H};};
     expect(await f.tools.execute({id:'branch',name:'github_create_branch',
       args:{name:'guessed-other-name',base_sha:H}},f.ctx()))
-      .toMatchObject({branch:f.branch,sha:H});
-    expect(actualBranch).toBe(f.branch);
+      .toMatchObject({branch:f.branch,sha:H,status:'existing'});
+    expect(actualBranch).toBe(''); // Pas de création superflue.
     expect(await f.tools.execute(f.commit({name:'guessed-other-name'}),f.ctx()))
       .toMatchObject({next_action:'github_run_checks'});
     expect(f.commits()).toBe(1);
@@ -97,6 +97,37 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     await expect(f.tools.execute(f.commit({name:'guessed-other-name'}),f.ctx()))
       .rejects.toThrow('api_task_not_enabled');
     expect(f.commits()).toBe(1);
+  });
+  it('reprise CI/CHANGES_REQUESTED : branche et PR existantes restent uniques',async()=>{
+    const f=await fixture();
+    let creates=0,opens=0;
+    f.options.writes.createBranch=async()=>{creates++;throw new Error('duplicate branch');};
+    f.options.writes.openPullRequest=async()=>{opens++;throw new Error('duplicate PR');};
+    f.options.writes.findPullRequest=async()=>({number:337,head_sha:H,draft:false});
+    const call=(name:string,args:Record<string,unknown>)=>f.tools.execute({id:'resume',name,args},f.ctx());
+    expect(await call('github_create_branch',{name:f.name,base_sha:H}))
+      .toMatchObject({branch:f.branch,sha:H,status:'existing',next_action:'resume_existing_branch'});
+    expect(await call('github_open_pr',{name:f.name,title:'Correction #337'}))
+      .toMatchObject({number:337,head_sha:H,status:'existing',draft:false});
+    expect([creates,opens]).toEqual([0,0]);
+    await expect(call('github_open_draft_pr',{name:f.name,title:'Draft'}))
+      .rejects.toThrow('api_existing_pr_state_mismatch');
+    f.options.writes.findPullRequest=async()=>({number:337,head_sha:'a'.repeat(40),draft:false});
+    await expect(call('github_open_pr',{name:f.name,title:'Stale'}))
+      .rejects.toThrow('api_existing_pr_head_mismatch');
+    await expect(call('github_create_branch',{name:f.name,base_sha:'invalid'}))
+      .rejects.toThrow('api_write_sha_invalid');
+  });
+  it('github_create_branch crée réellement lorsque la branche du mandat est absente',async()=>{
+    const f=await fixture();
+    let created=0;
+    f.options.writes.branchHead=async(_repo,branch)=>branch===BASE?H:created?H:null;
+    f.options.writes.createBranch=async()=>{created++;return {sha:H};};
+    const run=()=>f.tools.execute({id:'branch',name:'github_create_branch',
+      args:{name:f.name,base_sha:H}},f.ctx());
+    expect(await run()).toMatchObject({branch:f.branch,sha:H});
+    expect(await run()).toMatchObject({branch:f.branch,sha:H,status:'existing'});
+    expect(created).toBe(1);
   });
   it('rejects paths outside either grant or task, traversal and prefix siblings',async()=>{
     const f=await fixture();

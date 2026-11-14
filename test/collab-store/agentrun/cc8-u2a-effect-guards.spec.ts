@@ -197,11 +197,11 @@ describe('CC8 U2a — C1 : plusieurs éditions littérales en UN SEUL commit', (
 });
 
 describe('CC8 U2a — B3 : pas de seconde PR pour la même branche', () => {
-  it('le 2e github_open_pr est un refus CERTAIN (CONFLICT) et la réconciliation retrouve la PR existante', async () => {
+  it('le 2e github_open_pr retrouve la même PR sans second effet GitHub ; lookup de réconciliation reste identique', async () => {
     const f = await fixture();
     await f.tools.execute(f.commit([{ path: 'src/demo/a.ts', content: 'alpha NEW' }]), f.ctx());
     expect(await f.tools.execute(f.openPr(), f.ctx())).toMatchObject({ number: 7, draft: false });
-    await expect(f.tools.execute(f.openPr(), f.ctx())).rejects.toThrow('CONFLICT');
+    expect(await f.tools.execute(f.openPr(), f.ctx())).toMatchObject({ number: 7, status: 'existing', draft: false });
     expect(await f.tools.lookup(f.openPr(), f.ctx())).toMatchObject({ found: true, result: { number: 7, status: 'duplicate' } });
   });
 });

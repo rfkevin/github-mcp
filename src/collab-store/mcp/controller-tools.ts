@@ -84,8 +84,16 @@ export function registerControllerTools(server: McpServer, context: CollabToolCo
       op_id: z.string().min(1).max(253),
     },
     annotations: COORDINATOR_WRITE,
-  }, input => coordinatorAct(context, 'collab_request_correction', 'Demande de correction impossible.', participantId => requestCorrection(context.db, {
-    cycle_id: input.cycle, participant_id: participantId, task_id: input.task, items: input.items,
-    reason: input.reason, expected_revision: input.expected_rev, op_id: input.op_id,
-  })));
+  }, input => coordinatorAct(context, 'collab_request_correction', 'Demande de correction impossible.', async participantId => {
+    const result = await requestCorrection(context.db, {
+      cycle_id: input.cycle, participant_id: participantId, task_id: input.task, items: input.items,
+      reason: input.reason, expected_revision: input.expected_rev, op_id: input.op_id,
+    });
+    // Après APPLIED uniquement ; le journal D1 contient déjà l'intention.
+    if (result.status === 'applied') {
+      try { context.onApplied?.({ type: 'correction.request', payload_json: JSON.stringify({ task: input.task }) }); }
+      catch { /* le drain D1 reprend même si le hook échoue */ }
+    }
+    return result;
+  }));
 }

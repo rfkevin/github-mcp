@@ -121,6 +121,31 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
     const args = call.args ?? {};
     // Every GitHub effect uses the branch frozen by the server, never a guessed model name.
     let target: ToolCall = { ...call, args: { ...args, name: grantedName(s) } };
+    // La branche/PR du mandat subsiste entre runs : éviter création en double.
+    if (call.name === 'github_create_branch') {
+      if (typeof args.base_sha !== 'string' || !SHA.test(args.base_sha))
+        throw new ToolRefused('api_write_sha_invalid');
+      const existing = await options.writes.branchHead(options.repository, s.branch);
+      if (existing !== null) {
+        if (!SHA.test(existing)) throw new ToolRefused('api_branch_head_invalid');
+        return { branch: s.branch, sha: existing, base: options.baseBranch,
+          status: 'existing', next_action: 'resume_existing_branch' };
+      }
+    }
+    // Réutiliser la PR du même mandat après CI rouge, CHANGES_REQUESTED ou amendement.
+    if (call.name === 'github_open_pr' || call.name === 'github_open_draft_pr') {
+      const existing = await options.writes.findPullRequest(options.repository, s.branch);
+      if (existing) {
+        if (existing.draft !== (call.name === 'github_open_draft_pr'))
+          throw new ToolRefused('api_existing_pr_state_mismatch');
+        const current = await options.writes.branchHead(options.repository, s.branch);
+        if (!current || !SHA.test(current) || current !== existing.head_sha)
+          throw new ToolRefused('api_existing_pr_head_mismatch');
+        return { branch: s.branch, number: existing.number, head_sha: current,
+          draft: existing.draft, base: options.baseBranch, status: 'existing',
+          next_action: 'request_D12' };
+      }
+    }
     if (call.name === 'github_replace_text') {
       if (!s7.reads) throw new ToolRefused('api_edit_unavailable');
       const edits = normalizeEdits(args);
