@@ -32,6 +32,7 @@ import { createS7Tools, S7_SCHEMAS, type S7Options } from './github-write/tools'
 import { exactGrant, type WriteGrant } from './github-write/authorization';
 import { sha256Hex } from '../store/hash';
 import { createVerdictTools, VERDICT_TOOL_SCHEMAS } from './verdict-tools';
+import { createNoChangeTools, NO_CHANGE_TOOL, NO_CHANGE_SCHEMA } from './no-change';
 import { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_TOOL_SCHEMAS } from './contribution-tools';
 import { createModelChoiceTools, MODEL_CHOICE_TOOL_SCHEMAS } from './model-choice-tools';
 import type { PolicyEnv } from './model-policy';
@@ -200,6 +201,7 @@ const TOOL_UNIFIED_CAPABILITY: Readonly<Record<string, UnifiedCapability>> = Obj
   store_context: 'cycle.read',
   store_delta: 'cycle.read',
   store_run_diagnostics: 'cycle.read',
+  store_no_change_submit: 'task.status',
   store_salon_read: 'cycle.read',
   store_memory: 'memory.read',
   store_continuity: 'memory.read',
@@ -363,6 +365,9 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     ? createVerdictTools({ db: options.db, repository: options.repository, github: options.github, requiredChecks: options.requiredChecks })
     : null;
   // CC-7 L6b-2 : contributions de conception, seulement pour le kind design.
+  const noChange = options.storeWrites && options.repository!==null && options.github && options.githubWrites?.s7
+    ? createNoChangeTools({db:options.db,repository:options.repository,github:options.github,
+      policy:options.githubWrites.s7.policy,requiredChecks:options.requiredChecks}) : null;
   const contributions = options.contributions ? createContributionTools(options.db) : null;
   // CC-7 L9b : choix de modèle par l'agent lui-même, pour tout type de tâche connu.
   const modelChoice = options.modelChoice ? createModelChoiceTools(options.db, options.modelChoice) : null;
@@ -383,6 +388,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       ...(gh ? (unified ? ghSchemas.filter(schema => !options.githubWrites?.s7 || options.githubWrites.s7.checks
         || !['github_run_checks', 'github_check_result'].includes(schema.name)).map(schema => schema.name) : gh.names(kind)) : []),
       ...(verdicts && (unified || kind === 'review' || kind === 'test') ? ['store_verdict' as const] : []),
+      ...(noChange && (unified || kind==='implement') ? [NO_CHANGE_TOOL] : []),
       ...(contributions && (unified || kind === CONTRIBUTION_TASK_KIND) ? ['store_contribute' as const] : []),
       ...(modelChoice && (unified || Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind)) ? ['store_choose_model' as const] : []),
       ...(research ? research.writes(kind) : [])];
@@ -417,6 +423,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       }
     }
     if (writes && (WRITE_TOOL_SCHEMAS.some(schema => schema.name === call.name))) return writes.execute(call, ctx);
+    if (noChange && call.name===NO_CHANGE_TOOL) return noChange.execute(call,ctx);
     if (gh && isGitHubWrite(call.name)) return gh.execute(call, ctx);
     // CC-7 L5b (S10) : verdict contrôlé serveur (rôle, identité, couple, CI, preuve).
     if (verdicts && call.name === 'store_verdict') return verdicts.execute(call, ctx);
@@ -635,12 +642,13 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     schemas(taskKind: string): ToolSchema[] {
       const names = new Set<string>([...readNames(taskKind), ...writeNames(taskKind)]);
       const seen = new Set<string>();
-      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...ghSchemas, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name) && !seen.has(schema.name) && !!seen.add(schema.name));
+      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, NO_CHANGE_SCHEMA, ...ghSchemas, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name) && !seen.has(schema.name) && !!seen.add(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.
     async lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult> {
       if (verdicts && call.name === 'store_verdict') return verdicts.lookup(call, ctx);
+      if (noChange && call.name===NO_CHANGE_TOOL) return noChange.lookup(call,ctx);
       if (contributions && call.name === 'store_contribute') return contributions.lookup(call, ctx);
       if (modelChoice && call.name === 'store_choose_model') return modelChoice.lookup(call, ctx);
       if (research && call.name === 'store_salon_post') return research.lookup(call, ctx);

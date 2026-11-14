@@ -4,6 +4,7 @@
  * correction sur une PR déjà rejetée par un relecteur/testeur.
  */
 import { CollabStore } from '../store/collab-store';
+import { assertAutomationRunning } from '../owner/automation';
 import { ToolRefused, type ToolCall, type LookupResult } from './engine';
 import { exactGrant, authorize, type WritePolicy } from './github-write/authorization';
 import { effectOpId } from './store-tools';
@@ -62,6 +63,9 @@ export function createNoChangeTools(options:NoChangeOptions){
     const grant=await exactGrant(options.db,options.policy,run.cycle_id,run.task_id,run.participant_id);
     if(!grant)throw new ToolRefused('NO_CHANGE_GRANT_MISSING');
     await authorize(options.db,options.policy,ctx.run_id,grant.branch);
+    // Révision figée AVANT lectures GitHub pour écarter toute correction concurrente.
+    const store=new CollabStore(options.db);
+    const revision=await store.currentRevision(run.cycle_id);
     // Les arguments PR/SHA ne donnent pas d'autorisation : tous relus au GitHub.
     const pull=await options.github.getPullRequest(options.repository,args.pr) as Record<string,unknown>|null;
     const head=pull?.head as Record<string,unknown>|undefined;
@@ -117,8 +121,7 @@ export function createNoChangeTools(options:NoChangeOptions){
       origin:'author_no_change',pr:args.pr,head:args.head,base:args.base,
       correction_seq:correction.seq,prior_proof_seq:prior.seq,
       attestation:args.attestation,verified_success:true};
-    const store=new CollabStore(options.db);
-    const revision=await store.currentRevision(run.cycle_id);
+    await assertAutomationRunning(options.db);
     const outcome=await store.appendEvent({cycle_id:run.cycle_id,participant_id:run.participant_id,
       type:'evidence.add',expected_rev:revision,payload_json:JSON.stringify(payload),
       op_id:effectOpId(run.participant_id,run.cycle_id,ctx.effect_key),role:'owner'});
