@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { insertCycleRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
 import { previewNextActions } from '../../../src/collab-store/controller/next-actions';
-import { nativeCiCandidate } from '../../../src/collab-store/controller/webhook';
+import { nativeCiCandidate, handleGitHubWebhook, WEBHOOK_PATH } from '../../../src/collab-store/controller/webhook';
+import { racingBatch } from '../coordinator-helpers';
 import {
   nativeCiState, reconcileNativeCi, NATIVE_REQUIRED_CHECKS, type CiCheck,
 } from '../../../src/collab-store/controller/ci-transition';
@@ -122,6 +123,53 @@ describe('CC8 S9 — transitions postrun CI native (GitHub vérifié)',()=>{
     expect((await execute(cycle,state.reads)).status).toBe('ignored');
     expect((await rows(cycle,'correction.request')).results).toHaveLength(0);
     expect((await rows(cycle,'run.reconcile')).results).toHaveLength(0);
+  });
+
+  it('CAS : une correction concurrente au dernier instant interdit le réveil automatique',async()=>{
+    const {cycle}=await seed(), state=live();
+    const raced = racingBatch(db,7,target=>target.prepare([
+      'INSERT INTO events(cycle_id,at,type,participant_id,session_id,role,payload_json,expected_rev,idempotency_key,evidence_ref)',
+      "VALUES(?1,1700000099,'correction.request','gpt6','','coordinator',?2,1,?3,'')",
+    ].join(' ')).bind(cycle,JSON.stringify({task:'work',items:['Revoir le fond du test']}),'race:'+cycle).run());
+    expect((await reconcileNativeCi(raced,{repository:REPO,number:337,head:HEAD,reads:state.reads,now:1700000100})).status)
+      .toBe('ignored');
+    const c=(await rows(cycle,'correction.request')).results;
+    expect(c).toHaveLength(1);
+    expect(JSON.parse(c[0].payload_json)).toMatchObject({items:['Revoir le fond du test']});
+    expect((await rows(cycle,'run.reconcile')).results).toHaveLength(0);
+  });
+
+  it('webhook GitHub signé : check_run completed déclenche exactement la correction serveur et son hook de réveil',async()=>{
+    const {cycle}=await seed(), state=live();
+    const body=JSON.stringify({
+      installation:{id:42}, action:'completed', repository:{full_name:REPO},
+      check_run:{name:'ci',head_sha:HEAD,pull_requests:[{number:337}]},
+    });
+    const secret='test-only-ci-webhook-secret-012345';
+    const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+    const sig=new Uint8Array(await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(body)));
+    const signature='sha256='+[...sig].map(n=>n.toString(16).padStart(2,'0')).join('');
+    const request=(id:string)=>new Request('https://example.test'+WEBHOOK_PATH,{
+      method:'POST',body,headers:{'x-github-event':'check_run','x-github-delivery':id,
+        'x-hub-signature-256':signature,'content-type':'application/json'},
+    });
+    const events:string[]=[];
+    const ci={repository:REPO,reads:state.reads,onApplied:(event:{type:string})=>events.push(event.type)};
+    const pending:Promise<unknown>[]=[];
+    const ctx={waitUntil:(job:Promise<unknown>)=>{pending.push(job);}};
+    const enabled={COLLAB_DB:db,COLLAB_STORE_ENABLED:'true',CONTROLLER_WEBHOOK_ENABLED:'true',
+      GITHUB_WEBHOOK_SECRET:secret,GITHUB_INSTALLATION_ID:'42'};
+    const delivery=uniq('0000dead');
+    const response=await handleGitHubWebhook(request(delivery),enabled,ctx,{ci});
+    expect(response?.status).toBe(202);
+    await Promise.all(pending);
+    expect(events).toEqual(['correction.request']);
+    expect((await rows(cycle,'correction.request')).results).toHaveLength(1);
+    const again:Promise<unknown>[]=[];
+    const duplicate=await handleGitHubWebhook(request(delivery),enabled,
+      {waitUntil:(job:Promise<unknown>)=>{again.push(job);}},{ci});
+    expect(await duplicate?.json()).toMatchObject({outcome:'duplicate'});
+    expect(again).toHaveLength(0);
   });
 
   it('seul check_run completed signé sur le bon dépôt produit un candidat, pas un contenu falsifié',()=>{
