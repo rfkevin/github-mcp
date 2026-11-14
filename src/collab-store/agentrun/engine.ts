@@ -392,7 +392,7 @@ export function githubCompletionSatisfied(effects: readonly GithubCompletionEffe
 export async function storeCompletionVerified(db: D1Database, run: Pick<RunRow,
   'run_id' | 'cycle_id' | 'participant_id' | 'task_id' | 'task_kind' | 'prompt'>): Promise<boolean> {
   const tool = ({ answer: 'store_answer', review: 'store_verdict', test: 'store_verdict',
-    design: 'store_contribute' } as Record<string, string>)[run.task_kind];
+    design: 'store_contribute', implement: 'store_no_change_submit' } as Record<string, string>)[run.task_kind];
   if (!tool) return false;
   const ask = /^Question #([1-9][0-9]*) du cycle /.exec(run.prompt);
   const pair = /Couple exact à vérifier : head ([a-f0-9]{40}), base ([a-f0-9]{40})/.exec(run.prompt);
