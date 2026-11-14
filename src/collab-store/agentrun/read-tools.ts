@@ -80,6 +80,10 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
       active_work_checkpoint_page: { type: 'integer', minimum: 0 },
       active_work_page_size: { type: 'integer', minimum: 1, maximum: 100 },
     }, additionalProperties: false } },
+  { name: 'store_run_diagnostics', description: 'Relire les erreurs exactes persistées de VOS anciennes WorkSessions dans ce cycle, y compris le code de refus d’un outil (sans arguments, secrets, ni données des autres agents). Utiliser après tout échec ; run_id requis.',
+    parameters: { type: 'object', properties: { run_id: { type: 'string', minLength: 1, maxLength: 128 },
+      offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 30 } },
+      required: ['run_id'], additionalProperties: false } },
   { name: 'store_delta', description: 'Événements du cycle après since_seq (au plus 50), masqués selon votre participant.',
     parameters: { type: 'object', properties: { since_seq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50 },
       full: { type: 'boolean', description: 'Demander les événements complets si une preuve exacte est nécessaire (opt-in).' } },
@@ -102,7 +106,7 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
       required: ['base', 'head'], additionalProperties: false } },
 ]);
 
-export type ReadToolName = 'store_context' | 'store_delta' | 'github_list_directory' | 'github_read_file' | 'github_pull_request' | 'github_check_runs' | 'github_diff';
+export type ReadToolName = 'store_context' | 'store_run_diagnostics' | 'store_delta' | 'github_list_directory' | 'github_read_file' | 'github_pull_request' | 'github_check_runs' | 'github_diff';
 
 /**
  * CC-7 L3 (incrément 1) : lectures de continuité, ajoutées à TOUS les types de tâche quand l'hôte est créé avec
@@ -125,11 +129,11 @@ export const REGISTRY_MAX_TASKS = 60;
 export const READ_TOOLS_BY_KIND: Readonly<Record<string, readonly ReadToolName[]>> = Object.freeze({
   research: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs'],
   // 7c-2 : réponse à une question adressée (créée par le contrôleur, plan.ts).
-  answer: ['store_context', 'store_delta'],
+  answer: ['store_context', 'store_delta', 'store_run_diagnostics'],
   planning: ['store_context', 'store_delta', 'github_read_file'],
   status: ['store_context', 'store_delta', 'github_check_runs'],
   // 7c-3 : implémentation sur la branche de l'agent (écritures GitHub de github-tools.ts).
-  implement: ['store_context', 'store_delta', 'github_list_directory', 'github_read_file', 'github_pull_request', 'github_check_runs'],
+  implement: ['store_context', 'store_delta', 'store_run_diagnostics', 'github_list_directory', 'github_read_file', 'github_pull_request', 'github_check_runs'],
   // CC-7 L5a (S9) : réveils de relecture et de test — lecture du couple head/base exact.
   review: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs', 'github_diff'],
   test: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs', 'github_diff'],
@@ -195,6 +199,7 @@ export interface RunScope { cycle_id: string; participant_id: string; task_id: s
 const TOOL_UNIFIED_CAPABILITY: Readonly<Record<string, UnifiedCapability>> = Object.freeze({
   store_context: 'cycle.read',
   store_delta: 'cycle.read',
+  store_run_diagnostics: 'cycle.read',
   store_salon_read: 'cycle.read',
   store_memory: 'memory.read',
   store_continuity: 'memory.read',
@@ -463,6 +468,39 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const hasMore = all.tasks.length > offset + rows.length;
         return { ...mine, ...shared, registry, registry_truncated: hasMore,
           registry_page: page, registry_next_page: hasMore ? page + 1 : null, registry_total: all.tasks.length };
+      }
+      case 'store_run_diagnostics': {
+        // Le couple identité/cycle vient du RUN APPELANT, jamais du paramètre.
+        const pastRunId = stringArg(args, 'run_id', /^[A-Za-z0-9._:-]{1,128}$/);
+        const previous = await options.db.prepare([
+          'SELECT run_id,status,stop_reason,steps_done FROM agent_runs',
+          'WHERE run_id=?1 AND cycle_id=?2 AND participant_id=?3',
+        ].join(' ')).bind(pastRunId,cycle_id,participant_id)
+          .first<{run_id:string;status:string;stop_reason:string;steps_done:number}>();
+        if (!previous) throw new ToolRefused('run_not_owned_or_unknown');
+        const offset = intArg(args,'offset',0,100000,0);
+        const limit = intArg(args,'limit',1,30,15);
+        const {results} = await options.db.prepare([
+          "SELECT n,idx,tool,status,result FROM agent_run_effects WHERE run_id=?1",
+          "AND status IN ('failed','ambiguous') ORDER BY n,idx LIMIT ?2 OFFSET ?3",
+        ].join(' ')).bind(pastRunId,limit+1,offset).all<{
+          n:number;idx:number;tool:string;status:string;result:string|null;
+        }>();
+        // Ne retourner NI args, NI output modèle, NI résultats GitHub réussis,
+        // et jamais un résultat arbitraire brut.
+        const errors = results.slice(0,limit).map(effect=>{
+          let reason = 'unavailable';
+          try {
+            const payload:unknown=JSON.parse(effect.result??'');
+            if(payload && typeof payload==='object' && !Array.isArray(payload)){
+              const message=(payload as Record<string,unknown>).error;
+              if(typeof message==='string') reason=message.slice(0,350);
+            }
+          } catch { /* Diagnostic absent, pas un nouvel échec d'outil. */ }
+          return {step:effect.n,index:effect.idx,tool:effect.tool,status:effect.status,error:reason};
+        });
+        return {run_id:pastRunId,status:previous.status,stop_reason:previous.stop_reason.slice(0,200),
+          steps_done:previous.steps_done,errors,offset,next_offset:results.length>limit?offset+limit:null};
       }
       case 'store_delta': {
         const since = intArg(args, 'since_seq', 0, Number.MAX_SAFE_INTEGER);
