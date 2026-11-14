@@ -127,6 +127,39 @@ describe('Lot B R4 — preuve serveur run.proof', () => {
     expect(await proofEvents(w.cycle)).toHaveLength(1);
   });
 
+  it('mandat D1 dynamique : un run API validé publie la même preuve D12 sans grant statique', async () => {
+    const w = await world();
+    const { runId, grants } = await completedRun(w);
+    const requests: Array<{ cycle_id: string; task_id: string; participant_id: string }> = [];
+    const proof = await publishRunProof(db, runId, {
+      ...proofDeps(prReads(OPEN), []),
+      dynamicGrantFor: async target => { requests.push(target); return { ...grants[0]!, mission: 'pilot' }; },
+    });
+    expect(proof.status).toBe('published');
+    expect(requests).toEqual([{ cycle_id: w.cycle, task_id: 't0', participant_id: w.author }]);
+    expect((await proofEvents(w.cycle)).map(e => JSON.parse(e.payload_json))).toMatchObject([
+      { task: 't0', run_participant: w.author, head: C1, base: PR_BASE, verified_success: true },
+    ]);
+    expect((await previewNextActions(db, w.cycle, w.reviewer)).mine).toMatchObject([
+      { action: 'review', subject: C1 + '..' + PR_BASE },
+    ]);
+  });
+
+  it('mandat dynamique absent ou sur un autre participant : aucune preuve D12', async () => {
+    const absent = await world();
+    const first = await completedRun(absent);
+    expect(await publishRunProof(db, first.runId, {
+      ...proofDeps(prReads(OPEN), []), dynamicGrantFor: async () => null,
+    })).toEqual({ status: 'skipped', reason: 'no_s7_mandate' });
+    expect(await proofEvents(absent.cycle)).toHaveLength(0);
+    const wrong = await world();
+    const second = await completedRun(wrong);
+    expect(await publishRunProof(db, second.runId, {
+      ...proofDeps(prReads(OPEN), []), dynamicGrantFor: async () => ({ ...second.grants[0]!, participant: wrong.reviewer }),
+    })).toEqual({ status: 'skipped', reason: 'no_s7_mandate' });
+    expect(await proofEvents(wrong.cycle)).toHaveLength(0);
+  });
+
   it('jamais un avis : une preuve ne compte que comme soumission de l’auteur (pur)', () => {
     const roles = { owner: 'a', reviewer: 'r', tester: 't' };
     const proof = (participant: string, seq: number) => ({ seq, participant, evidence_ref: '', server_proof: true,
