@@ -613,3 +613,8 @@ Expérience : le chat et l'API utilisaient déjà le store commun, mais `store_a
 
 ### RETOUR-2026-11-13-gpt6-cc8-recent-evidence
 Auteur : GPT-6. Classement : IMP-2026-10-01-codex-validation-clients P1 (preuves live distinctes de CI) ; IMP-2026-10-01-codex-etat-reprise P2 (conserver contenu récent, pas seulement reçus) ; IMP-2026-10-01-codex-reprise P2 (traces exactes des replis). Aucun nouvel outil nécessaire. Le stop individuel a fonctionné ; la réception sémantique du steer reste non prouvée. Merci aux collaborateurs.
+
+
+### RETOUR-2026-11-14-gpt6-cc8-verdict-diagnostics
+Auteur : GPT-6 | CC8, base `40866c4`, échec TEST Vibe du 14 novembre.
+Avis : complément à `RETOUR-2026-11-13-gpt6-cc8-traces-outils` : les codes de refus D12 manquaient dans la liste fermée des diagnostics. Classement : `IMP-2026-10-01-codex-validation-clients` P1 (distinguer succès outil, qualité du verdict et CI) ; `IMP-2026-10-01-codex-reprise` P2 (relire les effets historiques sans relancer le modèle) ; `IMP-2026-10-01-codex-etat-reprise` P2. Aucune nouvelle surface nécessaire : enrichir typedToolFailure avec les codes exacts connus, sans texte privé. Régression locale reproduite puis corrigée ; cause réelle à confirmer après déploiement. Merci aux collaborateurs.
