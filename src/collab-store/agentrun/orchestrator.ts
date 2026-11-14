@@ -197,7 +197,8 @@ async function forget(deps: OrchestratorDeps, runId: string, leaseKey: string): 
 async function proofPending(deps: OrchestratorDeps, runId: string, now: number): Promise<boolean> {
   try {
     const engine = deps.engine(runId, deps.db);
-    const outcome = await publishRunProof(deps.db, runId, { tools: engine.tools, githubCompletionGrants: engine.githubCompletionGrants,
+    const outcome = await publishRunProof(deps.db, runId, { tools: engine.tools,
+      githubCompletionGrants: engine.githubCompletionGrants, dynamicGrantFor: engine.dynamicGrantFor,
       now: () => Math.floor(deps.nowMs() / 1000) });
     if (outcome.status === 'skipped') return false;
     await journal(deps.db, now, 'run_proof', runId, outcome.status === 'published' ? 'published:' + outcome.event_seq
