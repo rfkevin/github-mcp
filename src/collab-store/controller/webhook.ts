@@ -62,13 +62,15 @@ export interface NativeCiHook {
   onApplied?: (event: { type: string; payload_json: string }) => void;
 }
 /** Un webhook signé ne suffit jamais : le gestionnaire relit la PR et ses checks via GitHub. */
-export function nativeCiCandidate(event: string, payload: unknown, repository: string):
-  { number: number; head: string } | null {
+export function nativeCiCandidate(event: string, payload: unknown, repository: string,
+  requiredChecks: readonly string[] = []): { number: number; head: string } | null {
   if (event !== 'check_run' || !payload || typeof payload !== 'object') return null;
   const p = payload as Record<string, unknown>;
   const repo = p.repository as { full_name?: unknown } | undefined;
   const check = p.check_run as { name?: unknown; head_sha?: unknown; pull_requests?: unknown } | undefined;
-  if (repo?.full_name !== repository || p.action !== 'completed' || check?.name !== 'ci'
+  if (repo?.full_name !== repository || p.action !== 'completed'
+    || typeof check?.name !== 'string'
+    || (requiredChecks.length > 0 && !requiredChecks.includes(check.name))
     || typeof check.head_sha !== 'string' || !/^[a-f0-9]{40}$/.test(check.head_sha)
     || !Array.isArray(check.pull_requests)) return null;
   const number = (check.pull_requests[0] as { number?: unknown } | undefined)?.number;
@@ -218,7 +220,7 @@ export async function handleGitHubWebhook(request: Request, env: WebhookEnv, ctx
   // Les événements check_run sont traités MEME si le contrôleur les regroupe
   // dans sa fenêtre de cadence : sinon le rerun vert peut être perdu.
   const candidate = options.ci && outcome !== 'duplicate' && outcome !== 'ignored'
-    ? nativeCiCandidate(event, payload, options.ci.repository) : null;
+    ? nativeCiCandidate(event, payload, options.ci.repository, options.ci.requiredChecks) : null;
   if (candidate && options.ci) {
     const ci = options.ci;
     ctx.waitUntil(reconcileNativeCi(db, {

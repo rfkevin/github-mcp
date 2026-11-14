@@ -52,10 +52,12 @@ export function nativeCiState(checks: readonly CiCheck[], head: string,
       || !Number.isSafeInteger(check.id) || check.id <= 0) continue;
     if (!latest.has(check.name) || latest.get(check.name)!.id < check.id) latest.set(check.name, check);
   }
+  // Un échec d'un contrôle requis vaut CI rouge, pas seulement le job nommé ci.
+  const failure = [...latest.values()].find(check => check.status === 'completed'
+    && ['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure'].includes(check.conclusion ?? ''));
+  if (failure) return { state: 'failed', checkId: failure.id };
   const ci = latest.get('ci');
   if (!ci || ci.status !== 'completed') return { state: 'pending', checkId: 0 };
-  if (['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure'].includes(ci.conclusion ?? ''))
-    return { state: 'failed', checkId: ci.id };
   if (ci.conclusion !== 'success') return { state: 'pending', checkId: ci.id };
   const passed = required.every(name => latest.get(name)?.status === 'completed'
     && latest.get(name)?.conclusion === 'success');

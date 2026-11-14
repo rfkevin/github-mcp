@@ -64,6 +64,10 @@ describe('CC8 S9 — transitions postrun CI native (GitHub vérifié)',()=>{
     expect(nativeCiState(checks('failure'),HEAD).state).toBe('failed');
     expect(nativeCiState([...checks('failure'),...checks('success',99)],HEAD)).toEqual({state:'passed',checkId:99});
     expect(nativeCiState(checks('pending'),HEAD).state).toBe('pending');
+    const sonarFailed=checks('success').map(check =>
+      check.name==='SonarCloud Code Analysis' ? {...check,conclusion:'failure'} : check);
+    expect(nativeCiState(sonarFailed,HEAD)).toMatchObject({state:'failed'});
+    expect(nativeCiState(sonarFailed.filter(check=>check.name!=='ci'),HEAD)).toMatchObject({state:'failed'});
     expect(nativeCiState(checks('success').filter(x=>x.name!=='SonarCloud Code Analysis'),HEAD).state).toBe('pending');
     expect(nativeCiState(checks('success').map(x=>({...x,head_sha:OTHER})),HEAD).state).toBe('pending');
   });
