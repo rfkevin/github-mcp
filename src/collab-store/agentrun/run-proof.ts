@@ -135,6 +135,12 @@ export async function publishRunProof(db: D1Database, runId: string, deps: RunPr
   if (!run || run.task_kind !== 'implement' || run.status !== 'completed' || run.stop_reason !== 'final') {
     return { status: 'skipped', reason: 'not_a_completed_implement_run' };
   }
+  // Rejouer une preuve existante ne dépend pas de la durée de vie du grant D1.
+  // Aucun nouvel effet n'est autorisé par cette lecture idempotente.
+  const previous = await db.prepare('SELECT status, reason, event_seq FROM agent_run_proofs WHERE run_id = ?1')
+    .bind(runId).first<{ status: string; reason: string; event_seq: number | null }>();
+  if (previous?.status === 'published') return { status: 'published', event_seq: previous.event_seq ?? 0 };
+  if (previous?.status === 'refused') return { status: 'refused', reason: previous.reason };
   // Les WorkSessions lancées par le coordinateur utilisent un grant D1 dynamique,
   // non présent dans AGENT_RUN_GITHUB_TASKS. Le résoudre avec l'identité serveur du run.
   let grant = (deps.githubCompletionGrants ?? []).find(g => g.cycle === run.cycle_id && g.task === run.task_id
@@ -149,10 +155,6 @@ export async function publishRunProof(db: D1Database, runId: string, deps: RunPr
   }
   if (!grant || grant.cycle !== run.cycle_id || grant.task !== run.task_id || grant.participant !== run.participant_id)
     return { status: 'skipped', reason: 'no_s7_mandate' };
-  const previous = await db.prepare('SELECT status, reason, event_seq FROM agent_run_proofs WHERE run_id = ?1')
-    .bind(runId).first<{ status: string; reason: string; event_seq: number | null }>();
-  if (previous?.status === 'published') return { status: 'published', event_seq: previous.event_seq ?? 0 };
-  if (previous?.status === 'refused') return { status: 'refused', reason: previous.reason };
   const now = deps.now();
 
   // 1. Preuves D1 : garde #271 et dernière PR ouverte.

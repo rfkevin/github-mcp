@@ -143,6 +143,11 @@ describe('Lot B R4 — preuve serveur run.proof', () => {
     expect((await previewNextActions(db, w.cycle, w.reviewer)).mine).toMatchObject([
       { action: 'review', subject: C1 + '..' + PR_BASE },
     ]);
+    // Un ancien run déjà prouvé reste idempotent si son grant a expiré ou a été retiré.
+    expect(await publishRunProof(db, runId, {
+      ...proofDeps(prReads(), []), dynamicGrantFor: async () => null,
+    })).toEqual(proof);
+    expect(await proofEvents(w.cycle)).toHaveLength(1);
   });
 
   it('mandat dynamique absent ou sur un autre participant : aucune preuve D12', async () => {
