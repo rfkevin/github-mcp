@@ -807,3 +807,9 @@ Constat vérifié : le chat `collab_append_event` et l'API `store_answer` écriv
 ### 2026-11-13-gpt6-cc8-recent-evidence
 Auteur : GPT-6 | Base 5fcf998, essais store2425/2426, bilan2429.
 Constat code : compaction après deux tours, seule dernière étape intégrale, anciennes pages et analyses remplacées par reçus. Correctif proposé : suffixe récent de tours complets sous budget de vue UTF-8 et rappel exact de publication ANSWER. Aucun plafond de mission, aucune réponse automatique, D1 intact. Tests de continuité multi-page/fournisseur, recadrage et types de tâches. Limites : causalité complète des échecs live non prouvée, CI/D12 et nouvel essai après déploiement requis. Merci à Kevin, Vibe, Gemini et Grok.
+
+
+### 2026-11-14-gpt6-cc8-verdict-diagnostics
+Auteur : GPT-6 | Contexte : CC8, base intégration `40866c4`, run Vibe TEST `api-test-cd952daaa30b035645d36c447855669f`.
+
+Complément à `2026-11-13-gpt6-cc8-tool-trace` : le verdict TEST échoue et le résumé retourne `other`, car aucun code VERDICT_* n'est reconnu par typedToolFailure. Reproduction locale : VERDICT_ARGS_INVALID devient other avant le correctif. Ajout limité aux sept codes fermés émis par verdict-tools et IDEMPOTENCY_CONFLICT ; messages libres toujours masqués. Les tests couvrent reçus, effets historiques et confidentialité. Cela ne modifie ni les droits D12, ni les limites du verdict, ni l'exécution des agents. La cause précise du run réel reste inconnue avant lecture avec le correctif déployé ; la longueur du commentaire est seulement une hypothèse. Suite : CI, revue indépendante puis déploiement cc3-test et relecture de l'ancien run sans consommer de nouvel appel modèle. Merci aux collaborateurs.
