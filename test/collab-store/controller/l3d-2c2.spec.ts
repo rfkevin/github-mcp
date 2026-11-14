@@ -118,6 +118,9 @@ describe('CC-5 l3d 2c-2 — requestCorrection (D1)', () => {
     expect(await revision(w.cycle)).toBe(w.rev + 1);
     const view = await previewNextActions(db, w.cycle, w.author);
     expect(view.mine).toMatchObject([{ action: 'address_correction', subject: 'corr#' + out.event_seq }]);
+    const wake = await db.prepare("SELECT event_type,status FROM agent_event_wake_intents WHERE cycle_id=?1 AND event_type='correction.request'")
+      .bind(w.cycle).all<{event_type:string;status:string}>();
+    expect(wake.results).toEqual([{event_type:'correction.request',status:'queued'}]);
   });
 
   it('rejeu : duplicate sans seconde écriture ; même op_id, autres points → IDEMPOTENCY_CONFLICT', async () => {
@@ -152,8 +155,8 @@ describe('CC-5 l3d 2c-2 — requestCorrection (D1)', () => {
 
   it('course : tâche terminée entre les vérifications et le lot d\'écriture → CORRECTION_PRECONDITION_FAILED, rien écrit', async () => {
     const w = await world();
-    // Lot d'écriture de requestCorrection : 5 instructions.
-    const racing = racingBatch(db, 5, target => target.prepare("UPDATE tasks SET status = 'done' WHERE cycle_id = ?1 AND task_id = 't0'").bind(w.cycle).run());
+    // Lot d'écriture de requestCorrection : 7 instructions (événement et wake atomiques).
+    const racing = racingBatch(db, 7, target => target.prepare("UPDATE tasks SET status = 'done' WHERE cycle_id = ?1 AND task_id = 't0'").bind(w.cycle).run());
     expect(await codeOf(requestCorrection(racing, input(w)))).toBe('CORRECTION_PRECONDITION_FAILED');
     expect(await revision(w.cycle)).toBe(w.rev);
     expect(await countEvents(db, w.cycle, 'correction.request')).toBe(0);
