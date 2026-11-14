@@ -302,6 +302,25 @@ describe('Lot B R4 — orchestrateur : preuve à la fin du run, nouvel essai bor
     // Réveil tardif d'un run terminé : rien à refaire.
     expect(await objectWake(deps, runId, leaseKeyOf(w.cycle, w.author, 't0'))).toEqual({ accepted: true, reason: 'terminal' });
   });
+
+  it('la terminaison de la WorkSession transmet le mandat dynamique à run.proof', async () => {
+    const w = await world();
+    const { runId, grants } = await completedRun(w);
+    const { slot } = slotFixture();
+    const requests: Array<{ cycle_id: string; task_id: string; participant_id: string }> = [];
+    const clock = { ms: (T + 300) * 1000 };
+    const deps: OrchestratorDeps = { db, env: { AGENT_RUNS_ENABLED: 'true' }, slot, ownsLease: () => true,
+      nowMs: () => clock.ms,
+      engine: () => ({ model: scripted([]).client, tools: prReads(OPEN),
+        now: () => Math.floor(clock.ms / 1000), githubCompletionGrants: [],
+        dynamicGrantFor: async target => { requests.push(target); return { ...grants[0]!, mission: 'pilot' }; } }),
+      workerId: () => 'hb-dynamic-worker' };
+    await slot.put('run_id', runId);
+    expect(await objectAlarm(deps)).toEqual({ action: 'finished', outcome: 'completed' });
+    expect(requests).toEqual([{ cycle_id: w.cycle, task_id: 't0', participant_id: w.author }]);
+    expect(await proofEvents(w.cycle)).toHaveLength(1);
+    expect(await slot.get('run_id')).toBeUndefined();
+  });
 });
 
 describe('Lot B R5 — résumé expurgé et modèle servi', () => {
