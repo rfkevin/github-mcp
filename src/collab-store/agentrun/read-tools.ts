@@ -32,6 +32,7 @@ import { createS7Tools, S7_SCHEMAS, type S7Options } from './github-write/tools'
 import { exactGrant, type WriteGrant } from './github-write/authorization';
 import { sha256Hex } from '../store/hash';
 import { createVerdictTools, VERDICT_TOOL_SCHEMAS } from './verdict-tools';
+import { createNoChangeTools, NO_CHANGE_TOOL, NO_CHANGE_SCHEMA } from './no-change';
 import { createContributionTools, CONTRIBUTION_TASK_KIND, CONTRIBUTION_TOOL_SCHEMAS } from './contribution-tools';
 import { createModelChoiceTools, MODEL_CHOICE_TOOL_SCHEMAS } from './model-choice-tools';
 import type { PolicyEnv } from './model-policy';
@@ -80,6 +81,10 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
       active_work_checkpoint_page: { type: 'integer', minimum: 0 },
       active_work_page_size: { type: 'integer', minimum: 1, maximum: 100 },
     }, additionalProperties: false } },
+  { name: 'store_run_diagnostics', description: 'Relire les erreurs exactes persistées de VOS anciennes WorkSessions dans ce cycle, y compris le code de refus d’un outil (sans arguments, secrets, ni données des autres agents). Utiliser après tout échec ; run_id requis.',
+    parameters: { type: 'object', properties: { run_id: { type: 'string', minLength: 1, maxLength: 128 },
+      offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 30 } },
+      required: ['run_id'], additionalProperties: false } },
   { name: 'store_delta', description: 'Événements du cycle après since_seq (au plus 50), masqués selon votre participant.',
     parameters: { type: 'object', properties: { since_seq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50 },
       full: { type: 'boolean', description: 'Demander les événements complets si une preuve exacte est nécessaire (opt-in).' } },
@@ -102,7 +107,7 @@ export const READ_TOOL_SCHEMAS: readonly ToolSchema[] = Object.freeze([
       required: ['base', 'head'], additionalProperties: false } },
 ]);
 
-export type ReadToolName = 'store_context' | 'store_delta' | 'github_list_directory' | 'github_read_file' | 'github_pull_request' | 'github_check_runs' | 'github_diff';
+export type ReadToolName = 'store_context' | 'store_run_diagnostics' | 'store_delta' | 'github_list_directory' | 'github_read_file' | 'github_pull_request' | 'github_check_runs' | 'github_diff';
 
 /**
  * CC-7 L3 (incrément 1) : lectures de continuité, ajoutées à TOUS les types de tâche quand l'hôte est créé avec
@@ -195,6 +200,8 @@ export interface RunScope { cycle_id: string; participant_id: string; task_id: s
 const TOOL_UNIFIED_CAPABILITY: Readonly<Record<string, UnifiedCapability>> = Object.freeze({
   store_context: 'cycle.read',
   store_delta: 'cycle.read',
+  store_run_diagnostics: 'cycle.read',
+  store_no_change_submit: 'task.status',
   store_salon_read: 'cycle.read',
   store_memory: 'memory.read',
   store_continuity: 'memory.read',
@@ -358,6 +365,9 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     ? createVerdictTools({ db: options.db, repository: options.repository, github: options.github, requiredChecks: options.requiredChecks })
     : null;
   // CC-7 L6b-2 : contributions de conception, seulement pour le kind design.
+  const noChange = options.storeWrites && options.repository!==null && options.github && options.githubWrites?.s7
+    ? createNoChangeTools({db:options.db,repository:options.repository,github:options.github,
+      policy:options.githubWrites.s7.policy,requiredChecks:options.requiredChecks}) : null;
   const contributions = options.contributions ? createContributionTools(options.db) : null;
   // CC-7 L9b : choix de modèle par l'agent lui-même, pour tout type de tâche connu.
   const modelChoice = options.modelChoice ? createModelChoiceTools(options.db, options.modelChoice) : null;
@@ -378,6 +388,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       ...(gh ? (unified ? ghSchemas.filter(schema => !options.githubWrites?.s7 || options.githubWrites.s7.checks
         || !['github_run_checks', 'github_check_result'].includes(schema.name)).map(schema => schema.name) : gh.names(kind)) : []),
       ...(verdicts && (unified || kind === 'review' || kind === 'test') ? ['store_verdict' as const] : []),
+      ...(noChange && (unified || kind==='implement') ? [NO_CHANGE_TOOL] : []),
       ...(contributions && (unified || kind === CONTRIBUTION_TASK_KIND) ? ['store_contribute' as const] : []),
       ...(modelChoice && (unified || Object.prototype.hasOwnProperty.call(READ_TOOLS_BY_KIND, kind)) ? ['store_choose_model' as const] : []),
       ...(research ? research.writes(kind) : [])];
@@ -412,6 +423,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       }
     }
     if (writes && (WRITE_TOOL_SCHEMAS.some(schema => schema.name === call.name))) return writes.execute(call, ctx);
+    if (noChange && call.name===NO_CHANGE_TOOL) return noChange.execute(call,ctx);
     if (gh && isGitHubWrite(call.name)) return gh.execute(call, ctx);
     // CC-7 L5b (S10) : verdict contrôlé serveur (rôle, identité, couple, CI, preuve).
     if (verdicts && call.name === 'store_verdict') return verdicts.execute(call, ctx);
@@ -463,6 +475,44 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const hasMore = all.tasks.length > offset + rows.length;
         return { ...mine, ...shared, registry, registry_truncated: hasMore,
           registry_page: page, registry_next_page: hasMore ? page + 1 : null, registry_total: all.tasks.length };
+      }
+      case 'store_run_diagnostics': {
+        // Le couple identité/cycle vient du RUN APPELANT, jamais du paramètre.
+        const pastRunId = stringArg(args, 'run_id', /^[A-Za-z0-9._:-]{1,128}$/);
+        const previous = await options.db.prepare([
+          'SELECT run_id,status,stop_reason,steps_done FROM agent_runs',
+          'WHERE run_id=?1 AND cycle_id=?2 AND participant_id=?3',
+        ].join(' ')).bind(pastRunId,cycle_id,participant_id)
+          .first<{run_id:string;status:string;stop_reason:string;steps_done:number}>();
+        if (!previous) throw new ToolRefused('run_not_owned_or_unknown');
+        const offset = intArg(args,'offset',0,100000,0);
+        const limit = intArg(args,'limit',1,30,15);
+        const {results} = await options.db.prepare([
+          "SELECT n,idx,tool,status,result FROM agent_run_effects WHERE run_id=?1",
+          "AND status IN ('failed','ambiguous') ORDER BY n,idx LIMIT ?2 OFFSET ?3",
+        ].join(' ')).bind(pastRunId,limit+1,offset).all<{
+          n:number;idx:number;tool:string;status:string;result:string|null;
+        }>();
+        // Ne retourner NI args, NI output modèle, NI résultats GitHub réussis,
+        // et jamais un résultat arbitraire brut.
+        const errors = results.slice(0,limit).map(effect=>{
+          let reason = 'unavailable';
+          try {
+            const payload:unknown=JSON.parse(effect.result??'');
+            if(payload && typeof payload==='object' && !Array.isArray(payload)){
+              const message=(payload as Record<string,unknown>).error;
+              // Exposer uniquement le code de refus (déjà persisté dans D1).
+              // Les messages libres peuvent contenir chemins, tokens ou données utilisateur.
+              if(typeof message==='string') {
+                const code=/^([A-Za-z][A-Za-z0-9_]{2,95})(?=$|[ :])/.exec(message);
+                reason=code?.[1] ?? 'redacted';
+              }
+            }
+          } catch { /* Diagnostic absent, pas un nouvel échec d'outil. */ }
+          return {step:effect.n,index:effect.idx,tool:effect.tool,status:effect.status,error:reason};
+        });
+        return {run_id:pastRunId,status:previous.status,stop_reason:previous.stop_reason.slice(0,200),
+          steps_done:previous.steps_done,errors,offset,next_offset:results.length>limit?offset+limit:null};
       }
       case 'store_delta': {
         const since = intArg(args, 'since_seq', 0, Number.MAX_SAFE_INTEGER);
@@ -597,12 +647,13 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
     schemas(taskKind: string): ToolSchema[] {
       const names = new Set<string>([...readNames(taskKind), ...writeNames(taskKind)]);
       const seen = new Set<string>();
-      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, ...ghSchemas, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name) && !seen.has(schema.name) && !!seen.add(schema.name));
+      return [...READ_TOOL_SCHEMAS, ...CONTINUITY_TOOL_SCHEMAS, ...WRITE_TOOL_SCHEMAS, NO_CHANGE_SCHEMA, ...ghSchemas, ...VERDICT_TOOL_SCHEMAS, ...CONTRIBUTION_TOOL_SCHEMAS, ...MODEL_CHOICE_TOOL_SCHEMAS, ...RESEARCH_TOOL_SCHEMAS].filter(schema => names.has(schema.name) && !seen.has(schema.name) && !!seen.add(schema.name));
     },
     execute,
     // Contrat d'hôte 7a : un outil d'écriture sans lookup serait refusé ; les écritures store en ont un.
     async lookup(call: ToolCall, ctx: { run_id: string; effect_key: string }): Promise<LookupResult> {
       if (verdicts && call.name === 'store_verdict') return verdicts.lookup(call, ctx);
+      if (noChange && call.name===NO_CHANGE_TOOL) return noChange.lookup(call,ctx);
       if (contributions && call.name === 'store_contribute') return contributions.lookup(call, ctx);
       if (modelChoice && call.name === 'store_choose_model') return modelChoice.lookup(call, ctx);
       if (research && call.name === 'store_salon_post') return research.lookup(call, ctx);

@@ -392,7 +392,7 @@ export function githubCompletionSatisfied(effects: readonly GithubCompletionEffe
 export async function storeCompletionVerified(db: D1Database, run: Pick<RunRow,
   'run_id' | 'cycle_id' | 'participant_id' | 'task_id' | 'task_kind' | 'prompt'>): Promise<boolean> {
   const tool = ({ answer: 'store_answer', review: 'store_verdict', test: 'store_verdict',
-    design: 'store_contribute' } as Record<string, string>)[run.task_kind];
+    design: 'store_contribute', implement: 'store_no_change_submit' } as Record<string, string>)[run.task_kind];
   if (!tool) return false;
   const ask = /^Question #([1-9][0-9]*) du cycle /.exec(run.prompt);
   const pair = /Couple exact à vérifier : head ([a-f0-9]{40}), base ([a-f0-9]{40})/.exec(run.prompt);
@@ -443,6 +443,8 @@ async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps)
   const grants = await runGrants(run,deps);
   if (grants.length === 0) return !deps.dynamicGrantFor; // Dynamic mode fail closed without grant.
   if (grants.length !== 1) return false; // Ambiguïté = pas de succès.
+  // Une attestation auteur vérifiée sur la PR/CI existante n'exige aucun nouveau commit.
+  if (await storeCompletionVerified(db, run)) return true;
   return githubCompletionSatisfied(await runEvidence(db, run.run_id), grants[0].branch);
 }
 
@@ -1283,8 +1285,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     && output.tool_calls.some(call => call.name === 'store_handover')
     && (await runEvidence(db, run.run_id)).some(e=>e.tool==='store_handover' && e.status==='completed')
     && await completionVerified(db,run,deps);
-  const provenAtStore = run.task_kind !== 'implement' && output.tool_calls.some(call =>
-    ['store_answer', 'store_verdict', 'store_contribute'].includes(call.name))
+  const provenAtStore = output.tool_calls.some(call =>
+    ['store_answer', 'store_verdict', 'store_contribute', 'store_no_change_submit'].includes(call.name))
     && await completionVerified(db, run, deps);
   const repeatedDenial = await repeatedDeniedWithoutProgress(db, runId, n, output, results);
   const repeatedScope = !repeatedDenial && run.task_kind === 'implement'
