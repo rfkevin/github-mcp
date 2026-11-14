@@ -159,7 +159,7 @@ describe('CC8 S9 — transitions postrun CI native (GitHub vérifié)',()=>{
     const ctx={waitUntil:(job:Promise<unknown>)=>{pending.push(job);}};
     const enabled={COLLAB_DB:db,COLLAB_STORE_ENABLED:'true',CONTROLLER_WEBHOOK_ENABLED:'true',
       GITHUB_WEBHOOK_SECRET:secret,GITHUB_INSTALLATION_ID:'42'};
-    const delivery=uniq('0000dead');
+    const delivery='abcd'+Date.now().toString(16)+'-'+(++n).toString(16);
     const response=await handleGitHubWebhook(request(delivery),enabled,ctx,{ci});
     expect(response?.status).toBe(202);
     await Promise.all(pending);
