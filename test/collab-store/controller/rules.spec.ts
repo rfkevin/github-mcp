@@ -159,6 +159,49 @@ describe('CC-5 L3 — faits extraits des événements', () => {
       payload_json: payload({ task: 'l0', review: 'head ' + HEAD }) }]).submission).toBeNull();
   });
 
+  it('S9 : une preuve de benchmark sans verdict ne remplace pas le dernier AGREE D12', () => {
+    const facts = taskEvidence('l0', roles, [
+      { seq: 10, participant: 'vibe', evidence_ref: 'https://github.com/o/r/pull/333',
+        payload_json: payload({ task: 'l0', pr: 333, head: HEAD, base: BASE, state: 'SUBMITTED' }) },
+      { seq: 11, participant: 'grok', evidence_ref: '',
+        payload_json: payload({ task: 'l0', state: 'AGREE', head: HEAD, base: BASE }) },
+      { seq: 12, participant: 'claude', evidence_ref: '',
+        payload_json: payload({ task: 'l0', state: 'PASS', head: HEAD, base: BASE }) },
+      { seq: 13, participant: 'grok', evidence_ref: '',
+        payload_json: payload({ task: 'l0', state: 'BLIND_JUDGE_PACKET_READY', source: 'blind-benchmark' }) },
+      { seq: 14, participant: 'claude', evidence_ref: '',
+        payload_json: payload({ task: 'l0', state: 'BENCHMARK_RESULT', head: HEAD, base: BASE }) },
+    ]);
+    expect(facts.submission).toEqual({ head: HEAD, base: BASE, seq: 10 });
+    expect(facts.verdicts).toEqual([
+      { participant: 'grok', verdict: 'positive', head: HEAD, base: BASE, seq: 11 },
+      { participant: 'claude', verdict: 'positive', head: HEAD, base: BASE, seq: 12 },
+    ]);
+    expect(nextActors(snapshot([task({ task_id: 'l0', submission: facts.submission, verdicts: facts.verdicts })])).decisions)
+      .toMatchObject([{ kind: 'merge_ready', actor: 'owner' }]);
+  });
+
+  it('un avis explicite sans SHA reste un verdict D12 à renouveler', () => {
+    const facts = taskEvidence('l0', roles, [
+      { seq: 11, participant: 'grok', evidence_ref: '',
+        payload_json: payload({ task: 'l0', state: 'AGREE', head: HEAD, base: BASE }) },
+      { seq: 12, participant: 'grok', evidence_ref: '',
+        payload_json: payload({ task: 'l0', state: 'AGREE', source: 'review' }) },
+      { seq: 13, participant: 'claude', evidence_ref: '',
+        payload_json: payload({ task: 'l0', state: 'FAIL', head: HEAD2, base: BASE }) },
+    ]);
+    expect(facts.verdicts).toEqual([
+      { participant: 'grok', verdict: 'positive', head: HEAD, base: BASE, seq: 11 },
+      { participant: 'grok', verdict: 'positive', head: null, base: null, seq: 12 },
+      { participant: 'claude', verdict: 'negative', head: HEAD2, base: BASE, seq: 13 },
+    ]);
+    const decisions = nextActors(snapshot([task({ task_id: 'l0', submission: submitted, verdicts: facts.verdicts })])).decisions;
+    expect(decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actor: 'grok', rule: 'verdict-without-sha' }),
+      expect.objectContaining({ actor: 'claude', rule: 'verdict-stale' }),
+    ]));
+  });
+
   it('dépendances CC-STATE-1', () => {
     expect(parseDependencies('none')).toEqual([]);
     expect(parseDependencies(' l0, l1 ')).toEqual(['l0', 'l1']);

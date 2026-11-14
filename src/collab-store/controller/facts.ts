@@ -105,7 +105,12 @@ export function taskEvidence(taskId: string, roles: { owner: string; reviewer: s
       continue;
     }
     if (event.participant === roles.reviewer || event.participant === roles.tester) {
-      verdicts.push({ participant: event.participant, verdict: verdictOf(payload), head, base, seq: event.seq });
+      // evidence.add sert aussi aux benchmarks et diagnostics sans décision D12.
+      // Ne pas écraser un avis antérieur avec un événement informatif (ex. S9 BLIND_JUDGE_PACKET_READY).
+      // Un vrai avis explicite sans SHA reste conservé : D12 demandera son renouvellement.
+      const verdict = verdictOf(payload);
+      if (verdict === 'unknown') continue;
+      verdicts.push({ participant: event.participant, verdict, head, base, seq: event.seq });
     }
   }
   return { submission, verdicts };
