@@ -13,6 +13,7 @@ import { SALON_PATH, handleSalonRequest, type SalonRouteEnv } from './collab-sto
 import { controllerCronEnabled, runScheduledControllers } from './collab-store/controller/scheduled';
 import { WEBHOOK_PATH, handleGitHubWebhook, type WebhookEnv } from './collab-store/controller/webhook';
 import { agentRunPass } from './collab-store/agentrun/orchestrator';
+import { githubReadsFrom } from './agent-run-object';
 // CC-8 S8a : réveil événementiel des canaux (même passage que le webhook, bail anti-rafale D1).
 import { eventWake } from './collab-store/agentrun/wake-trigger';
 import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './collab-store/agentrun/object';
@@ -50,7 +51,15 @@ export default {
     }
     // CC-5 l3d 2d — webhook GitHub du contrôleur, hors OAuth (signature HMAC). Éteint : 404 habituel plus bas.
     if (new URL(request.url).pathname === WEBHOOK_PATH) {
-      const webhook = await handleGitHubWebhook(request, env as unknown as WebhookEnv, ctx);
+      const githubReads = githubReadsFrom(env);
+      const ciRepository = (env as {AGENT_RUN_REPOSITORY?: string}).AGENT_RUN_REPOSITORY;
+      const wakeCi = eventWake(env as unknown as AgentRunObjectEnv, ctx);
+      const webhook = await handleGitHubWebhook(request, env as unknown as WebhookEnv, ctx, {
+        ...(githubReads && ciRepository ? { ci: {
+          repository: ciRepository, reads: githubReads,
+          onApplied: wakeCi,
+        } } : {}),
+      });
       // Même cadence que le contrôleur : seulement quand la livraison lance un passage (202 accepted).
       if (webhook?.status === 202 && (await webhook.clone().json() as { outcome?: string }).outcome === 'accepted') {
         scheduleAgentRunPass(env, ctx);
