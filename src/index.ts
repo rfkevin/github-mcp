@@ -56,7 +56,23 @@ export default {
       const wakeCi = eventWake(env as unknown as AgentRunObjectEnv, ctx);
       const webhook = await handleGitHubWebhook(request, env as unknown as WebhookEnv, ctx, {
         ...(githubReads && ciRepository ? { ci: {
-          repository: ciRepository, reads: githubReads,
+          repository: ciRepository,
+          reads: {
+            getPullRequest: (repository: string, number: number) =>
+              githubReads.getPullRequest(repository, number),
+            listCheckRuns: async (repository: string, head: string) =>
+              (await githubReads.listCheckRuns(repository, head)).flatMap(value => {
+                if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+                const x = value as Record<string, unknown>;
+                if (!Number.isSafeInteger(x.id) || typeof x.name !== 'string'
+                  || typeof x.status !== 'string') return [];
+                return [{
+                  id: x.id as number, name: x.name, status: x.status,
+                  conclusion: typeof x.conclusion === 'string' ? x.conclusion : null,
+                  ...(typeof x.head_sha === 'string' ? { head_sha: x.head_sha } : {}),
+                }];
+              }),
+          },
           onApplied: wakeCi,
         } } : {}),
       });
