@@ -123,6 +123,13 @@ export async function requestCorrection(db: D1Database, input: CorrectionInput):
         'INSERT INTO events (cycle_id, at, type, participant_id, session_id, role, payload_json, expected_rev, idempotency_key, evidence_ref)',
         "VALUES (?1, ?2, 'correction.request', ?3, '', 'coordinator', ?4, ?5, ?6, '')",
       ].join(' ')).bind(input.cycle_id, at, input.participant_id, JSON.stringify(payload), input.expected_revision, key),
+      // Wake durable sous le même CAS que correction.request (hors CollabStore).
+      db.prepare([
+        'INSERT INTO agent_event_wake_intents',
+        '(event_key,cycle_id,event_type,status,attempts,next_at,created_at,updated_at,last_error)',
+        "VALUES (?1,?2,'correction.request','queued',0,?3,?3,?3,'')",
+      ].join(' ')).bind(key, input.cycle_id, at),
+      db.prepare("INSERT INTO agent_event_wake_audit(event_key,at,kind) VALUES (?1,?2,'wake_queued')").bind(key, at),
       db.prepare('UPDATE cycles SET revision = ?2 WHERE cycle_id = ?1 AND revision = ?3')
         .bind(input.cycle_id, input.expected_revision + 1, input.expected_revision),
       // Comme tout ajout au journal : la révision avance, donc les échéances du cycle (CR-F04).
