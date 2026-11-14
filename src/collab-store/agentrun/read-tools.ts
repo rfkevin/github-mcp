@@ -501,7 +501,12 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
             const payload:unknown=JSON.parse(effect.result??'');
             if(payload && typeof payload==='object' && !Array.isArray(payload)){
               const message=(payload as Record<string,unknown>).error;
-              if(typeof message==='string') reason=message.slice(0,350);
+              // Exposer uniquement le code de refus (déjà persisté dans D1).
+              // Les messages libres peuvent contenir chemins, tokens ou données utilisateur.
+              if(typeof message==='string') {
+                const code=/^([A-Za-z][A-Za-z0-9_]{2,95})(?=$|[ :])/.exec(message);
+                reason=code?.[1] ?? 'redacted';
+              }
             }
           } catch { /* Diagnostic absent, pas un nouvel échec d'outil. */ }
           return {step:effect.n,index:effect.idx,tool:effect.tool,status:effect.status,error:reason};
