@@ -151,7 +151,18 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
 
   it('porte active : réponse adressée sans tâche — relation au cycle prouvée par la question X13 (R1)', async () => {
     const { runId, scope } = await seeded({ kind: 'answer', participant: 'c2c-answerer', taskless: true });
-    const options: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true };
+    const githubForTest = {
+      ...github,
+      getPullRequest: async () => ({
+        number: 101,
+        state: 'closed',
+        merged: true,
+        draft: false,
+        head: { ref: 'feat', sha: 'a'.repeat(40) },
+        base: { ref: 'main', sha: 'b'.repeat(40) },
+      }),
+    };
+    const options: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github: githubForTest, unifiedCapabilities: true };
     const h: ToolHost = createReadToolHost(options);
     // Aucune question adressée : pas de relation prouvée au cycle, refus (aucun élargissement).
     await expect(h.execute({ id: 't', name: 'store_context', args: {} }, { run_id: runId }))
@@ -162,11 +173,31 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     expect((await runVerifiedClaims(db, scope, options)).cycle_member).toBe(true);
     const context = await h.execute({ id: 't2', name: 'store_context', args: {} }, { run_id: runId }) as Record<string, unknown>;
     expect(context.cycle_id).toBe(scope.cycle_id);
+    // Un run API answer SANS tâche, adressé par clarify.ask dans son cycle, peut appeler réellement github_pull_request via C0
+    const pr = await h.execute({ id: 't_pr', name: 'github_pull_request', args: { number: 101 } }, { run_id: runId }) as Record<string, unknown>;
+    expect(pr).toMatchObject({
+      number: 101,
+      merged: true,
+      draft: false,
+      head: { sha: 'a'.repeat(40) },
+    });
+
     // La relation survit à la fermeture de la question : existence, pas ouverture (pas de rupture en plein run).
     const ask = await db.prepare("SELECT seq FROM events WHERE cycle_id = ?1 AND type = 'clarify.ask'").bind(scope.cycle_id).first<{ seq: number }>();
     await db.prepare("INSERT INTO events (cycle_id, at, type, participant_id, payload_json, idempotency_key) VALUES (?1, ?2, 'clarify.answer', 'c2c-answerer', ?3, ?4)")
       .bind(scope.cycle_id, NOW, JSON.stringify({ ask_seq: ask!.seq, answer: 'Fait.' }), 'c2c-ans-' + crypto.randomUUID()).run();
     expect((await runVerifiedClaims(db, scope, options)).cycle_member).toBe(true);
+  });
+
+  it('cas négatif taskless : sans relation au cycle prouvée, github_pull_request reçoit capability_not_held:github.read et aucune autorisation d écriture ne découle', async () => {
+    const { runId, scope } = await seeded({ kind: 'answer', participant: 'c2c-answerer', taskless: true });
+    const options: ReadToolHostOptions = { db, repository: 'rfkevin/github-mcp', github, unifiedCapabilities: true };
+    const h: ToolHost = createReadToolHost(options);
+    await expect(h.execute({ id: 't_pr_neg', name: 'github_pull_request', args: { number: 101 } }, { run_id: runId }))
+      .rejects.toThrow(/capability_not_held:github\.read/);
+
+    const caps = resolveUnifiedCapabilities(await runVerifiedClaims(db, scope, options));
+    expect(caps).not.toContain('github.write');
   });
 
   it('porte active : review.verdict réservé au pair D12 (reviewer/tester) avec verdicts actifs', async () => {
