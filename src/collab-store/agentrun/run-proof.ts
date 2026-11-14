@@ -135,6 +135,12 @@ export async function publishRunProof(db: D1Database, runId: string, deps: RunPr
   if (!run || run.task_kind !== 'implement' || run.status !== 'completed' || run.stop_reason !== 'final') {
     return { status: 'skipped', reason: 'not_a_completed_implement_run' };
   }
+  // Une correction attestée S9 est déjà une SOUMISSION de l'auteur dans evidence.add.
+  // Ne pas chercher à fabriquer une nouvelle preuve commit/PR pour ce run sans diff.
+  const noChange=await db.prepare(
+    "SELECT 1 FROM agent_run_effects WHERE run_id=?1 AND tool='store_no_change_submit' AND status='completed' LIMIT 1"
+  ).bind(runId).first();
+  if(noChange) return {status:'skipped',reason:'author_no_change_submission'};
   // Rejouer une preuve existante ne dépend pas de la durée de vie du grant D1.
   // Aucun nouvel effet n'est autorisé par cette lecture idempotente.
   const previous = await db.prepare('SELECT status, reason, event_seq FROM agent_run_proofs WHERE run_id = ?1')
