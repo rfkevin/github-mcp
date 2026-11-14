@@ -7,10 +7,10 @@
 import { assertAutomationRunning, HALT_ACTIVE_SQL } from '../owner/automation';
 import { expireDueHypotheses } from '../memory/hypothesis-expiry';
 import { ensureSchema } from '../store/schema';
+import { VERDICT_REQUIRED_CHECKS } from '../agentrun/verdict-tools';
 
 const SHA = /^[a-f0-9]{40}$/;
-export const NATIVE_REQUIRED_CHECKS = ['ci', 'SonarCloud Code Analysis',
-  'GitGuardian Security Checks', 'Workers Builds: github-mcp'] as const;
+export const NATIVE_REQUIRED_CHECKS = VERDICT_REQUIRED_CHECKS; // même politique CI que D12, aucune liste parallèle.
 export type CiCheck = { id: number; name: string; status: string; conclusion: string | null; head_sha?: string };
 export interface CiReadOnly {
   getPullRequest(repository: string, number: number): Promise<unknown>;

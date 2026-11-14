@@ -58,6 +58,7 @@ export type WebhookOutcome = 'accepted' | 'coalesced' | 'ignored' | 'pong' | 'du
 export interface NativeCiHook {
   repository: string;
   reads: CiReadOnly;
+  requiredChecks?: readonly string[];
   onApplied?: (event: { type: string; payload_json: string }) => void;
 }
 /** Un webhook signé ne suffit jamais : le gestionnaire relit la PR et ses checks via GitHub. */
@@ -222,7 +223,7 @@ export async function handleGitHubWebhook(request: Request, env: WebhookEnv, ctx
     const ci = options.ci;
     ctx.waitUntil(reconcileNativeCi(db, {
       repository: ci.repository, number: candidate.number, head: candidate.head,
-      reads: ci.reads, now: at,
+      reads: ci.reads, requiredChecks: ci.requiredChecks, now: at,
     }).then(result => {
       if (result.status === 'applied') {
         try { ci.onApplied?.({ type: result.kind, payload_json: result.payload_json }); }

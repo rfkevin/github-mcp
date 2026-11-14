@@ -14,6 +14,7 @@ import { controllerCronEnabled, runScheduledControllers } from './collab-store/c
 import { WEBHOOK_PATH, handleGitHubWebhook, type WebhookEnv } from './collab-store/controller/webhook';
 import { agentRunPass } from './collab-store/agentrun/orchestrator';
 import { githubReadsFrom } from './agent-run-object';
+import { parseRequiredChecks } from './collab-store/agentrun/verdict-tools';
 // CC-8 S8a : réveil événementiel des canaux (même passage que le webhook, bail anti-rafale D1).
 import { eventWake } from './collab-store/agentrun/wake-trigger';
 import { agentRunDb, wakeViaNamespace, type AgentRunObjectEnv } from './collab-store/agentrun/object';
@@ -73,6 +74,7 @@ export default {
                 }];
               }),
           },
+          requiredChecks: parseRequiredChecks((env as { AGENT_RUN_REQUIRED_CHECKS?: string }).AGENT_RUN_REQUIRED_CHECKS),
           onApplied: wakeCi,
         } } : {}),
       });
