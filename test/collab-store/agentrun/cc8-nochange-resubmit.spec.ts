@@ -119,7 +119,7 @@ describe('CC8 S9 — resoumission explicite no-change après correction',()=>{
       "VALUES(?1,?2,6,0,'github_replace_text',?3,'failed',?4,?5)",
     ].join(' ')).bind(key,f.runId,JSON.stringify({secret:'SHOULD_NOT_LEAK'}),
       JSON.stringify({error:'api_write_wait_for_failed_ci'}),now()).run();
-    const host=createReadToolHost({db,repository:null,github:null});
+    const host=createReadToolHost({db,repository:null,github:null,unifiedCapabilities:true});
     const output=await host.execute({id:'diag',name:'store_run_diagnostics',args:{run_id:f.runId}},
       {run_id:f.runId}) as Record<string,unknown>;
     expect(output.errors).toMatchObject([{step:6,tool:'github_replace_text',error:'api_write_wait_for_failed_ci'}]);

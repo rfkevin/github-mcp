@@ -130,11 +130,11 @@ export const REGISTRY_MAX_TASKS = 60;
 export const READ_TOOLS_BY_KIND: Readonly<Record<string, readonly ReadToolName[]>> = Object.freeze({
   research: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs'],
   // 7c-2 : réponse à une question adressée (créée par le contrôleur, plan.ts).
-  answer: ['store_context', 'store_delta', 'store_run_diagnostics'],
+  answer: ['store_context', 'store_delta'],
   planning: ['store_context', 'store_delta', 'github_read_file'],
   status: ['store_context', 'store_delta', 'github_check_runs'],
   // 7c-3 : implémentation sur la branche de l'agent (écritures GitHub de github-tools.ts).
-  implement: ['store_context', 'store_delta', 'store_run_diagnostics', 'github_list_directory', 'github_read_file', 'github_pull_request', 'github_check_runs'],
+  implement: ['store_context', 'store_delta', 'github_list_directory', 'github_read_file', 'github_pull_request', 'github_check_runs'],
   // CC-7 L5a (S9) : réveils de relecture et de test — lecture du couple head/base exact.
   review: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs', 'github_diff'],
   test: ['store_context', 'store_delta', 'github_read_file', 'github_pull_request', 'github_check_runs', 'github_diff'],
