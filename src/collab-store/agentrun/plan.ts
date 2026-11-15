@@ -398,7 +398,31 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
   // Each transient provider failure normally retries the same durable run.
   // A historical model_transient failure can start another run after 900 s,
   // without a fixed number of allowed attempts or any duplicate IDs.
-  const retryAttempt = async (runIdFor: (attempt: number) => Promise<string>): Promise<string | null> => {
+  // A terminal provider-chain failure is not automatically retried. A FRESH
+  // WorkSession assignment by an owner-approved coordinator is an explicit
+  // new retry intent, tied to the same task/agent and later than the failed run.
+  // Replaying that assignment never unlocks a second run after the retry fails.
+  const freshCoordinatorAssignment = async (
+    cycleId: string, taskId: string, participantId: string, failedAt: number,
+  ): Promise<boolean> => {
+    const row = await db.prepare([
+      "SELECT 1 AS ok FROM events e",
+      "JOIN coordinators c ON c.participant_id=e.participant_id AND c.status='active'",
+      "JOIN participants p ON p.participant_id=c.participant_id AND p.status='active'",
+      "WHERE e.cycle_id=?1 AND e.type='checkpoint' AND e.role='coordinator'",
+      "AND json_valid(e.payload_json)",
+      "AND json_extract(e.payload_json,'$.state')='WORKSESSION_ASSIGNED'",
+      "AND json_extract(e.payload_json,'$.task')=?2",
+      "AND json_extract(e.payload_json,'$.participant')=?3",
+      "AND e.at>?4 AND e.at<=?5",
+      "ORDER BY e.seq DESC LIMIT 1",
+    ].join(' ')).bind(cycleId, taskId, participantId, failedAt, input.now).first<{ok:number}>();
+    return row?.ok === 1;
+  };
+  const retryAttempt = async (
+    runIdFor: (attempt: number) => Promise<string>,
+    explicitRetry?: (failedAt: number) => Promise<boolean>,
+  ): Promise<string | null> => {
     let previous: { status: string; stop_reason: string; updated_at: number } | null = null;
     for (let attempt = 1; Number.isSafeInteger(attempt); attempt++) {
       const runId = await runIdFor(attempt);
@@ -406,8 +430,14 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         .bind(runId).first<{ status: string; stop_reason: string; updated_at: number }>();
       if (row) { previous = row; continue; }
       if (!previous) return runId;
-      return previous.status === 'failed' && previous.stop_reason.startsWith('model_transient:')
-        && input.now - previous.updated_at >= 900 ? runId : null;
+      if (previous.status !== 'failed') return null;
+      if (previous.stop_reason.startsWith('model_transient:'))
+        return input.now - previous.updated_at >= 900 ? runId : null;
+      // An explicit coordinator assignment may retry a provider-chain terminal
+      // result once. Policy, capacity, HALT, leases and createRun still apply.
+      if (previous.stop_reason.startsWith('model_permanent:') && explicitRetry
+        && await explicitRetry(previous.updated_at)) return runId;
+      return null;
     }
     return null;
   };
@@ -487,8 +517,12 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         const taskId = decision.task_id ?? '';
         queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => {
           // La ronde est liée au sujet de la décision (incluant le couple head/base pour review/test).
-          const runId = await retryAttempt(attempt =>
-            attemptRunId(kind, cycleId, participantId, taskId, decision.subject, phase, round, attempt));
+          const runId = await retryAttempt(
+            attempt => attemptRunId(kind, cycleId, participantId, taskId, decision.subject, phase, round, attempt),
+            failedAt => kind === 'implement'
+              ? freshCoordinatorAssignment(cycleId, taskId, participantId, failedAt)
+              : Promise.resolve(false),
+          );
           if (runId === null) return false;
           return (await createRun(db, {
             runId, cycleId, participantId,
