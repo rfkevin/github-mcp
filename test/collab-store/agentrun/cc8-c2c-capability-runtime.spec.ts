@@ -187,6 +187,13 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
     await db.prepare("INSERT INTO events (cycle_id, at, type, participant_id, payload_json, idempotency_key) VALUES (?1, ?2, 'clarify.answer', 'c2c-answerer', ?3, ?4)")
       .bind(scope.cycle_id, NOW, JSON.stringify({ ask_seq: ask!.seq, answer: 'Fait.' }), 'c2c-ans-' + crypto.randomUUID()).run();
     expect((await runVerifiedClaims(db, scope, options)).cycle_member).toBe(true);
+
+    // Après clarify.answer, un appel taskless conserve github.read via le canal C0
+    const prPost = await h.execute({ id: 't_pr_post', name: 'github_pull_request', args: { number: 101 } }, { run_id: runId }) as Record<string, unknown>;
+    expect(prPost).toMatchObject({ number: 101, merged: true });
+    const capsPost = resolveUnifiedCapabilities(await runVerifiedClaims(db, scope, options));
+    expect(capsPost).toContain('github.read');
+    expect(capsPost).not.toContain('github.write');
   });
 
   it('cas négatif taskless : sans relation au cycle prouvée, github_pull_request reçoit capability_not_held:github.read et aucune autorisation d écriture ne découle', async () => {
