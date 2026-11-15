@@ -407,9 +407,18 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
   ): Promise<boolean> => {
     const row = await db.prepare([
       "SELECT 1 AS ok FROM events e",
-      "JOIN coordinators c ON c.participant_id=e.participant_id AND c.status='active'",
-      "JOIN participants p ON p.participant_id=c.participant_id AND p.status='active'",
-      "WHERE e.cycle_id=?1 AND e.type='checkpoint' AND e.role='coordinator'",
+      "JOIN participants p ON p.participant_id=e.participant_id AND p.status='active'",
+      // Same logical-family authorization as isCoordinator(): the owner grant
+      // may belong to another active member (e.g. sol grants gpt6 through chatgpt).
+      // Do not require a direct coordinator row for the event author.
+      "WHERE EXISTS (SELECT 1 FROM coordinators c",
+      "JOIN participants cp ON cp.participant_id=c.participant_id AND cp.status='active'",
+      "WHERE c.status='active' AND (c.participant_id=e.participant_id",
+      "OR c.participant_id IN (SELECT peer.participant_id FROM participant_identity_families peer",
+      "WHERE peer.family_id=COALESCE(",
+      "(SELECT member.family_id FROM participant_identity_families member WHERE member.participant_id=e.participant_id),",
+      "e.participant_id))))",
+      "AND e.cycle_id=?1 AND e.type='checkpoint' AND e.role='coordinator'",
       "AND json_valid(e.payload_json)",
       "AND json_extract(e.payload_json,'$.state')='WORKSESSION_ASSIGNED'",
       "AND json_extract(e.payload_json,'$.task')=?2",
