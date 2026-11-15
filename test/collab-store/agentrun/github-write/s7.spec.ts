@@ -165,6 +165,64 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     expect(await f.result()).toMatchObject({next_action:'request_D12',verifiedSuccess:true});
     expect(f.commits()).toBe(2);
   });
+  it('autorise un amendement utile après CI verte uniquement avec correction.request fraîche non soumise',async()=>{
+    const f=await fixture();
+    const firstCtx=f.ctx();
+    await f.tools.execute(f.commit(),firstCtx);
+    // Fixture direct tool calls do not persist engine effects. Anchor the real
+    // GitHub commit to its completed effect timestamp as the production engine does.
+    await db.prepare([
+      'INSERT INTO agent_run_effects (effect_key,run_id,n,idx,tool,args,status,result,updated_at)',
+      "VALUES (?1,?2,0,0,'github_commit_files','{}','completed','{}',?3)",
+    ].join(' ')).bind(firstCtx.effect_key,f.run,T+1).run();
+    f.setMode('success');
+    await f.result();
+    await expect(f.tools.execute(f.commit(),f.ctx())).rejects.toThrow('api_write_wait_for_failed_ci');
+    // A prior or unrelated correction cannot authorize a green-CI amendment.
+    await db.prepare([
+      "INSERT INTO events (cycle_id,at,type,participant_id,role,payload_json,idempotency_key)",
+      "VALUES (?1,?2,'correction.request','gpt6','coordinator',?3,?4)",
+    ].join(' ')).bind(f.cycle,T,JSON.stringify({task:f.task,items:['ancien']}),f.cycle+':old-corr').run();
+    await expect(f.tools.execute(f.commit(),f.ctx())).rejects.toThrow('api_write_wait_for_failed_ci');
+    await db.prepare([
+      "INSERT INTO events (cycle_id,at,type,participant_id,role,payload_json,idempotency_key)",
+      "VALUES (?1,?2,'correction.request','gpt6','coordinator',?3,?4)",
+    ].join(' ')).bind(f.cycle,T+2,JSON.stringify({task:'unrelated-task',items:['autre']}),f.cycle+':other-corr').run();
+    await expect(f.tools.execute(f.commit(),f.ctx())).rejects.toThrow('api_write_wait_for_failed_ci');
+    await db.prepare([
+      "INSERT INTO events (cycle_id,at,type,participant_id,role,payload_json,idempotency_key)",
+      "VALUES (?1,?2,'correction.request','gpt6','coordinator',?3,?4)",
+    ].join(' ')).bind(f.cycle,T+3,JSON.stringify({task:f.task,items:['ajouter une vraie assertion']}),f.cycle+':fresh-corr').run();
+    const secondCtx=f.ctx();
+    expect(await f.tools.execute(f.commit(),secondCtx)).toMatchObject({next_action:'github_run_checks'});
+    expect(f.commits()).toBe(2);
+    // The same correction is not reusable after a new green HEAD.
+    await db.prepare([
+      'INSERT INTO agent_run_effects (effect_key,run_id,n,idx,tool,args,status,result,updated_at)',
+      "VALUES (?1,?2,1,0,'github_commit_files','{}','completed','{}',?3)",
+    ].join(' ')).bind(secondCtx.effect_key,f.run,T+4).run();
+    await f.result();
+    await expect(f.tools.execute(f.commit(),f.ctx())).rejects.toThrow('api_write_wait_for_failed_ci');
+  });
+  it('ne réutilise pas une correction verte déjà soumise par son auteur',async()=>{
+    const f=await fixture();
+    const ctx=f.ctx();
+    await f.tools.execute(f.commit(),ctx);
+    await db.prepare([
+      'INSERT INTO agent_run_effects (effect_key,run_id,n,idx,tool,args,status,result,updated_at)',
+      "VALUES (?1,?2,0,0,'github_commit_files','{}','completed','{}',?3)",
+    ].join(' ')).bind(ctx.effect_key,f.run,T+1).run();
+    f.setMode('success');await f.result();
+    await db.prepare([
+      "INSERT INTO events (cycle_id,at,type,participant_id,role,payload_json,idempotency_key)",
+      "VALUES (?1,?2,'correction.request','gpt6','coordinator',?3,?4)",
+    ].join(' ')).bind(f.cycle,T+2,JSON.stringify({task:f.task,items:['corriger']}),f.cycle+':request').run();
+    await db.prepare([
+      "INSERT INTO events (cycle_id,at,type,participant_id,role,payload_json,idempotency_key)",
+      "VALUES (?1,?2,'evidence.add',?3,'owner',?4,?5)",
+    ].join(' ')).bind(f.cycle,T+3,f.participant,JSON.stringify({task:f.task,state:'SUBMITTED'}),f.cycle+':submitted').run();
+    await expect(f.tools.execute(f.commit(),f.ctx())).rejects.toThrow('api_write_wait_for_failed_ci');
+  });
   it('retries CI failures beyond three corrections without marking the task blocked',async()=>{
     const f=await fixture();await f.tools.execute(f.commit(),f.ctx());
     for(let i=0;i<5;i++){

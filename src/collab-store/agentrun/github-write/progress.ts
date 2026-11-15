@@ -7,6 +7,33 @@ export async function ensureProgress(db: D1Database): Promise<void> {
     db.prepare('CREATE TABLE IF NOT EXISTS api_write_checks (cycle TEXT NOT NULL, task TEXT NOT NULL, branch TEXT NOT NULL, sha TEXT NOT NULL, run_id INTEGER NOT NULL, state TEXT NOT NULL, PRIMARY KEY(cycle,task,branch,sha))'),
   ]);
 }
+/** A real coordinator correction can request a meaningful amendment after green
+ * CI. The request must be newer than the commit of this exact head and still
+ * unanswered by author submission/server proof, not simply an old cycle event.
+ * CAS on the branch head and all normal author/paths/HALT guards remain intact. */
+async function freshAuthorCorrection(db: D1Database, s: WriteScope, head: string): Promise<boolean> {
+  const committed = await db.prepare([
+    'SELECT MAX(e.updated_at) AS at FROM api_write_commits c',
+    'JOIN agent_run_effects e ON e.effect_key=c.effect_key',
+    "AND e.status='completed' AND e.tool IN ('github_commit_files','github_replace_text')",
+    'WHERE c.cycle=?1 AND c.task=?2 AND c.branch=?3 AND c.after_sha=?4',
+  ].join(' ')).bind(s.cycle,s.task,s.branch,head).first<{at:number|null}>();
+  if(!Number.isSafeInteger(committed?.at)) return false;
+  const pending=await db.prepare([
+    'SELECT 1 AS ok FROM events correction',
+    "WHERE correction.cycle_id=?1 AND correction.type='correction.request'",
+    "AND json_valid(correction.payload_json) AND json_extract(correction.payload_json,'$.task')=?2",
+    'AND correction.at>?3',
+    'AND NOT EXISTS (SELECT 1 FROM events submitted WHERE submitted.cycle_id=correction.cycle_id',
+    '  AND submitted.seq>correction.seq AND json_valid(submitted.payload_json)',
+    "  AND json_extract(submitted.payload_json,'$.task')=?2",
+    "  AND ((submitted.type='evidence.add' AND submitted.participant_id=?4)",
+    "    OR (submitted.type IN ('run.proof','run.reconcile') AND submitted.participant_id='agentrun')))",
+    'ORDER BY correction.seq DESC LIMIT 1',
+  ].join(' ')).bind(s.cycle,s.task,committed!.at,s.participant).first<{ok:number}>();
+  return pending?.ok===1;
+}
+
 export async function reserveCommit(db: D1Database, s: WriteScope, key: string, head: string): Promise<void> {
   await ensureProgress(db);
   const existing = await db.prepare('SELECT cycle,task,branch,before_sha,after_sha FROM api_write_commits WHERE effect_key=?1').bind(key).first<{cycle:string;task:string;branch:string;before_sha:string;after_sha:string|null}>();
@@ -22,7 +49,15 @@ export async function reserveCommit(db: D1Database, s: WriteScope, key: string, 
   if (correction && !prior.results.some(p => p.after_sha === head)) throw new ToolRefused('api_write_head_untracked');
   const check = await db.prepare('SELECT state FROM api_write_checks WHERE cycle=?1 AND task=?2 AND branch=?3 AND sha=?4')
     .bind(s.cycle, s.task, s.branch, head).first<{ state: string }>();
-  if (correction && check?.state !== 'failed') throw new ToolRefused('api_write_wait_for_failed_ci');
+  if (correction && check?.state !== 'failed') {
+    // A GREEN run still needs a fresh, authenticated correction.request when
+    // the author must amend a PR (e.g. a legacy completed run with no run.proof).
+    // No request, pending CI, already-submitted correction, or recycled request
+    // from an earlier commit may unlock a GitHub write.
+    if (check?.state !== 'passed' || !(await freshAuthorCorrection(db, s, head))) {
+      throw new ToolRefused('api_write_wait_for_failed_ci');
+    }
+  }
   // A reservation is retained even after an uncertain transport result. Only lookup can settle it.
   // No business-level limit on the number of CI corrections. Exact parent
   // SHA and effect_key uniqueness still stop duplicate/out-of-order commits.
