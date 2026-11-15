@@ -398,8 +398,8 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
   // Each transient provider failure normally retries the same durable run.
   // A historical model_transient failure can start another run after 900 s,
   // without a fixed number of allowed attempts or any duplicate IDs.
-  // A terminal provider-chain failure is not automatically retried. A FRESH
-  // WorkSession assignment by an owner-approved coordinator is an explicit
+  // A legacy free-day provider quota classified terminal is not automatically
+  // retried. A FRESH WorkSession assignment by an owner-approved coordinator is an explicit
   // new retry intent, tied to the same task/agent and later than the failed run.
   // Replaying that assignment never unlocks a second run after the retry fails.
   const freshCoordinatorAssignment = async (
@@ -433,10 +433,13 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
       if (previous.status !== 'failed') return null;
       if (previous.stop_reason.startsWith('model_transient:'))
         return input.now - previous.updated_at >= 900 ? runId : null;
-      // An explicit coordinator assignment may retry a provider-chain terminal
-      // result once. Policy, capacity, HALT, leases and createRun still apply.
-      if (previous.stop_reason.startsWith('model_permanent:') && explicitRetry
-        && await explicitRetry(previous.updated_at)) return runId;
+      // A free daily provider quota can be misclassified as permanent when
+      // fallback exhausted the chain. Only this known recoverable legacy stop
+      // may be rearmed by a fresh coordinator assignment; 401/403, route,
+      // authorization and funded-budget refusals remain terminal.
+      if (previous.stop_reason.startsWith('model_permanent:')
+        && /Budget gratuit du jour insuffisant/i.test(previous.stop_reason)
+        && explicitRetry && await explicitRetry(previous.updated_at)) return runId;
       return null;
     }
     return null;

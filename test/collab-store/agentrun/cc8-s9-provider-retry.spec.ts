@@ -30,7 +30,7 @@ describe('CC8 S9 — reprise terminale uniquement sur nouvelle attribution expli
     const first = await db.prepare("SELECT run_id FROM agent_runs WHERE cycle_id=?1 AND task_id=?2")
       .bind(cycle,task).first<{run_id:string}>();
     expect(first?.run_id).toBeTruthy();
-    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='model_permanent: provider chain exhausted',updated_at=?2 WHERE run_id=?1")
+    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='model_permanent: Budget gratuit du jour insuffisant : 7792 + 385 neurons > 8000',updated_at=?2 WHERE run_id=?1")
       .bind(first!.run_id,T+1).run();
 
     // The older wake alone, even after an arbitrary delay, cannot retry.
@@ -54,7 +54,14 @@ describe('CC8 S9 — reprise terminale uniquement sur nouvelle attribution expli
       .bind(cycle,task).all<{run_id:string;status:string}>()).results;
     expect(runs).toHaveLength(2);
     expect(runs[1].run_id).not.toBe(first!.run_id);
-    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='model_permanent: provider unavailable',updated_at=?2 WHERE run_id=?1")
+    // The same assignment cannot be replayed, even if the new run fails.
+    await db.prepare("UPDATE agent_runs SET status='failed',stop_reason='model_permanent: Budget gratuit du jour insuffisant',updated_at=?2 WHERE run_id=?1")
       .bind(runs[1].run_id,T+1006).run();
     expect((await planAgentRuns(db,config,{now:T+2000})).created).toBe(0);
+    // A truly permanent 403 must remain terminal even after another explicit
+    // assignment: a coordinator's request does not bypass provider authorization.
+    await db.prepare("UPDATE agent_runs SET stop_reason='model_permanent: HTTP 403' WHERE run_id=?1")
+      .bind(runs[1].run_id).run();
+    await wake('after-403',T+2001);
+    expect((await planAgentRuns(db,config,{now:T+2002})).created).toBe(0);
   });});
