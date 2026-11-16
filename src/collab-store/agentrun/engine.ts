@@ -1305,13 +1305,31 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     results.push(effect);
   }
 
-  // 3. Checkpoint : étape terminée et exécution avancée dans le même lot, sous la garde LIVE.
-  // Une mission S7 disposant déjà de TOUTES les preuves est complète dès l'effet
-  // github_open_pr : 6 étapes dépendantes suffisent, sans 7e appel final au modèle.
+  // Server-owned reconciliation: only an EXISTING PR at a genuinely tested
+  // latest commit may be reused. The normal fenced runEffect persists the
+  // authoritative GitHub receipt in D1; the model is not credited with a call.
+  let serverPrCompleted = false;
+  if (run.task_kind === 'implement' && !deps.guidedS7 && !await pendingSteer()
+    && deps.tools.spec(run.task_kind, 'github_open_pr')?.effect === 'write') {
+    const grants = await runGrants(run, deps);
+    if (grants.length === 1) {
+      const effects = await runEvidence(db, runId);
+      const verifiedHead = githubVerifiedHeadForExistingPr(effects, grants[0].branch);
+      if (verifiedHead && !githubCompletionSatisfied(effects, grants[0].branch)
+        && claimed.claimed_at + STEP_TIMEOUT_S - deps.now() >= EFFECT_LAUNCH_FLOOR_S) {
+        const call: ToolCall = { id: 'server-existing-pr-' + n, name: 'github_open_pr',
+          args: { existing_only: true, title: 'Reprise vérifiée de la PR existante' } };
+        const result = await runEffect(db, runId, claim, output.tool_calls.length, call, deps);
+        if ('outcome' in result) return result;
+        if (!result.error) serverPrCompleted = await completionVerified(db, run, deps);
+      }
+    }
+  }
+  // Checkpoint: server proof, author evidence and independent D12 remain distinct.
   const guarded = run.task_kind === 'implement' && (deps.githubCompletionGrants ?? []).some(g =>
     g.cycle === run.cycle_id && g.task === run.task_id && g.participant === run.participant_id);
-  const provenAtPr = guarded && !deps.guidedPreparation && output.tool_calls.some(call => call.name === 'github_open_pr')
-    && await completionVerified(db, run, deps);
+  const provenAtPr = serverPrCompleted || (guarded && !deps.guidedPreparation
+    && output.tool_calls.some(call => call.name === 'github_open_pr') && await completionVerified(db, run, deps));
   // Un effet métier persistant peut terminer le run sans forcer un tour modèle « final » supplémentaire.
   // Si l'outil est refusé, échoué ou n'a rien écrit, le test D1 ci-dessous reste négatif.
   const provenAtHandover = guarded && deps.guidedPreparation
