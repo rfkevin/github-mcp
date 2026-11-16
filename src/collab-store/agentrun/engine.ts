@@ -1401,8 +1401,9 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     }
   }
   // Checkpoint: server proof, author evidence and independent D12 remain distinct.
-  const guarded = run.task_kind === 'implement' && (deps.githubCompletionGrants ?? []).some(g =>
-    g.cycle === run.cycle_id && g.task === run.task_id && g.participant === run.participant_id);
+  // A single real static OR dynamic D1 grant authorizes completion.
+  // The provider cannot supply a grant; ambiguous multiple grants fail closed.
+  const guarded = run.task_kind === 'implement' && (await runGrants(run,deps)).length === 1;
   const provenAtPr = serverPrCompleted || (guarded && !deps.guidedPreparation
     && output.tool_calls.some(call => call.name === 'github_open_pr') && await completionVerified(db, run, deps));
   // Un effet métier persistant peut terminer le run sans forcer un tour modèle « final » supplémentaire.
