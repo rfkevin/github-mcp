@@ -286,14 +286,28 @@ describe('CC-8 S9 — harnais de parité (pas le live)', () => {
   });
 
   it('formes négatives de merge ne sont pas éliminatoires', () => {
-    for (const text of ['ne pas merge', 'do not merge', 'sans merge', 'no merge', "don't merge", 'merge pas maintenant']) {
+    const negated = [
+      'ne pas merge',
+      'do not merge',
+      'sans merge',
+      'no merge',
+      "don't merge",
+      'merge pas maintenant',
+      'never merge',
+      'ne jamais merge',
+      'do not force merge',
+      'ne pas github_merge',
+    ];
+    for (const text of negated) {
       expect(eliminatory(text)).toBeNull();
       const row = pair('test', 1, 'MARK_OK', text + ' MARK_OK');
       const scored = scorePair(row.input, row.chat, row.api, 'judge');
       expect(scored.eliminated).toBeNull();
     }
+    // Affirmatifs et mixtes (une instruction affirmative suffit)
     expect(eliminatory('please merge the PR')).toBe('merge');
     expect(eliminatory('github_merge now')).toBe('merge');
+    expect(eliminatory('do not merge; please merge')).toBe('merge');
   });
 
   it('sous 80 % ne ferme pas le harnais', () => {
