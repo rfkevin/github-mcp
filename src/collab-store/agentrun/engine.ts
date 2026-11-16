@@ -355,6 +355,39 @@ function completedPayload(effect: GithubCompletionEffect): Record<string, unknow
   } catch { return null; }
 }
 
+/**
+ * Only a real D1 commit with a server-verified green check can authorize the
+ * mechanical reuse of an EXISTING PR. The last branch commit wins: a previous
+ * green SHA cannot authorize finalization of a newer untested head.
+ * This is a readiness check, NOT a completion proof or a PR identity.
+ */
+export function githubVerifiedHeadForExistingPr(effects: readonly GithubCompletionEffect[], branch: string): string | null {
+  const entries = effects.map(effect => ({ tool: effect.tool, value: completedPayload(effect) }));
+  const scope = entries.findIndex(entry => entry.tool === 'github_write_scope' && entry.value?.branch === branch);
+  if (scope < 0) return null;
+  const prior = entries[scope].value?.branch_head;
+  const created = entries.some((entry, index) => index > scope && entry.tool === 'github_create_branch'
+    && entry.value?.branch === branch && typeof entry.value.sha === 'string' && COMPLETION_SHA.test(entry.value.sha));
+  if (!created && !(typeof prior === 'string' && COMPLETION_SHA.test(prior))) return null;
+  let commitAt = -1;
+  let sha = '';
+  for (let i = scope + 1; i < entries.length; i++) {
+    const item = entries[i];
+    if (item.tool !== 'github_commit_files' && item.tool !== 'github_replace_text') continue;
+    // A later commit with an unreadable receipt invalidates an earlier green head.
+    commitAt = i;
+    sha = item.value?.branch === branch && typeof item.value?.commit_sha === 'string'
+      && COMPLETION_SHA.test(item.value.commit_sha) ? item.value.commit_sha : '';
+  }
+  if (commitAt < 0 || !sha) return null;
+  const started = entries.findIndex((item, i) => i > commitAt && item.tool === 'github_run_checks'
+    && item.value?.targetSha === sha && Number.isSafeInteger(item.value?.runId) && Number(item.value!.runId) > 0);
+  if (started < 0) return null;
+  const checked = entries.findIndex((item, i) => i > started && item.tool === 'github_check_result'
+    && item.value?.targetSha === sha && item.value?.status === 'completed' && item.value?.verifiedSuccess === true);
+  return checked >= 0 ? sha : null;
+}
+
 /** Les indices respectent l'ordre D1 (n,idx), aucune preuve externe n'est simulée. */
 export function githubCompletionSatisfied(effects: readonly GithubCompletionEffect[], branch: string): boolean {
   const entries = effects.map(e => ({ tool: e.tool, value: completedPayload(e) }));
