@@ -1025,7 +1025,35 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   // CC8 S7 mode guidé : prochaine étape décidée sur l'état D1 AVANT la réclamation (même état, même décision).
   // Empreinte de l'état lu (effets + relevés), prise AVANT la lecture du plan (relecture D12 GPT-6, R4).
   const seen = deps.guidedS7 ? (await db.prepare('SELECT ' + GUIDED_STATE + ' AS fp').bind(runId).first<{ fp: string }>())?.fp ?? '' : '';
-  const plan = await guidedStep(db, run, deps, run.steps_done);
+  let plan = await guidedStep(db, run, deps, run.steps_done);
+  // A dynamic WorkSession resumes its correlated check without calling the
+  // provider or dispatching a new CI. On "wait", the existing CI poll ledger
+  // handles subsequent reads (CAS and append-only). On green, reuse the
+  // already-existing non-draft PR; on red, the model retains control.
+  if (!plan && run.task_kind === 'implement' && !deps.guidedS7 && deps.dynamicGrantFor) {
+    const grants = await runGrants(run, deps);
+    if (grants.length === 1) {
+      const effects = await runEvidence(db, runId);
+      const branch = grants[0].branch;
+      const name = branch.split('-api-')[1];
+      if (name && deps.tools.spec(run.task_kind,'github_open_pr')?.effect === 'write') {
+        const verified = githubVerifiedHeadForExistingPr(effects,branch);
+        if (verified && !githubCompletionSatisfied(effects,branch)) {
+          const already = await db.prepare([
+            "SELECT 1 FROM agent_run_effects WHERE run_id=?1 AND tool='github_open_pr'",
+            "AND json_valid(args) AND json_extract(args,'$.existing_only')=1",
+            "AND status IN ('completed','failed') LIMIT 1",
+          ].join(' ')).bind(runId).first();
+          if (!already) plan = { kind:'server',call:{id:'srv-pr-'+run.steps_done,
+            name:'github_open_pr',args:{name,title:'Reprise vérifiée de la PR existante',existing_only:true}} };
+        } else if (deps.tools.spec(run.task_kind,'github_check_result')) {
+          const check = githubStartedCheckForExistingPr(effects,branch);
+          if (check) plan = {kind:'server',call:{id:'srv-ci-'+run.steps_done,
+            name:'github_check_result',args:{name,sha:check.sha,run_id:check.runId}}};
+        }
+      }
+    }
+  }
   if (plan?.kind === 'stop') {
     // Arrêt typé et auditable d'un run guidé (aucun repli vers l'orchestration libre du modèle).
     // Relecture D12 GPT-6 (R4) : l'arrêt n'écrit que si le run est toujours le nôtre (garde LIVE : HALT,
