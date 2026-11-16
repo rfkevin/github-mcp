@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { planAgentRuns, attemptRunId, answerAttemptRunId, terminalRunMayRetry } from '../../../src/collab-store/agentrun/plan';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
+import { durableWakeWorthy } from '../../../src/collab-store/store/collab-store';
 import { insertCycleRow, insertEventRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
 import { PLAN_MODEL } from './plan-model';
 
@@ -117,5 +118,22 @@ describe('CC8 — matrice des sorties et reprise explicite du parcours unique',(
     ['needs_reconcile','effect_outcome_unknown',false],
   ])('politique typée %s / %s -> %s',(status,reason,expected)=>{
     expect(terminalRunMayRetry(status,reason)).toBe(expected);
+  });
+});
+
+describe('S8 durable wake — reprise terminale via le même événement',()=>{
+  const scoped = { state:'WORKSESSION_RETRY_AUTHORIZED', task:'retry', participant:'gemini',
+    kind:'test', subject:'a'.repeat(40)+'..'+'b'.repeat(40), failed_run_id:'api-test-123' };
+  it('réveille à événement appliqué, y compris ANSWER sans tâche',()=>{
+    expect(durableWakeWorthy('checkpoint',JSON.stringify(scoped))).toBe(true);
+    expect(durableWakeWorthy('checkpoint',JSON.stringify({ ...scoped,kind:'answer',task:'',
+      subject:'ask#2798' }))).toBe(true);
+    expect(durableWakeWorthy('checkpoint',JSON.stringify({state:'WORKSESSION_ASSIGNED',task:'retry'}))).toBe(true);
+  });
+  it('ne réveille pas pour checkpoint cosmétique ou incomplet',()=>{
+    expect(durableWakeWorthy('checkpoint',JSON.stringify({state:'OTHER',task:'retry'}))).toBe(false);
+    expect(durableWakeWorthy('checkpoint',JSON.stringify({ ...scoped,failed_run_id:'' }))).toBe(false);
+    expect(durableWakeWorthy('checkpoint',JSON.stringify({ ...scoped,kind:'test',task:'' }))).toBe(false);
+    expect(durableWakeWorthy('checkpoint','{invalid')).toBe(false);
   });
 });

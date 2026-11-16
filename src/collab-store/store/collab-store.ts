@@ -101,10 +101,23 @@ export interface StoreContextTask {
 export const DURABLE_WAKE_EVENT_TYPES = ['clarify.ask', 'clarify.answer', 'evidence.add', 'task.claim', 'task.status',
   'task.handoff', 'owner.decision', 'round.add', 'checkpoint', 'correction.request', 'run.reconcile'] as const;
 export function durableWakeWorthy(type: string, payloadJson: string): boolean {
-  if(type==='checkpoint'){
-    try{const p=JSON.parse(payloadJson) as {state?:unknown;task?:unknown};
-      return p.state==='WORKSESSION_ASSIGNED'&&typeof p.task==='string'&&p.task.length>0;
-    }catch{return false;}
+  if (type === 'checkpoint') {
+    try {
+      const p = JSON.parse(payloadJson) as Record<string, unknown>;
+      if (p.state === 'WORKSESSION_ASSIGNED')
+        return typeof p.task === 'string' && p.task.length > 0;
+      // Exact scoped retry authorizations must wake the SAME S8 event path as
+      // assignments; this predicate only queues a planner pass. Identity, prior
+      // run ID, role, terminal status, D12 and HALT remain checked by plan.ts.
+      if (p.state !== 'WORKSESSION_RETRY_AUTHORIZED') return false;
+      const kinds = ['answer', 'review', 'test', 'implement', 'design'];
+      return typeof p.task === 'string'
+        && (p.task.length > 0 || p.kind === 'answer')
+        && typeof p.participant === 'string' && p.participant.length > 0
+        && typeof p.kind === 'string' && kinds.includes(p.kind)
+        && typeof p.subject === 'string' && p.subject.length > 0
+        && typeof p.failed_run_id === 'string' && p.failed_run_id.length > 0;
+    } catch { return false; }
   }
   if (type === 'clarify.ask' || type === 'clarify.answer') {
     try {
