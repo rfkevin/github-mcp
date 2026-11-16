@@ -172,8 +172,13 @@ export async function publishRunProof(db: D1Database, runId: string, deps: RunPr
   const mission = missionOf(grant);
   let quality: { test_files: number; meaningful: number; tautological: number } | null = null;
   if (mission.kind === 'functional') {
-    const { results } = await db.prepare('SELECT tool, status, args, result FROM agent_run_effects WHERE run_id = ?1 AND tool = ?2 ORDER BY n, idx')
-      .bind(runId, 'github_commit_files').all<{ tool: string; status: string; args: string | null; result: string | null }>();
+    // Les deux outils réalisent de vrais commits. Le gardien de qualité
+    // analyse aussi les remplacements, et pas uniquement les fichiers entiers.
+    const { results } = await db.prepare([
+      'SELECT tool, status, args, result FROM agent_run_effects',
+      "WHERE run_id = ?1 AND tool IN ('github_commit_files','github_replace_text')",
+      'ORDER BY n, idx',
+    ].join(' ')).bind(runId).all<{ tool: string; status: string; args: string | null; result: string | null }>();
     quality = summarizeCommittedTests(results);
     if (quality.meaningful === 0) return refuse(db, runId, 'functional_assertions_missing', now);
   }

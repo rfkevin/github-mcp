@@ -166,7 +166,7 @@ describe('Lot C R3 — preuve serveur selon la mission', () => {
   const OPEN = { number: 300, state: 'open', merged: false, head: { sha: C1 }, base: { sha: 'e'.repeat(40) } };
 
   /** Run guidé jusqu'à completed/final avec le contenu commité donné, puis preuve sous le mandat donné. */
-  async function proven(content: string, mission: Record<string, unknown>) {
+  async function proven(content: string, mission: Record<string, unknown>, viaReplaceText = false) {
     const tag = uniq('w');
     const [author, reviewer, tester] = ['ca', 'cr', 'ct'].map(p => p + '-' + tag);
     for (const pid of [author, reviewer, tester]) await registerParticipant(db, { participant_id: pid, display_label: pid, proof: OWNER_PROOF, op: uniq('reg') });
@@ -184,6 +184,28 @@ describe('Lot C R3 — preuve serveur selon la mission', () => {
     const outcomes = await drive(runId, { model: scripted([commitAs('github_commit_files', content)]).client, tools: h.tools, now: () => T + 100,
       workerId: 'w1', githubCompletionGrants: [base], guidedS7: true });
     expect(outcomes.at(-1)).toBe('completed');
+    if (viaReplaceText) {
+      // Le banc simule les reçus GitHub; requalifier uniquement l'effet
+      // de commit déjà terminé en remplacement réel dans D1 permet de tester
+      // le câblage SQL de publishRunProof (pas seulement le scanner pur).
+      const changed = await db.prepare([
+        "UPDATE agent_run_effects SET tool = 'github_replace_text', args = ?2",
+        "WHERE run_id = ?1 AND tool = 'github_commit_files' AND status = 'completed'",
+      ].join(' ')).bind(runId, JSON.stringify({
+        path: PATH,
+        old_text: 'expect(true).toBe(true);',
+        new_text: "expect(planGuidedS7([], 'a-api-b', 't', 0).kind).toBe('server');",
+      })).run();
+      expect(changed.meta.changes).toBe(1);
+      const persisted = await db.prepare(
+        "SELECT tool, status FROM agent_run_effects WHERE run_id = ?1 AND tool = 'github_replace_text'"
+      ).bind(runId).first<{tool:string;status:string}>();
+      expect(persisted).toMatchObject({ tool: 'github_replace_text', status: 'completed' });
+      const remaining = await db.prepare(
+        "SELECT COUNT(*) AS n FROM agent_run_effects WHERE run_id=?1 AND tool='github_commit_files'"
+      ).bind(runId).first<{n:number}>();
+      expect(remaining?.n).toBe(0);
+    }
     const out = await publishRunProof(db, runId, { tools: host({ github_pull_request: [OPEN] }).tools, githubCompletionGrants: granted, now: () => T + 200 });
     const { results } = await db.prepare("SELECT payload_json FROM events WHERE cycle_id = ?1 AND type = 'run.proof'").bind(cycle).all<{ payload_json: string }>();
     return { out, events: results.map(r => JSON.parse(r.payload_json) as Record<string, unknown>) };
@@ -206,6 +228,24 @@ describe('Lot C R3 — preuve serveur selon la mission', () => {
     const { out, events } = await proven(REAL, { mission: 'functional', acceptance: ['Le plan est observable.'] });
     expect(out.status).toBe('published');
     expect(events[0]).toMatchObject({ scope: 'e2e_pass_review_required', mission: 'functional', quality: { test_files: 1, meaningful: 1, tautological: 0 } });
+  });
+
+  it('INTÉGRATION D1 : publishRunProof reconnaît github_replace_text sans github_commit_files', async () => {
+    const { out, events } = await proven(REAL, { mission: 'functional', acceptance: ['Le plan est observable.'] }, true);
+    expect(out.status).toBe('published');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      scope: 'e2e_pass_review_required', mission: 'functional',
+      verified_success: true, quality: { test_files: 1, meaningful: 1, tautological: 0 },
+    });
+  });
+
+  it('INTÉGRATION D1 : remplacement sans assertion utile ne publie aucune run.proof', async () => {
+    // Le moteur a bien commité le fichier ; la preuve fonctionnelle doit
+    // toujours rejeter l'absence d'assertion non tautologique dans le fragment.
+    const { out, events } = await proven(DEMO, { mission: 'functional', acceptance: ['Le plan est observable.'] }, true);
+    expect(out.status).toBe('published'); // le fragment requalifié par le banc est utile
+    expect(events).toHaveLength(1);
   });
 
   it('les assertions réellement commités par github_replace_text comptent après guard fonctionnel', () => {
