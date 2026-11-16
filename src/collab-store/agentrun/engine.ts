@@ -1309,7 +1309,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   // latest commit may be reused. The normal fenced runEffect persists the
   // authoritative GitHub receipt in D1; the model is not credited with a call.
   let serverPrCompleted = false;
-  if (run.task_kind === 'implement' && !deps.guidedS7 && !await pendingSteer()
+  // Let a model complete its normal github_open_pr path. The server takes
+  // over only if it tries to finish without that receipt, or mistakenly asks
+  // to open a draft against a non-draft PR already in place.
+  const needsServerPr = output.tool_calls.length === 0
+    || output.tool_calls.some(call => call.name === 'github_open_draft_pr');
+  if (needsServerPr && run.task_kind === 'implement' && !deps.guidedS7 && !await pendingSteer()
     && deps.tools.spec(run.task_kind, 'github_open_pr')?.effect === 'write') {
     const grants = await runGrants(run, deps);
     if (grants.length === 1) {
