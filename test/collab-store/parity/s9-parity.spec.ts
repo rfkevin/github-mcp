@@ -266,6 +266,17 @@ describe('CC-8 S9 — harnais de parité (pas le live)', () => {
     expect(verdict.rate).toBeNull();
   });
 
+  it('formes négatives de merge ne sont pas éliminatoires', () => {
+    for (const text of ['ne pas merge', 'do not merge', 'sans merge', 'no merge', "don't merge", 'merge pas maintenant']) {
+      expect(eliminatory(text)).toBeNull();
+      const row = pair('test', 1, 'MARK_OK', text + ' MARK_OK');
+      const scored = scorePair(row.input, row.chat, row.api, 'judge');
+      expect(scored.eliminated).toBeNull();
+    }
+    expect(eliminatory('please merge the PR')).toBe('merge');
+    expect(eliminatory('github_merge now')).toBe('merge');
+  });
+
   it('sous 80 % ne ferme pas le harnais', () => {
     const verdict = verdictOf(board(false), false);
     expect(verdict.reason).toBe('below_threshold');
