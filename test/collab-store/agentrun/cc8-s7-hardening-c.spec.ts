@@ -208,7 +208,41 @@ describe('Lot C R3 — preuve serveur selon la mission', () => {
     expect(events[0]).toMatchObject({ scope: 'e2e_pass_review_required', mission: 'functional', quality: { test_files: 1, meaningful: 1, tautological: 0 } });
   });
 
-  it('résumé des tests commités : dernier contenu par fichier, refusés et remplacements ignorés', () => {
+  it('les assertions réellement commités par github_replace_text comptent après guard fonctionnel', () => {
+    const effect = (args: unknown, status = 'completed', result: string | null = JSON.stringify({ commit_sha: C1 })) =>
+      ({ tool: 'github_replace_text', status, args: JSON.stringify(args), result });
+    const edit = { path: PATH, old_text: 'expect(true).toBe(true);', new_text:
+      "expect(await verifyRun()).toMatchObject({ verifiedSuccess: true });\nexpect(capsPost).not.toContain('github.write');" };
+    expect(summarizeCommittedTests([effect(edit)]))
+      .toEqual({ test_files: 1, meaningful: 2, tautological: 0 });
+    expect(summarizeCommittedTests([effect({ edits: [edit] })]))
+      .toEqual({ test_files: 1, meaningful: 2, tautological: 0 });
+    // Un fragment d'edit n'a pas ses imports : commitGuards valide déjà le fichier COMPLET.
+    expect(assertionSignal(edit.new_text).imports_project).toBe(false);
+  });
+
+  it('une chaîne, un commentaire, une tautologie ou un effet GitHub non prouvé ne comptent jamais', () => {
+    const effect = (args: unknown, status = 'completed', result: string | null = JSON.stringify({ commit_sha: C1 })) =>
+      ({ tool: 'github_replace_text', status, args: JSON.stringify(args), result });
+    const fake = { path: PATH, old_text: 'old', new_text:
+      "// expect(real()).toBe(123)\nconst quoted = 'expect(pretend()).toEqual(1)';\nexpect(true).toBe(true);" };
+    const bad = [
+      effect(fake), effect({ ...fake, path: 'src/app.ts', new_text: 'expect(real()).toBe(1)' }),
+      effect({ ...fake, new_text: fake.old_text }), effect({ ...fake, new_text: "expect(result).toBe(1);" }, 'failed'),
+      effect({ ...fake, new_text: "expect(result).toBe(1);" }, 'completed', '{}'),
+      effect({ ...fake, new_text: "expect(result).toBe(1);" }, 'completed', 'not-json'),
+    ];
+    expect(summarizeCommittedTests(bad).meaningful).toBe(0);
+    // Un remplacement plus récent invalide conservativement une ancienne
+    // preuve pleine qui peut avoir été retirée du fichier.
+    const committed = { tool: 'github_commit_files', status: 'completed',
+      args: JSON.stringify({ files: [{ path: PATH, content: REAL }] }),
+      result: JSON.stringify({ commit_sha: C1 }) };
+    expect(summarizeCommittedTests([committed, effect(fake)]))
+      .toEqual({ test_files: 1, meaningful: 0, tautological: 1 });
+  });
+
+  it('résumé des tests commités : dernier contenu par fichier, rejets et remplacements invalides ignorés', () => {
     const effect = (tool: string, status: string, content: string, result: string | null = JSON.stringify({ commit_sha: C1 })) =>
       ({ tool, status, args: JSON.stringify({ files: [{ path: PATH, content }] }), result });
     expect(summarizeCommittedTests([effect('github_commit_files', 'completed', DEMO), effect('github_commit_files', 'completed', REAL)]))
