@@ -388,6 +388,48 @@ export function githubVerifiedHeadForExistingPr(effects: readonly GithubCompleti
   return checked >= 0 ? sha : null;
 }
 
+/**
+ * When a genuine commit has started its correlated full check, one SERVER
+ * read can discover the result without another model turn or CI dispatch.
+ * An existing check result (including wait/failure) is not duplicated: the
+ * CI poll ledger owns waits, while failures return control to the model.
+ */
+export function githubStartedCheckForExistingPr(effects: readonly GithubCompletionEffect[], branch: string):
+  { sha: string; runId: number } | null {
+  const entries = effects.map(effect => ({ tool: effect.tool, value: completedPayload(effect) }));
+  const scope = entries.findIndex(entry => entry.tool === 'github_write_scope' && entry.value?.branch === branch);
+  if (scope < 0) return null;
+  const prior = entries[scope].value?.branch_head;
+  if (!(typeof prior === 'string' && COMPLETION_SHA.test(prior))
+    && !entries.some((entry, index) => index > scope && entry.tool === 'github_create_branch'
+      && entry.value?.branch === branch && typeof entry.value.sha === 'string' && COMPLETION_SHA.test(entry.value.sha))) return null;
+  let latest = -1;
+  let sha: string | null = null;
+  for (let i = scope + 1; i < entries.length; i++) {
+    const item = entries[i];
+    if (item.tool !== 'github_commit_files' && item.tool !== 'github_replace_text') continue;
+    latest = i;
+    sha = item.value?.branch === branch && typeof item.value.commit_sha === 'string'
+      && COMPLETION_SHA.test(item.value.commit_sha) ? item.value.commit_sha : null;
+  }
+  if (latest < 0 || !sha) return null;
+  let started = -1;
+  let runId = 0;
+  for (let i = latest + 1; i < entries.length; i++) {
+    const item = entries[i];
+    if (item.tool !== 'github_run_checks' || item.value?.targetSha !== sha
+      || !Number.isSafeInteger(item.value?.runId) || Number(item.value.runId) <= 0) continue;
+    started = i;
+    runId = Number(item.value.runId);
+  }
+  if (started < 0) return null;
+  // An actual check result (including a model-free CI poll) makes this phase
+  // complete; never launch a second server read for this SHA here.
+  if (entries.slice(started + 1).some(entry => entry.tool === 'github_check_result'
+    && entry.value?.targetSha === sha)) return null;
+  return { sha, runId };
+}
+
 /** Les indices respectent l'ordre D1 (n,idx), aucune preuve externe n'est simulée. */
 export function githubCompletionSatisfied(effects: readonly GithubCompletionEffect[], branch: string): boolean {
   const entries = effects.map(e => ({ tool: e.tool, value: completedPayload(e) }));
