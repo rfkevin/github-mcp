@@ -158,29 +158,56 @@ export function functionalTestCause(files: readonly { path: string; content: str
 export interface CommittedTestSummary { test_files: number; meaningful: number; tautological: number }
 
 /**
- * Résumé des tests réellement commités par une exécution : dernier contenu de chaque fichier de test écrit
- * par un github_commit_files abouti (effets D1 dans l'ordre). Les corrections par remplacement ne portent
- * pas le contenu complet : elles ne sont pas relues (le résumé peut alors être incomplet, jamais gonflé).
+ * Résumé conservateur des tests réellement commités par le run.
+ *
+ * - github_commit_files transporte le contenu complet des fichiers.
+ * - github_replace_text est un vrai commit, mais ne transporte que le fragment
+ *   old_text -> new_text. Le guard de commit S7 vérifie déjà le contenu COMPLET
+ *   après remplacement (imports du dépôt, assertions, absence de skip).
+ *   La preuve ne compte donc que les assertions ACTIVES ajoutées au fragment
+ *   new_text d'un remplacement effectué et muni d'un SHA de commit serveur.
+ * - Un commentaire, une chaîne, un matcher absent ou un effet non validé ne
+ *   constitue jamais une preuve fonctionnelle.
+ * - Chaque fichier n'est compté qu'une fois (dernier état observable).
  */
 export function summarizeCommittedTests(effects: readonly { tool: string; status: string; args: string | null; result: string | null }[]): CommittedTestSummary {
-  const latest = new Map<string, string>();
+  const latest = new Map<string, { content: string; full: boolean }>();
+  const commitSha = /^[a-f0-9]{40}$/;
   for (const effect of effects) {
-    if (effect.tool !== 'github_commit_files' || effect.status !== 'completed' || !effect.args) continue;
+    if (effect.status !== 'completed' || !effect.args || !effect.result) continue;
+    if (effect.tool !== 'github_commit_files' && effect.tool !== 'github_replace_text') continue;
     try {
-      const done = JSON.parse(effect.result ?? '') as { commit_sha?: unknown };
-      if (typeof done?.commit_sha !== 'string') continue;
-      const files = (JSON.parse(effect.args) as { files?: unknown }).files;
-      if (!Array.isArray(files)) continue;
-      for (const file of files as { path?: unknown; content?: unknown }[]) {
-        if (typeof file?.path === 'string' && typeof file.content === 'string' && isTestPath(file.path)) latest.set(file.path, file.content);
+      const done = JSON.parse(effect.result) as { commit_sha?: unknown };
+      if (typeof done?.commit_sha !== 'string' || !commitSha.test(done.commit_sha)) continue;
+      const args = JSON.parse(effect.args) as Record<string, unknown>;
+      if (effect.tool === 'github_commit_files') {
+        if (!Array.isArray(args.files)) continue;
+        for (const file of args.files as { path?: unknown; content?: unknown }[]) {
+          if (typeof file?.path === 'string' && typeof file.content === 'string' && isTestPath(file.path)) {
+            latest.set(file.path, { content: file.content, full: true });
+          }
+        }
+      } else {
+        const edits = Array.isArray(args.edits) ? args.edits : [args];
+        for (const edit of edits as { path?: unknown; old_text?: unknown; new_text?: unknown }[]) {
+          if (typeof edit?.path !== 'string' || !isTestPath(edit.path)
+            || typeof edit.old_text !== 'string' || typeof edit.new_text !== 'string'
+            || edit.old_text === edit.new_text) continue;
+          // Ne jamais réutiliser le contenu FULL antérieur après un edit :
+          // il pourrait avoir supprimé l'assertion qui justifiait la preuve.
+          latest.set(edit.path, { content: edit.new_text, full: false });
+        }
       }
-    } catch { /* effet illisible : pas une preuve */ }
+    } catch { /* effet illisible : jamais preuve */ }
   }
   let meaningful = 0;
   let tautological = 0;
-  for (const content of latest.values()) {
-    const signal = assertionSignal(content);
-    if (signal.disabled || !signal.imports_project) continue;
+  for (const entry of latest.values()) {
+    const signal = assertionSignal(entry.content);
+    // Le contenu complet est vérifiable ici ; pour un fragment de remplacement,
+    // l'import et le code désactivé ont été validés par commitGuards() sur le
+    // fichier complet avant que l'effet ne passe à completed.
+    if (signal.disabled || (entry.full && !signal.imports_project)) continue;
     meaningful += signal.meaningful;
     tautological += signal.tautological;
   }
