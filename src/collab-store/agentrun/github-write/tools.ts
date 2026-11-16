@@ -145,6 +145,9 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
           draft: existing.draft, base: options.baseBranch, status: 'existing',
           next_action: 'request_D12' };
       }
+      // Server-finalized runs may ONLY reuse an existing, non-draft PR. Never
+      // convert a missing PR into an implicit GitHub creation from this path.
+      if (args.existing_only === true) throw new ToolRefused('api_existing_pr_not_found');
     }
     if (call.name === 'github_replace_text') {
       if (!s7.reads) throw new ToolRefused('api_edit_unavailable');
