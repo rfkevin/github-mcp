@@ -1025,35 +1025,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   // CC8 S7 mode guidé : prochaine étape décidée sur l'état D1 AVANT la réclamation (même état, même décision).
   // Empreinte de l'état lu (effets + relevés), prise AVANT la lecture du plan (relecture D12 GPT-6, R4).
   const seen = deps.guidedS7 ? (await db.prepare('SELECT ' + GUIDED_STATE + ' AS fp').bind(runId).first<{ fp: string }>())?.fp ?? '' : '';
-  let plan = await guidedStep(db, run, deps, run.steps_done);
-  // Free-mode dynamic WorkSessions use the SAME server/fenced tool path as S7
-  // guided runs for CI receipt and existing-PR reuse. This never launches CI.
-  // Once check_result reports "wait", the existing append-only CI poll ledger
-  // takes over (no model calls). Failed checks return control to the model.
-  if (!plan && run.task_kind === 'implement' && !deps.guidedS7 && deps.dynamicGrantFor) {
-    const grants = await runGrants(run, deps);
-    if (grants.length === 1) {
-      const effects = await runEvidence(db, runId);
-      const branch = grants[0].branch;
-      const name = branch.split('-api-')[1];
-      if (name && deps.tools.spec(run.task_kind, 'github_open_pr')?.effect === 'write') {
-        const verified = githubVerifiedHeadForExistingPr(effects, branch);
-        if (verified && !githubCompletionSatisfied(effects, branch)) {
-          const attempted = await db.prepare([
-            "SELECT 1 FROM agent_run_effects WHERE run_id=?1 AND tool='github_open_pr'",
-            "AND json_valid(args) AND json_extract(args,'$.existing_only')=1",
-            "AND status IN ('completed','failed') LIMIT 1",
-          ].join(' ')).bind(runId).first();
-          if (!attempted) plan = {kind:'server',call:{id:'srv-final-pr-'+run.steps_done,
-            name:'github_open_pr',args:{name,existing_only:true,title:'Reprise vérifiée de la PR existante'}}};
-        } else if (deps.tools.spec(run.task_kind,'github_check_result')?.effect) {
-          const started = githubStartedCheckForExistingPr(effects, branch);
-          if (started) plan = {kind:'server',call:{id:'srv-check-'+run.steps_done,
-            name:'github_check_result',args:{name,sha:started.sha,run_id:started.runId}}};
-        }
-      }
-    }
-  }
+  const plan = await guidedStep(db, run, deps, run.steps_done);
   if (plan?.kind === 'stop') {
     // Arrêt typé et auditable d'un run guidé (aucun repli vers l'orchestration libre du modèle).
     // Relecture D12 GPT-6 (R4) : l'arrêt n'écrit que si le run est toujours le nôtre (garde LIVE : HALT,
@@ -1311,4 +1283,256 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // CC-8 S1b-2 (relecture D12 #255, bloquant 1) : garde avant chaque effet — l'effet doit
     // pouvoir FINIR avant le plafond d'étape ET la deadline du run : on réserve son timeout
     // maximal (120 s) + le plancher de 30 s (EFFECT_LAUNCH_FLOOR_S), borné par les DEUX.
-    // Jamais d'effet coupé au milieu ni ambiguous ; en dess
+    // Jamais d'effet coupé au milieu ni ambiguous ; en dessous : arrêt propre transient,
+    // la relance d'exécution S1b reprend (v2 point 4).
+    // Un ancien worker dont la réclamation a été reprise entre-temps ne décide de rien :
+    // réclamation fraîche relue, il rend 'busy' — jamais un faux 'failed' au nom d'un autre.
+    if (claimed.claimed_at + STEP_TIMEOUT_S - deps.now() < EFFECT_LAUNCH_FLOOR_S) {
+      const fresh = await db.prepare('SELECT claimed_by, claimed_at, attempts FROM agent_run_steps WHERE run_id = ?1 AND n = ?2')
+        .bind(runId, n).first<{ claimed_by: string; claimed_at: number; attempts: number }>();
+      if (!fresh || fresh.claimed_by !== deps.workerId || fresh.claimed_at !== claimed.claimed_at
+        || fresh.attempts !== claim.attempts) return { outcome: 'busy' };
+      await stopAs(db, runId, 'failed', 'model_transient: temps insuffisant avant l’effet ' + call.name
+        + ' (il faut ' + EFFECT_LAUNCH_FLOOR_S + ' s devant le plafond d’étape et la deadline, relecture D12 #255) ; relance d’exécution S1b.', deps.now(), claim);
+      return { outcome: 'failed' };
+    }
+    // Lot A R2 (#281) : prévalidation statique de l'étape de contenu guidée, AVANT tout effet GitHub.
+    // Le plan est recalculé à chaque passage : une reprise rejoue la même décision (clé déterministe).
+    if (plan?.kind === 'model' && call.name === GUIDED_TOOL) {
+      const source = guidedPrecheckFill ?? plan.fill;
+      // U2 : vérifier les modules externes depuis le manifeste du dépôt à la tête immuable.
+      const bare = guidedBareDependencies(call);
+      let declaredDependencies: ReadonlySet<string> | undefined;
+      if (bare.length && deps.tools.spec(run.task_kind, 'github_read_file')?.effect === 'read') {
+        try {
+          const file = await deps.tools.execute({ id: 'srv-package-' + n, name: 'github_read_file',
+            args: { path: 'package.json', ref: source.head } }, { run_id: runId, prefetch: true }) as { content?: unknown };
+          if (typeof file?.content === 'string') {
+            const packageJson = JSON.parse(file.content) as Record<string, unknown>;
+            declaredDependencies = new Set(['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
+              .flatMap(section => {
+                const obj = packageJson[section];
+                return obj && typeof obj === 'object' && !Array.isArray(obj) ? Object.keys(obj) : [];
+              }));
+          }
+        } catch { /* impossible de prouver le module déclaré : refus typé */ }
+      }
+      // U3 : après CI rouge, refuser une correction bit-à-bit identique à tous les fichiers proposés.
+      // En reprise après coupure, relire les sources au SHA de tête, indépendamment de la mémoire.
+      const currentFiles: Record<string, string> = { ...(source.currentFiles ?? {}) };
+      if (source.correction && Array.isArray(call.args?.files)
+        && deps.tools.spec(run.task_kind, 'github_read_file')?.effect === 'read') {
+        for (const file of call.args.files as Array<{ path?: unknown }>) {
+          if (typeof file?.path !== 'string' || !plan.fill.paths.includes(file.path)
+            || Object.prototype.hasOwnProperty.call(currentFiles, file.path)) continue;
+          try {
+            const result = await deps.tools.execute({ id: 'srv-diff-' + n, name: 'github_read_file',
+              args: { path: file.path, ref: source.head } }, { run_id: runId, prefetch: true }) as { content?: unknown };
+            if (typeof result?.content === 'string' && new TextEncoder().encode(result.content).length <= 100_000)
+              currentFiles[file.path] = result.content;
+          } catch { /* lecture impossible : aucune preuve de diff nul */ }
+        }
+      }
+      const cause = guidedPrecheck(call, plan.fill.paths, plan.fill.mission,
+        { declaredDependencies, currentFiles, correction: source.correction });
+      if (cause) {
+        const stopped = await recordPrecheck(db, runId, claim, idx, call, cause, deps.now());
+        if (stopped) return stopped;
+        refused('guided_precheck:' + cause + ' — ' + (PRECHECK_HINTS[cause] ?? cause));
+        continue;
+      }
+    }
+    const effect = await runEffect(db, runId, claim, idx, call, deps);
+    if ('outcome' in effect) return effect;
+    results.push(effect);
+  }
+
+  // Server-owned reconciliation: only an EXISTING PR at a genuinely tested
+  // latest commit may be reused. The normal fenced runEffect persists the
+  // authoritative GitHub receipt in D1; the model is not credited with a call.
+  let serverPrCompleted = false;
+  // Let a model complete its normal github_open_pr path. The server takes
+  // over only if it tries to finish without that receipt, or mistakenly asks
+  // to open a draft against a non-draft PR already in place.
+  const needsServerPr = output.tool_calls.length === 0
+    || output.tool_calls.some(call => call.name === 'github_open_draft_pr');
+  if (needsServerPr && run.task_kind === 'implement' && !deps.guidedS7 && !await pendingSteer()
+    && deps.tools.spec(run.task_kind, 'github_open_pr')?.effect === 'write') {
+    const grants = await runGrants(run, deps);
+    if (grants.length === 1) {
+      const effects = await runEvidence(db, runId);
+      const verifiedHead = githubVerifiedHeadForExistingPr(effects, grants[0].branch);
+      if (verifiedHead && !githubCompletionSatisfied(effects, grants[0].branch)
+        && claimed.claimed_at + STEP_TIMEOUT_S - deps.now() >= EFFECT_LAUNCH_FLOOR_S) {
+        const call: ToolCall = { id: 'server-existing-pr-' + n, name: 'github_open_pr',
+          args: { existing_only: true, title: 'Reprise vérifiée de la PR existante' } };
+        const result = await runEffect(db, runId, claim, output.tool_calls.length, call, deps);
+        if ('outcome' in result) return result;
+        if (!result.error) serverPrCompleted = await completionVerified(db, run, deps);
+      }
+    }
+  }
+  // Checkpoint: server proof, author evidence and independent D12 remain distinct.
+  const guarded = run.task_kind === 'implement' && (deps.githubCompletionGrants ?? []).some(g =>
+    g.cycle === run.cycle_id && g.task === run.task_id && g.participant === run.participant_id);
+  const provenAtPr = serverPrCompleted || (guarded && !deps.guidedPreparation
+    && output.tool_calls.some(call => call.name === 'github_open_pr') && await completionVerified(db, run, deps));
+  // Un effet métier persistant peut terminer le run sans forcer un tour modèle « final » supplémentaire.
+  // Si l'outil est refusé, échoué ou n'a rien écrit, le test D1 ci-dessous reste négatif.
+  const provenAtHandover = guarded && deps.guidedPreparation
+    && output.tool_calls.some(call => call.name === 'store_handover')
+    && (await runEvidence(db, run.run_id)).some(e=>e.tool==='store_handover' && e.status==='completed')
+    && await completionVerified(db,run,deps);
+  const provenAtStore = output.tool_calls.some(call =>
+    ['store_answer', 'store_verdict', 'store_contribute', 'store_no_change_submit'].includes(call.name))
+    && await completionVerified(db, run, deps);
+  const repeatedDenial = await repeatedDeniedWithoutProgress(db, runId, n, output, results);
+  const repeatedScope = !repeatedDenial && run.task_kind === 'implement'
+    && await repeatedScopeWithoutProgress(db, runId, output, results);
+  const noProgress = repeatedDenial || repeatedScope;
+  const persistedProof = provenAtPr || provenAtHandover || provenAtStore;
+  const final = persistedProof || (!await pendingSteer() && (noProgress || output.tool_calls.length === 0)) ? 1 : 0;
+  const verified = !noProgress && (provenAtPr || provenAtHandover || provenAtStore
+    || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true));
+  const completionStatus = verified ? 'completed' : 'failed';
+  const completionReason = repeatedDenial ? 'blocked:no_progress:repeated_denial'
+    : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit' : verified ? 'final'
+    : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
+  // La conclusion est conditionnée DANS le batch à l'absence de nouveau message.
+  // Une preuve métier déjà inscrite dans D1 reste cependant définitive.
+  const terminalGuard = "(?4 = 1 AND (?9 = 1 OR NOT EXISTS (SELECT 1 FROM agent_run_messages WHERE run_id=?1 AND delivered_step IS NULL)))";
+  const [done] = await db.batch([
+    db.prepare([
+      "UPDATE agent_run_steps SET state = 'completed', results = ?4, completed_at = ?5",
+      "WHERE run_id = ?1 AND n = ?2 AND claimed_by = ?3 AND attempts = ?6 AND state = 'model_done' AND " + LIVE,
+    ].join(' ')).bind(runId, n, deps.workerId, JSON.stringify(results), now, claimed.attempts),
+    db.prepare([
+      'UPDATE agent_runs SET steps_done = steps_done + 1, updated_at = ?3,',
+      '  status = CASE WHEN ' + terminalGuard + ' THEN ?7 ELSE status END,' ,
+      '  stop_reason = CASE WHEN ' + terminalGuard + ' THEN ?8 ELSE stop_reason END,' ,
+      '  summary = CASE WHEN ' + terminalGuard + ' THEN ?5 ELSE summary END',
+      'WHERE run_id = ?1 AND steps_done = ?2 AND EXISTS (SELECT 1 FROM agent_run_steps',
+      "  WHERE run_id = ?1 AND n = ?2 AND state = 'completed' AND claimed_by = ?6 AND completed_at = ?3)",
+    ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId, completionStatus, completionReason,
+      persistedProof ? 1 : 0),
+  ]);
+  if (done.meta.changes !== 1) return settled(db, runId, now);
+  const recordedStatus = (await db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId)
+    .first<{ status: RunStatus }>())?.status ?? 'running';
+  if (noProgress && recordedStatus === 'failed') {
+    // Durable, idempotent breadcrumb even when the optional salon is unavailable.
+    await db.prepare([
+      "INSERT INTO agent_run_journal (at,kind,run_id,detail)",
+      "SELECT ?2,'no_progress',?1,?3 WHERE EXISTS (SELECT 1 FROM agent_runs",
+      " WHERE run_id=?1 AND status='failed' AND stop_reason=?4)",
+      " AND NOT EXISTS (SELECT 1 FROM agent_run_journal WHERE run_id=?1 AND kind='no_progress')",
+    ].join(' ')).bind(runId, now, JSON.stringify({ step: n, reason: completionReason }), completionReason).run();
+    if (deps.salonEnabled && run.task_id) {
+      try {
+        await postSalonMessage(db, { SALON_ENABLED: 'true' }, {
+          authorPid: run.participant_id, level: 'blocking', taskId: run.task_id,
+          incidentKey: ('no-progress:' + runId).slice(0, 128), now,
+          body: 'WorkSession ' + runId + ' bloquée : ' +
+            (repeatedScope
+              ? 'mandat GitHub relu à répétition avec une branche déjà existante, sans nouvel effet productif D1. '
+              : 'même outil et même refus déterministe sur trois étapes consécutives (D1). Aucun effet externe effectué. ') +
+            'Diagnostic : ' + completionReason + '. Intervention/clarification demandée.',
+        });
+      } catch { /* D1 checkpoint already retained; the salon cannot override a terminal state. */ }
+    }
+  }
+  if (final && recordedStatus !== 'running') return { outcome: recordedStatus };
+  // Mode guidé : la limite d'étapes modèle se juge à la prochaine réclamation (une étape serveur peut suivre).
+  const status = await settle(db, runId, now, guarded && deps.guidedS7 === true);
+  return { outcome: status === 'running' ? 'stepped' : status };
+}
+
+/** Effet externe selon R2. Rend l'entrée de résultat, ou un arrêt. */
+async function runEffect(db: D1Database, runId: string, claim: Claim, idx: number, call: ToolCall, deps: EngineDeps):
+  Promise<ResultEntry | StepResult> {
+  const n = claim.n;
+  const now = deps.now();
+  const key = await sha256Hex(canonical({ run_id: runId, n, idx, tool: call.name, args: call.args }));
+  const ctx = { run_id: runId, effect_key: key };
+  const mark = (status: 'completed' | 'failed' | 'ambiguous', result: string) =>
+    db.prepare('UPDATE agent_run_effects SET status = ?2, result = ?3, updated_at = ?4 WHERE effect_key = ?1')
+      .bind(key, status, result, now).run();
+  const effect = await db.prepare('SELECT status, result, updated_at FROM agent_run_effects WHERE effect_key = ?1').bind(key).first<EffectRow>();
+  if (effect?.status === 'completed') return { id: call.id, content: effect.result ?? '' };
+  if (effect?.status === 'failed') return { id: call.id, content: effect.result ?? '', error: true };
+  // Effet lancé il y a moins de EFFECT_TIMEOUT_S : peut-être encore en vol chez un autre worker.
+  if (effect?.status === 'pending' && effect.updated_at + EFFECT_TIMEOUT_S > now) return { outcome: 'busy' };
+  if (effect && (effect.status === 'pending' || effect.status === 'ambiguous')) {
+    // Effet incertain : chercher s'il a eu lieu AVANT tout réessai ; jamais de réémission à l'aveugle.
+    let found: LookupResult = null;
+    try {
+      found = deps.tools.lookup ? await deps.tools.lookup(call, ctx) : null;
+    } catch {
+      found = null;
+    }
+    if (found?.found) {
+      const content = asContent(found.result);
+      await mark('completed', content);
+      return { id: call.id, content };
+    }
+    if (!found) {
+      await mark('ambiguous', JSON.stringify({ error: 'effect_outcome_unknown' }));
+      await stopAs(db, runId, 'needs_reconcile', 'effect_outcome_unknown: ' + call.name, now, claim);
+      return { outcome: 'needs_reconcile' };
+    }
+    // found === { found: false } : l'effet n'a certainement pas eu lieu, il peut être tenté.
+  }
+  if (!effect) {
+    const intent = await db.prepare([
+      'INSERT OR IGNORE INTO agent_run_effects (effect_key, run_id, n, idx, tool, args, status, updated_at)',
+      "SELECT ?2, ?1, ?3, ?4, ?5, ?6, 'intent', ?7 WHERE " + LIVE + ' AND ' + claimHeld('?3', '?8', '?9'),
+    ].join(' ')).bind(runId, key, n, idx, call.name, canonical(call.args), now, claim.worker, claim.attempts).run();
+    if (intent.meta.changes !== 1) return settled(db, runId, now);
+  }
+  const pending = await db.prepare([
+    "UPDATE agent_run_effects SET status = 'pending', updated_at = ?3",
+    "WHERE effect_key = ?2 AND status IN ('intent','pending','ambiguous') AND " + LIVE + ' AND ' + claimHeld('?4', '?5', '?6'),
+  ].join(' ')).bind(runId, key, now, n, claim.worker, claim.attempts).run();
+  if (pending.meta.changes !== 1) return settled(db, runId, now);
+  await deps.probe?.('before_effect');
+  let result: unknown;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const limit = Math.max(1, deps.effectTimeoutMs ?? EFFECT_TIMEOUT_S * 1000);
+    result = await Promise.race([
+      deps.tools.execute(call, ctx),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('effect_timeout')), limit); }),
+    ]);
+  } catch (error) {
+    if (error instanceof ToolRefused) {
+      const content = JSON.stringify({ error: errorText(error) });
+      await mark('failed', content);
+      return { id: call.id, content, error: true };
+    }
+    await mark('ambiguous', JSON.stringify({ error: errorText(error) }));
+    await stopAs(db, runId, 'needs_reconcile', 'effect_outcome_unknown: ' + call.name, now, claim);
+    return { outcome: 'needs_reconcile' };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  await deps.probe?.('after_effect');
+  // Enregistrement du résultat sans garde : c'est la trace de ce qui a réellement eu lieu.
+  const content = asContent(result);
+  await mark('completed', content);
+  await deps.probe?.('after_effect_recorded');
+  return { id: call.id, content };
+}
+
+/** Résumé d'une exécution pour la session chat suivante (L7-4). */
+export async function runSummary(db: D1Database, runId: string): Promise<{
+  status: string; stop_reason: string; steps_done: number; tokens_used: number; cost_cents: number; summary: string;
+  effects: { tool: string; status: string }[];
+} | null> {
+  await ensureAgentRunSchema(db);
+  const run = await db.prepare('SELECT status, stop_reason, steps_done, tokens_used, cost_cents, summary FROM agent_runs WHERE run_id = ?1')
+    .bind(runId).first<{ status: string; stop_reason: string; steps_done: number; tokens_used: number; cost_cents: number; summary: string }>();
+  if (!run) return null;
+  const { results } = await db.prepare('SELECT tool, status FROM agent_run_effects WHERE run_id = ?1 ORDER BY n, idx')
+    .bind(runId).all<{ tool: string; status: string }>();
+  return { ...run, effects: results };
+}
