@@ -115,11 +115,11 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
 
   it('T4-auto: CI prouvée => réutilisation serveur de la PR existante, sans outil de finalisation du modèle', async () => {
     const f = await fixture(); const h = githubHost();
-    const model = scripted(pipeline.slice(0, 5));
+    const model = scripted([...pipeline.slice(0, 5), final()]);
     const d: EngineDeps = { model, tools: h.tools, githubCompletionGrants: f.completion,
       now: () => NOW + 1, workerId: 'server-pr-auto' };
     expect(await drain(f.runId, d, 8)).toBe('completed');
-    expect(model.calls()).toBe(5);
+    expect(model.calls()).toBe(6); // Le dernier final ne contient aucun appel GitHub.
     expect(h.log).toEqual(['github_write_scope','github_create_branch','github_commit_files',
       'github_run_checks','github_check_result','github_open_pr']);
     const row = await db.prepare("SELECT args,result,status FROM agent_run_effects WHERE run_id=?1 AND tool='github_open_pr'")
@@ -127,6 +127,22 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
     expect(row?.status).toBe('completed');
     expect(JSON.parse(row!.args)).toMatchObject({ existing_only: true });
     expect(JSON.parse(row!.result)).toMatchObject({ number: 31, head_sha: COMMIT_SHA, draft: false });
+  });
+
+  it('T4-auto wrong tool: un brouillon demandé par erreur ne masque pas une PR existante non brouillon', async () => {
+    const f = await fixture(); const h = githubHost();
+    const names = new Set(h.tools.list('implement'));
+    names.add('github_open_draft_pr');
+    h.tools.list = () => [...names];
+    const before = h.tools.spec;
+    h.tools.spec = (kind,name) => name === 'github_open_draft_pr' ? { name, effect: 'write' } : before(kind,name);
+    const d = deps([...pipeline.slice(0,5), call('github_open_draft_pr','mistaken-draft')],h.tools,f.completion);
+    expect(await drain(f.runId,d,9)).toBe('completed');
+    const proof = await db.prepare(
+      "SELECT status,result FROM agent_run_effects WHERE run_id=?1 AND tool='github_open_pr'"
+    ).bind(f.runId).first<{status:string;result:string}>();
+    expect(proof?.status).toBe('completed');
+    expect(JSON.parse(proof!.result)).toMatchObject({number:31,head_sha:COMMIT_SHA,draft:false});
   });
 
   it('T4-auto fail-closed: CI verte sans PR existante => aucun succès ni création', async () => {
@@ -189,7 +205,7 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
     expect((await runStep(db, f.runId, resumed)).outcome).toBe('stepped');
     expect(await drain(f.runId, resumed, 8)).toBe('completed');
     expect(writes).toBe(1);
-    expect(model.calls()).toBe(pipeline.length - 2); // PR réutilisée par le serveur après la CI.
+    expect(model.calls()).toBe(pipeline.length - 1); // Le modèle a utilisé github_open_pr, sans dernier final.
   });
 
   it('T6: answer/review/test/design sans effet métier ne réussissent pas sur une simple sortie finale', async () => {
