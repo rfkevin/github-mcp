@@ -166,7 +166,7 @@ describe('Lot C R3 — preuve serveur selon la mission', () => {
   const OPEN = { number: 300, state: 'open', merged: false, head: { sha: C1 }, base: { sha: 'e'.repeat(40) } };
 
   /** Run guidé jusqu'à completed/final avec le contenu commité donné, puis preuve sous le mandat donné. */
-  async function proven(content: string, mission: Record<string, unknown>, viaReplaceText = false) {
+  async function proven(content: string, mission: Record<string, unknown>, viaReplaceText: 'meaningful' | 'tautological' | false = false) {
     const tag = uniq('w');
     const [author, reviewer, tester] = ['ca', 'cr', 'ct'].map(p => p + '-' + tag);
     for (const pid of [author, reviewer, tester]) await registerParticipant(db, { participant_id: pid, display_label: pid, proof: OWNER_PROOF, op: uniq('reg') });
@@ -194,7 +194,8 @@ describe('Lot C R3 — preuve serveur selon la mission', () => {
       ].join(' ')).bind(runId, JSON.stringify({
         path: PATH,
         old_text: 'expect(true).toBe(true);',
-        new_text: "expect(planGuidedS7([], 'a-api-b', 't', 0).kind).toBe('server');",
+        new_text: viaReplaceText === 'tautological' ? 'expect(true).toBe(true);' :
+          "expect(planGuidedS7([], 'a-api-b', 't', 0).kind).toBe('server');",
       })).run();
       expect(changed.meta.changes).toBe(1);
       const persisted = await db.prepare(
@@ -231,7 +232,7 @@ describe('Lot C R3 — preuve serveur selon la mission', () => {
   });
 
   it('INTÉGRATION D1 : publishRunProof reconnaît github_replace_text sans github_commit_files', async () => {
-    const { out, events } = await proven(REAL, { mission: 'functional', acceptance: ['Le plan est observable.'] }, true);
+    const { out, events } = await proven(REAL, { mission: 'functional', acceptance: ['Le plan est observable.'] }, 'meaningful');
     expect(out.status).toBe('published');
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
@@ -243,9 +244,9 @@ describe('Lot C R3 — preuve serveur selon la mission', () => {
   it('INTÉGRATION D1 : remplacement sans assertion utile ne publie aucune run.proof', async () => {
     // Le moteur a bien commité le fichier ; la preuve fonctionnelle doit
     // toujours rejeter l'absence d'assertion non tautologique dans le fragment.
-    const { out, events } = await proven(DEMO, { mission: 'functional', acceptance: ['Le plan est observable.'] }, true);
-    expect(out.status).toBe('published'); // le fragment requalifié par le banc est utile
-    expect(events).toHaveLength(1);
+    const { out, events } = await proven(DEMO, { mission: 'functional', acceptance: ['Le plan est observable.'] }, 'tautological');
+    expect(out).toEqual({ status: 'refused', reason: 'functional_assertions_missing' });
+    expect(events).toHaveLength(0);
   });
 
   it('les assertions réellement commités par github_replace_text comptent après guard fonctionnel', () => {
