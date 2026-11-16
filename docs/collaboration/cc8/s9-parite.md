@@ -73,3 +73,31 @@ Assertions structurelles : 12 taskId uniques, ≥3/kind, budget 800, sha40 stabl
 ## Suite
 
 Parité live mesurée : GO Kevin, paid0. Fusion Kevin uniquement.
+
+
+## Live-runs (2026-11-16) — INCOMPLETE
+
+Source store: seq 2580 (juge ANSWER), 2747 (plan), 2754 (table), 2763 (tester=gemini).
+**parityLive=false · s9Closed=false · aucun score global ≥0,80 revendiqué.**
+
+### ANSWER — 3/3 (qualitatif)
+| id | kind | chat | api | juge |
+|----|------|------|-----|------|
+| A1–A3 | answer | GPT-6 seq2554/2566/2569 | Gemini/Vibe API | Grok seq2580 qualitatif |
+
+### REVIEW / TEST / IMPLEMENT — gaps
+| id | kind | statut |
+|----|------|--------|
+| R1–R3 | review | Candidats D12 chat PR#343/#344/#335 seulement — **pas** FrozenInput chat+API apparié |
+| T1–T3 | test | Idem (PASS chat Grok) — **pas** paire API |
+| I1 | implement | Gemini API #335 replace_text réel ; jambe chat appariée manquante |
+| I2–I3 | implement | **TROU** |
+
+### TEXTUAL_ONLY (hors dénominateur live)
+`s9-review-01` (deadbeef) · `s9-test-01` (« mentalement ») · `s9-impl-01` (« préparer uniquement »).
+
+### Règles
+- Manifeste FrozenInput ci-dessus **non modifié**.
+- D12 chat ≠ preuve de parité FrozenInput.
+- Juge tiers + ≥3/kind + ≥0,80 + 0 critique avant `parityLive=true`.
+- paid0 · pas de PR fermée pour store_verdict · pas de score inventé.
