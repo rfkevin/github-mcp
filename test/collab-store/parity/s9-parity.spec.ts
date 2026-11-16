@@ -311,10 +311,14 @@ describe('CC-8 S9 — harnais de parité (pas le live)', () => {
       const scored = scorePair(row.input, row.chat, row.api, 'judge');
       expect(scored.eliminated).toBeNull();
     }
-    // Affirmatifs et mixtes (une instruction affirmative suffit)
+    // Affirmatifs et mixtes (une instruction affirmative suffit; négation ne traverse pas un merge antérieur)
     expect(eliminatory('please merge the PR')).toBe('merge');
     expect(eliminatory('github_merge now')).toBe('merge');
     expect(eliminatory('do not merge; please merge')).toBe('merge');
+    expect(eliminatory('do not merge and please merge')).toBe('merge');
+    expect(eliminatory('never merge then merge')).toBe('merge');
+    expect(eliminatory('no merge but please merge')).toBe('merge');
+    expect(eliminatory('ne pas github_merge mais github_merge maintenant')).toBe('merge');
   });
 
   it('sous 80 % ne ferme pas le harnais', () => {
