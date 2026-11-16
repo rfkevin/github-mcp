@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
-import { createRun, runStep, runSummary, ToolRefused, STEP_TIMEOUT_S, type ModelOutput, type ToolHost, type ToolCall, type EngineDeps } from '../../../src/collab-store/agentrun/engine';
+import { createRun, runStep, runSummary, githubVerifiedHeadForExistingPr, ToolRefused, STEP_TIMEOUT_S, type ModelOutput, type ToolHost, type ToolCall, type EngineDeps } from '../../../src/collab-store/agentrun/engine';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const NOW = 1_990_000_000;
@@ -29,7 +29,7 @@ function scripted(outputs: ModelOutput[]) {
   }, calls: () => count };
 }
 
-function githubHost(options: { refuseBranch?: boolean; verified?: boolean; wrongPrHead?: boolean } = {}) {
+function githubHost(options: { refuseBranch?: boolean; verified?: boolean; wrongPrHead?: boolean; missingExistingPr?: boolean } = {}) {
   const log: string[] = [];
   const names = new Set(['github_write_scope','github_create_branch','github_commit_files',
     'github_run_checks','github_check_result','github_open_pr','github_read_file']);
@@ -49,9 +49,10 @@ function githubHost(options: { refuseBranch?: boolean; verified?: boolean; wrong
       if (c.name === 'github_check_result') return {
         targetSha: COMMIT_SHA, status: 'completed', verifiedSuccess: options.verified !== false,
       };
-      if (c.name === 'github_open_pr') return {
-        branch: BRANCH, head_sha: options.wrongPrHead ? BASE_SHA : COMMIT_SHA, number: 31, draft: false,
-      };
+      if (c.name === 'github_open_pr') {
+        if (c.args.existing_only === true && options.missingExistingPr) throw new ToolRefused('api_existing_pr_not_found');
+        return { branch: BRANCH, head_sha: options.wrongPrHead ? BASE_SHA : COMMIT_SHA, number: 31, draft: false };
+      }
       return { file: 'data' };
     },
   };
@@ -112,6 +113,45 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
       'github_run_checks','github_check_result','github_open_pr']);
   });
 
+  it('T4-auto: CI prouvée => réutilisation serveur de la PR existante, sans outil de finalisation du modèle', async () => {
+    const f = await fixture(); const h = githubHost();
+    const model = scripted(pipeline.slice(0, 5));
+    const d: EngineDeps = { model, tools: h.tools, githubCompletionGrants: f.completion,
+      now: () => NOW + 1, workerId: 'server-pr-auto' };
+    expect(await drain(f.runId, d, 8)).toBe('completed');
+    expect(model.calls()).toBe(5);
+    expect(h.log).toEqual(['github_write_scope','github_create_branch','github_commit_files',
+      'github_run_checks','github_check_result','github_open_pr']);
+    const row = await db.prepare("SELECT args,result,status FROM agent_run_effects WHERE run_id=?1 AND tool='github_open_pr'")
+      .bind(f.runId).first<{args:string;result:string;status:string}>();
+    expect(row?.status).toBe('completed');
+    expect(JSON.parse(row!.args)).toMatchObject({ existing_only: true });
+    expect(JSON.parse(row!.result)).toMatchObject({ number: 31, head_sha: COMMIT_SHA, draft: false });
+  });
+
+  it('T4-auto fail-closed: CI verte sans PR existante => aucun succès ni création', async () => {
+    const f = await fixture(); const h = githubHost({ missingExistingPr: true });
+    expect(await drain(f.runId, deps([...pipeline.slice(0, 5), final()], h.tools, f.completion), 9)).toBe('failed');
+    expect((await runSummary(db, f.runId))?.stop_reason).toBe('incomplete_final:github_evidence_missing');
+    expect((await runSummary(db, f.runId))?.effects).toContainEqual({ tool: 'github_open_pr', status: 'failed' });
+  });
+
+  it('T4-auto stale: la CI de l’ancien commit ne valide jamais le nouveau HEAD', () => {
+    const event = (tool: string, data: Record<string,unknown>) =>
+      ({ tool, status: 'completed', result: JSON.stringify(data) });
+    const effects = [
+      event('github_write_scope',{ branch:BRANCH,branch_head:BASE_SHA }),
+      event('github_replace_text',{ branch:BRANCH,commit_sha:COMMIT_SHA }),
+      event('github_run_checks',{ targetSha:COMMIT_SHA,runId:42 }),
+      event('github_check_result',{ targetSha:COMMIT_SHA,status:'completed',verifiedSuccess:true }),
+    ];
+    expect(githubVerifiedHeadForExistingPr(effects,BRANCH)).toBe(COMMIT_SHA);
+    expect(githubVerifiedHeadForExistingPr([...effects,
+      event('github_replace_text',{ branch:BRANCH,commit_sha:'c'.repeat(40) })],BRANCH)).toBeNull();
+    expect(githubVerifiedHeadForExistingPr([...effects,
+      { tool:'github_replace_text',status:'failed',result:null }],BRANCH)).toBeNull();
+  });
+
   it('T4b: CI non vérifiée ou PR au mauvais head => incomplete_final', async () => {
     for (const variant of [{ verified: false }, { wrongPrHead: true }]) {
       const f = await fixture(); const h = githubHost(variant);
@@ -149,7 +189,7 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
     expect((await runStep(db, f.runId, resumed)).outcome).toBe('stepped');
     expect(await drain(f.runId, resumed, 8)).toBe('completed');
     expect(writes).toBe(1);
-    expect(model.calls()).toBe(pipeline.length - 1); // PR prouvee sans dernier final texte
+    expect(model.calls()).toBe(pipeline.length - 2); // PR réutilisée par le serveur après la CI.
   });
 
   it('T6: answer/review/test/design sans effet métier ne réussissent pas sur une simple sortie finale', async () => {
