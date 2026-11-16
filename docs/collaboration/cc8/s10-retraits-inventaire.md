@@ -36,3 +36,26 @@ Les catégories suivantes distinguent des **faits lus dans les fichiers** et des
 - **S10-3** : vérifier les anciens champs déclaratifs comme `preferred_free_model` avec les consommateurs réels et la politique S3 ; éventuel retrait du champ seulement avec la migration de son paquet.
 
 **Ne pas lancer S10-1 à S10-3 avant la validation live de S9.** La présente PR documentaire peut être revue et fusionnée sans altérer le comportement, et évite d'engager une suppression aveugle.
+
+ 
+## Addendum S10-1 — dépendances réellement actives (16 novembre 2026)
+
+**Référence vérifiée :** `cc3-integration` @ `8b30f89a1167ba2069249dc0daeb4e40a8652c77`. Cet addendum est **un audit documentaire uniquement**, distinct des retraits S10-1 à S10-3 qui restent conditionnés à la preuve de parité live S9. Il ne modifie ni code runtime, ni CI, ni configuration, ni historique D1.
+
+### Appelants et frontière de sécurité vérifiés
+
+- **Actif, à préserver :** `src/collab-store/agentrun/engine.ts:44` importe précisément `API_AGENT_FORBIDDEN` et `assertNotD12Verdict` depuis `../agents/tools`. Les lignes 1288–1310 utilisent ces symboles pour refuser les actions réservées au propriétaire, les outils hors catalogue et les verdicts D12 libres. Les exceptions `store_verdict` et `store_contribute` ne suppriment pas les contrôles : elles sont revérifiées par des outils dédiés côté serveur.
+- **Actif, à préserver :** `src/collab-store/mcp/tools.ts` enregistre les outils de WorkSession ; `src/collab-store/agentrun/plan.ts` planifie les exécutions ; le chemin Worker actif passe par `src/index.ts` / `src/agent-run-object.ts` / `src/collab-store/agentrun/object.ts`. Dans ces points d'entrée lus, aucun appel au pilote historique `runAgentPilot` n'a été observé.
+- **Historique, encore exporté :** `src/collab-store/agents/index.ts:1–15` expose `runAgentPilot`, `assembleAgentContext`, les personas, baux et outils. `src/collab-store/agents/assembler.ts` conserve son budget d'assemblage de 3 000 jetons et sa petite liste d'outils ; ce paquet n'est pas la politique des WorkSessions actuelles. `test/collab-store/agents/{pilot,persona,lease,tools}.spec.ts` dépend de ces modules historiques.
+- **Fonction distincte :** `src/collab-store/owner/handler.ts:21` importe `runOwnerTrial` pour le parcours `/owner`. Ce diagnostic n'est pas remplacé par le pilote `agents/` ni automatiquement par le canary : **KEEP**.
+- **Données :** conserver les événements, effets, historiques et anciennes lignes de baux D1. Aucune migration destructrice ne découle de cet audit.
+
+### Décision préparatoire de retrait
+
+**KEEP pour l'instant :** `agents/tools.ts` car ses deux contrôles sont appelés par `agentrun/engine.ts`. Une suppression globale de `src/collab-store/agents/` casserait le moteur actif. L'ancienne interdiction générale des verdicts D12 via `runAgentPilot` ne décrit pas le chemin WorkSession actuel : `store_verdict` reste une exception étroitement contrôlée et attestée en exécution réelle (S9 PR #347, verdict Gemini seq 2767).
+
+**CANDIDATS CONDITIONNELS :** `agents/{pilot,assembler,lease,persona}.ts`, `preferred_free_model` déclaratif et leurs tests historiques. Leur absence d'appelants runtime **n'est pas prouvée sur l'ensemble de l'intégration** : l'index `github_search_code` porte sur la branche par défaut, et les lectures de points d'entrée ne constituent pas une recherche exhaustive.
+
+**Ordre à respecter, seulement après clôture S9 :** (1) établir la liste complète des imports et usages sur la branche d'intégration ; (2) déplacer si nécessaire les deux gardes encore actifs vers un module du moteur, conserver leur logique et les régressions de refus D12/HALT/identité ; (3) retirer un seul groupe de modules réellement inemployés par PR, avec preuve de remplacement, CI 4/4 au SHA exact, relecteur/testeur indépendants et fusion par Kevin. Si une dépendance demeure, décider **KEEP** plutôt que forcer un retrait.
+
+**État au 16/11 :** S9 `in_progress`, `parityLive=false`, `s9Closed=false` ; aucun retrait S10 autorisé. La responsabilité testeur de la *nouvelle tâche d'audit* est Grok Chat, tandis que la ligne historique « Vibe testeur » en tête du dossier décrit l'ancien lot #346.
