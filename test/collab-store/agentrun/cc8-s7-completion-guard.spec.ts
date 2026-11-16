@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
-import { createRun, runStep, runSummary, githubVerifiedHeadForExistingPr, ToolRefused, STEP_TIMEOUT_S, type ModelOutput, type ToolHost, type ToolCall, type EngineDeps } from '../../../src/collab-store/agentrun/engine';
+import { createRun, runStep, runSummary, githubVerifiedHeadForExistingPr, githubStartedCheckForExistingPr, ToolRefused, STEP_TIMEOUT_S, type ModelOutput, type ToolHost, type ToolCall, type EngineDeps } from '../../../src/collab-store/agentrun/engine';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const NOW = 1_990_000_000;
@@ -29,8 +29,9 @@ function scripted(outputs: ModelOutput[]) {
   }, calls: () => count };
 }
 
-function githubHost(options: { refuseBranch?: boolean; verified?: boolean; wrongPrHead?: boolean; missingExistingPr?: boolean } = {}) {
+function githubHost(options: { refuseBranch?: boolean; verified?: boolean; wrongPrHead?: boolean; missingExistingPr?: boolean; pendingOnce?: boolean } = {}) {
   const log: string[] = [];
+  let checkCount = 0;
   const names = new Set(['github_write_scope','github_create_branch','github_commit_files',
     'github_run_checks','github_check_result','github_open_pr','github_read_file']);
   const tools: ToolHost = {
@@ -46,9 +47,15 @@ function githubHost(options: { refuseBranch?: boolean; verified?: boolean; wrong
       }
       if (c.name === 'github_commit_files') return { branch: BRANCH, commit_sha: COMMIT_SHA };
       if (c.name === 'github_run_checks') return { runId: 42, targetSha: COMMIT_SHA };
-      if (c.name === 'github_check_result') return {
-        targetSha: COMMIT_SHA, status: 'completed', verifiedSuccess: options.verified !== false,
-      };
+      if (c.name === 'github_check_result') {
+        const waiting = options.pendingOnce === true && ++checkCount === 1;
+        return { targetSha: COMMIT_SHA, runId: 42,
+          status: waiting ? 'in_progress' : 'completed',
+          conclusion: waiting ? null : options.verified === false ? 'failure' : 'success',
+          verifiedSuccess: !waiting && options.verified !== false,
+          next_action: waiting ? 'wait' : options.verified === false ? 'correct' : 'request_D12',
+          next_poll_seconds: waiting ? 15 : null };
+      }
       if (c.name === 'github_open_pr') {
         if (c.args.existing_only === true && options.missingExistingPr) throw new ToolRefused('api_existing_pr_not_found');
         return { branch: BRANCH, head_sha: options.wrongPrHead ? BASE_SHA : COMMIT_SHA, number: 31, draft: false };
@@ -166,6 +173,50 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
       event('github_replace_text',{ branch:BRANCH,commit_sha:'c'.repeat(40) })],BRANCH)).toBeNull();
     expect(githubVerifiedHeadForExistingPr([...effects,
       { tool:'github_replace_text',status:'failed',result:null }],BRANCH)).toBeNull();
+  });
+
+  it('T4-dynamic: un mandat D1 laisse le serveur relire la CI et finaliser sans appel fournisseur supplémentaire', async () => {
+    const f = await fixture(); const h = githubHost();
+    const model = scripted(pipeline.slice(0, 4));
+    const d: EngineDeps = { model, tools: h.tools, now: () => NOW + 1,
+      workerId: 'server-dynamic-pr', dynamicGrantFor: async () => f.completion[0], githubCompletionGrants: [] };
+    expect(await drain(f.runId, d, 10)).toBe('completed');
+    expect(model.calls()).toBe(4);
+    expect(h.log).toEqual(['github_write_scope','github_create_branch','github_commit_files',
+      'github_run_checks','github_check_result','github_open_pr']);
+    expect((await runSummary(db,f.runId))?.stop_reason).toBe('final');
+    const proof = await db.prepare("SELECT args FROM agent_run_effects WHERE run_id=?1 AND tool='github_open_pr'")
+      .bind(f.runId).first<{args:string}>();
+    expect(JSON.parse(proof!.args)).toMatchObject({existing_only:true});
+  });
+
+  it('T4-dynamic-pending: le serveur attend la CI via le ledger, sans CI ni commit dupliqués', async () => {
+    const f = await fixture(); const h = githubHost({ pendingOnce: true });
+    const model = scripted(pipeline.slice(0, 4));
+    const d: EngineDeps = { model, tools: h.tools, now: () => NOW + 1,
+      workerId: 'server-dynamic-pending', dynamicGrantFor: async () => f.completion[0], githubCompletionGrants: [] };
+    expect(await drain(f.runId, d, 12)).toBe('completed');
+    expect(model.calls()).toBe(4);
+    expect(h.log).toEqual(['github_write_scope','github_create_branch','github_commit_files',
+      'github_run_checks','github_check_result','github_check_result','github_open_pr']);
+    const polls = await db.prepare('SELECT k,status,result FROM agent_run_ci_polls WHERE run_id=?1')
+      .bind(f.runId).all<{k:number;status:string;result:string}>();
+    expect(polls.results).toHaveLength(1);
+    expect(polls.results[0]).toMatchObject({status:'completed'});
+    expect(JSON.parse(polls.results[0].result)).toMatchObject({verifiedSuccess:true,targetSha:COMMIT_SHA});
+  });
+
+  it('T4-dynamic-stale: aucun contrôle automatique sur le SHA erroné', () => {
+    const event = (tool: string, payload: Record<string,unknown>) =>
+      ({tool,status:'completed',result:JSON.stringify(payload)});
+    const es = [event('github_write_scope',{branch:BRANCH,branch_head:BASE_SHA}),
+      event('github_commit_files',{branch:BRANCH,commit_sha:COMMIT_SHA}),
+      event('github_run_checks',{targetSha:COMMIT_SHA,runId:42})];
+    expect(githubStartedCheckForExistingPr(es,BRANCH)).toEqual({sha:COMMIT_SHA,runId:42});
+    expect(githubStartedCheckForExistingPr([...es,
+      event('github_replace_text',{branch:BRANCH,commit_sha:'c'.repeat(40)})],BRANCH)).toBeNull();
+    expect(githubStartedCheckForExistingPr([...es,
+      event('github_check_result',{targetSha:COMMIT_SHA,status:'in_progress',verifiedSuccess:false})],BRANCH)).toBeNull();
   });
 
   it('T4b: CI non vérifiée ou PR au mauvais head => incomplete_final', async () => {
