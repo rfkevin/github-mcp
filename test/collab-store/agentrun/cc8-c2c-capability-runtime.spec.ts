@@ -190,7 +190,7 @@ describe('CC8 C2c — le catalogue runtime consomme le contrat unique C0', () =>
 
     // Après clarify.answer, un appel taskless conserve github.read via le canal C0
     const prPost = await h.execute({ id: 't_pr_post', name: 'github_pull_request', args: { number: 101 } }, { run_id: runId }) as Record<string, unknown>;
-    expect(prPost).toMatchObject({ number: 101, merged: true });
+    expect(prPost).toMatchObject({ number: 101, merged: true, draft: false, head: { sha: 'a'.repeat(40) } });
     const capsPost = resolveUnifiedCapabilities(await runVerifiedClaims(db, scope, options));
     expect(capsPost).toContain('github.read');
     expect(capsPost).not.toContain('github.write');
