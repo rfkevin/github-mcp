@@ -370,6 +370,17 @@ async function waitingSince(db: D1Database, cycleId: string, decision: Decision,
  *    réveil plus ancien d'un autre agent.
  * Les motifs typés des refus sont rendus (`incapable_detail`) pour la vue du coordinateur.
  */
+/** Terminal statuses are NEVER rearmed by an ordinary controller scan.
+ * A coordinator can explicitly rearm only a diagnosed, recoverable failed run.
+ * These reasons are not provider 401/403, HALT, stop, cost or ambiguous effects. */
+export function terminalRunMayRetry(status: string, stopReason: string): boolean {
+  if (status !== 'failed') return false;
+  return stopReason === 'step_attempts_exhausted'
+    || ['incomplete_final:', 'blocked:no_progress:', 'guided_stop:',
+      'guided_violation:', 'guided_preparation_violation:',
+      'guided_handover_violation:'].some(prefix => stopReason.startsWith(prefix));
+}
+
 export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: number; limit?: number }): Promise<PlanResult> {
   const participants = apiParticipants(env.AGENT_RUN_PARTICIPANTS);
   if (!participants.length) return planResult(0, 0, 0);
@@ -428,27 +439,58 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
     ].join(' ')).bind(cycleId, taskId, participantId, failedAt, input.now).first<{ok:number}>();
     return row?.ok === 1;
   };
+  /** One explicit, scoped coordinator checkpoint rearms ONE failed run, not a task forever.
+   * Subject is the current controller object (including exact head..base for D12).
+   * After a second failure the run ID changes, so the old intent cannot be reused. */
+  const freshScopedCoordinatorRetry = async (
+    cycleId: string, taskId: string, participantId: string, kind: string,
+    subject: string, failedRunId: string, failedAt: number,
+  ): Promise<boolean> => {
+    const row = await db.prepare([
+      "SELECT 1 AS ok FROM events e",
+      "JOIN participants p ON p.participant_id=e.participant_id AND p.status='active'",
+      "WHERE EXISTS (SELECT 1 FROM coordinators c",
+      "JOIN participants cp ON cp.participant_id=c.participant_id AND cp.status='active'",
+      "WHERE c.status='active' AND (c.participant_id=e.participant_id",
+      "OR c.participant_id IN (SELECT peer.participant_id FROM participant_identity_families peer",
+      "WHERE peer.family_id=COALESCE(",
+      "(SELECT member.family_id FROM participant_identity_families member WHERE member.participant_id=e.participant_id),",
+      "e.participant_id))))",
+      "AND e.cycle_id=?1 AND e.type='checkpoint' AND e.role='coordinator'",
+      "AND json_valid(e.payload_json)",
+      "AND json_extract(e.payload_json,'$.state')='WORKSESSION_RETRY_AUTHORIZED'",
+      "AND json_extract(e.payload_json,'$.task')=?2",
+      "AND json_extract(e.payload_json,'$.participant')=?3",
+      "AND json_extract(e.payload_json,'$.kind')=?4",
+      "AND json_extract(e.payload_json,'$.subject')=?5",
+      "AND json_extract(e.payload_json,'$.failed_run_id')=?6",
+      "AND e.at>?7 AND e.at<=?8",
+      "ORDER BY e.seq DESC LIMIT 1",
+    ].join(' ')).bind(cycleId, taskId, participantId, kind, subject, failedRunId, failedAt, input.now)
+      .first<{ ok: number }>();
+    return row?.ok === 1;
+  };
   const retryAttempt = async (
     runIdFor: (attempt: number) => Promise<string>,
-    explicitRetry?: (failedAt: number) => Promise<boolean>,
+    explicitRetry?: (failed: { run_id: string; status: string; stop_reason: string; updated_at: number }) => Promise<boolean>,
   ): Promise<string | null> => {
-    let previous: { status: string; stop_reason: string; updated_at: number } | null = null;
+    let previous: { run_id: string; status: string; stop_reason: string; updated_at: number } | null = null;
     for (let attempt = 1; Number.isSafeInteger(attempt); attempt++) {
       const runId = await runIdFor(attempt);
       const row = await db.prepare('SELECT status, stop_reason, updated_at FROM agent_runs WHERE run_id = ?1')
         .bind(runId).first<{ status: string; stop_reason: string; updated_at: number }>();
-      if (row) { previous = row; continue; }
+      if (row) { previous = { ...row, run_id: runId }; continue; }
       if (!previous) return runId;
       if (previous.status !== 'failed') return null;
+      // Transient provider failures already have their own autonomous 900-second retry.
       if (previous.stop_reason.startsWith('model_transient:'))
         return input.now - previous.updated_at >= 900 ? runId : null;
-      // A free daily provider quota can be misclassified as permanent when
-      // fallback exhausted the chain. Only this known recoverable legacy stop
-      // may be rearmed by a fresh coordinator assignment; 401/403, route,
-      // authorization and funded-budget refusals remain terminal.
-      if (previous.stop_reason.startsWith('model_permanent:')
-        && /Budget gratuit du jour insuffisant/i.test(previous.stop_reason)
-        && explicitRetry && await explicitRetry(previous.updated_at)) return runId;
+      const legacyFreeQuota = previous.stop_reason.startsWith('model_permanent:')
+        && /Budget gratuit du jour insuffisant/i.test(previous.stop_reason);
+      if ((legacyFreeQuota || terminalRunMayRetry(previous.status, previous.stop_reason))
+        && explicitRetry && await explicitRetry(previous)) return runId;
+      // Permanent provider/auth/route errors, HALT, stop, budget, unknown outcomes:
+      // never silently restart or treat an old approval as a new intent.
       return null;
     }
     return null;
@@ -487,8 +529,11 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           }
           const askSeq = Number(match[1]);
           queue.push({ waitingSince: await waitingSince(db, cycleId, decision, input.now), order: order++, create: async () => {
-            const runId = await retryAttempt(attempt =>
-              answerAttemptRunId(cycleId, participantId, askSeq, phase, round, attempt));
+            const runId = await retryAttempt(
+              attempt => answerAttemptRunId(cycleId, participantId, askSeq, phase, round, attempt),
+              failed => freshScopedCoordinatorRetry(cycleId, '', participantId,
+                'answer', 'ask#' + askSeq, failed.run_id, failed.updated_at),
+            );
             if (runId === null) return false;
             const dossier = await answerTaskDossier(db, cycleId, askSeq);
             if (dossier === null) return false;
@@ -531,9 +576,11 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           // La ronde est liée au sujet de la décision (incluant le couple head/base pour review/test).
           const runId = await retryAttempt(
             attempt => attemptRunId(kind, cycleId, participantId, taskId, decision.subject, phase, round, attempt),
-            failedAt => kind === 'implement'
-              ? freshCoordinatorAssignment(cycleId, taskId, participantId, failedAt)
-              : Promise.resolve(false),
+            failed => kind === 'implement' && failed.stop_reason.startsWith('model_permanent:')
+              && /Budget gratuit du jour insuffisant/i.test(failed.stop_reason)
+              ? freshCoordinatorAssignment(cycleId, taskId, participantId, failed.updated_at)
+              : freshScopedCoordinatorRetry(cycleId, taskId, participantId, kind, decision.subject,
+                failed.run_id, failed.updated_at),
           );
           if (runId === null) return false;
           return (await createRun(db, {
