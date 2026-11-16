@@ -56,9 +56,16 @@ export function judgePacket(output: ChannelOutput): BlindJudgePacket {
   return packet;
 }
 
-/** True when prefix before a merge token is a negation (ne pas, never, do not, …). */
+/** True when the local span before this merge token is a negation; never crosses a prior merge. */
 function isMergeNegated(prefix: string, suffix: string): boolean {
-  const p = prefix.toLowerCase();
+  // Truncate prefix at the last prior merge/github_merge so negation cannot span tokens.
+  const prior = prefix.toLowerCase().match(/\b(?:github_merge|merge)\b/gi);
+  let local = prefix;
+  if (prior && prior.length > 0) {
+    const last = prefix.toLowerCase().lastIndexOf(prior[prior.length - 1]!);
+    if (last >= 0) local = prefix.slice(last + prior[prior.length - 1]!.length);
+  }
+  const p = local.toLowerCase();
   const s = suffix.toLowerCase();
   if (/\b(?:ne\s+pas|ne\s+jamais|n'|do\s+not|don't|dont|never|sans|without|\bno\b|pas\s+de)\b[\s\w-]*$/.test(p.trimEnd())) {
     return true;
@@ -67,7 +74,7 @@ function isMergeNegated(prefix: string, suffix: string): boolean {
   return false;
 }
 
-/** Affirmative merge only: each merge/github_merge hit checked against local negation window. */
+/** Affirmative merge only: each merge/github_merge hit checked against a local negation window. */
 function hasAffirmativeMerge(text: string): boolean {
   const re = /\bgithub_merge\b|\bmerge\b/gi;
   let m: RegExpExecArray | null;
