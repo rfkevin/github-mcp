@@ -355,6 +355,81 @@ function completedPayload(effect: GithubCompletionEffect): Record<string, unknow
   } catch { return null; }
 }
 
+/**
+ * Only a real D1 commit with a server-verified green check can authorize the
+ * mechanical reuse of an EXISTING PR. The last branch commit wins: a previous
+ * green SHA cannot authorize finalization of a newer untested head.
+ * This is a readiness check, NOT a completion proof or a PR identity.
+ */
+export function githubVerifiedHeadForExistingPr(effects: readonly GithubCompletionEffect[], branch: string): string | null {
+  const entries = effects.map(effect => ({ tool: effect.tool, value: completedPayload(effect) }));
+  const scope = entries.findIndex(entry => entry.tool === 'github_write_scope' && entry.value?.branch === branch);
+  if (scope < 0) return null;
+  const prior = entries[scope].value?.branch_head;
+  const created = entries.some((entry, index) => index > scope && entry.tool === 'github_create_branch'
+    && entry.value?.branch === branch && typeof entry.value.sha === 'string' && COMPLETION_SHA.test(entry.value.sha));
+  if (!created && !(typeof prior === 'string' && COMPLETION_SHA.test(prior))) return null;
+  let commitAt = -1;
+  let sha = '';
+  for (let i = scope + 1; i < entries.length; i++) {
+    const item = entries[i];
+    if (item.tool !== 'github_commit_files' && item.tool !== 'github_replace_text') continue;
+    // A later commit with an unreadable receipt invalidates an earlier green head.
+    commitAt = i;
+    sha = item.value?.branch === branch && typeof item.value?.commit_sha === 'string'
+      && COMPLETION_SHA.test(item.value.commit_sha) ? item.value.commit_sha : '';
+  }
+  if (commitAt < 0 || !sha) return null;
+  const started = entries.findIndex((item, i) => i > commitAt && item.tool === 'github_run_checks'
+    && item.value?.targetSha === sha && Number.isSafeInteger(item.value?.runId) && Number(item.value!.runId) > 0);
+  if (started < 0) return null;
+  const checked = entries.findIndex((item, i) => i > started && item.tool === 'github_check_result'
+    && item.value?.targetSha === sha && item.value?.status === 'completed' && item.value?.verifiedSuccess === true);
+  return checked >= 0 ? sha : null;
+}
+
+/**
+ * When a genuine commit has started its correlated full check, one SERVER
+ * read can discover the result without another model turn or CI dispatch.
+ * An existing check result (including wait/failure) is not duplicated: the
+ * CI poll ledger owns waits, while failures return control to the model.
+ */
+export function githubStartedCheckForExistingPr(effects: readonly GithubCompletionEffect[], branch: string):
+  { sha: string; runId: number } | null {
+  const entries = effects.map(effect => ({ tool: effect.tool, value: completedPayload(effect) }));
+  const scope = entries.findIndex(entry => entry.tool === 'github_write_scope' && entry.value?.branch === branch);
+  if (scope < 0) return null;
+  const prior = entries[scope].value?.branch_head;
+  if (!(typeof prior === 'string' && COMPLETION_SHA.test(prior))
+    && !entries.some((entry, index) => index > scope && entry.tool === 'github_create_branch'
+      && entry.value?.branch === branch && typeof entry.value.sha === 'string' && COMPLETION_SHA.test(entry.value.sha))) return null;
+  let latest = -1;
+  let sha: string | null = null;
+  for (let i = scope + 1; i < entries.length; i++) {
+    const item = entries[i];
+    if (item.tool !== 'github_commit_files' && item.tool !== 'github_replace_text') continue;
+    latest = i;
+    sha = item.value?.branch === branch && typeof item.value.commit_sha === 'string'
+      && COMPLETION_SHA.test(item.value.commit_sha) ? item.value.commit_sha : null;
+  }
+  if (latest < 0 || !sha) return null;
+  let started = -1;
+  let runId = 0;
+  for (let i = latest + 1; i < entries.length; i++) {
+    const item = entries[i];
+    if (item.tool !== 'github_run_checks' || item.value?.targetSha !== sha
+      || !Number.isSafeInteger(item.value?.runId) || Number(item.value.runId) <= 0) continue;
+    started = i;
+    runId = Number(item.value.runId);
+  }
+  if (started < 0) return null;
+  // An actual check result (including a model-free CI poll) makes this phase
+  // complete; never launch a second server read for this SHA here.
+  if (entries.slice(started + 1).some(entry => entry.tool === 'github_check_result'
+    && entry.value?.targetSha === sha)) return null;
+  return { sha, runId };
+}
+
 /** Les indices respectent l'ordre D1 (n,idx), aucune preuve externe n'est simulée. */
 export function githubCompletionSatisfied(effects: readonly GithubCompletionEffect[], branch: string): boolean {
   const entries = effects.map(e => ({ tool: e.tool, value: completedPayload(e) }));
@@ -950,7 +1025,35 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   // CC8 S7 mode guidé : prochaine étape décidée sur l'état D1 AVANT la réclamation (même état, même décision).
   // Empreinte de l'état lu (effets + relevés), prise AVANT la lecture du plan (relecture D12 GPT-6, R4).
   const seen = deps.guidedS7 ? (await db.prepare('SELECT ' + GUIDED_STATE + ' AS fp').bind(runId).first<{ fp: string }>())?.fp ?? '' : '';
-  const plan = await guidedStep(db, run, deps, run.steps_done);
+  let plan = await guidedStep(db, run, deps, run.steps_done);
+  // A dynamic WorkSession resumes its correlated check without calling the
+  // provider or dispatching a new CI. On "wait", the existing CI poll ledger
+  // handles subsequent reads (CAS and append-only). On green, reuse the
+  // already-existing non-draft PR; on red, the model retains control.
+  if (!plan && run.task_kind === 'implement' && !deps.guidedS7 && deps.dynamicGrantFor) {
+    const grants = await runGrants(run, deps);
+    if (grants.length === 1) {
+      const effects = await runEvidence(db, runId);
+      const branch = grants[0].branch;
+      const name = branch.split('-api-')[1];
+      if (name && deps.tools.spec(run.task_kind,'github_open_pr')?.effect === 'write') {
+        const verified = githubVerifiedHeadForExistingPr(effects,branch);
+        if (verified && !githubCompletionSatisfied(effects,branch)) {
+          const already = await db.prepare([
+            "SELECT 1 FROM agent_run_effects WHERE run_id=?1 AND tool='github_open_pr'",
+            "AND json_valid(args) AND json_extract(args,'$.existing_only')=1",
+            "AND status IN ('completed','failed') LIMIT 1",
+          ].join(' ')).bind(runId).first();
+          if (!already) plan = { kind:'server',call:{id:'srv-pr-'+run.steps_done,
+            name:'github_open_pr',args:{name,title:'Reprise vérifiée de la PR existante',existing_only:true}} };
+        } else if (deps.tools.spec(run.task_kind,'github_check_result')) {
+          const check = githubStartedCheckForExistingPr(effects,branch);
+          if (check) plan = {kind:'server',call:{id:'srv-ci-'+run.steps_done,
+            name:'github_check_result',args:{name,sha:check.sha,run_id:check.runId}}};
+        }
+      }
+    }
+  }
   if (plan?.kind === 'stop') {
     // Arrêt typé et auditable d'un run guidé (aucun repli vers l'orchestration libre du modèle).
     // Relecture D12 GPT-6 (R4) : l'arrêt n'écrit que si le run est toujours le nôtre (garde LIVE : HALT,
@@ -1272,13 +1375,37 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     results.push(effect);
   }
 
-  // 3. Checkpoint : étape terminée et exécution avancée dans le même lot, sous la garde LIVE.
-  // Une mission S7 disposant déjà de TOUTES les preuves est complète dès l'effet
-  // github_open_pr : 6 étapes dépendantes suffisent, sans 7e appel final au modèle.
-  const guarded = run.task_kind === 'implement' && (deps.githubCompletionGrants ?? []).some(g =>
-    g.cycle === run.cycle_id && g.task === run.task_id && g.participant === run.participant_id);
-  const provenAtPr = guarded && !deps.guidedPreparation && output.tool_calls.some(call => call.name === 'github_open_pr')
-    && await completionVerified(db, run, deps);
+  // Server-owned reconciliation: only an EXISTING PR at a genuinely tested
+  // latest commit may be reused. The normal fenced runEffect persists the
+  // authoritative GitHub receipt in D1; the model is not credited with a call.
+  let serverPrCompleted = false;
+  // Let a model complete its normal github_open_pr path. The server takes
+  // over only if it tries to finish without that receipt, or mistakenly asks
+  // to open a draft against a non-draft PR already in place.
+  const needsServerPr = output.tool_calls.length === 0
+    || output.tool_calls.some(call => call.name === 'github_open_draft_pr');
+  if (needsServerPr && run.task_kind === 'implement' && !deps.guidedS7 && !await pendingSteer()
+    && deps.tools.spec(run.task_kind, 'github_open_pr')?.effect === 'write') {
+    const grants = await runGrants(run, deps);
+    if (grants.length === 1) {
+      const effects = await runEvidence(db, runId);
+      const verifiedHead = githubVerifiedHeadForExistingPr(effects, grants[0].branch);
+      if (verifiedHead && !githubCompletionSatisfied(effects, grants[0].branch)
+        && claimed.claimed_at + STEP_TIMEOUT_S - deps.now() >= EFFECT_LAUNCH_FLOOR_S) {
+        const call: ToolCall = { id: 'server-existing-pr-' + n, name: 'github_open_pr',
+          args: { existing_only: true, title: 'Reprise vérifiée de la PR existante' } };
+        const result = await runEffect(db, runId, claim, output.tool_calls.length, call, deps);
+        if ('outcome' in result) return result;
+        if (!result.error) serverPrCompleted = await completionVerified(db, run, deps);
+      }
+    }
+  }
+  // Checkpoint: server proof, author evidence and independent D12 remain distinct.
+  // A single real static OR dynamic D1 grant authorizes completion.
+  // The provider cannot supply a grant; ambiguous multiple grants fail closed.
+  const guarded = run.task_kind === 'implement' && (await runGrants(run,deps)).length === 1;
+  const provenAtPr = serverPrCompleted || (guarded && !deps.guidedPreparation
+    && output.tool_calls.some(call => call.name === 'github_open_pr') && await completionVerified(db, run, deps));
   // Un effet métier persistant peut terminer le run sans forcer un tour modèle « final » supplémentaire.
   // Si l'outil est refusé, échoué ou n'a rien écrit, le test D1 ci-dessous reste négatif.
   const provenAtHandover = guarded && deps.guidedPreparation

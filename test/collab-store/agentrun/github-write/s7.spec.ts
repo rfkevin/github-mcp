@@ -112,6 +112,14 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     expect([creates,opens]).toEqual([0,0]);
     await expect(call('github_open_draft_pr',{name:f.name,title:'Draft'}))
       .rejects.toThrow('api_existing_pr_state_mismatch');
+    // Chemin serveur : reprise d'une PR existante uniquement.
+    f.options.writes.findPullRequest=async()=>null;
+    await expect(call('github_open_pr',{name:f.name,title:'existing only',existing_only:true}))
+      .rejects.toThrow('api_existing_pr_not_found');
+    expect([creates,opens]).toEqual([0,0]);
+    f.options.writes.findPullRequest=async()=>({number:337,head_sha:H,draft:false});
+    expect(await call('github_open_pr',{name:f.name,title:'existing only',existing_only:true}))
+      .toMatchObject({number:337,head_sha:H,status:'existing',draft:false});
     f.options.writes.findPullRequest=async()=>({number:337,head_sha:'a'.repeat(40),draft:false});
     await expect(call('github_open_pr',{name:f.name,title:'Stale'}))
       .rejects.toThrow('api_existing_pr_head_mismatch');
