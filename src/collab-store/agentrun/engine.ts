@@ -1136,15 +1136,22 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         if (!liveSteering.live) return settled(db, runId, deps.now());
         const messages = await buildMessages(db, run, deps.compactHistory === true, liveSteering.messages);
         const tools = deps.tools.list(run.task_kind);
-        const verdictTurn = reviewVerdictTurn(run.task_kind, n, run.max_steps) && tools.includes('store_verdict');
+        const verdictTurn = (reviewVerdictTurn(run.task_kind, n, run.max_steps) || verdictRecoveryTurn)
+          && tools.includes('store_verdict');
         const extra = guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
           ? guide.instruction : verify ? verify.context + '\n\n' + verify.instruction : null;
-        // The final review/test model step must be able to attempt a real store_verdict.
-        // Do not allow an extra discovery loop to consume the final step.
-        const verdictInstruction = verdictTurn
-          ? 'Dernière étape de relecture : utiliser UNIQUEMENT store_verdict pour déposer un verdict structuré '
-            + 'avec les preuves et le couple head/base exacts. Si les preuves manquent, ne pas inventer AGREE.'
-          : null;
+        // After a tool-less final on an unbounded verifier run, allow ONE
+        // meaningful opportunity to publish store_verdict. Never invent PASS.
+        const verdictInstruction = verdictRecoveryTurn
+          ? 'Ton dernier tour de verification a répondu en texte SANS store_verdict : la tâche est toujours NON VALIDÉE. '
+            + 'Ceci est l UNIQUE tour correctif. Si les preuves sont suffisantes, appelle maintenant '
+            + 'store_verdict avec task, pr, head, base exacts et PASS/FAIL ou AGREE/CHANGES_REQUESTED '
+            + 'selon ton rôle. Si les preuves ne suffisent pas, indique précisément ce qui manque '
+            + 'dans ta réponse sans inventer de verdict ; la mission restera en échec.'
+          : verdictTurn
+            ? 'Dernière étape de relecture : utiliser UNIQUEMENT store_verdict pour déposer un verdict structuré '
+              + 'avec les preuves et le couple head/base exacts. Si les preuves manquent, ne pas inventer AGREE.'
+            : null;
         const replyContext = continuationReplyMessage(clarifications);
         const publicationInstruction = answerPublicationReminder(run.task_kind, run.prompt, tools);
         const additional = [extra, replyContext, verdictInstruction, publicationInstruction].filter(Boolean).join('\n\n');
