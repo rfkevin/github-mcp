@@ -130,14 +130,15 @@ describe('Vérification guidée — moteur (D1)', () => {
     const outcomes = await drive(runId, { model: m.client, tools: h.tools, now: () => T + 10, workerId: 'w1', guidedVerify: true });
     // Le host est simulé : aucun verdict dans D1. L'injection fonctionne mais ne prouve pas une mission réussie.
     expect(outcomes.at(-1)).toBe('failed');
-    expect(m.seen).toHaveLength(2);
-    for (const seen of m.seen) {
+    expect(m.seen).toHaveLength(3); // mock host did not persist D12; one corrective turn is required
+    for (const [i, seen] of m.seen.entries()) {
       expect(injected(seen).role).toBe('user');
       expect(injected(seen).content).toContain('CONTEXTE DE VÉRIFICATION PRÉPARÉ PAR LE SERVEUR');
       expect(injected(seen).content).toContain('### src/a.ts');
       expect(injected(seen).content).toContain('store_verdict (task, pr 285, head et base exacts ci-dessus, state PASS ou FAIL');
-      expect(seen.tools).toEqual(TOOLS); // liberté : tous les outils restent offerts
+      expect(seen.tools).toEqual(i === 2 ? ['store_verdict'] : TOOLS);
     }
+    expect(injected(m.seen[2]).content).toContain('Ton dernier tour de verification');
     // Lectures serveur une seule fois (contexte relu dans D1 ensuite) ; arguments au couple exact.
     expect(h.count('github_diff')).toBe(1);
     expect(h.count('github_check_runs')).toBe(1);

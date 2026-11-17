@@ -1455,6 +1455,9 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   // A second text-only ending fails explicitly; never retry indefinitely.
   const missingVerdictFirstTime = (run.task_kind === 'review' || run.task_kind === 'test')
     && output.tool_calls.length === 0 && !verified && !verdictRecoveryTurn
+    // Finite sessions on their final allowed step must fail, not remain
+    // running while no extra model turn can be scheduled.
+    && (run.max_steps < 0 || n + 1 < run.max_steps)
     && deps.tools.spec(run.task_kind, 'store_verdict')?.effect === 'write';
   const final = persistedProof || (!await pendingSteer()
     && (noProgress || (output.tool_calls.length === 0 && !missingVerdictFirstTime))) ? 1 : 0;
