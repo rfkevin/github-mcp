@@ -463,8 +463,11 @@ describe('CC-5 l7a — plafonds et outils', () => {
     expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
     expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
     expect(attempted).toBe(1); // real tool call comes only from the model
-    expect((await runStep(db, input.runId, d)).outcome).toBe('failed');
-    expect(await status(input.runId)).toMatchObject({ status: 'failed' });
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped'); // next empty turn gets one recovery
+    expect((await runStep(db, input.runId, d)).outcome).toBe('failed'); // second empty turn cannot loop
+    expect(model.state.offered[3]).toEqual(['store_verdict']);
+    expect(await status(input.runId)).toMatchObject({ status: 'failed',
+      stop_reason: 'incomplete_final:verdict_missing_after_reminder' });
     expect((await runSummary(db, input.runId))?.effects).toEqual([
       { tool: 'store_verdict', status: 'failed' },
     ]);
