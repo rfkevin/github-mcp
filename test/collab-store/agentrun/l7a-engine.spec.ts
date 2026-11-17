@@ -58,12 +58,12 @@ const READ_THEN_COMMIT: ModelOutput[] = [
   { text: 'correction faite', tool_calls: [] },
 ];
 
-async function newRun(overrides: Partial<{ maxSteps: number; maxTokens: number; maxCostCents: number; deadlineAt: number; now: number; task: string }> = {}) {
+async function newRun(overrides: Partial<{ maxSteps: number; maxTokens: number; maxCostCents: number; deadlineAt: number; now: number; task: string; kind: string }> = {}) {
   await ensureSchema(db);
   const id = ++n;
   const input = {
     runId: 'l7a-run-' + id + '-' + Date.now().toString(36), cycleId: 'l7a-cycle-' + id, participantId: 'vibe',
-    taskId: overrides.task ?? 'fix-1', taskKind: 'fix', prompt: 'Corrige le test cassé.',
+    taskId: overrides.task ?? 'fix-1', taskKind: overrides.kind ?? 'fix', prompt: 'Corrige le test cassé.',
     maxSteps: overrides.maxSteps ?? 10, maxTokens: overrides.maxTokens ?? 100_000, maxCostCents: overrides.maxCostCents ?? 0,
     deadlineAt: overrides.deadlineAt ?? T0 + 86_400, now: overrides.now ?? T0,
   };
@@ -418,7 +418,7 @@ describe('CC-5 l7a — plafonds et outils', () => {
   });
 
   it('arrête la boucle VERDICT_COUPLE_MISMATCH malgré des textes de revue différents', async () => {
-    const { input } = await newRun();
+    const { input } = await newRun({ kind: 'review' });
     const outputs: ModelOutput[] = Array.from({ length: 5 }, (_, i) => ({
       text: 'réexamen ' + i,
       tool_calls: [{ id: 'verdict-' + i, name: 'store_verdict', args: {
@@ -443,7 +443,7 @@ describe('CC-5 l7a — plafonds et outils', () => {
   });
 
   it('une correction de numéro de PR réinitialise la détection de refus répété', async () => {
-    const { input } = await newRun();
+    const { input } = await newRun({ kind: 'review' });
     const outputs: ModelOutput[] = [348, 348, 351].map((pr, i) => ({
       text: 'correction ' + i,
       tool_calls: [{ id: 'v-' + i, name: 'store_verdict', args: {
