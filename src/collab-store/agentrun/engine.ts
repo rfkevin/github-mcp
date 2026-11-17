@@ -114,7 +114,12 @@ export class ModelCallError extends Error {
 }
 
 /** Refus certain d'un outil : l'effet n'a PAS eu lieu (validation, garde). */
-export class ToolRefused extends Error {}
+export class ToolRefused extends Error {
+  /** Safe verified reference facts after certain denial. No D12 authorization. */
+  constructor(message: string, readonly recovery?: Record<string, string | number | boolean>) {
+    super(message);
+  }
+}
 
 export interface ToolSpec { name: string; effect: 'read' | 'write' }
 
@@ -1573,7 +1578,8 @@ async function runEffect(db: D1Database, runId: string, claim: Claim, idx: numbe
     ]);
   } catch (error) {
     if (error instanceof ToolRefused) {
-      const content = JSON.stringify({ error: errorText(error) });
+      const content = JSON.stringify({ error: errorText(error),
+        ...(error.recovery ? { recovery: error.recovery } : {}) });
       await mark('failed', content);
       return { id: call.id, content, error: true };
     }

@@ -213,7 +213,13 @@ describe('CC-7 L5b — store_verdict contrôlé serveur', () => {
     const q = await seedTask('couple');
     const host = (github: GitHubReads) => createReadToolHost({ db, repository: REPO, github, verdicts: true });
     let runId = await newRun(q.cycle, q.reviewer, 'review');
-    expect(await refusal(host(fakeReads({ prHead: OTHER })).execute(verdictCall(), { run_id: runId, effect_key: 'b'.repeat(64) }))).toBe('VERDICT_COUPLE_MISMATCH');
+    const mismatchHost = host(fakeReads({ prHead: OTHER }));
+    expect(await refusal(mismatchHost.execute(verdictCall(), { run_id: runId, effect_key: 'b'.repeat(64) }))).toBe('VERDICT_COUPLE_MISMATCH');
+    const recovery = await mismatchHost.execute(verdictCall(), { run_id: runId, effect_key: '1'.repeat(64) })
+      .then(() => null, (error: ToolRefused) => error.recovery);
+    expect(recovery).toMatchObject({ requested_pr: 300, requested_head: HEAD,
+      requested_base: BASE, github_head: OTHER, github_base: BASE,
+      github_state: 'open', github_merged: false });
     runId = await newRun(q.cycle, q.reviewer, 'review');
     expect(await refusal(host(fakeReads({ prBase: OTHER })).execute(verdictCall(), { run_id: runId, effect_key: 'c'.repeat(64) }))).toBe('VERDICT_COUPLE_MISMATCH');
     runId = await newRun(q.cycle, q.reviewer, 'review');

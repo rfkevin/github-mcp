@@ -473,6 +473,33 @@ describe('CC-5 l7a — plafonds et outils', () => {
     ]);
   });
 
+  it('rend au modèle les références du refus de verdict sans le compter comme une réussite', async () => {
+    const { input } = await newRun({ kind: 'test' });
+    const model = scripted([{ text: '', tool_calls: [{ id: 'v', name: 'store_verdict',
+      args: { task: 'fix-1', pr: 348, head: 'a'.repeat(40), base: 'b'.repeat(40), state: 'PASS' } }] }]);
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { throw new ToolRefused('VERDICT_COUPLE_MISMATCH', {
+        requested_pr: 348, requested_head: 'a'.repeat(40), requested_base: 'b'.repeat(40),
+        github_head: 'c'.repeat(40), github_base: 'd'.repeat(40),
+        github_state: 'closed', github_merged: true,
+      }); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    const row = await db.prepare('SELECT results FROM agent_run_steps WHERE run_id=?1 AND n=0')
+      .bind(input.runId).first<{ results: string }>();
+    const results = JSON.parse(row!.results) as Array<{content:string;error?:boolean}>;
+    expect(results[0].error).toBe(true);
+    expect(JSON.parse(results[0].content)).toMatchObject({
+      error: 'VERDICT_COUPLE_MISMATCH', recovery: { requested_pr: 348,
+        github_head: 'c'.repeat(40), github_base: 'd'.repeat(40),
+        github_state: 'closed', github_merged: true },
+    });
+    expect((await runSummary(db, input.runId))?.effects).toEqual([{ tool: 'store_verdict', status: 'failed' }]);
+  });
+
   it('arrête la boucle VERDICT_COUPLE_MISMATCH malgré des textes de revue différents', async () => {
     const { input } = await newRun({ kind: 'review' });
     const outputs: ModelOutput[] = Array.from({ length: 5 }, (_, i) => ({

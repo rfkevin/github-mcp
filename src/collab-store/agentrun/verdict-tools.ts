@@ -183,7 +183,18 @@ export function createVerdictTools(options: VerdictToolHostOptions): VerdictTool
     const prHead = ((pull.head ?? {}) as Record<string, unknown>).sha;
     const prBase = ((pull.base ?? {}) as Record<string, unknown>).sha;
     if (prHead !== args.head || prBase !== args.base || pull.merged === true || pull.state === 'closed') {
-      throw new ToolRefused('VERDICT_COUPLE_MISMATCH');
+      // Safe and precise refusal diagnostics; never accept or rewrite an
+      // incorrect pair. The model can correct its own next call.
+      throw new ToolRefused('VERDICT_COUPLE_MISMATCH', {
+        requested_pr: args.pr,
+        requested_head: args.head,
+        requested_base: args.base,
+        github_head: typeof prHead === 'string' ? prHead : 'unknown',
+        github_base: typeof prBase === 'string' ? prBase : 'unknown',
+        github_state: typeof pull.state === 'string' ? pull.state : 'unknown',
+        github_merged: pull.merged === true,
+        next_action: 'Relire la PR ouverte (numero + HEAD/BASE), puis repasser store_verdict seulement avec les references verifiees.',
+      });
     }
     // ⑥ CI du head entièrement verte : au moins un contrôle, tous terminés avec succès.
     const checks = await options.github.listCheckRuns(options.repository, args.head) as Array<Record<string, unknown>>;
