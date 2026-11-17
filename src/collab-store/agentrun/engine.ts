@@ -1448,12 +1448,20 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     && await repeatedScopeWithoutProgress(db, runId, output, results);
   const noProgress = repeatedDenial || repeatedScope;
   const persistedProof = provenAtPr || provenAtHandover || provenAtStore;
-  const final = persistedProof || (!await pendingSteer() && (noProgress || output.tool_calls.length === 0)) ? 1 : 0;
-  const verified = !noProgress && (provenAtPr || provenAtHandover || provenAtStore
+  const verified = !noProgress && (persistedProof
     || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true));
+  // A text-only verifier ending is NOT a verdict. On the first occurrence,
+  // keep the D1 run live so the next model step is offered ONLY store_verdict.
+  // A second text-only ending fails explicitly; never retry indefinitely.
+  const missingVerdictFirstTime = (run.task_kind === 'review' || run.task_kind === 'test')
+    && output.tool_calls.length === 0 && !verified && !verdictRecoveryTurn
+    && deps.tools.spec(run.task_kind, 'store_verdict')?.effect === 'write';
+  const final = persistedProof || (!await pendingSteer()
+    && (noProgress || (output.tool_calls.length === 0 && !missingVerdictFirstTime))) ? 1 : 0;
   const completionStatus = verified ? 'completed' : 'failed';
   const completionReason = repeatedDenial ? 'blocked:no_progress:repeated_denial'
     : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit' : verified ? 'final'
+    : verdictRecoveryTurn && output.tool_calls.length === 0 ? 'incomplete_final:verdict_missing_after_reminder'
     : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
   // La conclusion est conditionnée DANS le batch à l'absence de nouveau message.
   // Une preuve métier déjà inscrite dans D1 reste cependant définitive.
