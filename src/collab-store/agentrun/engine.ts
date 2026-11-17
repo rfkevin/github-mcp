@@ -74,8 +74,22 @@ export interface ModelOutput { text: string; tool_calls: ToolCall[] }
 /** U1: enforce an actual terminal opportunity for a structured D12 verdict, not prose.
  * Review and test runs have no mechanical guided server steps. */
 export function reviewVerdictTurn(kind: string, stepsDone: number, maxSteps: number): boolean {
-  // Legacy finite-run helper; unbounded work sessions never force a last model turn.
+  // Legacy finite-run helper. Unbounded runs get a semantic terminal recovery below.
   return maxSteps > 0 && (kind === 'review' || kind === 'test') && stepsDone >= maxSteps - 1;
+}
+/** CC8 S9: the immediately preceding REVIEW/TEST turn ended in prose without a tool.
+ * A SINGLE corrective turn can still publish a real, checked store_verdict.
+ * This is not a generic step cap and does not relax D12 or the run's fence. */
+async function priorEmptyVerifierTurn(db: D1Database, runId: string, n: number, kind: string): Promise<boolean> {
+  if (n < 1 || (kind !== 'review' && kind !== 'test')) return false;
+  const prior = await db.prepare(
+    "SELECT model_output FROM agent_run_steps WHERE run_id=?1 AND n=?2 AND state='completed'",
+  ).bind(runId, n - 1).first<{ model_output: string | null }>();
+  if (!prior?.model_output) return false;
+  try {
+    const output = JSON.parse(prior.model_output) as ModelOutput;
+    return Array.isArray(output.tool_calls) && output.tool_calls.length === 0;
+  } catch { return false; }
 }
 /** Split values are provided by the adapter when reported by the provider. */
 export interface ModelUsage { tokens: number; cost_cents: number; input_tokens?: number | null; output_tokens?: number | null; estimated_input_tokens?: number | null }
