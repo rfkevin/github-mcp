@@ -1092,6 +1092,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   if ('outcome' in claimed) return claimed;
   const n = run.steps_done;
   const claim: Claim = { n, worker: deps.workerId, attempts: claimed.attempts };
+  const verdictRecoveryTurn = await priorEmptyVerifierTurn(db, runId, n, run.task_kind);
 
   // CC-8 S1b-2 : budget TOTAL des appels modèle de l'étape — min(480 s, deadline restante
   // − 30 s, marge avant plafond d'étape) ; chaque appel reçoit ce qui reste (la chaîne de
