@@ -5,12 +5,16 @@ import { ensureSchema } from '../../../src/collab-store/store/schema';
 import { durableWakeWorthy } from '../../../src/collab-store/store/collab-store';
 import { insertCycleRow, insertEventRow, insertPhaseDefinition, insertTaskRow } from '../a0-helpers';
 import { PLAN_MODEL } from './plan-model';
+import { createProduct } from '../../../src/collab-store/owner/product';
+import { registerParticipant } from '../../../src/collab-store/owner/decisions';
+import { previewNextActions } from '../../../src/collab-store/controller/next-actions';
+import { OWNER_PROOF } from '../coordinator-helpers';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 const T = 2_000_000_000;
 const HEAD = 'a'.repeat(40), BASE = 'b'.repeat(40);
 let serial = 0;
-type Kind = 'answer' | 'review' | 'test' | 'implement';
+type Kind = 'answer' | 'review' | 'test' | 'implement' | 'design';
 
 async function seed(kind: Kind) {
   await ensureSchema(db);
@@ -118,6 +122,63 @@ describe('CC8 — matrice des sorties et reprise explicite du parcours unique',(
     ['needs_reconcile','effect_outcome_unknown',false],
   ])('politique typée %s / %s -> %s',(status,reason,expected)=>{
     expect(terminalRunMayRetry(status,reason)).toBe(expected);
+  });
+});
+
+
+describe('CC8 — réentrée design / contribute sur un produit réel', () => {
+  it('exige un checkpoint exact par échec et ne réarme jamais un HALT', async () => {
+    await ensureSchema(db);
+    const id = ++serial;
+    const cycle = '0000-a-s9-design-' + id;
+    const pids = ['author', 'reviewer', 'tester'].map(role => 'terminal-design-' + role + '-' + id);
+    for (const pid of pids) {
+      await registerParticipant(db, {
+        participant_id: pid, display_label: pid, proof: OWNER_PROOF, op: 'reg-' + pid,
+      });
+    }
+    await createProduct(db, { enabled: true, cycle_id: cycle,
+      goal: 'Comparer les reprises design du parcours unique', participants: pids, proof: OWNER_PROOF });
+    const coordinator = 'terminal-design-coord-' + id;
+    await db.prepare("INSERT INTO participants(participant_id,display_label,status) VALUES(?1,?1,'active')")
+      .bind(coordinator).run();
+    await db.prepare("INSERT INTO coordinators(participant_id,status,event_seq,updated_at) VALUES(?1,'active',NULL,?2)")
+      .bind(coordinator, T).run();
+
+    const participant = pids[0]!;
+    const decision = (await previewNextActions(db, cycle, participant)).mine
+      .find(action => action.action === 'contribute');
+    expect(decision?.task_id).toBeTruthy();
+    expect(decision?.subject).toContain('P1:proposal.submit:author');
+    const task = decision!.task_id!;
+    const subject = decision!.subject;
+    const config = { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: participant };
+    expect((await planAgentRuns(db, config, { now: T })).created).toBe(1);
+    const runId = (attempt: number) =>
+      attemptRunId('design', cycle, participant, task, subject, 'P1', 0, attempt);
+    const first = await runId(1);
+    expect(await db.prepare('SELECT task_kind FROM agent_runs WHERE run_id=?1')
+      .bind(first).first()).toMatchObject({ task_kind: 'design' });
+    const f: Fixture = { kind: 'design', cycle, task, participant, coordinator, subject,
+      config, runId, first };
+
+    await stop(first, 'failed', 'incomplete_final:store_effect_missing', T + 1);
+    expect((await plan(f, T + 5)).created).toBe(0);
+    await permit(f, first, T + 6, { subject: 'wrong-subject' });
+    expect((await plan(f, T + 7)).created).toBe(0);
+    await permit(f, first, T + 8);
+    expect((await plan(f, T + 9)).created).toBe(1);
+    const second = await runId(2);
+    expect((await plan(f, T + 10)).created).toBe(0);
+
+    await stop(second, 'failed', 'incomplete_final:store_effect_missing', T + 11);
+    expect((await plan(f, T + 12)).created).toBe(0); // first checkpoint cannot rearm run 2
+    await permit(f, second, T + 13);
+    expect((await plan(f, T + 14)).created).toBe(1);
+    const third = await runId(3);
+    await stop(third, 'halted', 'individual_stop:operator', T + 15);
+    await permit(f, third, T + 16);
+    expect((await plan(f, T + 17)).created).toBe(0); // HALT never rearmed
   });
 });
 
