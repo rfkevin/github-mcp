@@ -417,6 +417,53 @@ describe('CC-5 l7a — plafonds et outils', () => {
     )).toEqual(['tool_forbidden_on_api_channel', 'tool_forbidden_on_api_channel', 'tool_not_allowlisted', 'd12_verdict_forbidden_on_api_channel']);
   });
 
+  it('arrête la boucle VERDICT_COUPLE_MISMATCH malgré des textes de revue différents', async () => {
+    const { input } = await newRun();
+    const outputs: ModelOutput[] = Array.from({ length: 5 }, (_, i) => ({
+      text: 'réexamen ' + i,
+      tool_calls: [{ id: 'verdict-' + i, name: 'store_verdict', args: {
+        task: 'sample', pr: 348, head: 'a'.repeat(40), base: 'b'.repeat(40),
+        state: i % 2 === 0 ? 'AGREE' : 'CHANGES_REQUESTED', review: 'variation de texte ' + i,
+      } }],
+    }));
+    const model = scripted(outputs);
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { throw new ToolRefused('VERDICT_COUPLE_MISMATCH'); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect((await runStep(db, input.runId, d)).outcome).toBe('failed');
+    expect(await status(input.runId)).toMatchObject({
+      status: 'failed', stop_reason: 'blocked:no_progress:repeated_denial', steps_done: 3,
+    });
+    expect(model.state.calls).toBe(3);
+  });
+
+  it('une correction de numéro de PR réinitialise la détection de refus répété', async () => {
+    const { input } = await newRun();
+    const outputs: ModelOutput[] = [348, 348, 351].map((pr, i) => ({
+      text: 'correction ' + i,
+      tool_calls: [{ id: 'v-' + i, name: 'store_verdict', args: {
+        task: 'sample', pr, head: 'a'.repeat(40), base: 'b'.repeat(40),
+        state: 'AGREE', review: 'réessai',
+      } }],
+    }));
+    const model = scripted(outputs);
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { throw new ToolRefused('VERDICT_COUPLE_MISMATCH'); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    for (let i = 0; i < 3; i++) {
+      expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    }
+    expect(await status(input.runId)).toMatchObject({ status: 'running', steps_done: 3 });
+  });
+
   it('les tables sont append-only : suppression refusée', async () => {
     const { input } = await newRun();
     await expect(db.prepare('DELETE FROM agent_runs WHERE run_id = ?1').bind(input.runId).run()).rejects.toThrow(/append-only/);
