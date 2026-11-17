@@ -152,7 +152,7 @@ describe('CC8 — réentrée design / contribute sur un produit réel', () => {
     expect(decision?.subject).toContain('P1:proposal.submit:author');
     const task = decision!.task_id!;
     const subject = decision!.subject;
-    const config = { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: participant };
+    const config = { ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: participant, AGENT_RUN_GITHUB_WRITES: 'true' };
     expect((await planAgentRuns(db, config, { now: T })).created).toBe(1);
     const runId = (attempt: number) =>
       attemptRunId('design', cycle, participant, task, subject, 'P1', 0, attempt);
