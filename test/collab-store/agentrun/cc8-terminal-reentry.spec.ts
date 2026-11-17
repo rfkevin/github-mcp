@@ -49,6 +49,14 @@ async function seed(kind: Kind) {
   const first = await runId(1);
   const present = await db.prepare('SELECT run_id FROM agent_runs WHERE run_id=?1').bind(first).first();
   expect(present).not.toBeNull();
+  if (kind === 'review' || kind === 'test') {
+    const saved = await db.prepare('SELECT prompt FROM agent_runs WHERE run_id=?1')
+      .bind(first).first<{ prompt: string }>();
+    // D12 verifier receives PR number from the exact owner-submitted HEAD/BASE.
+    // No stale PR number from an earlier run can contaminate the prompt.
+    expect(saved?.prompt).toContain('PR exacte de la soumission courante : #348');
+    expect(saved?.prompt).toContain('store_verdict doit utiliser task=retry, pr=348');
+  }
   return { kind, cycle, task: kind === 'answer' ? '' : task, participant, coordinator, subject, config, runId, first };
 }
 
