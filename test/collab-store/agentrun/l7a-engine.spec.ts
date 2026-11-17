@@ -451,6 +451,7 @@ describe('CC-5 l7a — plafonds et outils', () => {
       { text: 'Avis réel proposé', tool_calls: [{ id: 'v', name: 'store_verdict',
         args: { task: 'fix-1', pr: 352, head: 'a'.repeat(40), base: 'b'.repeat(40), state: 'AGREE' } }] },
       { text: 'Refus typé : ne pas annoncer la réussite', tool_calls: [] },
+      { text: 'Preuve toujours manquante après rappel : blocage explicite', tool_calls: [] },
     ]);
     let attempted = 0;
     const verifier: ToolHost = {
