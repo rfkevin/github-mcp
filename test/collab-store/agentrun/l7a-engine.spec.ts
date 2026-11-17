@@ -14,11 +14,13 @@ const T0 = 1_900_000_000;
 class Crash extends Error {}
 
 function scripted(outputs: ModelOutput[], options: { fail?: number; usage?: { tokens: number; cost_cents: number } } = {}) {
-  const state = { calls: 0 };
+  const state = { calls: 0, offered: [] as string[][], messages: [] as AgentMessage[][] };
   return {
     state,
-    async complete(input: { messages: AgentMessage[] }) {
+    async complete(input: { messages: AgentMessage[]; tools?: string[] }) {
       state.calls += 1;
+      state.offered.push(input.tools ?? []);
+      state.messages.push(input.messages);
       if (options.fail && state.calls <= options.fail) throw new ModelCallError('HTTP 503 fournisseur indisponible', { tokens: 7, cost_cents: 0 });
       const step = input.messages.filter(message => message.role === 'assistant').length;
       return { output: outputs[step] ?? { text: 'fin', tool_calls: [] }, usage: options.usage ?? { tokens: 100, cost_cents: 0 } };
@@ -415,6 +417,56 @@ describe('CC-5 l7a — plafonds et outils', () => {
     expect((JSON.parse(row!.results) as { content: string }[]).map(entry =>
       entry.content.startsWith('{"error":') ? JSON.parse(entry.content).error : 'ok'
     )).toEqual(['tool_forbidden_on_api_channel', 'tool_forbidden_on_api_channel', 'tool_not_allowlisted', 'd12_verdict_forbidden_on_api_channel']);
+  });
+
+  it('une réponse textuelle de TEST sans store_verdict donne un seul tour correctif, puis échoue proprement', async () => {
+    const { input } = await newRun({ kind: 'test' });
+    const model = scripted([
+      { text: 'J ai lu la CI mais ne dépose pas de verdict', tool_calls: [] },
+      { text: 'Preuve insuffisante : pas de PASS inventé', tool_calls: [] },
+    ]);
+    let writes = 0;
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { writes += 1; throw new ToolRefused('unexpected_verdict'); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect(await status(input.runId)).toMatchObject({ status: 'running', steps_done: 1 });
+    expect((await runStep(db, input.runId, d)).outcome).toBe('failed');
+    expect(await status(input.runId)).toMatchObject({
+      status: 'failed', stop_reason: 'incomplete_final:verdict_missing_after_reminder', steps_done: 2,
+    });
+    expect(model.state.offered[1]).toEqual(['store_verdict']);
+    expect(model.state.messages[1]?.at(-1)?.content).toContain('Ton dernier tour de verification');
+    expect(model.state.calls).toBe(2);
+    expect(writes).toBe(0); // no auto-generated PASS or side effect
+  });
+
+  it('une première omission laisse appeler store_verdict au second tour, sans contourner son refus', async () => {
+    const { input } = await newRun({ kind: 'review' });
+    const model = scripted([
+      { text: 'Relecture terminée', tool_calls: [] },
+      { text: 'Avis réel proposé', tool_calls: [{ id: 'v', name: 'store_verdict',
+        args: { task: 'fix-1', pr: 352, head: 'a'.repeat(40), base: 'b'.repeat(40), state: 'AGREE' } }] },
+      { text: 'Refus typé : ne pas annoncer la réussite', tool_calls: [] },
+    ]);
+    let attempted = 0;
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { attempted += 1; throw new ToolRefused('VERDICT_READ_PROOF_MISSING'); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect(attempted).toBe(1); // real tool call comes only from the model
+    expect((await runStep(db, input.runId, d)).outcome).toBe('failed');
+    expect(await status(input.runId)).toMatchObject({ status: 'failed' });
+    expect((await runSummary(db, input.runId))?.effects).toEqual([
+      { tool: 'store_verdict', status: 'failed' },
+    ]);
   });
 
   it('arrête la boucle VERDICT_COUPLE_MISMATCH malgré des textes de revue différents', async () => {
