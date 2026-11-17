@@ -858,8 +858,14 @@ function deniedFingerprint(output: ModelOutput, results: ResultEntry[]): string 
     if (!result?.error || result.id !== call.id) return null;
     let error: unknown;
     try { error = (JSON.parse(result.content) as { error?: unknown }).error; } catch { return null; }
-    if (typeof error !== 'string' || !/^(tool_(?:not_allowlisted|forbidden_on_api_channel|not_configured)|d12_verdict_forbidden_on_api_channel|capability_not_held:)/.test(error)) return null;
-    attempts.push({ name: call.name, args: call.args, error });
+    if (typeof error !== 'string' || !/^(tool_(?:not_allowlisted|forbidden_on_api_channel|not_configured)|d12_verdict_forbidden_on_api_channel|capability_not_held:|VERDICT_COUPLE_MISMATCH$)/.test(error)) return null;
+    // A PR/head/base mismatch is deterministic: changing free-form review
+    // text or the desired verdict cannot repair the SAME incorrect PR pair.
+    // A corrected PR or SHA resets the streak and resumes normal progress.
+    const args = error === 'VERDICT_COUPLE_MISMATCH' && call.name === 'store_verdict'
+      ? { task: call.args.task, pr: call.args.pr, head: call.args.head, base: call.args.base }
+      : call.args;
+    attempts.push({ name: call.name, args, error });
   }
   return canonical(attempts);
 }
