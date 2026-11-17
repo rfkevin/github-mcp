@@ -145,6 +145,33 @@ export const READ_TOOLS_BY_KIND: Readonly<Record<string, readonly ReadToolName[]
 const SHA_RE = /^[a-f0-9]{40}$/;
 const REF_RE = /^[A-Za-z0-9._/-]{1,200}$/;
 
+/** Only GitHub PR references from a CERTAIN server mismatch are safe to
+ * disclose to the owning API participant. Never leak the raw effect args,
+ * free-form review text, arbitrary error strings or untrusted recovery keys. */
+export function safeVerdictMismatchRecovery(raw: string | null): Record<string, string | number | boolean> | null {
+  if (!raw) return null;
+  try {
+    const payload: unknown = JSON.parse(raw);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const data = payload as Record<string, unknown>;
+    if (data.error !== 'VERDICT_COUPLE_MISMATCH' || !data.recovery
+      || typeof data.recovery !== 'object' || Array.isArray(data.recovery)) return null;
+    const r = data.recovery as Record<string, unknown>;
+    if (typeof r.requested_pr !== 'number' || !Number.isSafeInteger(r.requested_pr)
+      || r.requested_pr < 1 || r.requested_pr > 100_000_000
+      || typeof r.requested_head !== 'string' || !SHA_RE.test(r.requested_head)
+      || typeof r.requested_base !== 'string' || !SHA_RE.test(r.requested_base)
+      || typeof r.github_head !== 'string' || !SHA_RE.test(r.github_head)
+      || typeof r.github_base !== 'string' || !SHA_RE.test(r.github_base)
+      || (r.github_state !== 'open' && r.github_state !== 'closed')
+      || typeof r.github_merged !== 'boolean') return null;
+    return { requested_pr: r.requested_pr, requested_head: r.requested_head,
+      requested_base: r.requested_base, github_head: r.github_head,
+      github_base: r.github_base, github_state: r.github_state,
+      github_merged: r.github_merged };
+  } catch { return null; }
+}
+
 /**
  * CC-7 L5b (S10) : journalise une lecture GitHub réussie de l'exécution dans
  * agent_run_reads (INSERT OR IGNORE, empreinte (run_id, tool, ref_sha)) — la
@@ -509,7 +536,10 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
               }
             }
           } catch { /* Diagnostic absent, pas un nouvel échec d'outil. */ }
-          return {step:effect.n,index:effect.idx,tool:effect.tool,status:effect.status,error:reason};
+          const recovery = effect.tool === 'store_verdict' && reason === 'VERDICT_COUPLE_MISMATCH'
+            ? safeVerdictMismatchRecovery(effect.result) : null;
+          return {step:effect.n,index:effect.idx,tool:effect.tool,status:effect.status,error:reason,
+            ...(recovery ? { recovery } : {})};
         });
         return {run_id:pastRunId,status:previous.status,stop_reason:previous.stop_reason.slice(0,200),
           steps_done:previous.steps_done,errors,offset,next_offset:results.length>limit?offset+limit:null};

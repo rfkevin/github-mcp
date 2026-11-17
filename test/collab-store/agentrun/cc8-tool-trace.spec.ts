@@ -3,11 +3,38 @@ import { describe, expect, it } from 'vitest';
 import { createRun } from '../../../src/collab-store/agentrun/engine';
 import { redactedRunSummary, redactedRunSummaryFor } from '../../../src/collab-store/agentrun/chat-continuity';
 import { redactedToolAttempts, typedToolFailure } from '../../../src/collab-store/agentrun/tool-trace';
+import { safeVerdictMismatchRecovery } from '../../../src/collab-store/agentrun/read-tools';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
 
 describe('CC8 — audit expurgé des vrais appels outils', () => {
+  it('restitue seulement les références SHA/PR vérifiables d un refus D12 exact', () => {
+    const head = 'a'.repeat(40);
+    const base = 'b'.repeat(40);
+    const wrong = 'c'.repeat(40);
+    const payload = JSON.stringify({ error: 'VERDICT_COUPLE_MISMATCH', recovery: {
+      requested_pr: 351, requested_head: wrong, requested_base: base,
+      github_head: head, github_base: base, github_state: 'open', github_merged: false,
+      next_action: 'DO_NOT_LEAK_PRIVATE_MESSAGE', token: 'DO_NOT_LEAK_SECRET',
+    }, userSecret: 'DO_NOT_LEAK_OTHER' });
+    expect(safeVerdictMismatchRecovery(payload)).toEqual({
+      requested_pr: 351, requested_head: wrong, requested_base: base,
+      github_head: head, github_base: base, github_state: 'open', github_merged: false,
+    });
+    expect(JSON.stringify(safeVerdictMismatchRecovery(payload))).not.toContain('DO_NOT_LEAK');
+    expect(safeVerdictMismatchRecovery(JSON.stringify({
+      error: 'VERDICT_COUPLE_MISMATCH', recovery: { requested_pr: 351, requested_head: 'PRIVATE',
+        requested_base: base, github_head: head, github_base: base,
+        github_state: 'open', github_merged: false },
+    }))).toBeNull();
+    expect(safeVerdictMismatchRecovery(JSON.stringify({ error: 'OTHER_ERROR', recovery: {
+      requested_pr: 351, requested_head: wrong, requested_base: base,
+      github_head: head, github_base: base, github_state: 'open', github_merged: false,
+    } }))).toBeNull();
+    expect(safeVerdictMismatchRecovery('NOT_JSON')).toBeNull();
+    expect(safeVerdictMismatchRecovery(JSON.stringify({ error: 'VERDICT_COUPLE_MISMATCH' }))).toBeNull();
+  });
   it('différencie reçu, refus, absence de reçu et effet D1 sans fuite de contenu', () => {
     const secret = 'PRIVATE_TOKEN_123__NEVER_EXPOSE';
     const calls = JSON.stringify({ text: secret, tool_calls: [
