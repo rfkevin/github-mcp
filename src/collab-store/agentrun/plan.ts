@@ -583,12 +583,14 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
                 failed.run_id, failed.updated_at),
           );
           if (runId === null) return false;
-          // The PR number is an authoritative property of the CURRENT submitted
-          // head/base pair, not of a previous answer or the model's memory.
+          // A D12 owner SUBMITTED is preferred. A completed API IMPLEMENT can
+          // instead have an immutable run.proof written by the SERVER (never
+          // under the author's identity). Both must match THIS task and SHA pair.
+          // The verifier will still re-read the open PR, CI and diff on GitHub.
           const pair = kind === 'review' || kind === 'test' ? SHA_PAIR_RE.exec(decision.subject) : null;
           let submittedPr: number | null = null;
           if (pair && taskId) {
-            const row = await db.prepare([
+            const ownerRow = await db.prepare([
               "SELECT json_extract(payload_json, '$.pr') AS pr FROM events",
               "WHERE cycle_id=?1 AND type='evidence.add' AND role='owner' AND json_valid(payload_json)",
               "AND json_extract(payload_json,'$.task')=?2",
@@ -596,8 +598,21 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
               "AND json_extract(payload_json,'$.head')=?3 AND json_extract(payload_json,'$.base')=?4",
               "ORDER BY seq DESC LIMIT 1",
             ].join(' ')).bind(cycleId, taskId, pair[1], pair[2]).first<{ pr: number | null }>();
-            if (typeof row?.pr === 'number' && Number.isSafeInteger(row.pr) && row.pr > 0)
-              submittedPr = row.pr;
+            if (typeof ownerRow?.pr === 'number' && Number.isSafeInteger(ownerRow.pr) && ownerRow.pr > 0)
+              submittedPr = ownerRow.pr;
+            if (submittedPr === null) {
+              const serverProof = await db.prepare([
+                "SELECT json_extract(payload_json,'$.pr') AS pr FROM events",
+                "WHERE cycle_id=?1 AND type='run.proof' AND participant_id='agentrun' AND role='server'",
+                "AND json_valid(payload_json) AND json_extract(payload_json,'$.task')=?2",
+                "AND json_extract(payload_json,'$.state')='RUN_PROVEN'",
+                "AND json_extract(payload_json,'$.verified_success')=1",
+                "AND json_extract(payload_json,'$.head')=?3 AND json_extract(payload_json,'$.base')=?4",
+                "ORDER BY seq DESC LIMIT 1",
+              ].join(' ')).bind(cycleId, taskId, pair[1], pair[2]).first<{ pr: number | null }>();
+              if (typeof serverProof?.pr === 'number' && Number.isSafeInteger(serverProof.pr) && serverProof.pr > 0)
+                submittedPr = serverProof.pr;
+            }
           }
           const basePrompt = taskPrompt(kind, cycleId, taskId, decision.subject);
           const prompt = !pair ? basePrompt : basePrompt + '\n' + (submittedPr === null

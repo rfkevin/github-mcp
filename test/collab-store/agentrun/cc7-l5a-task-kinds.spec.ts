@@ -126,6 +126,49 @@ describe('CC-7 L5a — planification des réveils de tâche', () => {
     expect((await db.prepare('SELECT COUNT(*) AS c FROM agent_runs WHERE cycle_id = ?1').bind(q.cycle).first<{ c: number }>())!.c).toBe(2);
   });
 
+  it('run.proof serveur API : REVIEW/TEST reçoivent la PR exacte de la soumission sans evidence.add du modèle', async () => {
+    const q = await seedTask('runproof-server', pids => [
+      { type: 'run.proof', participant: 'agentrun', role: 'server',
+        payload: { task: 'l5', state: 'RUN_PROVEN', run_id: 'api-implement-proven',
+          run_participant: pids.owner, pr: 353, head: HEAD, base: BASE,
+          verified_success: true, scope: 'e2e_pass_review_required' } },
+    ]);
+    const out = await planAgentRuns(db, {
+      ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.reviewer + ',' + q.tester,
+    }, { now: T });
+    expect(out.created).toBe(2);
+    const prompts = (await db.prepare('SELECT task_kind, prompt FROM agent_runs WHERE cycle_id=?1')
+      .bind(q.cycle).all<{ task_kind: string; prompt: string }>()).results;
+    expect(prompts.map(row => row.task_kind).sort()).toEqual(['review', 'test']);
+    for (const run of prompts) {
+      expect(run.prompt).toContain('PR exacte de la soumission courante : #353');
+      expect(run.prompt).toContain('pr=353, head=' + HEAD + ', base=' + BASE);
+    }
+  });
+
+  it('soumission owner prioritaire sur run.proof ; ne reprend aucune PR du mauvais couple', async () => {
+    const q = await seedTask('runproof-priority', pids => [
+      { type: 'run.proof', participant: 'agentrun', role: 'server',
+        payload: { task: 'l5', state: 'RUN_PROVEN', run_id: 'api-priority',
+          run_participant: pids.owner, pr: 353, head: HEAD, base: BASE,
+          verified_success: true } },
+      { type: 'run.proof', participant: 'agentrun', role: 'server',
+        payload: { task: 'l5', state: 'RUN_PROVEN', run_id: 'api-other-pair',
+          run_participant: pids.owner, pr: 999, head: 'f'.repeat(40), base: BASE,
+          verified_success: true } },
+      { type: 'evidence.add', participant: pids.owner, role: 'owner', payload: submission },
+    ]);
+    const result = await planAgentRuns(db, {
+      ...PLAN_MODEL, AGENT_RUN_PARTICIPANTS: q.reviewer,
+    }, { now: T });
+    expect(result.created).toBe(1);
+    const row = await db.prepare("SELECT prompt FROM agent_runs WHERE cycle_id=?1 AND task_kind='review'")
+      .bind(q.cycle).first<{ prompt: string }>();
+    expect(row?.prompt).toContain('pr=300, head=' + HEAD + ', base=' + BASE);
+    expect(row?.prompt).not.toContain('pr=999');
+    expect(row?.prompt).not.toContain('pr=353');
+  });
+
   it('implement sans soumission : une exécution pour l’auteur, rien pour le relecteur sans décision', async () => {
     const q = await seedTask('implement', () => []);
     const out = await planAgentRuns(db, { ...PLAN_MODEL, AGENT_RUN_GITHUB_WRITES: 'true', AGENT_RUN_PARTICIPANTS: q.owner + ',' + q.reviewer }, { now: T });
