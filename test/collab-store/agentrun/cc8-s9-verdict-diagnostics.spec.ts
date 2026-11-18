@@ -64,6 +64,10 @@ describe('CC8 S9 — diagnostics du verdict API réellement exécutés', () => {
       return runId;
     };
     const previous = await newRun('gemini', 'failed');
+    // La même identité ne peut pas avoir deux runs actifs sur ce bail.
+    // Le diagnostic porte sur une WorkSession réellement terminée.
+    await db.prepare("UPDATE agent_runs SET status='failed', stop_reason='incomplete_final' WHERE run_id=?1")
+      .bind(previous).run();
     const caller = await newRun('gemini', 'caller');
     const stranger = await newRun('vibe', 'stranger');
 
