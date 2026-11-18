@@ -583,11 +583,32 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
                 failed.run_id, failed.updated_at),
           );
           if (runId === null) return false;
+          // The PR number is an authoritative property of the CURRENT submitted
+          // head/base pair, not of a previous answer or the model's memory.
+          const pair = kind === 'review' || kind === 'test' ? SHA_PAIR_RE.exec(decision.subject) : null;
+          let submittedPr: number | null = null;
+          if (pair && taskId) {
+            const row = await db.prepare([
+              "SELECT json_extract(payload_json, '$.pr') AS pr FROM events",
+              "WHERE cycle_id=?1 AND type='evidence.add' AND role='owner' AND json_valid(payload_json)",
+              "AND json_extract(payload_json,'$.task')=?2",
+              "AND json_extract(payload_json,'$.state')='SUBMITTED'",
+              "AND json_extract(payload_json,'$.head')=?3 AND json_extract(payload_json,'$.base')=?4",
+              "ORDER BY seq DESC LIMIT 1",
+            ].join(' ')).bind(cycleId, taskId, pair[1], pair[2]).first<{ pr: number | null }>();
+            if (typeof row?.pr === 'number' && Number.isSafeInteger(row.pr) && row.pr > 0)
+              submittedPr = row.pr;
+          }
+          const basePrompt = taskPrompt(kind, cycleId, taskId, decision.subject);
+          const prompt = !pair ? basePrompt : basePrompt + '\n' + (submittedPr === null
+            ? 'Numéro de PR inconnu pour le HEAD/BASE de cette soumission : consulter github_pull_request et le diff exact; jamais réutiliser un numéro de PR antérieur.'
+            : 'PR exacte de la soumission courante : #' + submittedPr + ' ; store_verdict doit utiliser task='
+              + taskId + ', pr=' + submittedPr + ', head=' + pair[1] + ', base=' + pair[2]
+              + '. Ne jamais utiliser une PR précédente; vérifier à nouveau GitHub, le diff et la CI avant le verdict.');
           return (await createRun(db, {
             runId, cycleId, participantId,
             taskId, taskKind: kind,
-            prompt: await taskPromptWithServerPacket(db, { cycleId, participantId, taskId },
-              taskPrompt(kind, cycleId, taskId, decision.subject)),
+            prompt: await taskPromptWithServerPacket(db, { cycleId, participantId, taskId }, prompt),
             maxSteps: taskKindMaxSteps(kind), maxTokens: taskKindMaxTokens(kind, env), maxCostCents: taskKindCostCents(env, kind),
             deadlineAt: input.now + runDeadlineS(kind, taskKindCostCents(env, kind)), now: input.now,
           })).created;

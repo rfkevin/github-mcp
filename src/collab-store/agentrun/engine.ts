@@ -74,8 +74,22 @@ export interface ModelOutput { text: string; tool_calls: ToolCall[] }
 /** U1: enforce an actual terminal opportunity for a structured D12 verdict, not prose.
  * Review and test runs have no mechanical guided server steps. */
 export function reviewVerdictTurn(kind: string, stepsDone: number, maxSteps: number): boolean {
-  // Legacy finite-run helper; unbounded work sessions never force a last model turn.
+  // Legacy finite-run helper. Unbounded runs get a semantic terminal recovery below.
   return maxSteps > 0 && (kind === 'review' || kind === 'test') && stepsDone >= maxSteps - 1;
+}
+/** CC8 S9: the immediately preceding REVIEW/TEST turn ended in prose without a tool.
+ * A SINGLE corrective turn can still publish a real, checked store_verdict.
+ * This is not a generic step cap and does not relax D12 or the run's fence. */
+async function priorEmptyVerifierTurn(db: D1Database, runId: string, n: number, kind: string): Promise<boolean> {
+  if (n < 1 || (kind !== 'review' && kind !== 'test')) return false;
+  const prior = await db.prepare(
+    "SELECT model_output FROM agent_run_steps WHERE run_id=?1 AND n=?2 AND state='completed'",
+  ).bind(runId, n - 1).first<{ model_output: string | null }>();
+  if (!prior?.model_output) return false;
+  try {
+    const output = JSON.parse(prior.model_output) as ModelOutput;
+    return Array.isArray(output.tool_calls) && output.tool_calls.length === 0;
+  } catch { return false; }
 }
 /** Split values are provided by the adapter when reported by the provider. */
 export interface ModelUsage { tokens: number; cost_cents: number; input_tokens?: number | null; output_tokens?: number | null; estimated_input_tokens?: number | null }
@@ -100,7 +114,12 @@ export class ModelCallError extends Error {
 }
 
 /** Refus certain d'un outil : l'effet n'a PAS eu lieu (validation, garde). */
-export class ToolRefused extends Error {}
+export class ToolRefused extends Error {
+  /** Safe verified reference facts after certain denial. No D12 authorization. */
+  constructor(message: string, readonly recovery?: Record<string, string | number | boolean>) {
+    super(message);
+  }
+}
 
 export interface ToolSpec { name: string; effect: 'read' | 'write' }
 
@@ -858,8 +877,14 @@ function deniedFingerprint(output: ModelOutput, results: ResultEntry[]): string 
     if (!result?.error || result.id !== call.id) return null;
     let error: unknown;
     try { error = (JSON.parse(result.content) as { error?: unknown }).error; } catch { return null; }
-    if (typeof error !== 'string' || !/^(tool_(?:not_allowlisted|forbidden_on_api_channel|not_configured)|d12_verdict_forbidden_on_api_channel|capability_not_held:)/.test(error)) return null;
-    attempts.push({ name: call.name, args: call.args, error });
+    if (typeof error !== 'string' || !/^(tool_(?:not_allowlisted|forbidden_on_api_channel|not_configured)|d12_verdict_forbidden_on_api_channel|capability_not_held:|VERDICT_COUPLE_MISMATCH$)/.test(error)) return null;
+    // A PR/head/base mismatch is deterministic: changing free-form review
+    // text or the desired verdict cannot repair the SAME incorrect PR pair.
+    // A corrected PR or SHA resets the streak and resumes normal progress.
+    const args = error === 'VERDICT_COUPLE_MISMATCH' && call.name === 'store_verdict'
+      ? { task: call.args.task, pr: call.args.pr, head: call.args.head, base: call.args.base }
+      : call.args;
+    attempts.push({ name: call.name, args, error });
   }
   return canonical(attempts);
 }
@@ -1072,6 +1097,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   if ('outcome' in claimed) return claimed;
   const n = run.steps_done;
   const claim: Claim = { n, worker: deps.workerId, attempts: claimed.attempts };
+  const verdictRecoveryTurn = await priorEmptyVerifierTurn(db, runId, n, run.task_kind);
 
   // CC-8 S1b-2 : budget TOTAL des appels modèle de l'étape — min(480 s, deadline restante
   // − 30 s, marge avant plafond d'étape) ; chaque appel reçoit ce qui reste (la chaîne de
@@ -1115,15 +1141,22 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         if (!liveSteering.live) return settled(db, runId, deps.now());
         const messages = await buildMessages(db, run, deps.compactHistory === true, liveSteering.messages);
         const tools = deps.tools.list(run.task_kind);
-        const verdictTurn = reviewVerdictTurn(run.task_kind, n, run.max_steps) && tools.includes('store_verdict');
+        const verdictTurn = (reviewVerdictTurn(run.task_kind, n, run.max_steps) || verdictRecoveryTurn)
+          && tools.includes('store_verdict');
         const extra = guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
           ? guide.instruction : verify ? verify.context + '\n\n' + verify.instruction : null;
-        // The final review/test model step must be able to attempt a real store_verdict.
-        // Do not allow an extra discovery loop to consume the final step.
-        const verdictInstruction = verdictTurn
-          ? 'Dernière étape de relecture : utiliser UNIQUEMENT store_verdict pour déposer un verdict structuré '
-            + 'avec les preuves et le couple head/base exacts. Si les preuves manquent, ne pas inventer AGREE.'
-          : null;
+        // After a tool-less final on an unbounded verifier run, allow ONE
+        // meaningful opportunity to publish store_verdict. Never invent PASS.
+        const verdictInstruction = verdictRecoveryTurn
+          ? 'Ton dernier tour de verification a répondu en texte SANS store_verdict : la tâche est toujours NON VALIDÉE. '
+            + 'Ceci est l UNIQUE tour correctif. Si les preuves sont suffisantes, appelle maintenant '
+            + 'store_verdict avec task, pr, head, base exacts et PASS/FAIL ou AGREE/CHANGES_REQUESTED '
+            + 'selon ton rôle. Si les preuves ne suffisent pas, indique précisément ce qui manque '
+            + 'dans ta réponse sans inventer de verdict ; la mission restera en échec.'
+          : verdictTurn
+            ? 'Dernière étape de relecture : utiliser UNIQUEMENT store_verdict pour déposer un verdict structuré '
+              + 'avec les preuves et le couple head/base exacts. Si les preuves manquent, ne pas inventer AGREE.'
+            : null;
         const replyContext = continuationReplyMessage(clarifications);
         const publicationInstruction = answerPublicationReminder(run.task_kind, run.prompt, tools);
         const additional = [extra, replyContext, verdictInstruction, publicationInstruction].filter(Boolean).join('\n\n');
@@ -1420,12 +1453,23 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     && await repeatedScopeWithoutProgress(db, runId, output, results);
   const noProgress = repeatedDenial || repeatedScope;
   const persistedProof = provenAtPr || provenAtHandover || provenAtStore;
-  const final = persistedProof || (!await pendingSteer() && (noProgress || output.tool_calls.length === 0)) ? 1 : 0;
-  const verified = !noProgress && (provenAtPr || provenAtHandover || provenAtStore
+  const verified = !noProgress && (persistedProof
     || (output.tool_calls.length === 0 ? await completionVerified(db, run, deps) : true));
+  // A text-only verifier ending is NOT a verdict. On the first occurrence,
+  // keep the D1 run live so the next model step is offered ONLY store_verdict.
+  // A second text-only ending fails explicitly; never retry indefinitely.
+  const missingVerdictFirstTime = (run.task_kind === 'review' || run.task_kind === 'test')
+    && output.tool_calls.length === 0 && !verified && !verdictRecoveryTurn
+    // Finite sessions on their final allowed step must fail, not remain
+    // running while no extra model turn can be scheduled.
+    && (run.max_steps < 0 || n + 1 < run.max_steps)
+    && deps.tools.spec(run.task_kind, 'store_verdict')?.effect === 'write';
+  const final = persistedProof || (!await pendingSteer()
+    && (noProgress || (output.tool_calls.length === 0 && !missingVerdictFirstTime))) ? 1 : 0;
   const completionStatus = verified ? 'completed' : 'failed';
   const completionReason = repeatedDenial ? 'blocked:no_progress:repeated_denial'
     : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit' : verified ? 'final'
+    : verdictRecoveryTurn && output.tool_calls.length === 0 ? 'incomplete_final:verdict_missing_after_reminder'
     : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
   // La conclusion est conditionnée DANS le batch à l'absence de nouveau message.
   // Une preuve métier déjà inscrite dans D1 reste cependant définitive.
@@ -1534,7 +1578,8 @@ async function runEffect(db: D1Database, runId: string, claim: Claim, idx: numbe
     ]);
   } catch (error) {
     if (error instanceof ToolRefused) {
-      const content = JSON.stringify({ error: errorText(error) });
+      const content = JSON.stringify({ error: errorText(error),
+        ...(error.recovery ? { recovery: error.recovery } : {}) });
       await mark('failed', content);
       return { id: call.id, content, error: true };
     }

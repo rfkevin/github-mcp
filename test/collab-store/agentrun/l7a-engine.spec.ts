@@ -14,11 +14,13 @@ const T0 = 1_900_000_000;
 class Crash extends Error {}
 
 function scripted(outputs: ModelOutput[], options: { fail?: number; usage?: { tokens: number; cost_cents: number } } = {}) {
-  const state = { calls: 0 };
+  const state = { calls: 0, offered: [] as string[][], messages: [] as AgentMessage[][] };
   return {
     state,
-    async complete(input: { messages: AgentMessage[] }) {
+    async complete(input: { messages: AgentMessage[]; tools?: string[] }) {
       state.calls += 1;
+      state.offered.push(input.tools ?? []);
+      state.messages.push(input.messages);
       if (options.fail && state.calls <= options.fail) throw new ModelCallError('HTTP 503 fournisseur indisponible', { tokens: 7, cost_cents: 0 });
       const step = input.messages.filter(message => message.role === 'assistant').length;
       return { output: outputs[step] ?? { text: 'fin', tool_calls: [] }, usage: options.usage ?? { tokens: 100, cost_cents: 0 } };
@@ -58,12 +60,12 @@ const READ_THEN_COMMIT: ModelOutput[] = [
   { text: 'correction faite', tool_calls: [] },
 ];
 
-async function newRun(overrides: Partial<{ maxSteps: number; maxTokens: number; maxCostCents: number; deadlineAt: number; now: number; task: string }> = {}) {
+async function newRun(overrides: Partial<{ maxSteps: number; maxTokens: number; maxCostCents: number; deadlineAt: number; now: number; task: string; kind: string }> = {}) {
   await ensureSchema(db);
   const id = ++n;
   const input = {
     runId: 'l7a-run-' + id + '-' + Date.now().toString(36), cycleId: 'l7a-cycle-' + id, participantId: 'vibe',
-    taskId: overrides.task ?? 'fix-1', taskKind: 'fix', prompt: 'Corrige le test cassé.',
+    taskId: overrides.task ?? 'fix-1', taskKind: overrides.kind ?? 'fix', prompt: 'Corrige le test cassé.',
     maxSteps: overrides.maxSteps ?? 10, maxTokens: overrides.maxTokens ?? 100_000, maxCostCents: overrides.maxCostCents ?? 0,
     deadlineAt: overrides.deadlineAt ?? T0 + 86_400, now: overrides.now ?? T0,
   };
@@ -415,6 +417,134 @@ describe('CC-5 l7a — plafonds et outils', () => {
     expect((JSON.parse(row!.results) as { content: string }[]).map(entry =>
       entry.content.startsWith('{"error":') ? JSON.parse(entry.content).error : 'ok'
     )).toEqual(['tool_forbidden_on_api_channel', 'tool_forbidden_on_api_channel', 'tool_not_allowlisted', 'd12_verdict_forbidden_on_api_channel']);
+  });
+
+  it('une réponse textuelle de TEST sans store_verdict donne un seul tour correctif, puis échoue proprement', async () => {
+    const { input } = await newRun({ kind: 'test' });
+    const model = scripted([
+      { text: 'J ai lu la CI mais ne dépose pas de verdict', tool_calls: [] },
+      { text: 'Preuve insuffisante : pas de PASS inventé', tool_calls: [] },
+    ]);
+    let writes = 0;
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { writes += 1; throw new ToolRefused('unexpected_verdict'); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect(await status(input.runId)).toMatchObject({ status: 'running', steps_done: 1 });
+    expect((await runStep(db, input.runId, d)).outcome).toBe('failed');
+    expect(await status(input.runId)).toMatchObject({
+      status: 'failed', stop_reason: 'incomplete_final:verdict_missing_after_reminder', steps_done: 2,
+    });
+    expect(model.state.offered[1]).toEqual(['store_verdict']);
+    expect(model.state.messages[1]?.at(-1)?.content).toContain('Ton dernier tour de verification');
+    expect(model.state.calls).toBe(2);
+    expect(writes).toBe(0); // no auto-generated PASS or side effect
+  });
+
+  it('une première omission laisse appeler store_verdict au second tour, sans contourner son refus', async () => {
+    const { input } = await newRun({ kind: 'review' });
+    const model = scripted([
+      { text: 'Relecture terminée', tool_calls: [] },
+      { text: 'Avis réel proposé', tool_calls: [{ id: 'v', name: 'store_verdict',
+        args: { task: 'fix-1', pr: 352, head: 'a'.repeat(40), base: 'b'.repeat(40), state: 'AGREE' } }] },
+      { text: 'Refus typé : ne pas annoncer la réussite', tool_calls: [] },
+      { text: 'Preuve toujours manquante après rappel : blocage explicite', tool_calls: [] },
+    ]);
+    let attempted = 0;
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { attempted += 1; throw new ToolRefused('VERDICT_READ_PROOF_MISSING'); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect(attempted).toBe(1); // real tool call comes only from the model
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped'); // next empty turn gets one recovery
+    expect((await runStep(db, input.runId, d)).outcome).toBe('failed'); // second empty turn cannot loop
+    expect(model.state.offered[3]).toEqual(['store_verdict']);
+    expect(await status(input.runId)).toMatchObject({ status: 'failed',
+      stop_reason: 'incomplete_final:verdict_missing_after_reminder' });
+    expect((await runSummary(db, input.runId))?.effects).toEqual([
+      { tool: 'store_verdict', status: 'failed' },
+    ]);
+  });
+
+  it('rend au modèle les références du refus de verdict sans le compter comme une réussite', async () => {
+    const { input } = await newRun({ kind: 'test' });
+    const model = scripted([{ text: '', tool_calls: [{ id: 'v', name: 'store_verdict',
+      args: { task: 'fix-1', pr: 348, head: 'a'.repeat(40), base: 'b'.repeat(40), state: 'PASS' } }] }]);
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { throw new ToolRefused('VERDICT_COUPLE_MISMATCH', {
+        requested_pr: 348, requested_head: 'a'.repeat(40), requested_base: 'b'.repeat(40),
+        github_head: 'c'.repeat(40), github_base: 'd'.repeat(40),
+        github_state: 'closed', github_merged: true,
+      }); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    const row = await db.prepare('SELECT results FROM agent_run_steps WHERE run_id=?1 AND n=0')
+      .bind(input.runId).first<{ results: string }>();
+    const results = JSON.parse(row!.results) as Array<{content:string;error?:boolean}>;
+    expect(results[0].error).toBe(true);
+    expect(JSON.parse(results[0].content)).toMatchObject({
+      error: 'VERDICT_COUPLE_MISMATCH', recovery: { requested_pr: 348,
+        github_head: 'c'.repeat(40), github_base: 'd'.repeat(40),
+        github_state: 'closed', github_merged: true },
+    });
+    expect((await runSummary(db, input.runId))?.effects).toEqual([{ tool: 'store_verdict', status: 'failed' }]);
+  });
+
+  it('arrête la boucle VERDICT_COUPLE_MISMATCH malgré des textes de revue différents', async () => {
+    const { input } = await newRun({ kind: 'review' });
+    const outputs: ModelOutput[] = Array.from({ length: 5 }, (_, i) => ({
+      text: 'réexamen ' + i,
+      tool_calls: [{ id: 'verdict-' + i, name: 'store_verdict', args: {
+        task: 'sample', pr: 348, head: 'a'.repeat(40), base: 'b'.repeat(40),
+        state: i % 2 === 0 ? 'AGREE' : 'CHANGES_REQUESTED', review: 'variation de texte ' + i,
+      } }],
+    }));
+    const model = scripted(outputs);
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { throw new ToolRefused('VERDICT_COUPLE_MISMATCH'); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    expect((await runStep(db, input.runId, d)).outcome).toBe('failed');
+    expect(await status(input.runId)).toMatchObject({
+      status: 'failed', stop_reason: 'blocked:no_progress:repeated_denial', steps_done: 3,
+    });
+    expect(model.state.calls).toBe(3);
+  });
+
+  it('une correction de numéro de PR réinitialise la détection de refus répété', async () => {
+    const { input } = await newRun({ kind: 'review' });
+    const outputs: ModelOutput[] = [348, 348, 351].map((pr, i) => ({
+      text: 'correction ' + i,
+      tool_calls: [{ id: 'v-' + i, name: 'store_verdict', args: {
+        task: 'sample', pr, head: 'a'.repeat(40), base: 'b'.repeat(40),
+        state: 'AGREE', review: 'réessai',
+      } }],
+    }));
+    const model = scripted(outputs);
+    const verifier: ToolHost = {
+      spec: (_kind, name) => name === 'store_verdict' ? { name, effect: 'write' } : null,
+      list: () => ['store_verdict'],
+      execute: async () => { throw new ToolRefused('VERDICT_COUPLE_MISMATCH'); },
+    };
+    const d = deps(model, verifier, () => T0 + 1);
+    for (let i = 0; i < 3; i++) {
+      expect((await runStep(db, input.runId, d)).outcome).toBe('stepped');
+    }
+    expect(await status(input.runId)).toMatchObject({ status: 'running', steps_done: 3 });
   });
 
   it('les tables sont append-only : suppression refusée', async () => {
