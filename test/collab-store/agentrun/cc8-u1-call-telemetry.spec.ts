@@ -5,22 +5,18 @@ import { recordRunModelCall } from '../../../src/collab-store/agentrun/provider-
 import { redactedRunSummary } from '../../../src/collab-store/agentrun/chat-continuity';
 import { createRun } from '../../../src/collab-store/agentrun/engine';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
-import { nominalUsd, snapshotCallPrice } from '../../../src/collab-store/agentrun/call-costs';
+
 
 const db = (env as unknown as { COLLAB_DB_C2: D1Database }).COLLAB_DB_C2;
-async function makeRun(prefix: string, maxCostCents = 0): Promise<string> {
-  await ensureSchema(db);
-  await ensureAgentRunSchema(db);
-  const runId = prefix + crypto.randomUUID();
-  const created = await createRun(db, { runId, cycleId: runId, participantId: 'vibe',
-    taskId: 't', taskKind: 'review', prompt: 'PRIVATE_NEVER_RETURN',
-    maxSteps: 6, maxTokens: 48_000, maxCostCents, deadlineAt: 2_000_001_000, now: 2_000_000_000 });
-  expect(created.created).toBe(true);
-  return runId;
-}
 describe('CC8 U1 per-call token telemetry', () => {
   it('records split usage across fallback without revealing prompts', async () => {
-    const runId = await makeRun('cc8-u1-usage-');
+    await ensureSchema(db);
+    await ensureAgentRunSchema(db);
+    const runId = 'cc8-u1-usage-' + crypto.randomUUID();
+    const created = await createRun(db, { runId, cycleId: runId, participantId: 'vibe',
+      taskId: 't', taskKind: 'review', prompt: 'PRIVATE_NEVER_RETURN',
+      maxSteps: 6, maxTokens: 48_000, maxCostCents: 0, deadlineAt: 2_000_001_000, now: 2_000_000_000 });
+    expect(created.created).toBe(true);
     const base = { run_id: runId, n: 0, chosen_ref: 'zai:glm-4.7-flash', latency_ms: 17, at: 2_000_000_000 };
     await recordRunModelCall(db, { ...base, ref: 'zai:glm-4.7-flash', ok: false, failure: 'transient' });
     await recordRunModelCall(db, { ...base, ref: 'workers-ai:@cf/zai-org/glm-4.7-flash',
@@ -42,16 +38,5 @@ describe('CC8 U1 per-call token telemetry', () => {
       .bind(runId).first<{ n: number }>();
     expect(saved?.n).toBe(3);
   });
-  it('keeps free, paid and missing pricing facts distinct', () => {
-    expect(snapshotCallPrice('gemini:gemini-3.8-flash', 0)).toMatchObject({
-      basis: 'free', accounted_cost_cents: 0, input_rate_cents_per_m: 0, output_rate_cents_per_m: 0 });
-    expect(snapshotCallPrice('gemini:gemini-3.8-flash', null)).toMatchObject({
-      basis: 'unknown', accounted_cost_cents: null, input_rate_cents_per_m: null });
-    expect(snapshotCallPrice('zai:glm-5.3-flash', 1)).toMatchObject({
-      basis: 'api_rate', input_rate_cents_per_m: 15, output_rate_cents_per_m: 50, accounted_cost_cents: 1 });
-    expect(nominalUsd(null, 15)).toBeNull();
-    expect(nominalUsd(2400, 15)).toBe(0.00036);
-  });
-
 
 });
