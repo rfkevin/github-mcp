@@ -190,10 +190,9 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
     input_rate_cents_per_m: number | null; output_rate_cents_per_m: number | null;
     rate_as_of: string | null; rate_source: string | null }>(
     'SELECT c.n, c.k, c.chosen_ref, c.ref, c.ok, c.failure, c.latency_ms, u.input_tokens, u.output_tokens, u.estimated_input_tokens,'
-    + ' p.price_basis, p.accounted_cost_cents, p.input_rate_cents_per_m, p.output_rate_cents_per_m, p.rate_as_of, p.rate_source'
+    + ' u.price_basis, u.accounted_cost_cents, u.input_rate_cents_per_m, u.output_rate_cents_per_m, u.rate_as_of, u.rate_source'
     + ' FROM agent_run_model_calls c LEFT JOIN agent_run_call_usage u'
     + ' ON u.run_id = c.run_id AND u.n = c.n AND u.k = c.k'
-    + ' LEFT JOIN agent_run_call_costs p ON p.run_id = c.run_id AND p.n = c.n AND p.k = c.k'
     + ' WHERE c.run_id = ?1 ORDER BY c.n, c.k');
   const choices = await all<{ n: number; ref: string; chosen_by: string; effort: string | null }>(
     'SELECT n, ref, chosen_by, effort FROM agent_model_choices WHERE run_id = ?1 ORDER BY n');

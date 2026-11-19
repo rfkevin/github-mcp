@@ -34,7 +34,7 @@ describe('CC8 U1 per-call token telemetry', () => {
         nominal_input_usd: 0.00036, nominal_output_usd: 0.0004 },
     ]);
     expect(JSON.stringify(summary)).not.toContain('PRIVATE_NEVER_RETURN');
-    const saved = await db.prepare('SELECT COUNT(*) AS n FROM agent_run_call_costs WHERE run_id=?1')
+    const saved = await db.prepare('SELECT COUNT(*) AS n FROM agent_run_call_usage WHERE run_id=?1')
       .bind(runId).first<{ n: number }>();
     expect(saved?.n).toBe(3);
   });

@@ -259,7 +259,7 @@ export async function recordRunModelCall(db: D1Database, input: { run_id: string
   input_tokens?: number | null; output_tokens?: number | null; estimated_input_tokens?: number | null; cost_cents?: number | null }): Promise<void> {
   try {
     const price = snapshotCallPrice(input.ref, input.cost_cents ?? null);
-    // All three rows are inserted in one transaction; no private prompt or output is persisted.
+    // Both rows are inserted in one transaction; no private prompt or output is persisted.
     await db.batch([
       db.prepare([
         'INSERT OR IGNORE INTO agent_run_model_calls (run_id, n, k, chosen_ref, ref, ok, failure, latency_ms, at)',
@@ -267,18 +267,14 @@ export async function recordRunModelCall(db: D1Database, input: { run_id: string
       ].join(' ')).bind(input.run_id, input.n, input.chosen_ref, input.ref, input.ok ? 1 : 0, input.failure.slice(0, 40),
         Math.max(0, Math.round(input.latency_ms)), input.at),
       db.prepare([
-        'INSERT OR IGNORE INTO agent_run_call_usage (run_id, n, k, input_tokens, output_tokens, estimated_input_tokens)',
-        'SELECT run_id, n, k, ?3, ?4, ?5 FROM agent_run_model_calls',
+        'INSERT OR IGNORE INTO agent_run_call_usage',
+        '(run_id, n, k, input_tokens, output_tokens, estimated_input_tokens, accounted_cost_cents,',
+        ' price_basis, input_rate_cents_per_m, output_rate_cents_per_m, rate_as_of, rate_source)',
+        'SELECT run_id, n, k, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11 FROM agent_run_model_calls',
         'WHERE run_id = ?1 AND n = ?2 ORDER BY k DESC LIMIT 1',
       ].join(' ')).bind(input.run_id, input.n, input.input_tokens ?? null, input.output_tokens ?? null,
-        input.estimated_input_tokens ?? null),
-      // Use the k just inserted by the first statement; pricing is a separate,
-      // append-only fact rather than a later recomputation from mutable tariffs.
-      db.prepare('INSERT OR IGNORE INTO agent_run_call_costs '
-        + '(run_id, n, k, accounted_cost_cents, price_basis, input_rate_cents_per_m, output_rate_cents_per_m, rate_as_of, rate_source) '
-        + 'VALUES (?1, ?2, (SELECT MAX(k) FROM agent_run_model_calls WHERE run_id=?1 AND n=?2), ?3, ?4, ?5, ?6, ?7, ?8)')
-        .bind(input.run_id, input.n, price.accounted_cost_cents, price.basis,
-          price.input_rate_cents_per_m, price.output_rate_cents_per_m, price.rate_as_of, price.rate_source),
+        input.estimated_input_tokens ?? null, price.accounted_cost_cents, price.basis,
+        price.input_rate_cents_per_m, price.output_rate_cents_per_m, price.rate_as_of, price.rate_source),
     ]);
   } catch {
     // Optional telemetry failure never invents measurements or hides the real model outcome.
