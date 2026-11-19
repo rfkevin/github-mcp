@@ -32,6 +32,7 @@ import { GEMINI_PROTOCOL, geminiGenerateUrl } from './gemini-model';
 import { createOpenAiPaidModel } from './openai-paid-model';
 import { createPaidWorkersAiModel, parsePaidWorkersAiRef, type ParticipantEnvelope } from './paid-model';
 import { createPaidProtocolModel } from './paid-protocol';
+import { snapshotCallPrice } from './call-costs';
 // CC-8 S6 (raccordement suite) : comptage bêta des appels réels du maillon suivi.
 import { recordBetaExecution } from './beta';
 
@@ -255,9 +256,10 @@ export function createProviderModel(ref: string, tier: ModelTier, ctx: ProviderM
  */
 export async function recordRunModelCall(db: D1Database, input: { run_id: string; n: number; chosen_ref: string; ref: string;
   ok: boolean; failure: string; latency_ms: number; at: number;
-  input_tokens?: number | null; output_tokens?: number | null; estimated_input_tokens?: number | null }): Promise<void> {
+  input_tokens?: number | null; output_tokens?: number | null; estimated_input_tokens?: number | null; cost_cents?: number | null }): Promise<void> {
   try {
-    // Both rows are inserted in one transaction; no private prompt or output is persisted.
+    const price = snapshotCallPrice(input.ref, input.cost_cents ?? null);
+    // All three rows are inserted in one transaction; no private prompt or output is persisted.
     await db.batch([
       db.prepare([
         'INSERT OR IGNORE INTO agent_run_model_calls (run_id, n, k, chosen_ref, ref, ok, failure, latency_ms, at)',
@@ -270,6 +272,13 @@ export async function recordRunModelCall(db: D1Database, input: { run_id: string
         'WHERE run_id = ?1 AND n = ?2 ORDER BY k DESC LIMIT 1',
       ].join(' ')).bind(input.run_id, input.n, input.input_tokens ?? null, input.output_tokens ?? null,
         input.estimated_input_tokens ?? null),
+      db.prepare([
+        'INSERT OR IGNORE INTO agent_run_call_costs (run_id, n, k, accounted_cost_cents, price_basis,',
+        '  input_rate_cents_per_m, output_rate_cents_per_m, rate_as_of, rate_source)',
+        'SELECT run_id, n, k, ?3, ?4, ?5, ?6, ?7, ?8 FROM agent_run_model_calls',
+        'WHERE run_id = ?1 AND n = ?2 ORDER BY k DESC LIMIT 1',
+      ].join(' ')).bind(input.run_id, input.n, price.accounted_cost_cents, price.basis,
+        price.input_rate_cents_per_m, price.output_rate_cents_per_m, price.rate_as_of, price.rate_source),
     ]);
   } catch {
     // Optional telemetry failure never invents measurements or hides the real model outcome.
@@ -410,7 +419,8 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           await recordRunModelCall(ctx.db, { run_id: ctx.runId, n: run.steps_done, chosen_ref: ref, ref: candidate.ref, ok: true, failure: '',
             latency_ms: Date.now() - started, at: Math.floor(now.getTime() / 1000),
             input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens,
-            estimated_input_tokens: result.usage.estimated_input_tokens });
+            estimated_input_tokens: result.usage.estimated_input_tokens,
+             cost_cents: result.usage.cost_cents });
           if (isProbe) {
             await recordModelCall(ctx.db, candidate.ref, { ok: true, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started });
           } else {
@@ -437,7 +447,8 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           await recordRunModelCall(ctx.db, { run_id: ctx.runId, n: run.steps_done, chosen_ref: ref, ref: candidate.ref, ok: false,
             failure: transient ? 'transient' : 'permanent', latency_ms: Date.now() - started, at: Math.floor(now.getTime() / 1000),
             input_tokens: error instanceof ModelCallError ? error.usage?.input_tokens : null,
-            output_tokens: error instanceof ModelCallError ? error.usage?.output_tokens : null });
+            output_tokens: error instanceof ModelCallError ? error.usage?.output_tokens : null,
+             cost_cents: error instanceof ModelCallError ? error.usage?.cost_cents : null });
           const outcome = { ok: false, at: Math.floor(now.getTime() / 1000), latencyMs: Date.now() - started,
             error: error instanceof Error ? error.message : String(error) };
           // Échec PERMANENT : cumul seul — le coupe-circuit ne compte que le transitoire.

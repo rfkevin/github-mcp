@@ -198,11 +198,19 @@ const TABLES = [
     '  input_tokens INTEGER, output_tokens INTEGER, estimated_input_tokens INTEGER,',
     '  PRIMARY KEY (run_id, n, k)',
     ')'].join(' '),
+  // Persistent price snapshot, never recomputed from a later pricing registry.
+  ['CREATE TABLE IF NOT EXISTS agent_run_call_costs (',
+    '  run_id TEXT NOT NULL, n INTEGER NOT NULL, k INTEGER NOT NULL,',
+    '  accounted_cost_cents INTEGER, price_basis TEXT NOT NULL,',
+    '  input_rate_cents_per_m REAL, output_rate_cents_per_m REAL,',
+    '  rate_as_of TEXT, rate_source TEXT,',
+    '  PRIMARY KEY (run_id, n, k)',
+    ')'].join(' '),
 ];
 
 const NO_DELETE = ['agent_fences', 'agent_runs', 'agent_run_steps', 'agent_run_effects', 'agent_run_wakeups',
   'agent_run_alarms', 'agent_run_quota', 'agent_paid_steps', 'agent_run_journal', 'agent_run_reads', 'agent_run_server_steps',
-  'agent_run_proofs', 'agent_run_model_calls', 'agent_run_call_usage', 'api_dynamic_grants', 'agent_task_schedule', 'agent_run_messages'].map(table =>
+  'agent_run_proofs', 'agent_run_model_calls', 'agent_run_call_usage', 'agent_run_call_costs', 'api_dynamic_grants', 'agent_task_schedule', 'agent_run_messages'].map(table =>
   'CREATE TRIGGER IF NOT EXISTS ' + table + '_no_delete BEFORE DELETE ON ' + table
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END");
 
@@ -219,6 +227,8 @@ const MODEL_CALLS_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_model_ca
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END";
 const CALL_USAGE_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_call_usage_no_update BEFORE UPDATE ON agent_run_call_usage"
   + " BEGIN SELECT RAISE(ABORT, 'append-only'); END";
+const CALL_COSTS_APPEND_ONLY = "CREATE TRIGGER IF NOT EXISTS agent_run_call_costs_no_update BEFORE UPDATE ON agent_run_call_costs"
+  + " BEGIN SELECT RAISE(ABORT, 'append-only'); END";
 
 // Une preuve publiée ou refusée est définitive ; seule une ligne `pending` évolue.
 const PROOFS_FINAL = "CREATE TRIGGER IF NOT EXISTS agent_run_proofs_final BEFORE UPDATE ON agent_run_proofs"
@@ -234,5 +244,5 @@ const RUN_MESSAGES_IMMUTABLE = [
 ].join(' ');
 
 export async function ensureAgentRunSchema(db: D1Database): Promise<void> {
-  await db.batch([...TABLES, ...NO_DELETE, DYNAMIC_GRANTS_APPEND_ONLY, TASK_SCHEDULE_APPEND_ONLY, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY, MODEL_CALLS_APPEND_ONLY, CALL_USAGE_APPEND_ONLY, PROOFS_FINAL, RUN_MESSAGES_IMMUTABLE].map(sql => db.prepare(sql)));
+  await db.batch([...TABLES, ...NO_DELETE, DYNAMIC_GRANTS_APPEND_ONLY, TASK_SCHEDULE_APPEND_ONLY, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY, MODEL_CALLS_APPEND_ONLY, CALL_USAGE_APPEND_ONLY, CALL_COSTS_APPEND_ONLY, PROOFS_FINAL, RUN_MESSAGES_IMMUTABLE].map(sql => db.prepare(sql)));
 }
