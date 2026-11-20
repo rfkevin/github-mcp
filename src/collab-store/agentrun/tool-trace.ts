@@ -6,13 +6,14 @@
  */
 const READ_NAMES = new Set([
   'store_context','store_delta','store_memory','store_continuity','store_salon_read',
+  'store_run_diagnostics',
   'github_list_directory','github_read_file','github_pull_request','github_check_runs',
   'github_diff','github_check_result','web_fetch_official',
 ]);
 const WRITE_NAMES = new Set([
   'store_ask','store_answer','store_task_status','store_handover',
   'store_memory_propose','store_memory_rewrite','store_verdict','store_contribute',
-  'store_salon_post','store_choose_model',
+  'store_salon_post','store_choose_model','store_no_change_submit',
   'github_create_branch','github_commit_files','github_open_draft_pr','github_open_pr',
   'github_write_scope','github_replace_text','github_run_checks',
 ]);
@@ -30,6 +31,14 @@ const EXACT_ERRORS = new Set([
   'd12_verdict_forbidden_on_api_channel','superseded_by_live_message',
   'api_task_not_enabled','api_task_grant_ambiguous','api_write_scope_refused',
   'api_base_head_unavailable','effect_key_required','unknown_run',
+  // Refus ferme de store_run_diagnostics (read-tools.ts), lisible dans les recus.
+  'run_not_owned_or_unknown',
+  // Codes fermes de store_no_change_submit (no-change.ts), lisibles aussi dans les anciens effets D1.
+  'NO_CHANGE_ARGS_INVALID','NO_CHANGE_RUN_NOT_ACTIVE','NO_CHANGE_TASK_MISMATCH',
+  'NO_CHANGE_GRANT_MISSING','NO_CHANGE_PR_HEAD_OR_BRANCH_MISMATCH',
+  'NO_CHANGE_CI_NOT_VERIFIED_GREEN','NO_CHANGE_CORRECTION_STALE',
+  'NO_CHANGE_ALREADY_SUBMITTED','NO_CHANGE_D12_VERDICT_ALREADY_EXISTS',
+  'NO_CHANGE_PRIOR_PROOF_MISSING','NO_CHANGE_CONCURRENT_CHANGE_RECHECK',
 ]);
 const MAX_CALLS_PER_STEP = 64;
 

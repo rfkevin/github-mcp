@@ -136,3 +136,32 @@ describe('CC8 — audit expurgé des vrais appels outils', () => {
     expect(await redactedRunSummaryFor(db,'gemini',runId)).not.toBeNull();
   });
 });
+
+
+describe('CC8 — outils de diagnostic et no-change identifiables dans la trace', () => {
+  it('classe store_run_diagnostics en lecture et store_no_change_submit en écriture', () => {
+    const calls = JSON.stringify({ tool_calls: [
+      { id: 'd', name: 'store_run_diagnostics', args: { run_id: 'api-implement-exemple' } },
+      { id: 'n', name: 'store_no_change_submit', args: {} },
+    ] });
+    const results = JSON.stringify([
+      { id: 'd', content: JSON.stringify({ error: 'run_not_owned_or_unknown' }), error: true },
+      { id: 'n', content: JSON.stringify({ error: 'NO_CHANGE_PRIOR_PROOF_MISSING' }), error: true },
+    ]);
+    expect(redactedToolAttempts(calls, results)).toEqual([
+      { index: 0, tool: 'store_run_diagnostics', kind: 'read', status: 'receipt_failed', failure_code: 'run_not_owned_or_unknown' },
+      { index: 1, tool: 'store_no_change_submit', kind: 'write', status: 'receipt_failed', failure_code: 'NO_CHANGE_PRIOR_PROOF_MISSING' },
+    ]);
+  });
+
+  it.each([
+    'NO_CHANGE_ARGS_INVALID', 'NO_CHANGE_RUN_NOT_ACTIVE', 'NO_CHANGE_TASK_MISMATCH',
+    'NO_CHANGE_GRANT_MISSING', 'NO_CHANGE_PR_HEAD_OR_BRANCH_MISMATCH',
+    'NO_CHANGE_CI_NOT_VERIFIED_GREEN', 'NO_CHANGE_CORRECTION_STALE',
+    'NO_CHANGE_ALREADY_SUBMITTED', 'NO_CHANGE_D12_VERDICT_ALREADY_EXISTS',
+    'NO_CHANGE_PRIOR_PROOF_MISSING', 'NO_CHANGE_CONCURRENT_CHANGE_RECHECK',
+  ])('rend le refus fermé %s sans accepter un message libre', code => {
+    expect(typedToolFailure(JSON.stringify({ error: code }))).toBe(code);
+    expect(typedToolFailure(JSON.stringify({ error: code + ' : détail privé' }))).toBe('other');
+  });
+});
