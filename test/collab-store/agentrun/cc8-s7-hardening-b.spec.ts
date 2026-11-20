@@ -389,7 +389,7 @@ describe('Lot B R5 — résumé expurgé et modèle servi', () => {
     await recordRunModelCall(db, { run_id: runId, n: 2, chosen_ref: 'gemini:gemini-3.8-flash', ref: 'gemini:gemini-3.5-flash-lite', ok: true,
       failure: '', latency_ms: 800, at: T });
     const summary = await redactedRunSummaryFor(db, w.holder, runId);
-    expect(summary!.model_calls).toEqual([
+    expect(summary!.model_calls).toMatchObject([
       { n: 2, k: 0, chosen_ref: 'gemini:gemini-3.8-flash', served_ref: 'gemini:gemini-3.8-flash', ok: false, fallback: false, failure: 'transient', latency_ms: 1200, input_tokens: null, output_tokens: null, estimated_input_tokens: null },
       { n: 2, k: 1, chosen_ref: 'gemini:gemini-3.8-flash', served_ref: 'gemini:gemini-3.5-flash-lite', ok: true, fallback: true, failure: '', latency_ms: 800, input_tokens: null, output_tokens: null, estimated_input_tokens: null },
     ]);

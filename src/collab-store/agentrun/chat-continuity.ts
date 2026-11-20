@@ -7,6 +7,7 @@ import { cycleMandateEpoch } from '../coordinator/mandate';
 import { ensureAgentRunSchema } from './schema';
 import { redactedToolAttempts, safeToolName, typedToolFailure } from './tool-trace';
 import { preemptByChat, releaseChat, runSummary, leaseKeyOf } from './engine';
+import { nominalUsd, type PriceBasis } from './call-costs';
 
 export const CHAT_HOLD_SECONDS_DEFAULT = 900;
 export const LIST_RUNS_LIMIT = 40;
@@ -184,8 +185,12 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
   const polls = await all<{ n: number; idx: number; k: number; status: string; result: string }>(
     'SELECT n, idx, k, status, result FROM agent_run_ci_polls WHERE run_id = ?1 ORDER BY n, idx, k');
   const calls = await all<{ n: number; k: number; chosen_ref: string; ref: string; ok: number; failure: string; latency_ms: number;
-    input_tokens: number | null; output_tokens: number | null; estimated_input_tokens: number | null }>(
-    'SELECT c.n, c.k, c.chosen_ref, c.ref, c.ok, c.failure, c.latency_ms, u.input_tokens, u.output_tokens, u.estimated_input_tokens'
+    input_tokens: number | null; output_tokens: number | null; estimated_input_tokens: number | null;
+    price_basis: PriceBasis | null; accounted_cost_cents: number | null;
+    input_rate_cents_per_m: number | null; output_rate_cents_per_m: number | null;
+    rate_as_of: string | null; rate_source: string | null }>(
+    'SELECT c.n, c.k, c.chosen_ref, c.ref, c.ok, c.failure, c.latency_ms, u.input_tokens, u.output_tokens, u.estimated_input_tokens,'
+    + ' u.price_basis, u.accounted_cost_cents, u.input_rate_cents_per_m, u.output_rate_cents_per_m, u.rate_as_of, u.rate_source'
     + ' FROM agent_run_model_calls c LEFT JOIN agent_run_call_usage u'
     + ' ON u.run_id = c.run_id AND u.n = c.n AND u.k = c.k'
     + ' WHERE c.run_id = ?1 ORDER BY c.n, c.k');
@@ -219,7 +224,13 @@ export async function redactedRunSummary(db: D1Database, runId: string) {
     model_choices: choices.map(c => ({ n: c.n, ref: c.ref, chosen_by: c.chosen_by, effort: c.effort })),
     model_calls: calls.map(c => ({ n: c.n, k: c.k, chosen_ref: c.chosen_ref, served_ref: c.ref, ok: c.ok === 1,
       fallback: c.ref !== c.chosen_ref, failure: c.failure === 'transient' || c.failure === 'permanent' ? c.failure : '', latency_ms: c.latency_ms,
-      input_tokens: c.input_tokens, output_tokens: c.output_tokens, estimated_input_tokens: c.estimated_input_tokens })),
+      input_tokens: c.input_tokens, output_tokens: c.output_tokens, estimated_input_tokens: c.estimated_input_tokens,
+       price_basis: c.price_basis ?? 'unknown', accounted_cost_cents: c.accounted_cost_cents,
+       input_rate_cents_per_m: c.input_rate_cents_per_m, output_rate_cents_per_m: c.output_rate_cents_per_m,
+       rate_as_of: c.rate_as_of, rate_source: c.rate_source,
+       // Nominal rate estimate, not a bill (paid calls may be rounded/reserved).
+       nominal_input_usd: nominalUsd(c.input_tokens, c.input_rate_cents_per_m),
+       nominal_output_usd: nominalUsd(c.output_tokens, c.output_rate_cents_per_m) })),
     // Raisons de preuve : codes posés par run-proof.ts (identifiants), jamais de texte externe.
     proof: proof ? { status: proof.status, reason: /^[a-z_:]{1,80}$/.test(proof.reason) ? proof.reason : 'other', attempts: proof.attempts,
       event_seq: proof.event_seq } : null,

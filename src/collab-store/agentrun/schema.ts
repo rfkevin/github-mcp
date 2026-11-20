@@ -196,6 +196,9 @@ const TABLES = [
   ['CREATE TABLE IF NOT EXISTS agent_run_call_usage (',
     '  run_id TEXT NOT NULL, n INTEGER NOT NULL, k INTEGER NOT NULL,',
     '  input_tokens INTEGER, output_tokens INTEGER, estimated_input_tokens INTEGER,',
+    '  accounted_cost_cents INTEGER, price_basis TEXT,',
+    '  input_rate_cents_per_m REAL, output_rate_cents_per_m REAL,',
+    '  rate_as_of TEXT, rate_source TEXT,',
     '  PRIMARY KEY (run_id, n, k)',
     ')'].join(' '),
 ];
@@ -233,6 +236,30 @@ const RUN_MESSAGES_IMMUTABLE = [
   "BEGIN SELECT RAISE(ABORT, 'append-only'); END",
 ].join(' ');
 
+/** Existing D1 databases already have agent_run_call_usage: add nullable pricing fields
+ * in place; old immutable rows remain unknown instead of being retroactively priced. */
+const USAGE_PRICE_COLUMNS = [
+  'accounted_cost_cents INTEGER', 'price_basis TEXT',
+  'input_rate_cents_per_m REAL', 'output_rate_cents_per_m REAL',
+  'rate_as_of TEXT', 'rate_source TEXT',
+] as const;
+
 export async function ensureAgentRunSchema(db: D1Database): Promise<void> {
-  await db.batch([...TABLES, ...NO_DELETE, DYNAMIC_GRANTS_APPEND_ONLY, TASK_SCHEDULE_APPEND_ONLY, JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY, MODEL_CALLS_APPEND_ONLY, CALL_USAGE_APPEND_ONLY, PROOFS_FINAL, RUN_MESSAGES_IMMUTABLE].map(sql => db.prepare(sql)));
+  await db.batch([...TABLES, ...NO_DELETE, DYNAMIC_GRANTS_APPEND_ONLY, TASK_SCHEDULE_APPEND_ONLY,
+    JOURNAL_APPEND_ONLY, SERVER_STEPS_APPEND_ONLY, MODEL_CALLS_APPEND_ONLY, CALL_USAGE_APPEND_ONLY,
+    PROOFS_FINAL, RUN_MESSAGES_IMMUTABLE].map(sql => db.prepare(sql)));
+  const existing = (await db.prepare('PRAGMA table_info(agent_run_call_usage)').all<{ name: string }>()).results;
+  const names = new Set(existing.map(column => column.name));
+  for (const definition of USAGE_PRICE_COLUMNS) {
+    const name = definition.split(' ')[0];
+    if (names.has(name)) continue;
+    try {
+      await db.prepare('ALTER TABLE agent_run_call_usage ADD COLUMN ' + definition).run();
+    } catch (error) {
+      // Another concurrent request may have installed it after our PRAGMA.
+      const latest = (await db.prepare('PRAGMA table_info(agent_run_call_usage)').all<{ name: string }>()).results;
+      if (!latest.some(column => column.name === name)) throw error;
+    }
+    names.add(name);
+  }
 }

@@ -375,7 +375,9 @@ export function createPaidWorkersAiModel(options: PaidModelOptions): ModelClient
       await settleParticipantStep(options.db, { runId: options.runId, n, participantId: run.participant_id, cycleId: run.cycle_id,
         day, reservedCents: reserved, actualCents, reservedTokens: worstTokens, actualTokens, nowSec },
       neuronsStatements(options.db, neuronsKey, actualNeurons));
-      return { output: parsed.output, usage: { tokens: actualTokens, cost_cents: actualCents } };
+      return { output: parsed.output, usage: { tokens: actualTokens, cost_cents: actualCents,
+        input_tokens: parsed.input, output_tokens: parsed.output_tokens,
+        estimated_input_tokens: prepared.bound } };
     },
   };
 }
