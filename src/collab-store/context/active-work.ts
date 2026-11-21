@@ -74,7 +74,13 @@ export async function lastChatWrite(db: D1Database, cycleId: string, ids: readon
   const binds: unknown[] = [cycleId, ...unique];
   const clauses = [
     'cycle_id = ?1', 'participant_id IN (' + participantsIn(unique, 2) + ')',
-    "COALESCE(role, '') <> 'api-agent'", 'type NOT IN ' + NON_CHAT_TYPES, 'json_valid(payload_json)',
+    "COALESCE(role, '') <> 'api-agent'",
+    // A native API D12 verdict must keep its semantic reviewer/tester role, not impersonate a chat write.
+    // The executor generates api-verdict-<32 hex> op IDs; generic API writes already use role api-agent.
+    "NOT (type = 'evidence.add' AND COALESCE(role, '') IN ('reviewer','tester')"
+      + " AND idempotency_key GLOB ('op:' || REPLACE(participant_id, ':', '.') || ':' || cycle_id"
+      + " || ':api-verdict-????????????????????????????????:1'))",
+    'type NOT IN ' + NON_CHAT_TYPES, 'json_valid(payload_json)',
   ];
   if (options.taskId) {
     binds.push(options.taskId);
