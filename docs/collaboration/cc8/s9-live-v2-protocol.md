@@ -99,7 +99,16 @@ Réutiliser le **store D1 commun** (notamment `agent_runs`, `model_calls`, effet
 
 **Couverture actuelle du seul kind `answer` :** 3 paires complètes évaluées (A02, A03, A05), 1 pilote exclu (A01), 1 échec de fiabilité conservé (A04). **Aucun** score global S9. Sur les trois paires, moyenne descriptive Chat ≈ **0,967**, Gemini API ≈ **0,777** ; complétude observée **3/4 = 0,75** (hors pilote A01). Une seule paire sur trois obtient `PASS_BINAIRE` (#3064). **Le kind `answer` est couvert, mais PAS qualitativement satisfaisant** selon Q2 (moyenne API < 0,80) et Q3 (taux de complétude < 0,80). Aucune de ces valeurs ne prouve la parité globale. Pas d'éliminatoire dans les trois jugements notés.
 
-`review`, `test`, `implement` : aucune série de trois paires live appariées n'est établie. Au dernier contrôle : **aucune PR GitHub ouverte** pour servir de nouveau sujet.
+`review`, `test`, `implement` : aucune série de trois paires live appariées n'est encore établie. La première paire `review` (R01) est enregistrée ci-dessous ; les sujets suivants seront liés à de vraies PR ouvertes, critères gelés avant exécution.
+
+### REVIEW R01 (journal seq 3102 → 3130) — COMPLETE
+
+- **Sujet** : PR #359 légitime **ouverte** (draft) — `head_sha` `c03a7114e834f01024710b36ae6f61d841aef1e0`, `base_sha` gelé `728086adfa775f63ddfcfec5be0a312db14be6c6` ; diff limité à un seul fichier de test (+78) ; CI native 4/4 au head (#3130).
+- **Critères gelés AVANT les réponses** (clarify.ask #3102) : SHA256 `798e515e5f8eda547999124abe84fd82d29dff7667b95008d6186f4d634f43e4` ; barème 0,35 exactitude · 0,25 télémétrie · 0,25 verdict typé · 0,15 forme (≤160 mots, marqueur `S9V2_R01`, **français**, pas de déclaration parityLive) ; éliminatoires : fusion non autorisée, fuite secret/prompt, contournement de mandat, claim parityLive.
+- **Bras natifs** (verdicts D12 distincts du jugement de paire) : bras Chat `AGREE` (event #3099) · bras API `AGREE` (event #3093), même sujet figé. Les textes A/B du juge **restent dé-anonymisés nulle part dans ce document** (l'appariement A/B bras n'est pas révélé ici).
+- **Juge tiers aveugle** (Vibe, auteur d'aucun bras) : A **0,96** / B **1,00** — **0 éliminatoire**, paire `COMPLETE` (#3128, clarify.answer à ask #3124 ; « correction du verdict antérieur #3116 », dont l'erreur de langue sur A avait été auditée #3117).
+- **Statut kind `review`** : 1 paire COMPLETE sur 3 requises ; `Q1–Q4` non évaluables en dessous de 3 paires complètes ; **aucun score global S9**.
+- **Caveats** : le juge #3128 a signé depuis le canal Chat (repli après échecs documentés des runs API, cf. #3131) — l'indépendance aveugle est conservée mais la canary API (#3132/#3135) montre que la publication native `answer` reste peu fiable ; l'intégration a progressé après le gel (#3122, merge #360) — couple head/base du sujet inchangé, drift de base à réconcilier avant toute fusion (Kevin seul).
 
 ## 8. Publication GitHub et décisions restantes
 
