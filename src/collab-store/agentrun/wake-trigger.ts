@@ -90,6 +90,19 @@ export async function drainDurableEventWakes(db: D1Database, env: AgentRunObject
   try {
     const result = await agentRunPass(db, env, { now, deliverer: opts.deliverer, wake: opts.wake });
     if (result.skipped === 'disabled') throw new Error('DISABLED');
+    // A successful planner PASS does not imply that a WorkSession started:
+    // Chat-active/scheduled decisions are deferred. Keep a durable wake alive,
+    // otherwise a one-shot event may be consumed during the 900 s Chat window.
+    if ((result.plannerDeferred ?? 0) > 0) {
+      // Preserve scheduled_at exactly if the only deferral is a future timer.
+      // When Chat activity is involved, retry until idle on the 60s event alarm.
+      const retryAt = (result.plannerDeferDetails?.chat ?? 0) > 0
+        ? now + PASS_LEASE_TTL_S
+        : result.plannerDeferDetails?.scheduledAt ?? now + PASS_LEASE_TTL_S;
+      for (const item of queued) await markIntent(db, item, now, 'deferred',
+        Math.max(now + 1, retryAt), 'PLANNER_DEFERRED');
+      return { delivered: 0, deferred: queued.length, errors: 0, next_at: await nextDue() };
+    }
     for (const item of queued) await markIntent(db, item, now, 'delivered', now, 'PASS_APPLIED');
     const next = await nextDue();
     return { delivered: queued.length, deferred: 0, errors: 0,

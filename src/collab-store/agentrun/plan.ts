@@ -323,6 +323,8 @@ async function plannedKindOf(db: D1Database, cycleId: string, participantId: str
  * { considered, created } reste inchangée.
  */
 export interface PlanResult { considered: number; created: number; deferred?: number; unequipped?: number; incapable?: number;
+  /** Optional plan-pass detail, omitted for existing direct callers. */
+  deferDetails?: { chat: number; scheduledAt: number | null };
   /** CC-8 S1a : motif typé de chaque refus de capacité du passage (un par agent, cycle et type), jamais de contenu privé. */
   incapable_detail?: IncapableDetail[] }
 
@@ -381,7 +383,8 @@ export function terminalRunMayRetry(status: string, stopReason: string): boolean
       'guided_handover_violation:'].some(prefix => stopReason.startsWith(prefix));
 }
 
-export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: number; limit?: number }): Promise<PlanResult> {
+export async function planAgentRuns(db: D1Database, env: PlanEnv,
+  input: { now: number; limit?: number; includeDeferDetails?: boolean }): Promise<PlanResult> {
   const participants = apiParticipants(env.AGENT_RUN_PARTICIPANTS);
   if (!participants.length) return planResult(0, 0, 0);
   await ensureAgentRunSchema(db);
@@ -389,6 +392,8 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
   const { results: cycles } = await db.prepare("SELECT cycle_id FROM cycles WHERE status = 'open' ORDER BY cycle_id LIMIT ?1")
     .bind(PLAN_MAX_CYCLES).all<{ cycle_id: string }>();
   let deferred = 0;
+  let deferredChat = 0;
+  let scheduledAt: number | null = null;
   let unequipped = 0;
   let incapable = 0;
   const nowDate = new Date(input.now * 1000);
@@ -521,6 +526,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
           // L12 : le chat de l'agent est actif sur ce cycle — il traite lui-même la question.
           if (await chatActive(null)) {
             deferred += 1;
+            deferredChat += 1;
             continue;
           }
           if (!(await capable(participantId, cycleId, 'answer'))) {
@@ -554,11 +560,16 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
         if(decision.task_id){
           const schedule=await db.prepare('SELECT not_before FROM agent_task_schedule WHERE cycle_id=?1 AND task_id=?2')
             .bind(cycleId,decision.task_id).first<{not_before:number}>();
-          if(schedule&&schedule.not_before>input.now){deferred+=1;continue;}
+          if(schedule&&schedule.not_before>input.now){
+            deferred += 1;
+            scheduledAt = scheduledAt === null ? schedule.not_before : Math.min(scheduledAt, schedule.not_before);
+            continue;
+          }
         }
         // L12 : le chat de l'agent travaille sur cette tâche — pas d'exécution API en parallèle.
         if (decision.task_id && await chatActive(decision.task_id)) {
           deferred += 1;
+          deferredChat += 1;
           continue;
         }
         // L15 : sans outils d'écriture GitHub, l'API ne peut pas implémenter — on ne la réveille pas pour ça.
@@ -648,5 +659,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv, input: { now: 
       if (await intent.create()) created += 1;
     }
   }
-  return planResult(considered, created, deferred, unequipped, incapable, detail);
+  const output = planResult(considered, created, deferred, unequipped, incapable, detail);
+  if (input.includeDeferDetails && deferred > 0) output.deferDetails = { chat: deferredChat, scheduledAt };
+  return output;
 }

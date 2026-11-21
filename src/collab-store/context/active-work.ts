@@ -74,7 +74,18 @@ export async function lastChatWrite(db: D1Database, cycleId: string, ids: readon
   const binds: unknown[] = [cycleId, ...unique];
   const clauses = [
     'cycle_id = ?1', 'participant_id IN (' + participantsIn(unique, 2) + ')',
-    "COALESCE(role, '') <> 'api-agent'", 'type NOT IN ' + NON_CHAT_TYPES, 'json_valid(payload_json)',
+    "COALESCE(role, '') <> 'api-agent'",
+    // Native API D12 verdicts use reviewer/tester business roles, unlike generic API writes.
+    // Compare a deterministic op-id prefix and length instead of a 32-? GLOB (D1 pattern too complex).
+    "NOT (type = 'evidence.add' AND COALESCE(role, '') IN ('reviewer','tester')"
+      + " AND substr(idempotency_key,1,length('op:' || REPLACE(participant_id, ':', '.') || ':' || cycle_id"
+      + " || ':api-verdict-')) = ('op:' || REPLACE(participant_id, ':', '.') || ':' || cycle_id || ':api-verdict-')"
+      + " AND length(idempotency_key) = length('op:' || REPLACE(participant_id, ':', '.') || ':' || cycle_id"
+      + " || ':api-verdict-') + 34"
+      + " AND substr(idempotency_key,-2) = ':1'"
+      + " AND substr(idempotency_key,length('op:' || REPLACE(participant_id, ':', '.') || ':' || cycle_id"
+      + " || ':api-verdict-')+1,32) NOT GLOB '*[^0-9a-f]*')",
+    'type NOT IN ' + NON_CHAT_TYPES, 'json_valid(payload_json)',
   ];
   if (options.taskId) {
     binds.push(options.taskId);
