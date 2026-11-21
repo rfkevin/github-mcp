@@ -38,7 +38,7 @@
  * le résultat réel d'un effet déjà envoyé (completed, failed, ambiguous), et `settle`
  * qui ne fait que constater une condition d'arrêt (HALT, préemption, plafond).
  */
-import { recentHistoryOffset, answerPublicationReminder, answerRecoveryInstruction } from './history-policy';
+import { recentHistoryOffset, answerAskSeq, answerPublicationReminder, answerRecoveryInstruction } from './history-policy';
 import { sha256Hex } from '../store/hash';
 import { postSalonMessage } from '../salon';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
@@ -1131,7 +1131,10 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const verdictRecoveryTurn = await priorEmptyVerifierTurn(db, runId, n, run.task_kind);
   // CC8 S9 v2 : reprise `answer` symétrique — UN SEUL tour correctif après une
   // fin purement textuelle ; store_answer seulement. Aucun repli automatique.
-  const answerRecoveryTurn = await priorEmptyAnswerTurn(db, runId, n, run.task_kind);
+  // Gate S9 v2 : la reprise n'a de sens que si le prompt référence une question
+  // réelle (answerAskSeq) — même condition que storeCompletionVerified côté store.
+  const answerRecoveryTurn = (await priorEmptyAnswerTurn(db, runId, n, run.task_kind))
+    && answerAskSeq(run.prompt) !== null;
 
   // CC-8 S1b-2 : budget TOTAL des appels modèle de l'étape — min(480 s, deadline restante
   // − 30 s, marge avant plafond d'étape) ; chaque appel reçoit ce qui reste (la chaîne de
@@ -1507,7 +1510,8 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const missingAnswerFirstTime = run.task_kind === 'answer'
     && output.tool_calls.length === 0 && !verified && (await emptyAnswerStepsBefore(db, runId, n)) === 0
     && (run.max_steps < 0 || n + 1 < run.max_steps)
-    && deps.tools.spec(run.task_kind, 'store_answer')?.effect === 'write';
+    && deps.tools.spec(run.task_kind, 'store_answer')?.effect === 'write'
+    && answerAskSeq(run.prompt) !== null;
   const final = persistedProof || (!await pendingSteer()
     && (noProgress || (output.tool_calls.length === 0 && !missingVerdictFirstTime && !missingAnswerFirstTime))) ? 1 : 0;
   const completionStatus = verified ? 'completed' : 'failed';

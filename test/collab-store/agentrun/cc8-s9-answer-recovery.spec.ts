@@ -154,7 +154,10 @@ describe('CC8 S9 v2 — reprise answer dans le moteur (D1 réel)', () => {
     expect(run.stop_reason).toBe('incomplete_final:store_effect_missing');
     expect(outcomes).toEqual(['stepped', 'stepped', 'failed']);
     expect(model.seen).toHaveLength(3); // reprise unique consommée, puis échec définitif
-    expect(await answersOf(s.cycle)).toHaveLength(0);
+    // Journal append-only : une clarify.answer sur un ask_seq erroné peut être enregistrée
+    // (pas de FK) ; la vraie propriété est qu'AUCUNE réponse valide ne cible la vraie question.
+    const misdirected = await answersOf(s.cycle);
+    expect(misdirected.every(a => JSON.parse(a.payload_json).ask_seq !== s.askSeq)).toBe(true);
   });
 
   it('sans store_answer disponible : échec immédiat inchangé (fail-closed)', async () => {

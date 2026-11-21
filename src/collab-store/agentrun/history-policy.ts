@@ -18,13 +18,22 @@ export function recentHistoryOffset(steps: readonly { model_output: string; resu
   return offset;
 }
 
+/** Numéro de question référencé par le prompt d'une mission `answer` (extrait de
+ * l'en-tête `Question #N du cycle …`), ou null si le prompt ne cible aucune question
+ * réelle — même condition que la publication store_answer vérifiée côté store. */
+export function answerAskSeq(prompt: string): number | null {
+  const ask = /^Question #([1-9][0-9]*) du cycle /.exec(prompt);
+  if (!ask || !Number.isSafeInteger(Number(ask[1]))) return null;
+  return Number(ask[1]);
+}
+
 /** Reminder only: the model must choose and execute the existing publication tool.
  * No invented answer, verdict, effect, or automatic success. */
 export function answerPublicationReminder(kind: string, prompt: string, tools: readonly string[]): string | null {
   if (kind !== 'answer' || !tools.includes('store_answer')) return null;
-  const ask = /^Question #([1-9][0-9]*) du cycle /.exec(prompt);
-  if (!ask || !Number.isSafeInteger(Number(ask[1]))) return null;
-  return 'Publication de cette mission : répondre avec store_answer({ask_seq:' + ask[1]
+  const ask = answerAskSeq(prompt);
+  if (ask === null) return null;
+  return 'Publication de cette mission : répondre avec store_answer({ask_seq:' + ask
     + ', answer: votre réponse étayée}). Un texte final seul ne publie rien dans le store. '
     + 'Utilisez les lectures et résultats déjà présents dans cet historique ; ne recommencez pas la préparation '
     + 'si ces preuves suffisent. Si une preuve manque, poursuivez les lectures utiles et dites ce qui reste incertain.';
@@ -36,9 +45,9 @@ export function answerPublicationReminder(kind: string, prompt: string, tools: r
 export function answerRecoveryInstruction(kind: string, prompt: string, tools: readonly string[],
   isRecoveryTurn: boolean): string | null {
   if (!isRecoveryTurn || kind !== 'answer' || !tools.includes('store_answer')) return null;
-  const ask = /^Question #([1-9][0-9]*) du cycle /.exec(prompt);
-  const call = ask && Number.isSafeInteger(Number(ask[1]))
-    ? 'store_answer({ask_seq:' + ask[1] + ', answer: votre réponse étayée})'
+  const ask = answerAskSeq(prompt);
+  const call = ask !== null
+    ? 'store_answer({ask_seq:' + ask + ', answer: votre réponse étayée})'
     : 'store_answer({ask_seq: seq de la question, answer: votre réponse étayée})';
   return 'Reprise PUBLICATION : votre dernier tour a répondu en texte SANS store_answer — la réponse n a PAS '
     + 'été publiée dans le store. Ceci est l UNIQUE tour correctif : appelez maintenant ' + call + '. '
