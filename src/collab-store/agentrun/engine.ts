@@ -77,11 +77,10 @@ export function reviewVerdictTurn(kind: string, stepsDone: number, maxSteps: num
   // Legacy finite-run helper. Unbounded runs get a semantic terminal recovery below.
   return maxSteps > 0 && (kind === 'review' || kind === 'test') && stepsDone >= maxSteps - 1;
 }
-/** CC8 S9: the immediately preceding REVIEW/TEST turn ended in prose without a tool.
- * A SINGLE corrective turn can still publish a real, checked store_verdict.
- * This is not a generic step cap and does not relax D12 or the run's fence. */
-async function priorEmptyVerifierTurn(db: D1Database, runId: string, n: number, kind: string): Promise<boolean> {
-  if (n < 1 || (kind !== 'review' && kind !== 'test')) return false;
+/** CC8 S9: a text-only final is not a persisted answer or D12 verdict.
+ * Offer at most one corrective tool turn, without inventing a D1 effect. */
+async function priorEmptyPublicationTurn(db: D1Database, runId: string, n: number, kind: string): Promise<boolean> {
+  if (n < 1 || !['answer', 'review', 'test'].includes(kind)) return false;
   const prior = await db.prepare(
     "SELECT model_output FROM agent_run_steps WHERE run_id=?1 AND n=?2 AND state='completed'",
   ).bind(runId, n - 1).first<{ model_output: string | null }>();
@@ -1097,7 +1096,9 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   if ('outcome' in claimed) return claimed;
   const n = run.steps_done;
   const claim: Claim = { n, worker: deps.workerId, attempts: claimed.attempts };
-  const verdictRecoveryTurn = await priorEmptyVerifierTurn(db, runId, n, run.task_kind);
+  const priorEmptyPublication = await priorEmptyPublicationTurn(db, runId, n, run.task_kind);
+  const verdictRecoveryTurn = priorEmptyPublication && (run.task_kind === 'review' || run.task_kind === 'test');
+  const answerRecoveryTurn = priorEmptyPublication && run.task_kind === 'answer';
 
   // CC-8 S1b-2 : budget TOTAL des appels modèle de l'étape — min(480 s, deadline restante
   // − 30 s, marge avant plafond d'étape) ; chaque appel reçoit ce qui reste (la chaîne de
@@ -1159,12 +1160,20 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
             : null;
         const replyContext = continuationReplyMessage(clarifications);
         const publicationInstruction = answerPublicationReminder(run.task_kind, run.prompt, tools);
-        const additional = [extra, replyContext, verdictInstruction, publicationInstruction].filter(Boolean).join('\n\n');
+        // One corrective model call after a text-only ANSWER, never a synthetic D1 publication.
+        const answerRecoveryInstruction = answerRecoveryTurn
+          ? 'Your previous text final did not publish store_answer in D1. This is your ONLY corrective turn. '
+            + 'Call store_answer with the original ask_seq and your answer. Do not repeat exploration; '
+            + 'if publication is impossible, the run must fail without fabricating an answer.'
+          : null;
+        const additional = [extra, replyContext, verdictInstruction, answerRecoveryInstruction, publicationInstruction]
+          .filter(Boolean).join('\n\n');
         // Preserve an approximate full-context+output budget for the terminal verdict call.
         // No paid allowance or D12 bypass; exhausted budgets still refuse before the provider.
         response = await deps.model.complete({
           messages: additional ? [...messages, { role: 'user', content: additional }] : messages,
-          tools: verdictTurn ? ['store_verdict'] : guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
+          tools: verdictTurn ? ['store_verdict'] : answerRecoveryTurn ? ['store_answer']
+            : guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
             ? guide.tools.filter(name => tools.includes(name)) : tools,
           task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
       }
@@ -1464,11 +1473,21 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // running while no extra model turn can be scheduled.
     && (run.max_steps < 0 || n + 1 < run.max_steps)
     && deps.tools.spec(run.task_kind, 'store_verdict')?.effect === 'write';
+  // The first text-only ANSWER gets one final chance if store_answer is allowed.
+  // A refused store_answer on that turn MUST fail: a tool call is not D1 proof.
+  const missingAnswerFirstTime = run.task_kind === 'answer'
+    && output.tool_calls.length === 0 && !verified && !answerRecoveryTurn
+    && (run.max_steps < 0 || n + 1 < run.max_steps)
+    && deps.tools.spec(run.task_kind, 'store_answer')?.effect === 'write';
+  const answerRecoveryFailed = answerRecoveryTurn && !persistedProof;
   const final = persistedProof || (!await pendingSteer()
-    && (noProgress || (output.tool_calls.length === 0 && !missingVerdictFirstTime))) ? 1 : 0;
-  const completionStatus = verified ? 'completed' : 'failed';
+    && (noProgress || answerRecoveryFailed
+      || (output.tool_calls.length === 0 && !missingVerdictFirstTime && !missingAnswerFirstTime))) ? 1 : 0;
+  const completionStatus = answerRecoveryFailed ? 'failed' : verified ? 'completed' : 'failed';
   const completionReason = repeatedDenial ? 'blocked:no_progress:repeated_denial'
-    : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit' : verified ? 'final'
+    : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit'
+    : answerRecoveryFailed ? 'incomplete_final:answer_not_published_after_recovery'
+    : verified ? 'final'
     : verdictRecoveryTurn && output.tool_calls.length === 0 ? 'incomplete_final:verdict_missing_after_reminder'
     : run.task_kind === 'implement' ? 'incomplete_final:github_evidence_missing' : 'incomplete_final:store_effect_missing';
   // La conclusion est conditionnée DANS le batch à l'absence de nouveau message.
