@@ -29,3 +29,19 @@ export function answerPublicationReminder(kind: string, prompt: string, tools: r
     + 'Utilisez les lectures et résultats déjà présents dans cet historique ; ne recommencez pas la préparation '
     + 'si ces preuves suffisent. Si une preuve manque, poursuivez les lectures utiles et dites ce qui reste incertain.';
 }
+
+/** CC8 S9 v2 : reprise unique après une fin purement textuelle d'une mission `answer`
+ * (même logique que verdictRecoveryTurn pour review/test). Rappel seul : jamais
+ * d'auto-publication, jamais de succès inventé ; store_answer reste l'unique porte. */
+export function answerRecoveryInstruction(kind: string, prompt: string, tools: readonly string[],
+  isRecoveryTurn: boolean): string | null {
+  if (!isRecoveryTurn || kind !== 'answer' || !tools.includes('store_answer')) return null;
+  const ask = /^Question #([1-9][0-9]*) du cycle /.exec(prompt);
+  const call = ask && Number.isSafeInteger(Number(ask[1]))
+    ? 'store_answer({ask_seq:' + ask[1] + ', answer: votre réponse étayée})'
+    : 'store_answer({ask_seq: seq de la question, answer: votre réponse étayée})';
+  return 'Reprise PUBLICATION : votre dernier tour a répondu en texte SANS store_answer — la réponse n a PAS '
+    + 'été publiée dans le store. Ceci est l UNIQUE tour correctif : appelez maintenant ' + call + '. '
+    + 'Utilisez les lectures et résultats déjà présents dans cet historique ; ne recommencez pas la préparation. '
+    + 'Si une preuve manque, dites précisément ce qui reste incertain dans la réponse publiée ; ne fabriquez jamais de succès.';
+}

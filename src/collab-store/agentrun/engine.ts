@@ -38,7 +38,7 @@
  * le résultat réel d'un effet déjà envoyé (completed, failed, ambiguous), et `settle`
  * qui ne fait que constater une condition d'arrêt (HALT, préemption, plafond).
  */
-import { recentHistoryOffset, answerPublicationReminder } from './history-policy';
+import { recentHistoryOffset, answerPublicationReminder, answerRecoveryInstruction } from './history-policy';
 import { sha256Hex } from '../store/hash';
 import { postSalonMessage } from '../salon';
 import { API_AGENT_FORBIDDEN, assertNotD12Verdict } from '../agents/tools';
@@ -90,6 +90,37 @@ async function priorEmptyVerifierTurn(db: D1Database, runId: string, n: number, 
     const output = JSON.parse(prior.model_output) as ModelOutput;
     return Array.isArray(output.tool_calls) && output.tool_calls.length === 0;
   } catch { return false; }
+}
+/** CC8 S9 v2 : étapes `answer` déjà terminées en texte sans aucun appel d'outil.
+ * D1 fait autorité : une sortie non enregistrée n'est jamais une publication. */
+async function emptyAnswerStepsBefore(db: D1Database, runId: string, before: number): Promise<number> {
+  if (before < 1) return 0;
+  const { results } = await db.prepare(
+    "SELECT model_output FROM agent_run_steps WHERE run_id = ?1 AND n < ?2 AND state = 'completed'",
+  ).bind(runId, before).all<{ model_output: string | null }>();
+  let count = 0;
+  for (const row of results) {
+    try {
+      const output = JSON.parse(row.model_output ?? '') as ModelOutput;
+      if (Array.isArray(output.tool_calls) && output.tool_calls.length === 0) count++;
+    } catch { /* sortie non exploitable : pas une fin textuelle */ }
+  }
+  return count;
+}
+/** CC8 S9 v2 : le tour immédiatement antérieur d'une mission `answer` est la seule
+ * fin purement textuelle ; le tour courant est donc l'UNIQUE tour correctif, où seul
+ * store_answer est offert. Jamais d'auto-publication, jamais de succès inventé. */
+async function priorEmptyAnswerTurn(db: D1Database, runId: string, n: number, kind: string): Promise<boolean> {
+  if (n < 1 || kind !== 'answer') return false;
+  const prior = await db.prepare(
+    "SELECT model_output FROM agent_run_steps WHERE run_id=?1 AND n=?2 AND state='completed'",
+  ).bind(runId, n - 1).first<{ model_output: string | null }>();
+  if (!prior?.model_output) return false;
+  try {
+    const output = JSON.parse(prior.model_output) as ModelOutput;
+    if (!Array.isArray(output.tool_calls) || output.tool_calls.length > 0) return false;
+  } catch { return false; }
+  return (await emptyAnswerStepsBefore(db, runId, n - 1)) === 0;
 }
 /** Split values are provided by the adapter when reported by the provider. */
 export interface ModelUsage { tokens: number; cost_cents: number; input_tokens?: number | null; output_tokens?: number | null; estimated_input_tokens?: number | null }
@@ -1098,6 +1129,9 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const n = run.steps_done;
   const claim: Claim = { n, worker: deps.workerId, attempts: claimed.attempts };
   const verdictRecoveryTurn = await priorEmptyVerifierTurn(db, runId, n, run.task_kind);
+  // CC8 S9 v2 : reprise `answer` symétrique — UN SEUL tour correctif après une
+  // fin purement textuelle ; store_answer seulement. Aucun repli automatique.
+  const answerRecoveryTurn = await priorEmptyAnswerTurn(db, runId, n, run.task_kind);
 
   // CC-8 S1b-2 : budget TOTAL des appels modèle de l'étape — min(480 s, deadline restante
   // − 30 s, marge avant plafond d'étape) ; chaque appel reçoit ce qui reste (la chaîne de
@@ -1158,13 +1192,16 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
               + 'avec les preuves et le couple head/base exacts. Si les preuves manquent, ne pas inventer AGREE.'
             : null;
         const replyContext = continuationReplyMessage(clarifications);
-        const publicationInstruction = answerPublicationReminder(run.task_kind, run.prompt, tools);
+        const publicationInstruction = answerRecoveryTurn
+          ? answerRecoveryInstruction(run.task_kind, run.prompt, tools, true)
+          : answerPublicationReminder(run.task_kind, run.prompt, tools);
         const additional = [extra, replyContext, verdictInstruction, publicationInstruction].filter(Boolean).join('\n\n');
         // Preserve an approximate full-context+output budget for the terminal verdict call.
         // No paid allowance or D12 bypass; exhausted budgets still refuse before the provider.
         response = await deps.model.complete({
           messages: additional ? [...messages, { role: 'user', content: additional }] : messages,
-          tools: verdictTurn ? ['store_verdict'] : guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
+          tools: verdictTurn ? ['store_verdict'] : answerRecoveryTurn && tools.includes('store_answer') ? ['store_answer']
+            : guide?.kind === 'model' || guide?.kind === 'prepare' || guide?.kind === 'handover'
             ? guide.tools.filter(name => tools.includes(name)) : tools,
           task_kind: run.task_kind, budget_left_ms: budgetLeftMs });
       }
@@ -1464,8 +1501,15 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     // running while no extra model turn can be scheduled.
     && (run.max_steps < 0 || n + 1 < run.max_steps)
     && deps.tools.spec(run.task_kind, 'store_verdict')?.effect === 'write';
+  // CC8 S9 v2 : une fin textuelle d'une mission `answer` n'est PAS une publication.
+  // Première occurrence : le run reste vivant pour l'UNIQUE tour correctif
+  // (store_answer seul proposé). Seconde occurrence : échec explicite définitif.
+  const missingAnswerFirstTime = run.task_kind === 'answer'
+    && output.tool_calls.length === 0 && !verified && (await emptyAnswerStepsBefore(db, runId, n)) === 0
+    && (run.max_steps < 0 || n + 1 < run.max_steps)
+    && deps.tools.spec(run.task_kind, 'store_answer')?.effect === 'write';
   const final = persistedProof || (!await pendingSteer()
-    && (noProgress || (output.tool_calls.length === 0 && !missingVerdictFirstTime))) ? 1 : 0;
+    && (noProgress || (output.tool_calls.length === 0 && !missingVerdictFirstTime && !missingAnswerFirstTime))) ? 1 : 0;
   const completionStatus = verified ? 'completed' : 'failed';
   const completionReason = repeatedDenial ? 'blocked:no_progress:repeated_denial'
     : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit' : verified ? 'final'
