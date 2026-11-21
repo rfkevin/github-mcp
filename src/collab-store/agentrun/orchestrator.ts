@@ -365,7 +365,8 @@ export async function objectAlarm(deps: OrchestratorDeps): Promise<AlarmResult> 
 
 export type WakeFn = (leaseKey: string, runId: string) => Promise<WakeResult>;
 
-export interface PassResult { delivered: number; failed: number; rescued: number; planned?: number; plannerDeferred?: number; skipped?: 'disabled';
+export interface PassResult { delivered: number; failed: number; rescued: number; planned?: number; plannerDeferred?: number;
+  plannerDeferDetails?: { chat: number; scheduledAt: number | null }; skipped?: 'disabled';
   /** CC-8 S6 (suite) : maintenance des suivis de bêta du passage (absent si désactivé). */
   beta?: { advanced: number; rolledBack: number; skipped: number; errors: number }; }
 
@@ -500,10 +501,12 @@ export async function agentRunPass(db: D1Database | undefined, env: AgentRunEnv,
   // Une panne de planification ne bloque ni la livraison ni le secours.
   let planned = 0;
   let plannerDeferred = 0;
+  let plannerDeferDetails: PassResult['plannerDeferDetails'];
   try {
-    const plan = await planAgentRuns(db, env, { now: input.now });
+    const plan = await planAgentRuns(db, env, { now: input.now, includeDeferDetails: true });
     planned = plan.created;
     plannerDeferred = plan.deferred ?? 0;
+    plannerDeferDetails = plan.deferDetails;
   } catch {
     planned = 0;
   }
@@ -516,7 +519,8 @@ export async function agentRunPass(db: D1Database | undefined, env: AgentRunEnv,
   } catch {
     beta = { advanced: 0, rolledBack: 0, skipped: 0, errors: 0 };
   }
-  return { delivered, failed, rescued, planned, ...(plannerDeferred ? { plannerDeferred } : {}), beta };
+  return { delivered, failed, rescued, planned,
+    ...(plannerDeferred ? { plannerDeferred, plannerDeferDetails } : {}), beta };
 }
 
 // ---------------------------------------------------------------- dépendances par défaut (7b)
