@@ -4,6 +4,8 @@ import { createRoutedModel, type ProviderModelContext } from '../../../src/colla
 import { GEMINI_CC3_TEST_PUBLIC_ORIGIN } from '../../../src/collab-store/executors/gemini';
 import { acquireBreakerProbeLease, breakerOpenUntil, ensureModelPolicySchema, recordModelCallWithBreaker } from '../../../src/collab-store/agentrun/model-policy';
 import { BREAKER_PAUSE_S, BREAKER_PROBE_LEASE_S, breakerSkipping } from '../../../src/collab-store/agentrun/run-policy';
+// CC8 post-365 (seq 3192 #4) : erreur de transport à message transitoire garanti.
+import { executorError } from '../../../src/collab-store/executors/fetch-timeout';
 import { modelFailureKind } from '../../../src/collab-store/agentrun/model-failure';
 import { freshRun } from './cc7-l2-paid-harness';
 
@@ -224,5 +226,51 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
     expect((thrown as Error).message).toContain('CIRCUIT_OPEN');
     expect((thrown as Error).message).toContain('bail de sonde détenu');
     expect(modelFailureKind(thrown)).toBe('transient'); // relance S1b possible
+  });
+
+  // CC8 post-365 (seq 3192 #3) : sonde en échec TRANSITOIRE sur un maillon en pause —
+  // exemptée du gate et du coupe-circuit : l’échec est enregistré sans mutation de la
+  // série breaker, puis le repli est servi. (Complément du test « sonde succès » ci-dessus.)
+  it('sonde en échec transitoire sur maillon en pause : breaker inchangé, repli servi (post-365)', async () => {
+    const run = await freshRun(db, 's1b2-brk-i', AT, 10_000, PARTICIPANT);
+    await seedTransientFailures(PRIMARY, AT);
+    const seen: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.includes('gemini-3.8-flash')) return new Response('{"error":{"message":"Service unavailable"}}', { status: 503 });
+      return new Response(JSON.stringify(GEMINI_OK), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    const result = await client(run.runId, fetchImpl).complete({ ...message, task_kind: 'probe' });
+    expect(result.output.text).toBe('repli réussi');
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toContain('gemini-3.8-flash');
+    expect(seen[1]).toContain('gemini-3.6-flash');
+    // La sonde n’a jamais compté : série breaker du maillon testé intacte.
+    const row = await breakerRow(PRIMARY);
+    expect(row?.consecutive_transient_failures).toBe(3);
+    expect(row?.circuit_open_until).toBeGreaterThan(0); // pause toujours en cours
+    // Succès du repli via recordModelCall : jamais via le coupe-circuit.
+    expect(await breakerRow(BACKUP)).toBeNull();
+  });
+
+  // CC8 post-365 (seq 3192 #4) : kind fort, maillon préféré écarté par la pause, repli en
+  // échec transitoire — HORS gate (candidate.ref !== ref) : épuisement de la chaîne,
+  // lastError transitoire (relance S1b), l’échec du repli compté par le coupe-circuit.
+  it('kind fort, préféré en pause, repli transitoire : lastError transitoire, sans déclassement supplémentaire (post-365)', async () => {
+    const run = await freshRun(db, 's1b2-brk-j', AT, 10_000, PARTICIPANT);
+    await seedTransientFailures(PRIMARY, AT);
+    const seen: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      throw executorError('EXECUTOR_TIMEOUT', 'Fournisseur sans réponse après 60000 ms.');
+    }) as typeof fetch;
+    let thrown: unknown;
+    try { await client(run.runId, fetchImpl).complete(message); } catch (error) { thrown = error; }
+    expect(seen).toHaveLength(1); // seul le repli est appelé (le préféré est écarté par la pause)
+    expect(seen[0]).toContain('gemini-3.6-flash');
+    expect(modelFailureKind(thrown)).toBe('transient'); // lastError relançable, chaîne épuisée
+    const backup = await breakerRow(BACKUP);
+    expect(backup?.consecutive_transient_failures).toBe(1); // le transitoire du repli est compté
   });
 });
