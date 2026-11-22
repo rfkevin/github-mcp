@@ -197,3 +197,24 @@ describe('CC8 S9 v2 — reprise answer dans le moteur (D1 réel)', () => {
     expect(model.seen).toHaveLength(1);
   });
 });
+
+
+describe('CC8 S9 v2 — non-régression : une mission answer normale à plusieurs étapes n\'est pas mise en reprise', () => {
+  it('lectures puis réponse : aucune instruction de reprise, outils de lecture encore offerts, run complété', async () => {
+    const s = await seedAnswerScenario('multi-step');
+    const runId = await newAnswerRun(s);
+    const model = scripted([
+      { text: '', tool_calls: [{ id: 'r', name: 'store_context', args: {} }] },
+      { text: '', tool_calls: [{ id: 'a', name: 'store_answer', args: { ask_seq: s.askSeq, answer: 'Le SHA est bc58d886.' } }] },
+    ]);
+    const outcomes = await drive(runId, { model: model.client, tools: storeHost(), now: () => T + 10, workerId: 'multi' });
+    expect(outcomes.at(-1)).toBe('completed');
+    expect(model.seen).toHaveLength(2);
+    // Étape 2 (n = 1) : le tour précédent avait un appel d'outil, ce n'est donc PAS un tour correctif.
+    const second = model.seen[1];
+    expect(JSON.stringify(second.messages)).not.toContain('Reprise PUBLICATION');
+    expect(second.tools).toEqual(expect.arrayContaining(['store_context', 'store_delta', 'store_answer']));
+    expect(second.tools.length).toBeGreaterThan(1);
+    expect(await answersOf(s.cycle)).toHaveLength(1);
+  });
+});
