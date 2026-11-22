@@ -124,6 +124,68 @@ describe('CC8 S1b — incident Gemini 503, repli pendant le même appel', () => 
       .bind('gemini', PRIMARY).first<{ consecutive_transient_failures: number }>();
     expect(row?.consecutive_transient_failures).toBe(1);
   });
+
+  // CC8 post-365 (seq 3192 #1, tâche cc8-post365-provider-retry-tests) : un refus PERMANENT
+  // (401/403) sur le maillon PRÉFÉRÉ d’un kind fort fait UN SEUL appel, sans
+  // PREFERRED_TRANSIENT_BACKOFF : une panne permanente ne devient pas une boucle de relance
+  // et ne déclenche aucun repli (le gate ne vise que le transitoire).
+  it.each([401, 403] as const)('%i permanent sur le maillon préféré, kind fort : UN appel, classé permanent, sans PREFERRED_TRANSIENT_BACKOFF', async status => {
+    const run = await freshRun(db, 's1b-strong-perm-' + status, 1_983_300_000, 10_000, 'gemini');
+    const seen: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response('{"error":{"message":"denied"}}', { status });
+    }) as typeof fetch;
+    await ensureModelPolicySchema(db);
+    let caught: unknown;
+    try { await client(run.runId, fetchImpl).complete({ ...message, task_kind: 'review' }); } catch (error) { caught = error; }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('gemini-3.8-flash');
+    expect((caught as Error).message).not.toContain('PREFERRED_TRANSIENT_BACKOFF');
+    expect((caught as Error).message).not.toContain('gemini-3.6-flash');
+    expect(modelFailureKind(caught)).toBe('permanent');
+  });
+
+  // CC8 post-365 (seq 3192 #2, AC 1 de la tâche) : panne transitoire PERSISTANTE d’un kind
+  // fort — chaque tentative relance le maillon PRÉFÉRÉ (throw PREFERRED_TRANSIENT_BACKOFF,
+  // reprise = même étape), le coupe-circuit S1b-2 compte 1 puis 2 puis 3 → pause ; l’appel
+  // suivant est servi par le repli de la chaîne owner, le préféré n’est PAS rappelé.
+  it('implement : panne persistante du préféré → 3 relances transitoires, pause breaker, puis repli servi sans rappeler le préféré', async () => {
+    const run = await freshRun(db, 's1b-strong-persistent', 1_983_400_000, 10_000, 'gemini');
+    const seen: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.includes('gemini-3.8-flash')) return new Response('{"error":{"message":"Service unavailable"}}', { status: 503 });
+      return new Response(JSON.stringify({
+        candidates: [{ content: { role: 'model', parts: [{ text: 'repli après pause' }] } }],
+        usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 4 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    await ensureModelPolicySchema(db);
+    const routed = client(run.runId, fetchImpl);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let caught: unknown;
+      try { await routed.complete({ ...message, task_kind: 'implement' }); } catch (error) { caught = error; }
+      expect((caught as Error).message).toContain('PREFERRED_TRANSIENT_BACKOFF');
+      expect(modelFailureKind(caught)).toBe('transient'); // relance durable du même maillon
+      expect(seen).toHaveLength(attempt); // strictement un appel par tentative, jamais le repli
+      const row = await db.prepare('SELECT consecutive_transient_failures, circuit_open_until FROM agent_model_breaker WHERE participant_id = ?1 AND ref = ?2')
+        .bind('gemini', PRIMARY).first<{ consecutive_transient_failures: number; circuit_open_until: number }>();
+      expect(row?.consecutive_transient_failures).toBe(attempt);
+      if (attempt === 3) expect(row?.circuit_open_until).toBeGreaterThan(0); // 3 échecs → pause
+      else expect(row?.circuit_open_until).toBe(0);
+    }
+    // Coupe-circuit ouvert : l’étape est servie par le repli owner, le préféré n’est pas rappelé.
+    const served = await routed.complete({ ...message, task_kind: 'implement' });
+    expect(served.output.text).toBe('repli après pause');
+    expect(seen).toHaveLength(4);
+    expect(seen[3]).toContain('gemini-3.6-flash');
+    const paused = await db.prepare('SELECT consecutive_transient_failures, circuit_open_until FROM agent_model_breaker WHERE participant_id = ?1 AND ref = ?2')
+      .bind('gemini', PRIMARY).first<{ consecutive_transient_failures: number; circuit_open_until: number }>();
+    expect(paused?.consecutive_transient_failures).toBe(3); // inchangé : pas de rappel du préféré
+    expect(paused?.circuit_open_until).toBeGreaterThan(0);
+  });
 });
 
 // CC-8 S1b-2 : le coupe-circuit (participant × modèle, table agent_model_breaker) persiste en
