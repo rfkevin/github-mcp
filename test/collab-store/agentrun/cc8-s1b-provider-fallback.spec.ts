@@ -17,7 +17,10 @@ const routes = {
   GEMINI_FREE_PROJECT_ATTESTED: 'true',
   PUBLIC_ORIGIN: GEMINI_CC3_TEST_PUBLIC_ORIGIN,
 };
-const message = { messages: [{ role: 'user' as const, content: 'ping' }], tools: [], task_kind: 'review' };
+// CC8 primary-retry-quality (mandat seq 3170) : kind answer = repli intra-étape conservé
+// (basse enjeu) ; les kinds forts (implement/review/test) sont couverts par le test
+// PREFERRED_TRANSIENT_BACKOFF en fin de suite.
+const message = { messages: [{ role: 'user' as const, content: 'ping' }], tools: [], task_kind: 'answer' };
 
 function client(runId: string, fetchImpl: typeof fetch) {
   const ctx: ProviderModelContext = {
@@ -96,6 +99,30 @@ describe('CC8 S1b — incident Gemini 503, repli pendant le même appel', () => 
     expect((caught as Error).message).toContain('FALLBACK_AFTER_TRANSIENT');
     expect(modelFailureKind(caught)).toBe('transient');
     expect(seen).toHaveLength(2);
+  });
+
+  // CC8 primary-retry-quality (mandat seq 3170) : kinds forts (implement/review/test) —
+  // un échec TRANSITOIRE du maillon préféré ne parcourt PAS la chaîne de repli : le moteur
+  // relance durablement le même maillon (model_retry). Le transitoire reste compté par le
+  // coupe-circuit S1b-2 : l’écart durable suit la pause ou la chaîne posée par l’owner.
+  it.each(['implement', 'review', 'test'] as const)('%s : 503 du maillon préféré → PREFERRED_TRANSIENT_BACKOFF transitoire, repli non appelé, breaker compté', async kind => {
+    const run = await freshRun(db, 's1b-strong-retry-' + kind, 1_983_200_000, 10_000, 'gemini');
+    const seen: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      return new Response('{"error":{"message":"Service unavailable"}}', { status: 503 });
+    }) as typeof fetch;
+    await ensureModelPolicySchema(db);
+    let caught: unknown;
+    try { await client(run.runId, fetchImpl).complete({ ...message, task_kind: kind }); } catch (error) { caught = error; }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('gemini-3.8-flash');
+    expect((caught as Error).message).toContain('PREFERRED_TRANSIENT_BACKOFF');
+    expect(modelFailureKind(caught)).toBe('transient');
+    const row = await db.prepare('SELECT consecutive_transient_failures FROM agent_model_breaker WHERE participant_id = ?1 AND ref = ?2')
+      .bind('gemini', PRIMARY).first<{ consecutive_transient_failures: number }>();
+    expect(row?.consecutive_transient_failures).toBe(1);
   });
 });
 
