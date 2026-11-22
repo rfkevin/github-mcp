@@ -144,7 +144,7 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
     expect(await breakerRow(PRIMARY)).toBeNull(); // jamais compté par le coupe-circuit
   });
 
-  it('budget d’étape : décompté entre maillons, arrêt propre transitoire sous le plancher de 30 s', async () => {
+  it('budget d’étape : décompté entre maillons, arrêt propre transitoire sous le plancher de 30 s (kind answer)', async () => {
     const run = await freshRun(db, 's1b2-brk-f', AT, 10_000, PARTICIPANT);
     let clockMs = AT * 1000;
     const seen: string[] = [];
@@ -159,7 +159,7 @@ describe('CC8 S1b-2 — coupe-circuit participant × modèle (option B, plan seq
     }) as typeof fetch;
     let thrown: unknown;
     try {
-      await client(run.runId, fetchImpl, () => clockMs).complete({ ...message, budget_left_ms: 120_000 });
+      await client(run.runId, fetchImpl, () => clockMs).complete({ ...message, task_kind: 'answer', budget_left_ms: 120_000 });
     } catch (error) { thrown = error; }
     expect(seen).toHaveLength(1); // primaire seul : 120 s − 100 s consommés < plancher 30 s
     expect((thrown as Error).message).toContain('STEP_MODEL_BUDGET_EXHAUSTED');

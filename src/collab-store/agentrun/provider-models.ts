@@ -65,7 +65,7 @@ import { modelFailureKind } from './model-failure';
 // CC-7 F1 : fiche canonique des agents — tampon version + hash (module pur fiche.ts, artefact généré).
 import { ficheStamp } from './fiche';
 import { FICHE_HASH, FICHE_VERSION } from './generated/agent-fiche.generated';
-import { acquireBreakerProbeLease, breakerOpenUntil, budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, recordModelCall, recordModelCallWithBreaker, recordModelChoice, resolveParticipantPolicy, type PolicyEnv } from './model-policy';
+import { acquireBreakerProbeLease, breakerOpenUntil, budgetState, chooseModel, modelOption, modelPreference, participantEnvelope, recordModelCall, recordModelCallWithBreaker, recordModelChoice, resolveParticipantPolicy, STRONG_KINDS, type PolicyEnv } from './model-policy';
 // CC-8 S1b-2 : prédicat pur du coupe-circuit (option B).
 import { breakerSkipping, BREAKER_PROBE_LEASE_S, STEP_MODEL_BUDGET_FLOOR_MS } from './run-policy';
 
@@ -460,6 +460,20 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
           if (!isProbe) {
             await recordBetaExecutionForCall(ctx.db, { participant_id: run.participant_id, ref: candidate.ref,
               run_id: ctx.runId, at: outcome.at, ok: false, latency_ms: outcome.latencyMs });
+          }
+          // CC8 primary-retry-quality (mandat seq 3170, décret GPT-6) : sur un échec TRANSITOIRE
+          // du maillon préféré d’un kind fort (implement/review/test), NE PAS parcourir la chaîne
+          // de repli intra-étape : la relance durable du moteur (journal model_retry, backoff
+          // borné, même étape au même run_id) rejoue le maillon préféré. L’écart durable ne passe
+          // QUE par le coupe-circuit S1b-2 (3 échecs, pause) ou la chaîne posée par l’owner
+          // (opt-in) ; efforts préservés ; kinds basse enjeu (answer, design…) inchangés.
+          if (transient && !isProbe && candidate.ref === ref && STRONG_KINDS.includes(taskKind)) {
+            const reason = error instanceof Error ? error.message : String(error);
+            throw new ModelCallError('PREFERRED_TRANSIENT_BACKOFF : maillon préféré ' + ref
+              + ' indisponible (' + reason + ') pour le kind ' + taskKind
+              + ' ; échec transitoire du fournisseur (timeout/5xx) : repli intra-étape désactivé, '
+              + 'relance durable S1b sur le même maillon.',
+              { tokens: spentTokens, cost_cents: spentCents });
           }
           if (!transient) {
             // An OPTIONAL fallback can reject a valid primary-model conversation
