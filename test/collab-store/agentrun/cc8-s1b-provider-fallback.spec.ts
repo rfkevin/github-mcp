@@ -168,7 +168,7 @@ describe('CC8 S1b — incident Gemini 503, repli pendant le même appel', () => 
       let caught: unknown;
       try { await routed.complete({ ...message, task_kind: 'implement' }); } catch (error) { caught = error; }
       expect((caught as Error).message).toContain('PREFERRED_TRANSIENT_BACKOFF');
-      expect(modelFailureKind(caught)).toBe('transient'); // relance durable du mêtre maillon
+      expect(modelFailureKind(caught)).toBe('transient'); // relance durable du même maillon
       expect(seen).toHaveLength(attempt); // strictement un appel par tentative, jamais le repli
       const row = await db.prepare('SELECT consecutive_transient_failures, circuit_open_until FROM agent_model_breaker WHERE participant_id = ?1 AND ref = ?2')
         .bind('gemini', PRIMARY).first<{ consecutive_transient_failures: number; circuit_open_until: number }>();
