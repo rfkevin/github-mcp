@@ -161,7 +161,11 @@ describe('CC8 S7 — permissions, edits and correction loop',()=>{
     const f=await fixture();
     const call={id:'r',name:'github_replace_text',args:{name:f.name,expected_head_sha:H,path:'src/demo/a.ts',expected_sha:BLOB,old_text:'world',new_text:'S7',message:'fix'}};
     await expect(f.tools.execute({...call,args:{...call.args,expected_sha:H}},f.ctx())).rejects.toThrow('api_edit_blob_changed');
-    await expect(f.tools.execute({...call,args:{...call.args,expected_head_sha:BLOB}},f.ctx())).rejects.toThrow('api_write_head_changed');
+    await expect(f.tools.execute({...call,args:{...call.args,expected_head_sha:BLOB}},f.ctx())).rejects.toMatchObject({
+      message: 'api_write_head_changed',
+      recovery: {next_action:'github_write_scope',hint:expect.stringContaining('github_read_file')},
+    });
+    expect(f.commits()).toBe(0);
     expect(await f.tools.execute(call,f.ctx())).toMatchObject({next_action:'github_run_checks'});expect(f.commits()).toBe(1);
   });
   it('pending CI blocks a correction; red -> correction -> green requests D12',async()=>{

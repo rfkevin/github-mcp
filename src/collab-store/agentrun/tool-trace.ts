@@ -30,7 +30,7 @@ const EXACT_ERRORS = new Set([
   'tool_not_allowlisted','tool_forbidden_on_api_channel',
   'd12_verdict_forbidden_on_api_channel','superseded_by_live_message',
   'api_task_not_enabled','api_task_grant_ambiguous','api_write_scope_refused',
-  'api_base_head_unavailable','effect_key_required','unknown_run',
+  'api_write_head_changed','api_base_head_unavailable','effect_key_required','unknown_run',
   // Refus ferme de store_run_diagnostics (read-tools.ts), lisible dans les recus.
   'run_not_owned_or_unknown',
   // Codes fermes de store_no_change_submit (no-change.ts), lisibles aussi dans les anciens effets D1.

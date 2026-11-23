@@ -17,7 +17,7 @@ export interface S7Options { policy: WritePolicy; reads: GitHubReads | null; che
 const SHA = /^[a-f0-9]{40}$/;
 const common = { name: { type: 'string' }, sha: { type: 'string', pattern: SHA.source } };
 export const S7_SCHEMAS: readonly ToolSchema[] = [
-  { name: 'github_write_scope', description: 'Lire votre mandat serveur et ses critères d’acceptation : mission, acceptance, branche, nom, chemins, SHA actuel de la base et corrections restantes. Utiliser base_sha pour github_create_branch, jamais un SHA de fichier. La mission est également lisible dans le store (task.next_action), sans accorder de nouvelles permissions.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'github_write_scope', description: 'Lire votre mandat serveur et ses critères d’acceptation : mission, acceptance, branche, nom, chemins, SHA actuel de la base et corrections restantes. Utiliser base_sha pour créer la branche. Pour éditer, prendre branch_head comme expected_head_sha et lire le fichier à ce commit pour obtenir son expected_sha. Si branch_head est null, la branche reste à créer. La mission est également lisible dans le store (task.next_action), sans accorder de nouvelles permissions.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'github_replace_text', description: 'Remplacement littéral unique au head/blob exacts, dans votre tâche. Une édition (path, expected_sha, old_text, new_text) ou un tableau edits (' + MAX_EDITS + ' au plus, fichiers distincts) appliqué en UN SEUL commit. Une correction est autorisée après une CI rouge, sans plafond de corrections par mission.',
     parameters: { type: 'object', properties: { name: common.name, expected_head_sha: common.sha, message: { type: 'string' }, path: { type: 'string' }, expected_sha: common.sha,
       old_text: { type: 'string' }, new_text: { type: 'string' },
@@ -95,7 +95,12 @@ export function createS7Tools(options: GitHubWriteToolsOptions, s7: S7Options) {
   }
   async function head(branch: string, sha: unknown): Promise<string> {
     if (typeof sha !== 'string' || !SHA.test(sha)) throw new ToolRefused('api_write_sha_invalid');
-    if (await options.writes.branchHead(options.repository, branch) !== sha) throw new ToolRefused('api_write_head_changed');
+    if (await options.writes.branchHead(options.repository, branch) !== sha) {
+      throw new ToolRefused('api_write_head_changed', {
+        next_action: 'github_write_scope',
+        hint: 'Relire branch_head. Pour une édition, vérifier le fichier à ce commit avec github_read_file avant de réessayer avec expected_head_sha = branch_head et expected_sha = SHA du fichier.',
+      });
+    }
     return sha;
   }
   async function execute(call: ToolCall, ctx: Context): Promise<unknown> {
