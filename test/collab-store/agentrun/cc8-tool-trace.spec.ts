@@ -19,8 +19,7 @@ describe('CC8 — audit expurgé des vrais appels outils', () => {
       next_action: 'DO_NOT_LEAK_PRIVATE_MESSAGE', token: 'DO_NOT_LEAK_SECRET',
     }, userSecret: 'DO_NOT_LEAK_OTHER' });
     expect(safeVerdictMismatchRecovery(payload)).toEqual({
-      requested_pr: 351, requested_head: wrong, requested_base: base,
-      github_head: head, github_base: base, github_state: 'open', github_merged: false,
+      requested_pr: 351, requested_head: wrong, requested_base: base, github_head: head, github_base: base, github_state: 'open', github_merged: false,
     });
     expect(JSON.stringify(safeVerdictMismatchRecovery(payload))).not.toContain('DO_NOT_LEAK');
     expect(safeVerdictMismatchRecovery(JSON.stringify({
@@ -133,7 +132,7 @@ describe('CC8 — audit expurgé des vrais appels outils', () => {
     for(const s of ['PRIVATE_PROMPT_', 'PRIVATE_OUTPUT_', 'PRIVATE_ARGS_', 'PRIVATE_GITHUB_RESULT_'])
       expect(serial).not.toContain(s);
     expect(await redactedRunSummaryFor(db,'other-agent',runId)).toBeNull();
-    expect(await redactedRunSummaryFor(db,'gemini',runId)).not.toBeNull();
+    expect(await redacted_headedRunSummaryFor(db,'gemini',runId)).not.toBeNull();
   });
 });
 
