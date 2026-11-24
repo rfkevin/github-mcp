@@ -1,3 +1,4 @@
+import { steerAgentRun } from '../../../src/collab-store/agentrun/run-control';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { ensureSchema } from '../../../src/collab-store/store/schema';
@@ -204,6 +205,26 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
     expect(polls.results).toHaveLength(1);
     expect(polls.results[0]).toMatchObject({status:'completed'});
     expect(JSON.parse(polls.results[0].result)).toMatchObject({verifiedSuccess:true,targetSha:COMMIT_SHA});
+  });
+
+  it.each([false, true])('delivers steering before the next automatic CI read (already pending: %s)', async pending => {
+    const f = await fixture();
+    const h = githubHost({pendingOnce: pending});
+    const initial = scripted(pipeline.slice(0, 4));
+    const d: EngineDeps = {model: initial, tools: h.tools, now: () => NOW + 1,
+      workerId: 'steer-ci', dynamicGrantFor: async () => f.completion[0]};
+    expect(await drain(f.runId, d, pending ? 5 : 4)).toBe('stepped');
+    const message = 'Inspect the file before continuing CI.';
+    await steerAgentRun(db, {runId: f.runId, sender: 'gpt6', opId: 'during-ci', message, now: NOW + 1});
+    const before = h.log.length;
+    d.model = {async complete(input) {
+      expect(input.messages.some(m => m.role === 'user' && m.content.includes(message))).toBe(true);
+      return {output: call('github_read_file', 'inspect'), usage: {tokens: 10, cost_cents: 0}};
+    }};
+    expect((await runStep(db, f.runId, d)).outcome).toBe('stepped');
+    expect(h.log.slice(before)).toEqual(['github_read_file']);
+    expect((await db.prepare('SELECT delivered_step FROM agent_run_messages WHERE run_id=?1')
+      .bind(f.runId).first<{delivered_step: number}>())?.delivered_step).toBe(pending ? 5 : 4);
   });
 
   it('T4-dynamic-stale: aucun contrôle automatique sur le SHA erroné', () => {

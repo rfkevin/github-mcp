@@ -1053,18 +1053,18 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   const run = await getRun(db, runId);
   if (!run) return { outcome: 'unknown_run' };
   if (run.status !== 'running') return { outcome: run.status };
-  // CC8 S7 : CI pending → relevé serveur SANS modèle. Ces effets déjà lancés
-  // doivent progresser même si une clarification humaine est encore ouverte.
+  const clarifications = await runClarificationState(db, run.cycle_id, runId);
+  // A retried provider turn may already own the message at steps_done.
+  const steeringTurn = Boolean(await db.prepare(
+    'SELECT 1 FROM agent_run_messages WHERE run_id=?1 AND (delivered_step IS NULL OR delivered_step=?2) LIMIT 1',
+  ).bind(runId, run.steps_done).first());
   await ensureCiPollSchema(db);
   const pendingPoll = await pendingCiPoll(db, runId, run.steps_done);
-  if (pendingPoll) {
+  // Finish a claimed poll and keep CI progressing during a durable clarification wait.
+  if (pendingPoll && (!steeringTurn || pendingPoll.inflight || clarifications.pending.length)) {
     const polled = await runCiPoll(db, run, pendingPoll, deps, now);
     if (polled) return polled;
   }
-  // U2b2: a completed store_ask effect creates a durable wait. In the absence of
-  // its applied clarify.answer, never claim a new step or call the provider.
-  // D1 effects/events are authoritative; the model cannot forge an answer.
-  const clarifications = await runClarificationState(db, run.cycle_id, runId);
   if (clarifications.pending.length) {
     const status = await settle(db, runId, now, false, true); // HALT, chat fence, deadline and budgets win.
     if (status === 'deadline') {
@@ -1086,7 +1086,7 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
   // provider or dispatching a new CI. On "wait", the existing CI poll ledger
   // handles subsequent reads (CAS and append-only). On green, reuse the
   // already-existing non-draft PR; on red, the model retains control.
-  if (!plan && run.task_kind === 'implement' && !deps.guidedS7 && deps.dynamicGrantFor) {
+  if (!plan && !steeringTurn && run.task_kind === 'implement' && !deps.guidedS7 && deps.dynamicGrantFor) {
     const grants = await runGrants(run, deps);
     if (grants.length === 1) {
       const effects = await runEvidence(db, runId);
