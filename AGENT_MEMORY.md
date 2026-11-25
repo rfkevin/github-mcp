@@ -828,3 +828,6 @@ Contexte : demande propriétaire de mesures générales des jetons d'entrée/sor
 ### 2026-11-19-gpt6-cc8-pr356-single-registry-correction
 Auteur : GPT-6 | Rectification de la note 2026-11-19-gpt6-cc8-shared-input-output-cost (PR #356, suite).
 Le design a été simplifié AVANT fusion : aucun registre parallèle `agent_run_call_costs` n'est conservé. Les champs de tarif et coût comptabilisé rejoignent directement `agent_run_call_usage` par colonnes additionnelles nullables et migration idempotente D1. Le relevé reste append-only ; les anciennes lignes restent sans prix si aucun instantané fiable n'existe. Le commentaire précédent décrivait une itération intermédiaire non livrée. Sonar et CI/D12 restent à valider au SHA final ; ne pas prétendre déploiement. Merci aux collaborateurs.
+
+### 2026-11-25-codex-budget-essai
+Auteur : Codex | CC8. Le plafond partagé utilise les réservations de agent_paid_steps pour les tâches et participants approuvés dans /owner. Les appels incertains gardent leur réserve. Prochaine vérification : comparaison des trois API après déploiement et approbation humaine. Merci aux collaborateurs.

@@ -1,3 +1,4 @@
+import { trialBudget } from './trial-budget';
 /**
  * CC-8 S1a (CC-PLAN-8, synthèse seq 1262, validée par Kevin) — capacité réelle d'un agent API.
  *
@@ -40,7 +41,7 @@ function errorText(error: unknown): string {
 }
 
 export async function runCapacity(db: D1Database, env: object, participantId: string, cycleId: string | null,
-  kind: string, now: Date): Promise<RunCapacity> {
+  kind: string, now: Date, taskId = ''): Promise<RunCapacity> {
   // CC-8 S8a : pause serveur réversible (acte owner set_agent_run_status) — AVANT toute politique,
   // route ou sonde : un participant en pause ne reçoit AUCUN réveil, aucune exécution n'est créée
   // pour lui. Fail-closed sur les deux axes : sans ligne dans agent_run_status, le participant est
@@ -64,7 +65,9 @@ export async function runCapacity(db: D1Database, env: object, participantId: st
   } catch (error) {
     return { capable: false, reason: 'MODEL_POLICY_INVALID : ' + errorText(error) };
   }
+  const trial = await trialBudget(db, cycleId, taskId, participantId);
   if (policy) {
+    policy.envelope = { ...policy.envelope, trial };
     // CC-8 S1a 2/3 : refus anticipé — mêmes maillons que le routage réel après coupe-circuit
     // S1b-2 (option B, participant × modèle). Tous en pause → CIRCUIT_OPEN, aucune exécution
     // créée (le routage échouerait aussitôt). Les sondes (probe) restent exemptées.
@@ -104,7 +107,7 @@ export async function runCapacity(db: D1Database, env: object, participantId: st
   }
   if (resolved.free) return { capable: true, reason: route.ref };
   // Canal payant : enveloppe de l'agent financée (refus de la fabrique sinon) et une étape dans le budget restant.
-  const envelope = participantEnvelope(policyEnv, participantId);
+  const envelope = { ...participantEnvelope(policyEnv, participantId), trial };
   const budget = await budgetState(db, envelope, participantId, cycleId, now);
   const cost = paidStepCents(resolved, route.ref, kind);
   if (!envelopeFunded(envelope) || cost > budget.day_limit - budget.day_spent || cost > budget.cycle_limit - budget.cycle_spent) {

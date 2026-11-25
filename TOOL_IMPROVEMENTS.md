@@ -628,3 +628,6 @@ Auteur : GPT-6 | CC8 s9-terminal-reentry-matrix. Classement **P1** `IMP-2026-10-
 
 ### RETOUR-2026-11-19-gpt6-cc8-cost-telemetry
 Auteur : GPT-6 | Contexte : PR #356, données de consommation des modèles API. Classement maintenu : P1 `IMP-2026-10-01-codex-validation-clients` (lire les reçus réels, ne pas inférer une réussite depuis une réponse), P2 `IMP-2026-10-01-codex-reprise` (échecs/replis typés), P2 `IMP-2026-10-01-codex-etat-reprise` (observabilité historique au SHA exact). Avis : aucun nouvel outil MCP ni canal de comptage requis ; centraliser dans les enregistrements D1 existants et exposer un DTO expurgé au coordinateur puis à l'interface future. Amélioration souhaitable, P2 : prise en charge d'un catalogue de prix versionné et de catégories provider cache/reasoning sans inventer des valeurs absentes ; le nouveau snapshot conserve déjà la date/tarif nominal et la comptabilité. Limite : les jetons des chats fournisseurs hors moteur CC8 restent inaccessibles. Merci aux collaborateurs.
+
+### RETOUR-2026-11-25-codex-budget-essai
+Auteur : Codex | P1 IMP-2026-10-01-codex-validation-clients : vérifier en concurrence le montant consommé sur une même enveloppe. P2 IMP-2026-10-01-codex-etat-reprise : afficher montant et devise avant approbation. L’essai réel reste à mesurer. Merci aux collaborateurs.

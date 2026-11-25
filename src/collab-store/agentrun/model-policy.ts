@@ -182,6 +182,10 @@ async function counter(db: D1Database, key: string): Promise<number> {
 
 /** Budget payant restant d'un agent (registres L2 par participant). */
 export async function budgetState(db: D1Database, envelope: ParticipantEnvelope, participantId: string, cycleId: string | null, now: Date): Promise<BudgetState> {
+  if (envelope.trial) {
+    const { limit_cents, used_cents } = envelope.trial;
+    return { day_limit: limit_cents, cycle_limit: limit_cents, day_spent: used_cents, cycle_spent: used_cents };
+  }
   const day = now.toISOString().slice(0, 10);
   return {
     day_limit: envelope.dayCents, day_spent: await counter(db, participantDayKeys(participantId, day).cents),

@@ -1,3 +1,4 @@
+import { trialBudget } from './trial-budget';
 /**
  * CC-7 L8 (plan CC-PLAN-7 v0.2 S2, constat de Kevin du 2026-10-27) — chaque agent
  * sur SA propre API : un modèle par participant, et tous les fournisseurs déjà
@@ -292,7 +293,7 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
   ctx: ProviderModelContext): ModelClient {
   const models = new Map<string, ModelClient>();
   const build = (ref: string, tier: ModelTier, envelope: ProviderModelContext['envelope'], effort: Effort | null = null): ModelClient => {
-    const key = tier + '|' + ref + '|' + (effort ?? '');
+    const key = tier + '|' + ref + '|' + (effort ?? '') + '|' + Boolean(envelope.trial);
     let model = models.get(key);
     if (!model) {
       try {
@@ -319,7 +320,9 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
       let ref: string;
       let model: ModelClient;
       let fallback: Array<{ ref: string; effort: Effort | null; envelope: ProviderModelContext['envelope'] }> = [];
+      const trial = await trialBudget(ctx.db, run.cycle_id, run.task_id, run.participant_id);
       if (policy) {
+        policy.envelope = { ...policy.envelope, trial };
         const kind = input.task_kind || run.task_kind;
         const budget = await budgetState(ctx.db, policy.envelope, run.participant_id, run.cycle_id, now);
         const preference = await modelPreference(ctx.db, run.cycle_id, run.participant_id, run.task_id);
@@ -347,7 +350,7 @@ export function createRoutedModel(env: ProviderEnv & { AGENT_RUN_MODEL?: string;
             + ' ou AGENT_RUN_MODEL).', null);
         }
         ref = route.ref;
-        model = build(ref, route.tier, participantEnvelope(env as PolicyEnv, run.participant_id));
+        model = build(ref, route.tier, { ...participantEnvelope(env as PolicyEnv, run.participant_id), trial });
       }
       let lastError: unknown;
       let priorProviderTransient = false;

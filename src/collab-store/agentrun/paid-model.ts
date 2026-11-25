@@ -1,3 +1,4 @@
+import { RUN_TRIAL_REMAINING, trialForRun, type TrialBudget } from './trial-budget';
 /**
  * CC-5 l7 (incrément 7d, amendement A5 du plan de clôture v1.1) — modèles
  * Workers AI payants derrière l’enveloppe de coût de l’owner.
@@ -91,6 +92,7 @@ const MAX_PAID_TOKENS = 1_000_000_000;
  * optionnels (0 = pas de plafond supplémentaire au-delà des bornes existantes).
  */
 export interface ParticipantEnvelope {
+  trial?: TrialBudget | null;
   /** Cents US par participant et par jour (P5 Q1 : 200) ; 0 = non financée. */
   readonly dayCents: number;
   /** Cents US par participant et par cycle (P5 Q1 : 1000) ; 0 = non financée. */
@@ -131,7 +133,7 @@ export function parseParticipantEnvelope(env: ParticipantEnvelopeEnv): Participa
 
 /** L’enveloppe n’est financée que si les deux bornes en cents sont posées (jour ET cycle). */
 export function envelopeFunded(envelope: ParticipantEnvelope): boolean {
-  return envelope.dayCents > 0 && envelope.cycleCents > 0;
+  return Boolean(envelope.trial) || (envelope.dayCents > 0 && envelope.cycleCents > 0);
 }
 
 /** Registres quota_counters d’un participant pour un jour donné : cents, jetons, requêtes. */
@@ -201,8 +203,8 @@ export interface ParticipantStepReservation {
 export async function reserveParticipantStep(db: D1Database, input: ParticipantStepReservation): Promise<void> {
   const day = participantDayKeys(input.participantId, input.day);
   const cycleKey = participantCycleKey(input.participantId, input.cycleId);
-  const guardOk = '(SELECT writes FROM quota_counters WHERE day = ?1) + ?3 <= ?4'
-    + ' AND (SELECT writes FROM quota_counters WHERE day = ?2) + ?3 <= ?5'
+  const guardOk = 'COALESCE((' + RUN_TRIAL_REMAINING + ') >= ?3, ((SELECT writes FROM quota_counters WHERE day = ?1) + ?3 <= ?4'
+    + ' AND (SELECT writes FROM quota_counters WHERE day = ?2) + ?3 <= ?5))'
     + ' AND (?6 = 0 OR (SELECT writes FROM quota_counters WHERE day = ?7) + ?8 <= ?6)'
     + ' AND (?9 = 0 OR (SELECT writes FROM quota_counters WHERE day = ?10) + 1 <= ?9)';
   try {
@@ -213,7 +215,7 @@ export async function reserveParticipantStep(db: D1Database, input: ParticipantS
       db.prepare('INSERT INTO quota_counters (day, writes) VALUES (?1, 0) ON CONFLICT(day) DO NOTHING').bind(day.requests),
       db.prepare('INSERT INTO collab_store_guard (ok) SELECT CASE WHEN ' + guardOk + ' THEN 1 ELSE 0 END')
         .bind(day.cents, cycleKey, input.cents, input.envelope.dayCents, input.envelope.cycleCents,
-          input.envelope.dayTokens, day.tokens, input.tokens, input.envelope.dayRequests, day.requests),
+          input.envelope.dayTokens, day.tokens, input.tokens, input.envelope.dayRequests, day.requests, input.runId),
       db.prepare('UPDATE quota_counters SET writes = writes + ?2 WHERE day = ?1').bind(day.cents, input.cents),
       db.prepare('UPDATE quota_counters SET writes = writes + ?2 WHERE day = ?1').bind(cycleKey, input.cents),
       db.prepare('UPDATE quota_counters SET writes = writes + ?2 WHERE day = ?1').bind(day.tokens, input.tokens),
@@ -223,6 +225,7 @@ export async function reserveParticipantStep(db: D1Database, input: ParticipantS
       db.prepare('DELETE FROM collab_store_guard'),
     ]);
   } catch {
+    if (input.envelope.trial) throw new ModelCallError('PAID_TRIAL_RESERVE_FAILED : réservation du budget partagé refusée.', null);
     const used = async (key: string) =>
       (await db.prepare('SELECT writes FROM quota_counters WHERE day = ?1').bind(key).first<{ writes: number }>())?.writes ?? 0;
     if ((await used(day.cents)) + input.cents > input.envelope.dayCents) {
@@ -314,7 +317,8 @@ export function createPaidWorkersAiModel(options: PaidModelOptions): ModelClient
   return {
     async complete(input): Promise<{ output: ModelOutput; usage: ModelUsage }> {
       // (1) Enveloppe par participant non financée : refus avant tout appel, aucun quota touché.
-      if (!envelopeFunded(options.envelope)) {
+      const envelope = { ...options.envelope, trial: await trialForRun(options.db, options.runId) };
+      if (!envelopeFunded(envelope)) {
         throw new ModelCallError('PAID_ENVELOPE_NOT_FUNDED : enveloppe owner par participant absente ou nulle ; aucun appel payant n’est fait.', null);
       }
       const now = options.now?.() ?? new Date();
@@ -327,6 +331,8 @@ export function createPaidWorkersAiModel(options: PaidModelOptions): ModelClient
       // Étape en cours : le moteur réclame l’étape n = steps_done et ne l’incrémente qu’au checkpoint.
       const n = run.steps_done;
       const previous = await readPaidStep(options.db, options.runId, n);
+      if (previous && envelope.trial && !previous.settled)
+        throw new ModelCallError('PAID_TRIAL_STEP_PENDING : envoi précédent incertain, réservation conservée.', null);
       if (previous?.settled) {
         // (2) Coupure entre le règlement et la persistance de la sortie : fail-closed, aucune seconde charge.
         throw new ModelCallError('PAID_STEP_ALREADY_SETTLED : l’étape ' + n + ' est déjà réglée ; rejeu refusé pour éviter une seconde charge.', null);
@@ -348,7 +354,7 @@ export function createPaidWorkersAiModel(options: PaidModelOptions): ModelClient
         reserved = previous.reserved_cents;
       } else {
         await reserveParticipantStep(options.db, { runId: options.runId, n, participantId: run.participant_id, cycleId: run.cycle_id,
-          day, cents: worstCents, tokens: worstTokens, envelope: options.envelope, nowSec });
+          day, cents: worstCents, tokens: worstTokens, envelope, nowSec });
         reserved = worstCents;
       }
       let raw: unknown;

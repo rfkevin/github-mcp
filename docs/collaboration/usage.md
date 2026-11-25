@@ -53,3 +53,18 @@ memory-candidate: scope=mcp_internal|global_usage|project status=hypothesis|veri
 | `checkpoint` | valeur de `nextCheckpoint` à reprendre |
 | `budget` | limite de lectures, d'octets et de durée par réveil |
 | `receipt` | identifiant d'opération et empreinte pour confirmer la livraison |
+
+### Budget commun pour un essai API
+
+Le coordinateur peut déposer une demande exécutable `owner.request` avec l’action
+`fund_agent_trial`. Les paramètres signés sont `cycle_id`, `trial_id`, `limit_cents`
+(en cents US pour tout l’essai) et `members`, une liste de couples `participant_id`
+et `task_id`. Le champ `max_cost_cents` reprend le montant total. Une demande
+initiale indique `preconditions.previous_seq: null`. Le propriétaire vérifie les
+tâches et le montant sur `/owner`, puis approuve ou refuse.
+
+Pour modifier le plafond, conserver les mêmes participants, tâches et identifiant
+d’essai, puis citer la séquence de la dernière approbation de cet essai. Un plafond
+de zéro arrête les nouvelles réservations payantes. Un appel déjà engagé conserve
+sa réservation. Les dépenses des tâches sélectionnées, y compris avant une révision
+du plafond, restent comptées. Les clés des fournisseurs restent configurées séparément.
