@@ -109,6 +109,30 @@ describe('CC8 S7 — garde serveur contre le faux final implement', () => {
     ]);
   });
 
+  it('resumes a stale-head final in the same run and stops if the refusal repeats without progress', async () => {
+    const f = await fixture();
+    const h = githubHost();
+    const execute = h.tools.execute.bind(h.tools);
+    h.tools.execute = async (c, ctx) => {
+      if (c.name === 'github_commit_files') throw new ToolRefused('api_write_head_changed');
+      return execute(c, ctx);
+    };
+    const d = deps([], h.tools, f.completion);
+    const outputs = [call('github_commit_files','stale'), final(), call('github_write_scope','scope'),
+      call('github_commit_files','stale-again'), final()];
+    let turn = 0;
+    d.model = { async complete(input) {
+      if (turn === 2) {
+        expect(input.messages[input.messages.length - 1]?.content).toContain('Relis github_write_scope');
+        expect(input.tools).toContain('github_commit_files');
+      }
+      return { output: outputs[turn++], usage: { tokens: 20, cost_cents: 0 } };
+    } };
+    expect(await drain(f.runId, d, 6)).toBe('failed');
+    expect(turn).toBe(5);
+    expect(h.log).toEqual(['github_write_scope']);
+  });
+
   const pipeline = [call('github_write_scope','s'),call('github_create_branch','b'),
     call('github_commit_files','c'),call('github_run_checks','r'),
     call('github_check_result','v'),call('github_open_pr','p'),final()];

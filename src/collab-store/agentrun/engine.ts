@@ -573,6 +573,26 @@ async function completionVerified(db: D1Database, run: RunRow, deps: EngineDeps)
   return githubCompletionSatisfied(await runEvidence(db, run.run_id), grants[0].branch);
 }
 
+async function pendingHeadRecovery(db: D1Database, runId: string): Promise<boolean> {
+  const latest = await db.prepare([
+    'SELECT status, result FROM agent_run_effects WHERE run_id = ?1',
+    "AND tool IN ('github_write_scope','github_commit_files','github_replace_text','github_run_checks','github_check_result','github_open_pr')",
+    'ORDER BY n DESC, idx DESC LIMIT 1',
+  ].join(' ')).bind(runId).first<{ status: string; result: string | null }>();
+  if (latest?.status !== 'failed' || !latest.result) return false;
+  try {
+    if (JSON.parse(latest.result)?.error !== 'api_write_head_changed') return false;
+  } catch { return false; }
+  // A repeated refusal is not progress. A successful commit or check launch
+  // starts new work that may independently need a refreshed reference.
+  const used = await db.prepare([
+    "SELECT 1 FROM agent_run_journal WHERE run_id=?1 AND kind='implement_head_recovery'",
+    'AND CAST(detail AS INTEGER) >= COALESCE((SELECT MAX(n) FROM agent_run_effects',
+    "WHERE run_id=?1 AND status='completed' AND tool IN ('github_commit_files','github_replace_text','github_run_checks')), -1) LIMIT 1",
+  ].join(' ')).bind(runId).first();
+  return !used;
+}
+
 /** Effets D1 de l'exécution dans l'ordre (n, idx) ; les relevés de CI serveur suivent leur effet d'origine. */
 async function runEvidence(db: D1Database, runId: string): Promise<GithubCompletionEffect[]> {
   const { results } = await db.prepare(
@@ -1198,7 +1218,13 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
         const publicationInstruction = answerRecoveryTurn
           ? answerRecoveryInstruction(run.task_kind, run.prompt, tools, true)
           : answerPublicationReminder(run.task_kind, run.prompt, tools);
-        const additional = [extra, replyContext, verdictInstruction, publicationInstruction].filter(Boolean).join('\n\n');
+        const resumedHead = run.task_kind === 'implement' && !liveSteering.messages.length
+          && await db.prepare("SELECT 1 FROM agent_run_journal WHERE run_id=?1 AND kind='implement_head_recovery' AND detail=?2 LIMIT 1")
+            .bind(runId, String(n - 1)).first();
+        const headInstruction = resumedHead
+          ? 'La référence de branche a été refusée. Relis github_write_scope pour obtenir branch_head, puis décide comment poursuivre ta mission.'
+          : null;
+        const additional = [extra, replyContext, verdictInstruction, publicationInstruction, headInstruction].filter(Boolean).join('\n\n');
         // Preserve an approximate full-context+output budget for the terminal verdict call.
         // No paid allowance or D12 bypass; exhausted budgets still refuse before the provider.
         response = await deps.model.complete({
@@ -1512,8 +1538,15 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
     && (run.max_steps < 0 || n + 1 < run.max_steps)
     && deps.tools.spec(run.task_kind, 'store_answer')?.effect === 'write'
     && answerAskSeq(run.prompt) !== null;
+  // A stale branch reference is recoverable. Offer another turn only when the
+  // server receipt still applies and a previous reminder has not covered this work.
+  const headRecovery = guarded && !deps.guidedS7 && !deps.guidedPreparation
+    && !verified && !noProgress && output.tool_calls.length === 0
+    && (run.max_steps < 0 || n + 1 < run.max_steps)
+    && deps.tools.list(run.task_kind).includes('github_write_scope')
+    && await pendingHeadRecovery(db, runId);
   const final = persistedProof || (!await pendingSteer()
-    && (noProgress || (output.tool_calls.length === 0 && !missingVerdictFirstTime && !missingAnswerFirstTime))) ? 1 : 0;
+    && (noProgress || (output.tool_calls.length === 0 && !missingVerdictFirstTime && !missingAnswerFirstTime && !headRecovery))) ? 1 : 0;
   const completionStatus = verified ? 'completed' : 'failed';
   const completionReason = repeatedDenial ? 'blocked:no_progress:repeated_denial'
     : repeatedScope ? 'blocked:no_progress:repeated_scope_without_commit' : verified ? 'final'
@@ -1536,6 +1569,12 @@ export async function runStep(db: D1Database, runId: string, deps: EngineDeps): 
       "  WHERE run_id = ?1 AND n = ?2 AND state = 'completed' AND claimed_by = ?6 AND completed_at = ?3)",
     ].join(' ')).bind(runId, n, now, final, output.text.slice(0, 4000), deps.workerId, completionStatus, completionReason,
       persistedProof ? 1 : 0),
+    ...(headRecovery ? [db.prepare([
+      "INSERT INTO agent_run_journal (at,kind,run_id,detail) SELECT ?3,'implement_head_recovery',?1,?4",
+      "WHERE EXISTS (SELECT 1 FROM agent_runs WHERE run_id=?1 AND steps_done=?2+1 AND status='running')",
+      "AND EXISTS (SELECT 1 FROM agent_run_steps WHERE run_id=?1 AND n=?2 AND claimed_by=?5 AND attempts=?6 AND state='completed')",
+      "AND NOT EXISTS (SELECT 1 FROM agent_run_journal WHERE run_id=?1 AND kind='implement_head_recovery' AND detail=?4)",
+    ].join(' ')).bind(runId, n, now, String(n), deps.workerId, claimed.attempts)] : []),
   ]);
   if (done.meta.changes !== 1) return settled(db, runId, now);
   const recordedStatus = (await db.prepare('SELECT status FROM agent_runs WHERE run_id=?1').bind(runId)
