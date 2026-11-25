@@ -570,13 +570,16 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       case 'github_read_file': {
         const path = stringArg(args, 'path', /^[^\0]{1,400}$/);
         const ref = stringArg(args, 'ref', REF_RE);
+        const page = ctx.prefetch === true ? null : {
+          offset: intArg(args, 'offset', 0, Number.MAX_SAFE_INTEGER, 0),
+          limit: intArg(args, 'limit_chars', 1, GITHUB_FILE_PAGE_CHARS, GITHUB_FILE_PAGE_CHARS),
+        };
         const file = await options.github!.getTextFile(options.repository!, path, ref);
         await journalRead(options.db, ctx.run_id, 'github_read_file', SHA_RE.test(ref) ? ref : '');
         // La prélecture serveur guidée doit inspecter le contenu entier (vérification S7),
         // jamais seulement la première page destinée au contexte du fournisseur.
-        if (ctx.prefetch === true) return { path: file.path, sha: file.sha, size: file.size, content: file.content };
-        const offset = intArg(args, 'offset', 0, Number.MAX_SAFE_INTEGER, 0);
-        const limit = intArg(args, 'limit_chars', 1, GITHUB_FILE_PAGE_CHARS, GITHUB_FILE_PAGE_CHARS);
+        if (!page) return { path: file.path, sha: file.sha, size: file.size, content: file.content };
+        const { offset, limit } = page;
         const content = file.content.slice(offset, offset + limit);
         const next = offset + content.length;
         return { path: file.path, sha: file.sha, size: file.size, content, offset,
@@ -601,6 +604,12 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
       case 'github_diff': {
         const head = stringArg(args, 'head', SHA_RE);
         const base = stringArg(args, 'base', REF_RE);
+        const page = ctx.prefetch === true ? null : {
+          fileOffset: intArg(args, 'file_offset', 0, Number.MAX_SAFE_INTEGER, 0),
+          fileLimit: intArg(args, 'file_limit', 1, GITHUB_DIFF_PAGE_FILES, GITHUB_DIFF_PAGE_FILES),
+          patchOffset: intArg(args, 'patch_offset', 0, Number.MAX_SAFE_INTEGER, 0),
+          patchChars: intArg(args, 'patch_chars', 1, GITHUB_DIFF_PAGE_PATCH_CHARS, DIFF_PATCH_CHARS),
+        };
         const comparison = await options.github!.compareRefs(options.repository!, base, head) as Record<string, unknown>;
         // CC8 S7 vérification guidée (relecture GPT-6 #286, V1) : la prélecture serveur est journalisée à part ;
         // elle ne vaut preuve d'un verdict positif que si le contexte injecté couvre tout le diff (verify-guided.ts).
@@ -609,7 +618,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
         const raw = Array.isArray(comparison.files) ? comparison.files as Array<Record<string, unknown>> : [];
         // Les contrôles guidés doivent conserver leur enveloppe de preuve historique
         // (jusqu'à 50 fichiers, patchs limités avec indicateur de coupe).
-        if (ctx.prefetch === true) {
+        if (!page) {
           const files = raw.slice(0, DIFF_MAX_FILES).map(file => {
             const patch = typeof file.patch === 'string' ? file.patch : '';
             return { filename: file.filename, status: file.status, additions: file.additions, deletions: file.deletions,
@@ -619,10 +628,7 @@ export function createReadToolHost(options: ReadToolHostOptions): ToolHost & { s
             total_commits: comparison.total_commits, files, files_truncated: raw.length > DIFF_MAX_FILES };
         }
         // Pagination avant réinjection au modèle : les pages suivantes restent consultables.
-        const fileOffset = intArg(args, 'file_offset', 0, Number.MAX_SAFE_INTEGER, 0);
-        const fileLimit = intArg(args, 'file_limit', 1, GITHUB_DIFF_PAGE_FILES, GITHUB_DIFF_PAGE_FILES);
-        const patchOffset = intArg(args, 'patch_offset', 0, Number.MAX_SAFE_INTEGER, 0);
-        const patchChars = intArg(args, 'patch_chars', 1, GITHUB_DIFF_PAGE_PATCH_CHARS, DIFF_PATCH_CHARS);
+        const { fileOffset, fileLimit, patchOffset, patchChars } = page;
         const files = raw.slice(fileOffset, fileOffset + fileLimit).map(file => {
           const patch = typeof file.patch === 'string' ? file.patch : '';
           const content = patch.slice(patchOffset, patchOffset + patchChars);

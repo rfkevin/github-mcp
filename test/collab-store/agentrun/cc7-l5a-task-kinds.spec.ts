@@ -53,7 +53,7 @@ function fakeReads() {
   const calls: string[] = [];
   const github: GitHubReads & { calls: string[] } = {
     calls,
-    async getTextFile(repository, path) { return { path, sha: 'e'.repeat(40), size: 1, content: 'x' }; },
+    async getTextFile(repository, path) { calls.push('file:' + path); return { path, sha: 'e'.repeat(40), size: 1, content: 'x' }; },
     async getPullRequest(repository, number) { return { number }; },
     async listCheckRuns() { return []; },
     async compareRefs(repository, base, head) {
@@ -224,6 +224,35 @@ describe('CC-7 L5a — outils review, github_diff et github_open_pr', () => {
       .toEqual(['store_context', 'store_delta', 'store_ask', 'store_answer']);
     // L5b décidera des verdicts serveur : aucun store_verdict ni store_submit n’existe encore.
     expect(WRITE_TOOL_SCHEMAS.some(schema => /verdict|submit/.test(schema.name))).toBe(false);
+  });
+
+  it('rejects invalid page arguments before fetching or recording a successful read', async () => {
+    const q = await seedTask('page-validation', () => []);
+    const runId = await newRun(q.cycle, q.reviewer, 'review');
+    const github = fakeReads();
+    let requests = 0;
+    const host = createReadToolHost({ db, repository: REPO, github: { ...github,
+      async getTextFile(...args) { requests++; return github.getTextFile(...args); },
+      async compareRefs(...args) { requests++; return github.compareRefs(...args); },
+    } });
+    const reads = () => db.prepare('SELECT COUNT(*) AS n FROM agent_run_reads WHERE run_id=?1')
+      .bind(runId).first<number>('n');
+    for (const [name, args] of [
+      ['github_read_file', { path: 'src/example.ts', ref: HEAD, offset: -1 }],
+      ['github_read_file', { path: 'src/example.ts', ref: HEAD, limit_chars: 0 }],
+      ['github_diff', { base: BASE, head: HEAD, file_offset: -1 }],
+      ['github_diff', { base: BASE, head: HEAD, file_limit: 0 }],
+      ['github_diff', { base: BASE, head: HEAD, patch_offset: -1 }],
+      ['github_diff', { base: BASE, head: HEAD, patch_chars: 0 }],
+    ] as const) {
+      await expect(host.execute({ id: 'invalid', name, args }, { run_id: runId })).rejects.toThrow();
+    }
+    expect(github.calls).toHaveLength(0);
+    expect(await reads()).toBe(0);
+    await host.execute({ id: 'file', name: 'github_read_file', args: { path: 'src/example.ts', ref: HEAD } }, { run_id: runId });
+    await host.execute({ id: 'diff', name: 'github_diff', args: { base: BASE, head: HEAD } }, { run_id: runId });
+    expect(github.calls).toHaveLength(2);
+    expect(await reads()).toBe(2);
   });
 
   it('github_diff : head doit être un SHA de 40 caractères ; bornage des fichiers et des patchs', async () => {
