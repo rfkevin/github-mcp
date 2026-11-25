@@ -1,3 +1,4 @@
+import { trialForRun } from './trial-budget';
 /**
  * CC-7 L2 (PR 2.3, plan CC-PLAN-7 v0.2 S2) — noyau commun des adaptateurs
  * payants du canal API, paramétré par protocole (OpenAI PR 2.2, Anthropic
@@ -133,7 +134,8 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
   return {
     async complete(input): Promise<{ output: ModelOutput; usage: ModelUsage }> {
       // (1) Enveloppe par participant non financée : refus avant tout appel, aucun quota touché.
-      if (!envelopeFunded(options.envelope)) {
+      const envelope = { ...options.envelope, trial: await trialForRun(options.db, options.runId) };
+      if (!envelopeFunded(envelope)) {
         throw new ModelCallError('PAID_ENVELOPE_NOT_FUNDED : enveloppe owner par participant absente ou nulle ; aucun appel payant n’est fait.', null);
       }
       // Secret absent : refus typé avant toute réservation, aucun quota touché.
@@ -151,6 +153,8 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
       if (!run) throw new ModelCallError('PAID_RUN_UNKNOWN : exécution ' + options.runId + ' introuvable.', null);
       const n = run.steps_done;
       const previous = await readPaidStep(options.db, options.runId, n);
+      if (previous && envelope.trial && !previous.settled)
+        throw new ModelCallError('PAID_TRIAL_STEP_PENDING : envoi précédent incertain, réservation conservée.', null);
       if (previous?.settled) {
         // Coupure entre le règlement et la persistance de la sortie : fail-closed, aucune seconde charge.
         throw new ModelCallError('PAID_STEP_ALREADY_SETTLED : l’étape ' + n + ' est déjà réglée ; rejeu refusé pour éviter une seconde charge.', null);
@@ -174,7 +178,7 @@ export function createPaidProtocolModel(options: PaidProtocolModelOptions): Mode
         reserved = previous.reserved_cents;
       } else {
         await reserveParticipantStep(options.db, { runId: options.runId, n, participantId: run.participant_id, cycleId: run.cycle_id,
-          day, cents: worstCents, tokens: worstTokens, envelope: options.envelope, nowSec });
+          day, cents: worstCents, tokens: worstTokens, envelope, nowSec });
         reserved = worstCents;
       }
       let raw: unknown;

@@ -206,6 +206,7 @@ const ACTION_LABELS: Record<string, string> = { install_phases: 'Installer les d
   register_endpoint: 'Inscrire ou modifier un endpoint d’exécution', grant_coordinator: 'Accorder ou révoquer le rôle coordinateur',
   set_identity_family: 'Configurer une identité logique commune',
   // CC-Owner V2 L6 : actes désormais exécutables à l’approbation d’une demande.
+  fund_agent_trial: 'Fixer le budget total partagé de l’essai',
   classify_request: 'Classer une demande', close_cycle: 'Clôturer un cycle (mode doux)',
   appoint_cycle_coordinator: 'Nommer ou révoquer le coordinateur d’un cycle' };
 
@@ -227,7 +228,7 @@ function executableDetail(item: PendingWithExecutable): string {
     + '<dt>Retour arrière</dt><dd>' + escapeHtml(exec.rollback ?? '') + '</dd>'
     + '<dt>Précondition</dt><dd>dernier acte du même type au seq ' + (exec.previous_seq ?? 'aucun') + '</dd>'
     + stateDiffRows(exec)
-    + '<dt>Coût maximal</dt><dd>' + ((exec.max_cost_cents ?? 0) / 100).toFixed(2) + ' €</dd>'
+    + '<dt>Coût maximal</dt><dd>' + ((exec.max_cost_cents ?? 0) / 100).toFixed(2) + (exec.action === 'fund_agent_trial' ? ' USD' : ' €') + '</dd>'
     + '<dt>Expiration</dt><dd>' + escapeHtml(expiry) + (exec.expired ? ' — <strong>expirée, non approuvable</strong>' : '') + '</dd>'
     + '<dt>Empreinte sha256</dt><dd><code>' + escapeHtml(exec.payload_sha256 ?? '') + '</code></dd>'
     + '</dl><pre>' + escapeHtml(exec.preview ?? '') + '</pre>';

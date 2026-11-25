@@ -1,3 +1,4 @@
+import { TRIAL_MEMBERS_SCHEMA } from './trial-budget';
 /**
  * CC-5 l7 (incrément 7a) — tables de l'exécution autonome des agents API.
  *
@@ -29,6 +30,8 @@
  * Aucune suppression : un trigger refuse DELETE sur toutes ces tables.
  */
 const TABLES = [
+  TRIAL_MEMBERS_SCHEMA,
+  'CREATE INDEX IF NOT EXISTS agent_trial_approval ON agent_trial_members(approval_seq)',
   ['CREATE TABLE IF NOT EXISTS agent_fences (',
     '  lease_key TEXT PRIMARY KEY,',
     '  generation INTEGER NOT NULL,',
@@ -58,6 +61,7 @@ const TABLES = [
     '  created_at INTEGER NOT NULL,',
     '  updated_at INTEGER NOT NULL',
     ')'].join(' '),
+  'CREATE INDEX IF NOT EXISTS agent_runs_trial_scope ON agent_runs(cycle_id,task_id,participant_id)',
   'CREATE INDEX IF NOT EXISTS agent_runs_lease ON agent_runs (lease_key, status)',
   ['CREATE TABLE IF NOT EXISTS agent_run_steps (',
     '  run_id TEXT NOT NULL,',

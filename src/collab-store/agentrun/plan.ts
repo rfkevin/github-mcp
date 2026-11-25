@@ -1,3 +1,4 @@
+import { trialBudget } from './trial-budget';
 /**
  * CC-5 l7 (incrément 7c-2) — création d'exécutions API depuis les décisions du contrôleur.
  * CC-7 L5a (S9) — les réveils de tâche créent aussi des exécutions typées.
@@ -399,11 +400,11 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv,
   const nowDate = new Date(input.now * 1000);
   const capacityCache = new Map<string, RunCapacity>();
   const detail: IncapableDetail[] = [];
-  const capable = async (participantId: string, cycleId: string, kind: string): Promise<boolean> => {
-    const key = participantId + '\u001f' + cycleId + '\u001f' + kind;
+  const capable = async (participantId: string, cycleId: string, kind: string, taskId = ''): Promise<boolean> => {
+    const key = participantId + '\u001f' + cycleId + '\u001f' + kind + '\u001f' + taskId;
     let value = capacityCache.get(key);
     if (value === undefined) {
-      value = await runCapacity(db, env, participantId, cycleId, kind, nowDate);
+      value = await runCapacity(db, env, participantId, cycleId, kind, nowDate, taskId);
       capacityCache.set(key, value);
       // CC-8 S1a 2/3 : verdict journalisé (capable ou refus typé) — lu par la vue du coordinateur.
       await recordCapacity(db, { participant_id: participantId, cycle_id: cycleId, kind, capacity: value, now: input.now });
@@ -578,7 +579,7 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv,
           continue;
         }
         // CC-8 S1a : aucun modèle abordable maintenant — on ne crée pas une exécution vouée à l'échec.
-        if (!(await capable(participantId, cycleId, kind))) {
+        if (!(await capable(participantId, cycleId, kind, decision.task_id ?? ''))) {
           incapable += 1;
           continue;
         }
@@ -625,6 +626,8 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv,
                 submittedPr = serverProof.pr;
             }
           }
+          const trial = await trialBudget(db, cycleId, taskId, participantId);
+          const maxCostCents = trial?.limit_cents ?? taskKindCostCents(env, kind);
           const basePrompt = taskPrompt(kind, cycleId, taskId, decision.subject);
           const prompt = !pair ? basePrompt : basePrompt + '\n' + (submittedPr === null
             ? 'Numéro de PR inconnu pour le HEAD/BASE de cette soumission : consulter github_pull_request et le diff exact; jamais réutiliser un numéro de PR antérieur.'
@@ -635,8 +638,8 @@ export async function planAgentRuns(db: D1Database, env: PlanEnv,
             runId, cycleId, participantId,
             taskId, taskKind: kind,
             prompt: await taskPromptWithServerPacket(db, { cycleId, participantId, taskId }, prompt),
-            maxSteps: taskKindMaxSteps(kind), maxTokens: taskKindMaxTokens(kind, env), maxCostCents: taskKindCostCents(env, kind),
-            deadlineAt: input.now + runDeadlineS(kind, taskKindCostCents(env, kind)), now: input.now,
+            maxSteps: taskKindMaxSteps(kind), maxTokens: taskKindMaxTokens(kind, env), maxCostCents,
+            deadlineAt: input.now + runDeadlineS(kind, maxCostCents), now: input.now,
           })).created;
         } });
       }

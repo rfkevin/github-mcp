@@ -1,3 +1,4 @@
+import { approveTrialBudget, trialParams } from './trial-budget';
 /**
  * CC-4 A2 (plan §8, exigence Kevin project-mcp-collab#41 6114249479) —
  * demandes owner EXÉCUTABLES : l'agent prépare l'acte, le propriétaire ne
@@ -49,7 +50,7 @@ import { CHAIN_STATUSES, POLICY_MAX_MODELS } from '../agentrun/model-policy';
 import { latestRunStatusActSeq, RUN_STATUSES, setAgentRunStatus, type RunStatus } from './agent-run-status';
 
 export const EXECUTABLE_ACTIONS = ['install_phases', 'import_state', 'register_endpoint', 'grant_coordinator', 'set_identity_family', 'reassign_task',
-  'classify_request', 'close_cycle', 'appoint_cycle_coordinator', 'set_agent_models', 'set_agent_run_status'] as const;
+  'classify_request', 'close_cycle', 'appoint_cycle_coordinator', 'set_agent_models', 'set_agent_run_status', 'fund_agent_trial'] as const;
 export type ExecutableAction = (typeof EXECUTABLE_ACTIONS)[number];
 const SHA_RE = /^[0-9a-f]{64}$/;
 const CYCLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -110,6 +111,10 @@ const ENDPOINT_FIELDS = ['endpoint_id', 'principal_id', 'attestation_kind', 'att
 
 /** Renvoie la cible de l'acte : cycle (phases, état) ou endpoint_id (register_endpoint). */
 function validateParams(action: ExecutableAction, params: Record<string, unknown>): string {
+  if (action === 'fund_agent_trial') {
+    const trial = trialParams(params);
+    return trial.cycle_id + '/' + trial.trial_id;
+  }
   if (action === 'register_endpoint') {
     const extra = Object.keys(params).filter(key => !ENDPOINT_FIELDS.includes(key));
     if (extra.length) throw new Error('params : champs inconnus ' + extra.join(', ') + '.');
@@ -295,7 +300,7 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     const target = validateParams(action as ExecutableAction, params as Record<string, unknown>);
     const cycleId = action === 'register_endpoint' || action === 'grant_coordinator' || action === 'set_identity_family'
       || action === 'set_agent_models' || action === 'set_agent_run_status'
-      ? REGISTRY_CYCLE : action === 'reassign_task' ? String((params as Record<string, unknown>).cycle_id) : target;
+      ? REGISTRY_CYCLE : (action === 'reassign_task' || action === 'fund_agent_trial') ? String((params as Record<string, unknown>).cycle_id) : target;
     // L6 : pour classify_request, target (request:<seq>) n’est pas un cycle — le
     // cycle réel (celui de la demande classée) est résolu à l’approbation.
     const declared = payload.payload_sha256;
@@ -307,6 +312,8 @@ export async function parseOwnerRequest(payloadJson: string): Promise<ParsedRequ
     if (!pre || !(previous === null || (Number.isSafeInteger(previous) && (previous as number) > 0))) {
       throw new Error('preconditions.previous_seq : seq du dernier acte du même type sur la cible, ou null.');
     }
+    if (action === 'fund_agent_trial' && payload.max_cost_cents !== (params as Record<string, unknown>).limit_cents)
+      throw new Error('Essai : max_cost_cents égal au montant partagé requis.');
     const expires = payload.expires_at;
     if (expires !== undefined && !(Number.isSafeInteger(expires) && (expires as number) > 0)) throw new Error('expires_at : secondes Unix.');
     const cost = payload.max_cost_cents ?? 0;
@@ -328,6 +335,10 @@ export async function latestOwnerActSeq(db: D1Database, action: ExecutableAction
   // même type (previous_seq toujours null : la PK 0011 verrouille le
   // re-classement, l’état clos verrouille la re-clôture) ; le mandat
   // coordinateur, lui, se chaîne acte par acte (epoch).
+  if (action === 'fund_agent_trial') {
+    return db.prepare("SELECT MAX(seq) FROM events WHERE type='owner.decision' AND substr(idempotency_key,1,length(?1))=?1")
+      .bind('owner:trial-budget:' + cycleId + ':').first<number>('MAX(seq)');
+  }
   if (action === 'classify_request' || action === 'close_cycle') return null;
   if (action === 'appoint_cycle_coordinator') return latestMandateActSeq(db, cycleId);
   if (action === 'register_endpoint') return latestEndpointActSeq(db, cycleId);
@@ -376,7 +387,7 @@ export async function describePending(page: PendingPage, now: () => Date = () =>
     if (parsed.kind === 'invalid') { items.push({ ...item, executable: { invalid: parsed.reason } }); continue; }
     const req = parsed.request;
     const body = req.action === 'install_phases' ? String(req.params.definitions)
-      : req.action === 'register_endpoint' || req.action === 'grant_coordinator' || req.action === 'set_identity_family'
+      : req.action === 'fund_agent_trial' || req.action === 'register_endpoint' || req.action === 'grant_coordinator' || req.action === 'set_identity_family'
         || req.action === 'reassign_task' || req.action === 'classify_request' || req.action === 'close_cycle'
         || req.action === 'appoint_cycle_coordinator' || req.action === 'set_agent_models' || req.action === 'set_agent_run_status'
         ? JSON.stringify(req.params, null, 2) : String(req.params.markdown);
@@ -469,6 +480,12 @@ export async function decideOwnerRequest(db: D1Database, input: {
   }
   const binding = { request_id: req.request_id, request_seq: request.seq, payload_sha256: req.payload_sha256,
     expected_previous_seq: req.previous_seq };
+  if (req.action === 'fund_agent_trial') {
+    if (request.cycle_id !== req.cycle_id) throw new CollabStoreError('REQUEST_MISMATCH', 'Cycle différent de la demande.');
+    const result = await approveTrialBudget(db, trialParams(req.params), input.proof, binding, input.now);
+    return { ...result, decision: 'approve', executed: { action: req.action, cycle_id: req.cycle_id,
+      detail: 'Budget partagé : ' + req.max_cost_cents + ' cents US' } };
+  }
   if (req.action === 'register_endpoint') {
     const result = await registerEndpoint(db, { registration: req.params, proof: input.proof, binding, now: input.now });
     return { status: result.status, event: result.event, decision: 'approve', executed: { action: req.action, cycle_id: req.target,
